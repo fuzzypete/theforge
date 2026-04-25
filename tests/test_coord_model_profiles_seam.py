@@ -462,6 +462,99 @@ def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_
     assert "code_review" in audit["budget"]["locked_roles"]
 
 
+def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monkeypatch):
+    """Explicit plan + review_pool overrides must win even when config.models is set.
+
+    Regression guard for the pattern bug: the override-collection block was
+    guarded by `if config.models is None`, so a models: config with additional
+    explicit plan/review_pool overrides silently used adaptive selections instead.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from dataclasses import replace as _replace
+
+    from theforge.config import ModelProfile, PlanConfig
+    from theforge.coordinator import preflight as _pf
+
+    explicit_plan_model = "pinned-planner-model"
+    explicit_reviewer = ModelProfile(
+        name="pinned-reviewer",
+        cli="claude",
+        provider=None,
+        model="pinned-reviewer-model",
+        budget_usd=2.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Grep"),
+    )
+
+    config = _replace(
+        _make_config(tmp_path),
+        # Simulate a v0.8 models: path by setting config.models to a non-None list.
+        # Use an empty list so _apply_complexity_adaptation exits early while
+        # still setting the "models path" branch of the code.
+        models=[],
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+            AgentDef(
+                name="opus",
+                provider="anthropic",
+                model="opus",
+                budget_usd=8.0,
+                timeout_seconds=1200,
+                tier="strong",
+                cli="claude",
+            ),
+        ],
+        plan=PlanConfig(
+            enabled=True,
+            cli="claude",
+            model=explicit_plan_model,
+            provider=None,
+            budget_usd=6.0,
+            timeout=600,
+        ),
+        plan_model_is_default=False,
+        review_pool=[explicit_reviewer],
+        review_pool_is_default=False,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=50.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    # Planner must show the explicit model, not an adaptive selection.
+    assert audit["assignments"]["planner"] == explicit_plan_model
+    assert audit["role_sources"]["planner"] == "explicit_override"
+    # Code reviewer must show the explicit pool, not an adaptive selection.
+    assert audit["assignments"]["code_reviewers"] == [explicit_reviewer.model]
+    assert audit["role_sources"]["code_review"] == "explicit_override"
+    # The adaptive decision must also have the explicit planner so plan_flow
+    # will see it when "planner" is in _explicit_roles.
+    decision = state._adaptive_decision
+    assert decision.planner.model == explicit_plan_model
+    assert [p.model for p in decision.code_reviewers] == [explicit_reviewer.model]
+
+
 def test_record_run_memory_is_called_from_resume_path(tmp_path):
     """Both run_task and _run_resume_coordinator must call _record_run_memory.
 

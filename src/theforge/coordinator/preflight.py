@@ -747,6 +747,9 @@ def _apply_preflight_config(
     _explicit_roles: set[str] = set()
     _explicit_review_pool: list[_ModelProfile] = []
     _explicit_plan_review_pool: list[_ModelProfile] = []
+    # Collect explicit overrides from both the legacy-agents path (models is None)
+    # and the v0.8 models: path.  The is_default flags are authoritative regardless
+    # of which YAML path set them, so the guard must not be limited to models is None.
     if config.models is None:
         if config.dev_profile is not _DEF_DEV:
             _explicit["dev"] = config.dev_profile
@@ -754,29 +757,30 @@ def _apply_preflight_config(
         if config.preflight_profile is not _DEF_PRE:
             _explicit["preflight"] = config.preflight_profile
             _explicit_roles.add("preflight")
-        if config.review_pool and not config.review_pool_is_default:
-            _explicit_roles.add("review_pool")
-            _explicit_review_pool = list(config.review_pool)
-            # Lock code_review against budget downgrade and audit it as overridden.
-            _explicit["code_review"] = _explicit_review_pool[0]
-        if not config.plan_model_is_default:
-            _explicit_roles.add("planner")
-            _explicit_planner = _ModelProfile(
-                name="plan",
-                cli=config.plan.cli,
-                model=config.plan.model,
-                provider=config.plan.provider,
-                budget_usd=config.plan.budget_usd,
-                timeout_seconds=config.plan.timeout,
-                allowed_tools=config.preflight_profile.allowed_tools,
-                api_fallback=config.plan.api_fallback,
-                phase="plan",
-            )
-            _explicit["planner"] = _explicit_planner
-        if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-            _explicit_roles.add("plan_agent_review")
-            _explicit_plan_review_pool = list(config.plan_agent_review.profiles)
-            _explicit["plan_review"] = _explicit_plan_review_pool[0]
+    # review_pool, plan, and plan_agent_review overrides apply on both paths.
+    if config.review_pool and not config.review_pool_is_default:
+        _explicit_roles.add("review_pool")
+        _explicit_review_pool = list(config.review_pool)
+        # Lock code_review against budget downgrade and audit it as overridden.
+        _explicit["code_review"] = _explicit_review_pool[0]
+    if not config.plan_model_is_default:
+        _explicit_roles.add("planner")
+        _explicit_planner = _ModelProfile(
+            name="plan",
+            cli=config.plan.cli,
+            model=config.plan.model,
+            provider=config.plan.provider,
+            budget_usd=config.plan.budget_usd,
+            timeout_seconds=config.plan.timeout,
+            allowed_tools=config.preflight_profile.allowed_tools,
+            api_fallback=config.plan.api_fallback,
+            phase="plan",
+        )
+        _explicit["planner"] = _explicit_planner
+    if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
+        _explicit_roles.add("plan_agent_review")
+        _explicit_plan_review_pool = list(config.plan_agent_review.profiles)
+        _explicit["plan_review"] = _explicit_plan_review_pool[0]
 
     _decision = _assign_models(
         config.agents,
