@@ -78,6 +78,44 @@ def test_story_audit_includes_iteration_loop_metrics(tmp_path):
     }
 
 
+def test_story_audit_includes_runner_failure_fields(tmp_path):
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.dev_iteration_telemetry = [
+        DevIterationTelemetry(
+            iteration=1,
+            max_iterations=3,
+            cost_usd=None,
+            duration_s=1.2,
+            gate_result="RUNNER_CRASH",
+            files_changed=["scratch.py"],
+            files_changed_count=1,
+            meaningful_progress=True,
+            agent_exit_code=2,
+            runner_failure_code="runner_argument_error",
+            runner_failure_summary="error: unexpected argument '-C' found",
+        )
+    ]
+
+    audit = generate_audit_log(
+        config,
+        task,
+        CoordinatorResult(
+            success=False,
+            phase=Phase.ESCALATE,
+            state=state,
+            message="runner crash",
+        ),
+    )
+
+    assert audit["iterations"]["dev_loop"][0]["agent_exit_code"] == 2
+    assert audit["iterations"]["dev_loop"][0]["runner_failure_code"] == "runner_argument_error"
+    assert audit["iterations"]["dev_loop"][0]["runner_failure_summary"] == (
+        "error: unexpected argument '-C' found"
+    )
+
+
 def test_sprint_summary_includes_iteration_usage_distribution(tmp_path):
     manifest = SprintManifest(name="demo-sprint", budget_usd=5.0, stories=["issue:123"])
     state = CoordinatorState(phase=Phase.DONE)

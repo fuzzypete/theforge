@@ -4,8 +4,9 @@ Uses mocked runner to test all state transitions without real agent calls.
 """
 
 import json
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from coord_test_helpers import (
@@ -23,6 +24,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.dev_phase import classify_runner_subprocess_failure
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase, parse_phase_name
 from theforge.runners import AgentResult, LogLevel
@@ -894,3 +896,237 @@ class TestStartupFailureEscalation:
         # dev_agent called once; no VALIDATE or REVIEW
         assert mock_dev_agent.call_count == 1
         mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_runner_argument_crash_escalates_with_runner_reason(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Runner arg-parse crashes escalate immediately with runner-specific messaging."""
+        from theforge.runners import AgentResult
+
+        config = replace(
+            _make_config(tmp_path),
+            dev_profile=replace(DEFAULT_DEV_PROFILE, cli="codex"),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git diff --name-only" in cmd:
+                return (True, "")
+            if "git status --porcelain" in cmd:
+                return (True, "?? scratch.py")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_dev_agent.return_value = AgentResult(
+            success=False,
+            output=(
+                "error: unexpected argument '-C' found\n"
+                "Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]\n"
+            ),
+            session_id=None,
+            cost_usd=None,
+            exit_code=2,
+            raw={},
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.error_type == "runner_argument_error"
+        assert "Runner crashed before agent execution: codex" in result.message
+        assert "unexpected argument '-C' found" in result.message
+        assert result.state.dev_iteration_telemetry[0].gate_result == "RUNNER_CRASH"
+        assert (
+            result.state.dev_iteration_telemetry[0].runner_failure_code == "runner_argument_error"
+        )
+        assert result.state.dev_iteration_telemetry[0].runner_failure_summary == (
+            "error: unexpected argument '-C' found"
+        )
+        assert result.state.dev_iteration_telemetry[0].files_changed == ["scratch.py"]
+        mock_pool.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("output", "exit_code", "expected_failure_code", "expected_summary"),
+        [
+            (
+                "bash: codex: command not found\n",
+                127,
+                "runner_command_not_found",
+                "bash: codex: command not found",
+            ),
+            (
+                "bash: /usr/local/bin/codex: Permission denied\n",
+                126,
+                "runner_permission_denied",
+                "bash: /usr/local/bin/codex: Permission denied",
+            ),
+        ],
+    )
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_runner_crash_signatures_escalate_with_specific_failure_codes(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_pool,
+        tmp_path,
+        output,
+        exit_code,
+        expected_failure_code,
+        expected_summary,
+    ):
+        """Known runner crash signatures must escalate through the runner-specific path."""
+        from theforge.runners import AgentResult
+
+        config = replace(
+            _make_config(tmp_path),
+            dev_profile=replace(DEFAULT_DEV_PROFILE, cli="codex"),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git diff --name-only" in cmd:
+                return (True, "")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_dev_agent.return_value = AgentResult(
+            success=False,
+            output=output,
+            session_id=None,
+            cost_usd=None,
+            exit_code=exit_code,
+            raw={},
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.error_type == expected_failure_code
+        assert result.state.dev_iteration_telemetry[0].agent_exit_code == exit_code
+        assert result.state.dev_iteration_telemetry[0].runner_failure_code == expected_failure_code
+        assert result.state.dev_iteration_telemetry[0].runner_failure_summary == expected_summary
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_runner_crash_emits_single_failure_phase_end(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Runner crash must emit one DEV phase_end event with failure outcome."""
+        from theforge.runners import AgentResult
+
+        config = replace(
+            _make_config(tmp_path),
+            dev_profile=replace(DEFAULT_DEV_PROFILE, cli="codex"),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git diff --name-only" in cmd:
+                return (True, "")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_dev_agent.return_value = AgentResult(
+            success=False,
+            output="error: unexpected argument '-C' found\n",
+            session_id=None,
+            cost_usd=None,
+            exit_code=2,
+            raw={},
+        )
+
+        logger = MagicMock()
+        logger._safe_emit = MagicMock()
+        with patch("theforge.coordinator.engine.StructuredLogger", return_value=logger):
+            result = run_task(config, task)
+
+        assert result.success is False
+        phase_end_calls = [
+            call
+            for call in logger._safe_emit.call_args_list
+            if call.args and call.args[0] == "phase_end" and call.kwargs.get("phase") == "DEV"
+        ]
+        assert len(phase_end_calls) == 1
+        assert phase_end_calls[0].kwargs["outcome"] == "failure"
+        mock_pool.assert_not_called()
+
+    def test_runner_command_not_found_classifier_ignores_agent_tool_errors(self):
+        """Shell-style launcher evidence is required for command-not-found crashes."""
+        output = (
+            "I ran the build and got tool output:\n"
+            "ripgrep: command not found\n"
+            "no such file or directory: src/missing.py\n"
+        )
+
+        assert classify_runner_subprocess_failure(output, exit_code=1) is None
+        assert classify_runner_subprocess_failure(output, exit_code=127) is None
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_iteration_telemetry_records_agent_exit_code_on_normal_pass(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Normal dev iterations should record the agent exit code, not leave it unset."""
+        from theforge.runners import AgentResult
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = AgentResult(
+            success=True,
+            output="Implemented.",
+            session_id="sess-1",
+            cost_usd=0.5,
+            exit_code=0,
+            raw={},
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.dev_iteration_telemetry[0].agent_exit_code == 0
+        assert result.state.dev_iteration_telemetry[0].runner_failure_code is None
