@@ -5,6 +5,7 @@ Covers: prompt routing (fix vs dev prompt) and session resume/carry-through.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,6 +31,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.config.types import HardConventionsConfig
 from theforge.coordinator.dev_phase import (
     _current_cycle_p1s_for_dev_prompt,
     _prior_open_p1s_for_dev_prompt,
@@ -244,6 +246,70 @@ test_coverage:
         assert result.state.dev_iteration == 2
         assert not mock_fix_prompt.called, "build_fix_prompt must NOT be called on gate_fail retry"
         assert mock_dev_prompt.call_count == 2, "build_dev_prompt should be called both times"
+
+    @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
+    @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_convention_violation_retry_injects_actionable_findings_into_dev_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        mock_check_conventions,
+        tmp_path,
+    ):
+        """Blocking convention violations are propagated into the next dev retry prompt."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            conventions_hard=HardConventionsConfig(max_module_lines=500),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        violation = type(
+            "Violation",
+            (),
+            {
+                "rule": "no_scratch_files",
+                "file": "test_resolution_commentary.py",
+                "detail": "Unexpected root-level scratch file",
+                "blocking": True,
+            },
+        )()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_check_conventions.side_effect = [
+            ([violation], [violation]),
+            ([], []),
+        ]
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_dev_prompt.call_count == 2
+        retry_findings = mock_dev_prompt.call_args_list[1].kwargs["review_findings"]
+        assert retry_findings is not None
+        assert "## Blocking Convention Violations" in retry_findings
+        assert "[P1]" in retry_findings
+        assert "test_resolution_commentary.py" in retry_findings
+        assert "no_scratch_files" in retry_findings
+        assert "Resolve the [no_scratch_files] convention violation" in retry_findings
+        assert not mock_fix_prompt.called
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)

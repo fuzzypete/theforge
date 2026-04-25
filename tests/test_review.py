@@ -7,6 +7,8 @@ from theforge.review import (
     _coerce_line,
     _dedup_findings,
     _try_parse_review,
+    append_convention_retry_findings,
+    convention_violations_to_review_findings,
     findings_to_markdown,
     merge_review_results,
     parse_plan_review_output,
@@ -140,6 +142,50 @@ class TestFindingsToMarkdown:
         assert "**Fix:** Fix it" in md
         assert "[P2]" in md
         assert "`src/bar.py`" in md
+
+
+class TestConventionViolationsToReviewFindings:
+    def test_blocking_violations_are_converted_to_p1_findings(self):
+        findings = convention_violations_to_review_findings(
+            [
+                {
+                    "rule": "no_scratch_files",
+                    "file": "test_resolution_commentary.py",
+                    "detail": "Unexpected root-level scratch file",
+                    "blocking": True,
+                },
+                {
+                    "rule": "max_module_lines",
+                    "file": "src/large.py",
+                    "detail": "Module exceeds limit",
+                    "blocking": False,
+                },
+            ]
+        )
+
+        assert len(findings) == 1
+        assert findings[0].severity == "P1"
+        assert findings[0].file == "test_resolution_commentary.py"
+        assert "no_scratch_files" in findings[0].description
+        assert "Resolve the [no_scratch_files]" in findings[0].suggestion
+
+    def test_append_convention_retry_findings_preserves_existing_feedback(self):
+        output = append_convention_retry_findings(
+            "## Review Summary\nPrior review feedback",
+            [
+                {
+                    "rule": "no_scratch_files",
+                    "file": "test_resolution_commentary.py",
+                    "detail": "Unexpected root-level scratch file",
+                    "blocking": True,
+                }
+            ],
+        )
+
+        assert output is not None
+        assert "## Review Summary" in output
+        assert "## Blocking Convention Violations" in output
+        assert "`test_resolution_commentary.py`" in output
 
 
 class TestParsePlanReviewOutput:
