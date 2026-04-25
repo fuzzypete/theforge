@@ -55,6 +55,7 @@ from theforge.runners.schema_utils import (
     noop_finalizer,
     uses_openai_responses_api,
 )
+from theforge.runners.stuck_detection import StuckTracker, build_observation
 from theforge.runners.tool_runtime import TOOL_REGISTRY, ToolDef
 
 if TYPE_CHECKING:
@@ -169,161 +170,6 @@ class _UsageAccumulator:
         )
 
 
-_MODIFY_TOOL_NAMES = frozenset({"write_file", "edit_file"})
-
-
-def _signature(call: ToolCallRequest) -> str:
-    """Stable signature for a tool call: name + sorted-key JSON of arguments."""
-    try:
-        args_str = json.dumps(call.arguments, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        args_str = repr(call.arguments)
-    return f"{call.name}|{args_str}"
-
-
-def _signature_set(calls: list[ToolCallRequest]) -> frozenset[str]:
-    return frozenset(_signature(c) for c in calls if c.name and isinstance(c.arguments, dict))
-
-
-def _error_signatures(results: list[dict]) -> list[str]:
-    """Return tool-result content strings that look like errors."""
-    out = []
-    for r in results:
-        content = str(r.get("content", ""))
-        if content.startswith("Error"):
-            out.append(content[:200])
-    return out
-
-
-class _StuckTracker:
-    """Detect stuck-agent patterns across loop iterations.
-
-    Tracks three observable patterns:
-      1. Repeated identical (name+arguments) tool calls
-      2. No file-modifying tool calls over consecutive iterations
-      3. Repeated identical error tool results
-
-    When a pattern crosses its threshold, ``check`` returns a nudge message
-    once. If the same pattern persists for ``post_nudge_iterations`` more
-    iterations, ``check`` returns a termination reason instead.
-
-    Detection is gated by profile.phase == "dev" so review/preflight loops
-    are unaffected by default. False-positive guard: counters reset whenever
-    the observed pattern changes (different signature, file modified, or
-    different error content) — slow-but-real progress does not trigger.
-    """
-
-    def __init__(self, profile: "ModelProfile") -> None:
-        cfg = profile.stuck_detection
-        self._enabled = bool(
-            cfg and cfg.enabled and profile.phase == "dev"
-            # No-progress arm needs at least one modify tool to be meaningful;
-            # repeat/error arms always work, so we still enable when modify
-            # tools are present *or* when the agent has tool calls at all.
-        )
-        self._cfg = cfg
-        modify_names = ("Write", "Edit", "write_file", "edit_file")
-        self._has_modify_tools = bool(
-            profile.allowed_tools and any(t in profile.allowed_tools for t in modify_names)
-        )
-        self._last_sig: frozenset[str] | None = None
-        self._repeat_count = 0
-        self._iters_without_mod = 0
-        self._last_error: str | None = None
-        self._error_count = 0
-        self._nudge_sent = False
-        self._nudge_pattern: str | None = None
-        self._post_nudge_iters = 0
-
-    @property
-    def enabled(self) -> bool:
-        return self._enabled
-
-    def observe(
-        self, calls: list[ToolCallRequest], results: list[dict]
-    ) -> tuple[str | None, str | None, str | None]:
-        """Update state for one iteration. Returns (nudge_msg, terminate_reason, pattern).
-
-        At most one of nudge_msg/terminate_reason is non-None per call.
-        ``pattern`` is the human-readable detected pattern when either fires.
-        """
-        if not self._enabled or self._cfg is None:
-            return (None, None, None)
-
-        sig = _signature_set(calls)
-        if self._last_sig is not None and sig == self._last_sig and sig:
-            self._repeat_count += 1
-        else:
-            self._repeat_count = 1
-        self._last_sig = sig
-
-        # No-progress: any successful modify call resets the counter.
-        modified = any(c.name in _MODIFY_TOOL_NAMES for c in calls)
-        if modified or not calls:
-            self._iters_without_mod = 0
-        else:
-            self._iters_without_mod += 1
-
-        errors = _error_signatures(results)
-        # Use the first error in the iteration as the representative signature;
-        # if multiple identical errors persist across iterations we still detect.
-        cur_error = errors[0] if errors else None
-        if cur_error and cur_error == self._last_error:
-            self._error_count += 1
-        else:
-            self._error_count = 1 if cur_error else 0
-        self._last_error = cur_error
-
-        # Determine whether any pattern is currently active.
-        active_pattern = self._active_pattern()
-
-        if not self._nudge_sent:
-            if active_pattern is not None:
-                self._nudge_sent = True
-                self._nudge_pattern = active_pattern
-                self._post_nudge_iters = 0
-                return (self._build_nudge(active_pattern), None, active_pattern)
-            return (None, None, None)
-
-        # Already nudged: check whether the same pattern is still active.
-        if active_pattern is not None:
-            self._post_nudge_iters += 1
-            if self._post_nudge_iters >= self._cfg.post_nudge_iterations:
-                return (None, self._build_terminate_reason(active_pattern), active_pattern)
-        else:
-            # Pattern broke — reset the post-nudge counter; do not re-nudge.
-            self._post_nudge_iters = 0
-        return (None, None, None)
-
-    def _active_pattern(self) -> str | None:
-        if self._cfg is None:
-            return None
-        if self._repeat_count >= self._cfg.repeat_threshold and self._last_sig:
-            preview = next(iter(self._last_sig))[:120]
-            return f"repeated identical tool calls ({self._repeat_count}x): {preview}"
-        if self._has_modify_tools and self._iters_without_mod >= self._cfg.no_progress_iterations:
-            return f"no file modifications over {self._iters_without_mod} consecutive iterations"
-        if self._error_count >= self._cfg.error_threshold and self._last_error:
-            return f"error loop ({self._error_count}x): {self._last_error[:120]}"
-        return None
-
-    @staticmethod
-    def _build_nudge(pattern: str) -> str:
-        return (
-            "[SYSTEM] Progress check: you appear to be stuck — "
-            f"{pattern}. Try a different approach, gather more information with a "
-            "different tool, or submit your current best result. Continuing the same "
-            "behavior will cause this run to be terminated."
-        )
-
-    def _build_terminate_reason(self, pattern: str) -> str:
-        assert self._cfg is not None
-        return (
-            f"stuck pattern persisted for {self._post_nudge_iters} iterations after nudge: "
-            f"{pattern}"
-        )
-
-
 class AgentLoopManager:
     """Drives the multi-turn tool-use loop for API-mode agents.
 
@@ -359,7 +205,7 @@ class AgentLoopManager:
         self._deadline = time.monotonic() + profile.timeout_seconds
         self._iter_nudge_sent = False
         self._time_nudge_sent = False
-        self._stuck = _StuckTracker(profile)
+        self._stuck = StuckTracker(profile)
 
     def _timed_out(self) -> bool:
         return time.monotonic() > self._deadline
@@ -599,7 +445,7 @@ class AgentLoopManager:
             # On detection, inject a nudge; if the pattern persists after the nudge,
             # terminate with a structured failure log.
             stuck_nudge, stuck_terminate, stuck_pattern = self._stuck.observe(
-                turn.tool_calls, turn_results
+                build_observation(turn.tool_calls, turn_results)
             )
             if stuck_terminate is not None:
                 _log(

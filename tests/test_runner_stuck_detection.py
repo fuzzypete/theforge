@@ -382,6 +382,337 @@ class TestNoProgressDetection:
         assert len(nudges) >= 1
 
 
+class TestPostNudgeSamePatternRequired:
+    """Post-nudge termination requires the SAME pattern kind to persist."""
+
+    def test_pattern_change_after_nudge_resets_and_rearm(self, tmp_path):
+        # repeat fires first; switch to varied calls (pattern breaks); the
+        # tracker must re-arm rather than terminate. Configure thresholds so
+        # the second pattern (no-progress) would otherwise hit terminate
+        # immediately if the kind check were absent.
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=2,
+            error_threshold=99,
+            # Loose post-nudge window so the test isolates the re-arm behavior.
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        messages_seen: list[list[dict]] = []
+        call_count = [0]
+        # First two iterations identical → repeat nudge at iter 2.
+        # Then varied iterations break repeat; tracker must re-arm and emit a
+        # fresh no-progress nudge rather than terminating without one.
+        patterns = ["x", "x", "a", "b", "c", "d", "e", "f"]
+
+        def adapter(messages, tools):
+            messages_seen.append(list(messages))
+            call_count[0] += 1
+            if call_count[0] <= len(patterns):
+                return _glob_turn(call_count[0], pattern=patterns[call_count[0] - 1])
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="submit",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_usage(),
+            )
+
+        manager = _make_manager(profile, tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        # The run should not terminate on stuck pattern: repeat broke before
+        # post-nudge persistence threshold was reached.
+        assert result.success, result.output
+        # Two distinct nudges expected: one for repeat, one for no-progress.
+        last_msgs = messages_seen[-1]
+        nudges = [
+            m
+            for m in last_msgs
+            if m.get("role") == "user" and "Progress check" in m.get("content", "")
+        ]
+        # At least the repeat nudge must have been issued; the no-progress
+        # arm needs >=2 iterations without modifications, satisfied by the
+        # varied glob iterations. Both kinds should produce a nudge.
+        kinds = {("repeated" in n["content"], "no file" in n["content"]) for n in nudges}
+        assert any(repeat for repeat, _ in kinds)
+        assert any(noprog for _, noprog in kinds), (
+            "expected a fresh no-progress nudge after the repeat pattern broke"
+        )
+
+    def test_no_terminate_when_post_nudge_pattern_breaks(self, tmp_path):
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=2,
+        )
+        profile = _dev_profile(stuck=cfg)
+        call_count = [0]
+        # iter 1,2: identical → nudge at iter 2.
+        # iter 3,4: different signatures → pattern broken, no terminate.
+        # iter 5: submit.
+        patterns = ["x", "x", "a", "b"]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] <= len(patterns):
+                return _glob_turn(call_count[0], pattern=patterns[call_count[0] - 1])
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="submit",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_usage(),
+            )
+
+        manager = _make_manager(profile, tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert result.success, result.output
+
+
+class TestFailedModifyDoesNotResetNoProgress:
+    """A write/edit that returns an error must not count as progress."""
+
+    def test_failed_edit_calls_count_as_no_progress(self, tmp_path):
+        # write_file with missing required arg → tool returns Error, so the
+        # call should NOT reset the no-progress counter.
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=99,
+            no_progress_iterations=3,
+            error_threshold=99,
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        messages_seen: list[list[dict]] = []
+        call_count = [0]
+        # Each iteration calls write_file with a different (still-invalid)
+        # path argument so signatures vary (no repeat) and the tool errors
+        # (no successful modify). After 3 such iterations, no-progress
+        # nudge must fire.
+        paths = ["a.py", "b.py", "c.py", "d.py", "e.py"]
+
+        def adapter(messages, tools):
+            messages_seen.append(list(messages))
+            call_count[0] += 1
+            if call_count[0] <= len(paths):
+                # Missing required `content` → tool reports an Error result.
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id=f"c{call_count[0]}",
+                            name="write_file",
+                            arguments={"path": paths[call_count[0] - 1]},
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="submit",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "done"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_usage(),
+            )
+
+        manager = _make_manager(profile, tmp_path, adapter)
+        manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        all_msgs = [m for msgs in messages_seen for m in msgs]
+        nudges = [
+            m
+            for m in all_msgs
+            if m.get("role") == "user" and "no file modifications" in m.get("content", "")
+        ]
+        assert len(nudges) >= 1, "failed write_file calls should count as no-progress"
+
+
+class TestClaudeCliStuckDetection:
+    """Stuck detection runs in the Claude CLI streaming loop, not just API mode."""
+
+    @staticmethod
+    def _assistant_event(call_id: str, name: str, args: dict) -> str:
+        import json as _json
+
+        return (
+            _json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": call_id,
+                                "name": name,
+                                "input": args,
+                            }
+                        ]
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    @staticmethod
+    def _user_result_event(call_id: str, text: str, is_error: bool = False) -> str:
+        import json as _json
+
+        return (
+            _json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": call_id,
+                                "content": text,
+                                "is_error": is_error,
+                            }
+                        ]
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    @staticmethod
+    def _result_event(text: str = "done") -> str:
+        import json as _json
+
+        return _json.dumps({"type": "result", "result": text, "session_id": "s1"}) + "\n"
+
+    def _build_dev_profile(self, cfg: StuckDetectionConfig | None) -> ModelProfile:
+        return ModelProfile(
+            name="dev",
+            cli="claude",
+            provider=None,
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=120,
+            allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+            phase="dev",
+            stuck_detection=cfg,
+        )
+
+    def _build_stream(self, n_iterations: int) -> list[str]:
+        """Build a Claude CLI stream of N identical Glob iterations."""
+        lines: list[str] = []
+        for i in range(n_iterations):
+            cid = f"call-{i}"
+            lines.append(self._assistant_event(cid, "Glob", {"pattern": "**/*.py"}))
+            lines.append(self._user_result_event(cid, "[]"))
+        lines.append(self._result_event())
+        return lines
+
+    def test_cli_terminates_on_stuck_pattern(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.runners.runner_claude import _run_claude
+
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=2,
+        )
+        profile = self._build_dev_profile(cfg)
+
+        # 10 identical Glob iterations is well past repeat(2) + post_nudge(2).
+        stream = self._build_stream(10)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(stream)
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.poll.return_value = 0
+
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            result = _run_claude(
+                prompt="go",
+                profile=profile,
+                working_dir=tmp_path,
+            )
+
+        assert result.success is False
+        assert result.failure_code == "stuck_pattern"
+        assert "stuck pattern persisted" in result.output
+        assert result.exit_code == -2
+        # Subprocess must have been killed once a stuck termination fired.
+        mock_proc.kill.assert_called()
+
+    def test_cli_does_not_terminate_when_phase_not_dev(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.runners.runner_claude import _run_claude
+
+        # phase=None disables stuck detection regardless of cfg.enabled.
+        cfg = StuckDetectionConfig(enabled=True, repeat_threshold=2, post_nudge_iterations=2)
+        profile = ModelProfile(
+            name="reviewer",
+            cli="claude",
+            provider=None,
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=120,
+            allowed_tools=("Read", "Glob"),
+            phase=None,
+            stuck_detection=cfg,
+        )
+
+        stream = self._build_stream(10)
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(stream)
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.poll.return_value = 0
+
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            result = _run_claude(
+                prompt="go",
+                profile=profile,
+                working_dir=tmp_path,
+            )
+        # No stuck termination should have fired for non-dev phase.
+        assert result.failure_code != "stuck_pattern"
+        # And the stream completes through the result event.
+        mock_proc.kill.assert_not_called()
+
+
 class TestStuckDetectionConfigParsing:
     """Loader accepts and validates the forge.yaml stuck_detection block."""
 
