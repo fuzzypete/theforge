@@ -118,6 +118,7 @@ def apply_cached_preflight_state(
         if cached_state.preflight_likely_files is None
         else list(cached_state.preflight_likely_files)
     )
+    state.preflight_result = cached_state.preflight_result
     state.preflight_duration_s = cached_state.preflight_duration_s
     state.preflight_cached = True
     state.preflight_cached_original_verdict = cached_state.preflight_verdict
