@@ -150,6 +150,23 @@ criteria_checked:
 ```
 """
 
+PREFLIGHT_ALREADY_DONE_EMPTY_EVIDENCE = """\
+```yaml
+verdict: ALREADY_DONE
+reason: "The code looks done."
+complexity: small
+sufficiency: implementation_ready
+work_type: feature
+criteria_checked:
+  - criterion: "Feature X is implemented"
+    satisfied: true
+    files_checked:
+      - "src/theforge/coordinator/engine.py"
+    runtime_path: "run_task() -> _run_preflight_phase() -> engine execution path"
+    evidence: ""
+```
+"""
+
 PREFLIGHT_ALREADY_DONE_NO_RUNTIME_PATH_FIELD = """\
 ```yaml
 verdict: ALREADY_DONE
@@ -445,6 +462,42 @@ class TestPreflightAlreadyDoneVerification:
 
         assert result.state.preflight_verdict == "PROCEED"
         assert any("evidence too thin" in w for w in (result.state.preflight_warnings or []))
+        mock_dev.assert_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_empty_evidence_downgraded_to_proceed(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """AC with empty evidence → ALREADY_DONE downgraded to PROCEED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE_EMPTY_EVIDENCE, cost_usd=0.05
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "PROCEED"
+        assert any("evidence missing" in w for w in (result.state.preflight_warnings or []))
         mock_dev.assert_called()
 
     def test_parse_criteria_checked_captures_runtime_path(self) -> None:

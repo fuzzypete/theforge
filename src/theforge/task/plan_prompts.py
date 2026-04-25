@@ -260,9 +260,9 @@ def build_preflight_prompt(
         - For ALREADY_DONE, every `evidence` field must explain observable behavior:
           input/state → executed runtime path → output/side effect that satisfies the
           criterion. Merely saying a symbol exists is insufficient.
-        - Counter-example: "src/theforge/assignment.py defines assign_models()" does NOT
-          satisfy a routing acceptance criterion unless you also cite the coordinator or
-          sprint runtime path that actually invokes it for this story's configured flow.
+        - Counter-example: "a helper module defines `assign_models()`" does NOT satisfy
+          a routing acceptance criterion unless you also cite the coordinator or sprint
+          runtime path that actually invokes it for this story's configured flow.
         - Evaluate ALREADY_DONE against the configured target baseline branch
           content from `config.workspace.base_branch`, not the resumed worktree contents.
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
