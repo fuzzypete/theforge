@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from theforge.config.defaults import DEFAULT_DEV_PROFILE
 from theforge.coordinator.state import CycleHistory
 from theforge.task import (
     TaskStory,
@@ -246,6 +247,32 @@ class TestBuildFixPrompt:
         assert "Do NOT re-run the gate" not in skipped
         assert "Gate:" not in skipped
         assert "make gate" not in skipped
+
+    def test_includes_webfetch_guidance_when_tool_allowed(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "WebFetch" in prompt
+        assert "untrusted" in prompt
+        assert "--help" in prompt
+
+    def test_omits_webfetch_guidance_when_tool_not_allowed(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            allowed_tools=(),
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "## WebFetch Guidance" not in prompt
 
 
 class TestBuildFixPromptCycleHistory:

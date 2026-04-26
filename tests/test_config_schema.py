@@ -143,6 +143,8 @@ class TestPhaseWrappers:
         plan = PlanRoleConfig(ref=ref)
         assert not hasattr(plan, "cli")
         assert plan.validate_spec is True
+        assert "WebFetch" not in plan.allowed_tools
+        assert "WebSearch" not in plan.allowed_tools
 
     def test_review_role_config_fields(self):
         ref = ModelRef(model="opus", cli="claude", budget_usd=1.0, timeout_seconds=300)
