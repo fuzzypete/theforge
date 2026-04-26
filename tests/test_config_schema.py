@@ -128,7 +128,7 @@ class TestPhaseWrappers:
         assert not hasattr(dev, "budget_usd")
         assert not hasattr(dev, "timeout_seconds")
         # Phase-specific fields
-        assert dev.allowed_tools == ("Read", "Edit", "Write", "Bash", "Glob", "Grep")
+        assert dev.allowed_tools == ("Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch")
         assert dev.sandbox_mode == "workspace-write"
 
     def test_preflight_role_config_fields(self):
@@ -143,6 +143,8 @@ class TestPhaseWrappers:
         plan = PlanRoleConfig(ref=ref)
         assert not hasattr(plan, "cli")
         assert plan.validate_spec is True
+        assert "WebFetch" not in plan.allowed_tools
+        assert "WebSearch" not in plan.allowed_tools
 
     def test_review_role_config_fields(self):
         ref = ModelRef(model="opus", cli="claude", budget_usd=1.0, timeout_seconds=300)
@@ -221,6 +223,7 @@ class TestDeriveRolesHappyPath:
         ra = derive_roles(["claude/sonnet"])
         assert "Edit" in ra.dev.allowed_tools
         assert "Write" in ra.dev.allowed_tools
+        assert "WebFetch" in ra.dev.allowed_tools
 
     def test_preflight_allowed_tools_default(self):
         ra = derive_roles(["claude/sonnet"])

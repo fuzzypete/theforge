@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from theforge.config.defaults import DEFAULT_DEV_PROFILE
 from theforge.task import TaskStory, build_dev_prompt
 
 
@@ -185,6 +186,22 @@ def test_dev_prompt_uses_configured_commands_and_no_hardcoded_layout_rule(tmp_pa
     assert "npm run validate" in prompt
     assert "3. Only after the gate passes, commit your changes:" in prompt
     assert "4. Emit a `<forge_handoff>` block in your **final message**" in prompt
+
+
+def test_dev_prompt_includes_webfetch_framing_when_tool_allowed(tmp_path):
+    task = _make_task(tmp_path)
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+        story_content="# Spec",
+        gate_command="make gate",
+    )
+
+    assert "WebFetch" in prompt
+    assert "untrusted" in prompt
+    assert "--help" in prompt
 
 
 class TestContractChangeTestRule:

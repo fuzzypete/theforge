@@ -11,7 +11,7 @@ DEFAULT_DEV_PROFILE = ModelProfile(
     model="sonnet",
     budget_usd=2.00,
     timeout_seconds=900,
-    allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch"),
     phase="dev",
 )
 
