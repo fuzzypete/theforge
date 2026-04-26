@@ -190,8 +190,20 @@ class TestRunAgentClaude:
         assert "--allowedTools" in claude_cmd
         assert call_args[1]["cwd"] == str(tmp_path)
 
-        # Prompt written to stdin
-        mock_proc.stdin.write.assert_called_once_with("implement the thing")
+        # The runner uses --input-format stream-json and writes the initial
+        # prompt as a stream-json user message; stdin is kept open across the
+        # stream and closed only after the stream completes.
+        assert "--input-format" in claude_cmd
+        ifmt_idx = claude_cmd.index("--input-format")
+        assert claude_cmd[ifmt_idx + 1] == "stream-json"
+        write_calls = mock_proc.stdin.write.call_args_list
+        assert len(write_calls) == 1
+        written = write_calls[0][0][0]
+        assert written.endswith("\n")
+        payload = json.loads(written)
+        assert payload["type"] == "user"
+        assert payload["message"]["role"] == "user"
+        assert payload["message"]["content"] == "implement the thing"
         mock_proc.stdin.close.assert_called_once()
 
     def test_claudecode_env_stripped(self, dev_profile: ModelProfile, tmp_path: Path) -> None:

@@ -133,8 +133,15 @@ class _ClaudeStreamMonitor:
         self._pending_results: list[dict] = []
         self.terminate_reason: str | None = None
         self.terminate_pattern: str | None = None
-        self.nudge_pattern: str | None = None  # last nudge for log/diagnostic
+        self.nudge_pattern: str | None = None  # last nudge pattern (for logging)
+        self._pending_nudge: str | None = None  # nudge text awaiting delivery
         self.iteration_count = 0
+
+    def consume_pending_nudge(self) -> str | None:
+        """Return and clear the nudge message awaiting delivery, if any."""
+        msg = self._pending_nudge
+        self._pending_nudge = None
+        return msg
 
     @property
     def enabled(self) -> bool:
@@ -216,11 +223,30 @@ class _ClaudeStreamMonitor:
         self.iteration_count += 1
         if nudge_msg is not None:
             self.nudge_pattern = pattern
+            self._pending_nudge = nudge_msg
         if terminate_reason is not None and self.terminate_reason is None:
             self.terminate_reason = terminate_reason
             self.terminate_pattern = pattern
         self._pending_calls = []
         self._pending_results = []
+
+
+def _write_user_message(stdin: Any, text: str) -> None:
+    """Write a single user message to claude's stream-json input pipe.
+
+    Claude's ``--input-format stream-json`` reads one JSON object per line; each
+    line that is a ``user`` message is processed as another conversation turn.
+    Used both for the initial prompt and for stuck-detection nudges.
+    """
+    if stdin is None:
+        return
+    payload = {"type": "user", "message": {"role": "user", "content": text}}
+    try:
+        stdin.write(json.dumps(payload) + "\n")
+        stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        # Subprocess closed stdin (e.g. after kill); silently ignore.
+        pass
 
 
 def _try_parse_handoff(output: str) -> dict | None:
@@ -295,6 +321,8 @@ def _run_claude(
         "-p",
         "--output-format",
         "stream-json",
+        "--input-format",
+        "stream-json",
         "--verbose",
         "--model",
         profile.model,
@@ -345,8 +373,11 @@ def _run_claude(
             env=env,
         )
         assert proc.stdin is not None
-        proc.stdin.write(prompt)
-        proc.stdin.close()
+        # Send the initial prompt as a stream-json user message. stdin is kept
+        # open so stuck-detection nudges can be injected as additional user
+        # messages mid-run; it is closed only after the stream completes
+        # (or the run is killed).
+        _write_user_message(proc.stdin, prompt)
 
         lines: list[str] = []
         assert proc.stdout is not None
@@ -370,14 +401,10 @@ def _run_claude(
             stripped = line.strip()
             _process_stream_event(stripped, label_prefix=lp)
             stuck_monitor.ingest(stripped)
-            if stuck_monitor.nudge_pattern is not None and not getattr(
-                stuck_monitor, "_nudge_logged", False
-            ):
-                _log(
-                    f"  ⚠ {label} stuck-detection nudge (CLI mode, log-only): "
-                    f"{stuck_monitor.nudge_pattern}"
-                )
-                stuck_monitor._nudge_logged = True
+            pending_nudge = stuck_monitor.consume_pending_nudge()
+            if pending_nudge is not None:
+                _write_user_message(proc.stdin, pending_nudge)
+                _log(f"  ⚠ {label} stuck-detection nudge sent: {stuck_monitor.nudge_pattern}")
             if stuck_monitor.should_terminate:
                 _log(
                     f"  ⚠ {label} stuck-detection terminate after "
@@ -392,6 +419,13 @@ def _run_claude(
                 break
 
         stuck_monitor.finalize()
+        # Close stdin now that the stream is done (or the proc was killed) so
+        # any reader cleanup completes; ignore errors if stdin is already
+        # closed by the kill path.
+        try:
+            proc.stdin.close()
+        except (BrokenPipeError, ValueError, OSError):
+            pass
         proc.wait()
     except FileNotFoundError:
         return AgentResult(

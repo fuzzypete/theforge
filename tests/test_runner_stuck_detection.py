@@ -671,6 +671,88 @@ class TestClaudeCliStuckDetection:
         assert result.exit_code == -2
         # Subprocess must have been killed once a stuck termination fired.
         mock_proc.kill.assert_called()
+        # Nudge must have been written to stdin as a stream-json user
+        # message before termination — verify by inspecting the writes.
+        import json as _json
+
+        stdin_writes = [_call.args[0] for _call in mock_proc.stdin.write.call_args_list]
+        # First write is the initial prompt; subsequent writes include the nudge.
+        decoded = []
+        for raw in stdin_writes:
+            for piece in raw.splitlines():
+                if not piece.strip():
+                    continue
+                try:
+                    decoded.append(_json.loads(piece))
+                except _json.JSONDecodeError:
+                    pass
+        user_contents = [
+            d.get("message", {}).get("content", "") for d in decoded if d.get("type") == "user"
+        ]
+        assert user_contents, "expected at least the initial prompt written to stdin"
+        assert user_contents[0] == "go"
+        # At least one nudge user-message must have been delivered.
+        nudge_msgs = [c for c in user_contents[1:] if "Progress check" in c]
+        assert nudge_msgs, "expected stuck-detection nudge to be written to stdin"
+
+    def test_cli_nudge_delivered_then_recovers(self, tmp_path):
+        """Nudge is delivered via stdin; if pattern breaks, run completes normally."""
+        from unittest.mock import MagicMock, patch
+
+        from theforge.runners.runner_claude import _run_claude
+
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=99,  # never terminate, isolate nudge delivery
+        )
+        profile = self._build_dev_profile(cfg)
+
+        # 3 identical iterations → repeat nudge fires; then result event ends
+        # the stream cleanly (no terminate because post_nudge=99).
+        stream: list[str] = []
+        for i in range(3):
+            cid = f"call-{i}"
+            stream.append(self._assistant_event(cid, "Glob", {"pattern": "*.py"}))
+            stream.append(self._user_result_event(cid, "[]"))
+        stream.append(self._result_event())
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(stream)
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.poll.return_value = 0
+
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            _run_claude(prompt="go", profile=profile, working_dir=tmp_path)
+
+        import json as _json
+
+        stdin_writes = [c.args[0] for c in mock_proc.stdin.write.call_args_list]
+        decoded = []
+        for raw in stdin_writes:
+            for piece in raw.splitlines():
+                if not piece.strip():
+                    continue
+                try:
+                    decoded.append(_json.loads(piece))
+                except _json.JSONDecodeError:
+                    pass
+        user_msgs = [d["message"]["content"] for d in decoded if d.get("type") == "user"]
+        # Initial prompt + at least one nudge.
+        assert user_msgs[0] == "go"
+        assert any("Progress check" in m for m in user_msgs[1:]), (
+            f"expected nudge in stdin writes; got {user_msgs}"
+        )
+        # No kill since post_nudge=99 and the result event closed the stream.
+        mock_proc.kill.assert_not_called()
+        # stdin closed exactly once at end of stream.
+        mock_proc.stdin.close.assert_called()
 
     def test_cli_does_not_terminate_when_phase_not_dev(self, tmp_path):
         from unittest.mock import MagicMock, patch
