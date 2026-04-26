@@ -202,6 +202,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
         task,
         workspace_path=workspace_path,
         branch_name=branch_name,
+        allowed_tools=config.dev_profile.allowed_tools,
         story_content=story_content,
         gate_command=config.validation.gate_command,
         conventions=config.conventions_soft,

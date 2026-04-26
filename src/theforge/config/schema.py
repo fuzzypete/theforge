@@ -74,7 +74,7 @@ class DevRoleConfig:
     """
 
     ref: ModelRef
-    allowed_tools: tuple[str, ...] = ("Read", "Edit", "Write", "Bash", "Glob", "Grep")
+    allowed_tools: tuple[str, ...] = ("Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch")
     sandbox_mode: str = "workspace-write"
 
 
