@@ -72,7 +72,7 @@ def _glob_turn(idx: int, pattern: str = "*.py") -> LoopTurn:
 class TestStuckDetectionTriggers:
     """The runner injects a nudge once the repeat-call threshold is crossed."""
 
-    def test_repeated_identical_calls_trigger_nudge(self, tmp_path):
+    def test_repeated_identical_calls_trigger_nudge(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=3,
@@ -84,7 +84,7 @@ class TestStuckDetectionTriggers:
         messages_seen: list[list[dict]] = []
         call_count = [0]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             messages_seen.append(list(messages))
             call_count[0] += 1
             if call_count[0] <= 5:
@@ -121,7 +121,7 @@ class TestStuckDetectionTriggers:
 class TestStuckDetectionNudgeDelivery:
     """Detection only fires once per run, regardless of how long the pattern persists."""
 
-    def test_nudge_sent_only_once(self, tmp_path):
+    def test_nudge_sent_only_once(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=2,
@@ -133,7 +133,7 @@ class TestStuckDetectionNudgeDelivery:
         messages_seen: list[list[dict]] = []
         call_count = [0]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             messages_seen.append(list(messages))
             call_count[0] += 1
             if call_count[0] <= 8:
@@ -169,7 +169,7 @@ class TestStuckDetectionNudgeDelivery:
 class TestStuckDetectionTermination:
     """Termination follows when the nudge does not break the pattern."""
 
-    def test_termination_after_nudge_persistence(self, tmp_path):
+    def test_termination_after_nudge_persistence(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=3,
@@ -180,7 +180,7 @@ class TestStuckDetectionTermination:
         profile = _dev_profile(stuck=cfg)
         call_count = [0]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             call_count[0] += 1
             return _glob_turn(call_count[0])
 
@@ -196,7 +196,7 @@ class TestStuckDetectionTermination:
         # nudge at iter 3, then 2 more identical iters → terminate at iter 5.
         assert call_count[0] == 5
 
-    def test_termination_logs_pattern_and_counts(self, tmp_path):
+    def test_termination_logs_pattern_and_counts(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=2,
@@ -207,7 +207,7 @@ class TestStuckDetectionTermination:
         profile = _dev_profile(stuck=cfg)
         call_count = [0]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             call_count[0] += 1
             return _glob_turn(call_count[0])
 
@@ -226,7 +226,7 @@ class TestStuckDetectionTermination:
 class TestStuckDetectionNoFalsePositiveOnVariedIterations:
     """Different tool calls per iteration are real progress, not a stuck pattern."""
 
-    def test_varied_signatures_do_not_trigger(self, tmp_path):
+    def test_varied_signatures_do_not_trigger(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=3,
@@ -239,7 +239,7 @@ class TestStuckDetectionNoFalsePositiveOnVariedIterations:
         call_count = [0]
         patterns = ["*.py", "*.md", "*.txt", "src/*", "tests/*", "*.json", "*.yaml"]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             messages_seen.append(list(messages))
             call_count[0] += 1
             if call_count[0] <= len(patterns):
@@ -276,7 +276,7 @@ class TestStuckDetectionNoFalsePositiveOnVariedIterations:
 class TestStuckDetectionDisabled:
     """When stuck_detection is None or phase != 'dev', the runner is unaffected."""
 
-    def test_disabled_when_phase_not_dev(self, tmp_path):
+    def test_disabled_when_phase_not_dev(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(enabled=True, repeat_threshold=2, post_nudge_iterations=2)
         # phase=None disables detection regardless of cfg.enabled.
         profile = ModelProfile(
@@ -292,7 +292,7 @@ class TestStuckDetectionDisabled:
         )
         call_count = [0]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             call_count[0] += 1
             if call_count[0] <= 5:
                 return _glob_turn(call_count[0])
@@ -310,11 +310,11 @@ class TestStuckDetectionDisabled:
         )
         assert result.success
 
-    def test_disabled_when_cfg_none(self, tmp_path):
+    def test_disabled_when_cfg_none(self, tmp_path):-> None:
         profile = _dev_profile(stuck=None)
         call_count = [0]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             call_count[0] += 1
             if call_count[0] <= 5:
                 return _glob_turn(call_count[0])
@@ -336,7 +336,7 @@ class TestStuckDetectionDisabled:
 class TestNoProgressDetection:
     """no_progress_iterations triggers when modify-capable agents stop modifying files."""
 
-    def test_no_modifications_triggers_nudge(self, tmp_path):
+    def test_no_modifications_triggers_nudge(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=99,
@@ -350,7 +350,7 @@ class TestNoProgressDetection:
         # Vary the args so repeat_threshold doesn't fire instead.
         patterns = ["*.py", "*.md", "*.txt", "src/*", "tests/*"]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             messages_seen.append(list(messages))
             call_count[0] += 1
             if call_count[0] <= len(patterns):
@@ -385,7 +385,7 @@ class TestNoProgressDetection:
 class TestPostNudgeSamePatternRequired:
     """Post-nudge termination requires the SAME pattern kind to persist."""
 
-    def test_pattern_change_after_nudge_resets_and_rearm(self, tmp_path):
+    def test_pattern_change_after_nudge_resets_and_rearm(self, tmp_path):-> None:
         # repeat fires first; switch to varied calls (pattern breaks); the
         # tracker must re-arm rather than terminate. Configure thresholds so
         # the second pattern (no-progress) would otherwise hit terminate
@@ -406,7 +406,7 @@ class TestPostNudgeSamePatternRequired:
         # fresh no-progress nudge rather than terminating without one.
         patterns = ["x", "x", "a", "b", "c", "d", "e", "f"]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             messages_seen.append(list(messages))
             call_count[0] += 1
             if call_count[0] <= len(patterns):
@@ -448,7 +448,7 @@ class TestPostNudgeSamePatternRequired:
             "expected a fresh no-progress nudge after the repeat pattern broke"
         )
 
-    def test_no_terminate_when_post_nudge_pattern_breaks(self, tmp_path):
+    def test_no_terminate_when_post_nudge_pattern_breaks(self, tmp_path):-> None:
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=2,
@@ -463,7 +463,7 @@ class TestPostNudgeSamePatternRequired:
         # iter 5: submit.
         patterns = ["x", "x", "a", "b"]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             call_count[0] += 1
             if call_count[0] <= len(patterns):
                 return _glob_turn(call_count[0], pattern=patterns[call_count[0] - 1])
@@ -491,7 +491,7 @@ class TestPostNudgeSamePatternRequired:
 class TestFailedModifyDoesNotResetNoProgress:
     """A write/edit that returns an error must not count as progress."""
 
-    def test_failed_edit_calls_count_as_no_progress(self, tmp_path):
+    def test_failed_edit_calls_count_as_no_progress(self, tmp_path):-> None:
         # write_file with missing required arg → tool returns Error, so the
         # call should NOT reset the no-progress counter.
         cfg = StuckDetectionConfig(
@@ -510,7 +510,7 @@ class TestFailedModifyDoesNotResetNoProgress:
         # nudge must fire.
         paths = ["a.py", "b.py", "c.py", "d.py", "e.py"]
 
-        def adapter(messages, tools):
+        def adapter(messages, tools):-> None:
             messages_seen.append(list(messages))
             call_count[0] += 1
             if call_count[0] <= len(paths):
@@ -632,7 +632,7 @@ class TestClaudeCliStuckDetection:
         lines.append(self._result_event())
         return lines
 
-    def test_cli_terminates_on_stuck_pattern(self, tmp_path):
+    def test_cli_terminates_on_stuck_pattern(self, tmp_path):-> None:
         from unittest.mock import MagicMock, patch
 
         from theforge.runners.runner_claude import _run_claude
@@ -695,7 +695,7 @@ class TestClaudeCliStuckDetection:
         nudge_msgs = [c for c in user_contents[1:] if "Progress check" in c]
         assert nudge_msgs, "expected stuck-detection nudge to be written to stdin"
 
-    def test_cli_nudge_delivered_then_recovers(self, tmp_path):
+    def test_cli_nudge_delivered_then_recovers(self, tmp_path):-> None:
         """Nudge is delivered via stdin; if pattern breaks, run completes normally."""
         from unittest.mock import MagicMock, patch
 
@@ -754,7 +754,7 @@ class TestClaudeCliStuckDetection:
         # stdin closed exactly once at end of stream.
         mock_proc.stdin.close.assert_called()
 
-    def test_cli_does_not_terminate_when_phase_not_dev(self, tmp_path):
+    def test_cli_does_not_terminate_when_phase_not_dev(self, tmp_path):-> None:
         from unittest.mock import MagicMock, patch
 
         from theforge.runners.runner_claude import _run_claude
@@ -798,13 +798,13 @@ class TestClaudeCliStuckDetection:
 class TestStuckDetectionConfigParsing:
     """Loader accepts and validates the forge.yaml stuck_detection block."""
 
-    def test_parse_defaults(self):
+    def test_parse_defaults(self):-> None:
         from theforge.config.load import _parse_stuck_detection
 
         cfg = _parse_stuck_detection({})
         assert cfg == StuckDetectionConfig()
 
-    def test_parse_overrides(self):
+    def test_parse_overrides(self):-> None:
         from theforge.config.load import _parse_stuck_detection
 
         cfg = _parse_stuck_detection(
@@ -824,7 +824,7 @@ class TestStuckDetectionConfigParsing:
             post_nudge_iterations=4,
         )
 
-    def test_parse_rejects_non_int_threshold(self):
+    def test_parse_rejects_non_int_threshold(self):-> None:
         from theforge.config.load import _parse_stuck_detection
 
         try:
@@ -834,7 +834,7 @@ class TestStuckDetectionConfigParsing:
         else:
             raise AssertionError("expected ValueError")
 
-    def test_parse_rejects_zero_threshold(self):
+    def test_parse_rejects_zero_threshold(self):-> None:
         from theforge.config.load import _parse_stuck_detection
 
         try:
