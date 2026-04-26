@@ -87,6 +87,28 @@ class GithubConfig:
 
 
 @dataclass(frozen=True)
+class StuckDetectionConfig:
+    """Thresholds for progress-aware stuck-agent detection.
+
+    The runner monitors per-iteration tool-call activity for three observable
+    stall patterns: repeated identical (name+arguments) tool calls, no file
+    modifications across consecutive iterations, and tool-result error loops.
+    On detection, the runner injects a one-shot nudge message; if the same
+    pattern continues for ``post_nudge_iterations`` more iterations, the run
+    is terminated with a structured failure log.
+
+    Detection is gated by profile.phase == "dev" so review/preflight loops
+    are unaffected.
+    """
+
+    enabled: bool = True
+    no_progress_iterations: int = 5  # N — iterations without file modification → stuck
+    repeat_threshold: int = 4  # consecutive identical (name+args) tool calls → stuck
+    error_threshold: int = 4  # consecutive identical error tool results → stuck
+    post_nudge_iterations: int = 3  # M — iterations after nudge before termination
+
+
+@dataclass(frozen=True)
 class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
@@ -123,6 +145,9 @@ class ModelProfile:
     # small number of paths (e.g. raw dataclass constructions in tests) that
     # have not been migrated yet.
     transport: TransportSpec | None = None
+    # Per-profile stuck-detection thresholds; None falls back to the
+    # ForgeConfig-level default and only fires when phase == "dev".
+    stuck_detection: StuckDetectionConfig | None = None
 
     def __post_init__(self) -> None:
         if self.transport is None and (self.cli or self.provider):
@@ -428,6 +453,7 @@ class ForgeConfig:
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
     conventions_soft: list[str] = field(default_factory=list)  # [] = no soft conventions
     finding_classifier: FindingClassifierConfig = field(default_factory=FindingClassifierConfig)
+    stuck_detection: StuckDetectionConfig = field(default_factory=StuckDetectionConfig)
     models_budget_usd: float | None = None  # set when models: key is used (v0.8 path)
     models_overrides: dict[str, Any] | None = None  # raw overrides: dict from v0.8 YAML
 

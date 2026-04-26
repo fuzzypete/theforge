@@ -51,6 +51,7 @@ from .types import (
     RetryPolicy,
     SlackConfig,
     SprintConfig,
+    StuckDetectionConfig,
     ValidationConfig,
     WorkspaceConfig,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "RetryPolicy",
     "SlackConfig",
     "SprintConfig",
+    "StuckDetectionConfig",
     "SUPPORTED_PROVIDERS",
     "ValidationConfig",
     "WorkspaceConfig",

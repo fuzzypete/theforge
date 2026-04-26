@@ -55,6 +55,7 @@ from theforge.runners.schema_utils import (
     noop_finalizer,
     uses_openai_responses_api,
 )
+from theforge.runners.stuck_detection import StuckTracker, build_observation
 from theforge.runners.tool_runtime import TOOL_REGISTRY, ToolDef
 
 if TYPE_CHECKING:
@@ -204,6 +205,7 @@ class AgentLoopManager:
         self._deadline = time.monotonic() + profile.timeout_seconds
         self._iter_nudge_sent = False
         self._time_nudge_sent = False
+        self._stuck = StuckTracker(profile)
 
     def _timed_out(self) -> bool:
         return time.monotonic() > self._deadline
@@ -438,6 +440,28 @@ class AgentLoopManager:
 
             # Append assistant turn + all tool results in a single history entry
             messages = self._append_tool_results(messages, turn.tool_calls, turn_results)
+
+            # Progress-aware stuck detection: observe this iteration's calls/results.
+            # On detection, inject a nudge; if the pattern persists after the nudge,
+            # terminate with a structured failure log.
+            stuck_nudge, stuck_terminate, stuck_pattern = self._stuck.observe(
+                build_observation(turn.tool_calls, turn_results)
+            )
+            if stuck_terminate is not None:
+                _log(
+                    f"  ⚠ {label} stuck-detection terminate after {iterations} iterations "
+                    f"({self._total_tool_calls} tool calls): {stuck_pattern}"
+                )
+                return self._failure_result(
+                    f"Agent loop terminated: {stuck_terminate} "
+                    f"(at iteration {iterations}, {self._total_tool_calls} tool calls)"
+                )
+            if stuck_nudge is not None:
+                messages = list(messages)
+                messages.append({"role": "user", "content": stuck_nudge})
+                _log(
+                    f"  ⚠ {label} stuck-detection nudge at iteration {iterations}: {stuck_pattern}"
+                )
 
             # Nudge: when approaching the iteration limit, tell the model to wrap up
             if not self._iter_nudge_sent:

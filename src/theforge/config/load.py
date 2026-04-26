@@ -49,6 +49,7 @@ from .types import (
     RetryPolicy,
     ShapeCheckConfig,
     SprintConfig,
+    StuckDetectionConfig,
     ValidationConfig,
 )
 
@@ -163,6 +164,41 @@ def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> 
     _ready, _reason = check_agent_auth(_stub, secrets)
     if not _ready:
         raise ValueError(f"plan section uses provider '{plan_cfg.provider}': {_reason}")
+
+
+def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
+    """Build a StuckDetectionConfig from the optional 'stuck_detection:' block.
+
+    Defaults are applied when keys are missing. Type errors raise ValueError so
+    misconfiguration surfaces at load time rather than mid-run.
+    """
+    if raw is None:
+        return StuckDetectionConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"forge.yaml 'stuck_detection' must be a mapping, got {type(raw).__name__}"
+        )
+    defaults = StuckDetectionConfig()
+    fields = {
+        "enabled": (bool, defaults.enabled),
+        "no_progress_iterations": (int, defaults.no_progress_iterations),
+        "repeat_threshold": (int, defaults.repeat_threshold),
+        "error_threshold": (int, defaults.error_threshold),
+        "post_nudge_iterations": (int, defaults.post_nudge_iterations),
+    }
+    kwargs: dict[str, Any] = {}
+    for key, (typ, default) in fields.items():
+        val = raw.get(key, default)
+        if typ is bool:
+            if not isinstance(val, bool):
+                raise ValueError(f"forge.yaml 'stuck_detection.{key}' must be bool, got {val!r}")
+        else:
+            if isinstance(val, bool) or not isinstance(val, int) or val < 1:
+                raise ValueError(
+                    f"forge.yaml 'stuck_detection.{key}' must be a positive int, got {val!r}"
+                )
+        kwargs[key] = val
+    return StuckDetectionConfig(**kwargs)
 
 
 def load_config(config_path: Path) -> ForgeConfig:
@@ -679,6 +715,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
     finding_classifier_cfg = FindingClassifierConfig(allow_net_new_bypass=_allow_bypass)
 
+    stuck_detection_cfg = _parse_stuck_detection(raw.get("stuck_detection", {}))
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -712,6 +750,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         conventions_hard=conventions_hard_cfg,
         conventions_soft=conventions_soft_list,
         finding_classifier=finding_classifier_cfg,
+        stuck_detection=stuck_detection_cfg,
         models_budget_usd=budget_usd_val,
         models_overrides=_raw_overrides,
     )
