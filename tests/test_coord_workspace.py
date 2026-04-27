@@ -169,6 +169,90 @@ class TestFreshWorkspacePull:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
+    def test_pull_non_ff_recovers_with_fetch_reset_on_clean_base(
+        self, mock_log, mock_shell, tmp_path
+    ):
+        """A clean checked-out base branch auto-recovers from a non-ff pull failure."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        issued: list[str] = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            issued.append(cmd)
+            if "rev-parse HEAD:src/theforge" in cmd:
+                return (True, "tree123\n")
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)
+            if "pull --ff-only" in cmd:
+                return (False, "fatal: Not possible to fast-forward, aborting.")
+            if "rev-list --count origin/" in cmd and ".." + config.workspace.base_branch in cmd:
+                return (True, "0\n")
+            if "rev-list --count " + config.workspace.base_branch + "..origin/" in cmd:
+                return (True, "1\n")
+            if cmd == "git fetch origin main":
+                return (True, "From origin")
+            if cmd == "git status --porcelain":
+                return (True, "")
+            if cmd == "git reset --hard origin/main":
+                return (True, "HEAD is now at 9c2e778")
+            if "mkdir" in cmd:
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, branch_name, err = _create_workspace(config, task, no_pull=False)
+
+        assert err is None
+        assert workspace_path is not None
+        assert branch_name == "forge/test-task"
+        assert "git fetch origin main" in issued
+        assert "git reset --hard origin/main" in issued
+        assert any(
+            "recovering with fetch + reset" in str(call) for call in mock_log.call_args_list
+        )
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_pull_non_ff_recovery_refuses_dirty_base(self, mock_log, mock_shell, tmp_path):
+        """A dirty checked-out base branch aborts with an actionable recovery error."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse HEAD:src/theforge" in cmd:
+                return (True, "tree123\n")
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)
+            if "pull --ff-only" in cmd:
+                return (False, "fatal: Not possible to fast-forward, aborting.")
+            if "rev-list --count origin/" in cmd and ".." + config.workspace.base_branch in cmd:
+                return (True, "0\n")
+            if "rev-list --count " + config.workspace.base_branch + "..origin/" in cmd:
+                return (True, "1\n")
+            if cmd == "git fetch origin main":
+                return (True, "From origin")
+            if cmd == "git status --porcelain":
+                return (True, " M src/theforge/coordinator/workspace.py\n")
+            if "mkdir" in cmd:
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, branch_name, err = _create_workspace(config, task, no_pull=False)
+
+        assert workspace_path is None
+        assert branch_name is None
+        assert err is not None
+        assert "local changes" in err
+        assert "rebase onto origin/main" in err
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
     def test_no_pull_skips_pull(self, mock_log, mock_shell, tmp_path):
         """When no_pull=True, no fetch or pull command is issued."""
         config = _make_config(tmp_path)

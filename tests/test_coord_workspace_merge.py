@@ -54,6 +54,60 @@ class TestCoordinatorWorkspaceFailure:
         assert result.phase == Phase.ESCALATE
         assert "workspace" in result.message.lower() or "Workspace" in result.message
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_recoverable_pull_failure_proceeds_past_workspace(
+        self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+    ):
+        """A recoverable base-branch pull failure should not escalate before agent work."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse HEAD:src/theforge" in cmd:
+                return (True, "tree123\n")
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)
+            if "pull --ff-only" in cmd:
+                return (False, "fatal: Not possible to fast-forward, aborting.")
+            if "rev-list --count origin/" in cmd and ".." + config.workspace.base_branch in cmd:
+                return (True, "0\n")
+            if "rev-list --count " + config.workspace.base_branch + "..origin/" in cmd:
+                return (True, "1\n")
+            if cmd == "git fetch origin main":
+                return (True, "From origin")
+            if cmd == "git status --porcelain":
+                return (True, "")
+            if cmd == "git reset --hard origin/main":
+                return (True, "HEAD is now at 9c2e778")
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "mkdir -p" in cmd:
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        mock_preflight.assert_called_once()
+        mock_dev.assert_called_once()
+        mock_pool.assert_called_once()
+
 
 # ── Auto-merge tests ──────────────────────────────────────────────
 
