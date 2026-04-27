@@ -490,6 +490,86 @@ def _deindex_forge_artifacts(workspace_path: Path, *, purge: bool = False) -> No
                 _cu._log(f"⚠ WORKSPACE  failed to delete {artifact}: {exc}")
 
 
+def _sync_base_branch(config: ForgeConfig, current_branch: str) -> tuple[bool, str]:
+    """Sync the local base branch from origin using the safest fast path."""
+    base_branch = config.workspace.base_branch
+    if current_branch == base_branch:
+        return _cu._run_shell(f"git pull --ff-only origin {base_branch}", config.project_root)
+    return _cu._run_shell(f"git fetch origin {base_branch}:{base_branch}", config.project_root)
+
+
+def _branch_sync_delta(config: ForgeConfig, base_branch: str) -> tuple[int | None, int | None]:
+    """Return (ahead, behind) for local base vs origin/base, or (None, None) if unavailable."""
+    try:
+        ok_a, a = _cu._run_shell(
+            f"git rev-list --count origin/{base_branch}..{base_branch}", config.project_root
+        )
+        ok_b, b = _cu._run_shell(
+            f"git rev-list --count {base_branch}..origin/{base_branch}", config.project_root
+        )
+        if ok_a and ok_b:
+            return int(a.strip()), int(b.strip())
+    except Exception:
+        pass
+    return None, None
+
+
+def _recover_base_branch_sync(
+    config: ForgeConfig,
+    *,
+    current_branch: str,
+    pull_out: str,
+    ahead: int | None,
+    behind: int | None,
+) -> tuple[bool, str]:
+    """Attempt a conservative recovery after a base-branch sync failure."""
+    base_branch = config.workspace.base_branch
+    if ahead not in (None, 0):
+        return (
+            False,
+            f"WORKSPACE abort: base branch '{base_branch}' has local commits and cannot be "
+            "auto-recovered safely. Resolve it manually before rerunning the sprint.",
+        )
+
+    ok_fetch, fetch_out = _cu._run_shell(f"git fetch origin {base_branch}", config.project_root)
+    if not ok_fetch:
+        return (
+            False,
+            f"WORKSPACE abort: pull failed for base branch '{base_branch}', and recovery fetch "
+            f"also failed — {fetch_out.strip() or pull_out.strip()}",
+        )
+
+    if current_branch == base_branch:
+        ok_status, status_out = _cu._run_shell("git status --porcelain", config.project_root)
+        if not ok_status:
+            return (
+                False,
+                f"WORKSPACE abort: pull failed for base branch '{base_branch}', and recovery "
+                f"could not verify a clean worktree — {status_out.strip() or pull_out.strip()}",
+            )
+        if status_out.strip():
+            return (
+                False,
+                f"WORKSPACE abort: pull failed for base branch '{base_branch}', but automatic "
+                "reset recovery was skipped because the project root has local changes. "
+                f"Clean the worktree or rebase onto origin/{base_branch} before rerunning.",
+            )
+        _cu._log(
+            f"⚠ WORKSPACE  pull failed while {base_branch} was checked out — "
+            f"recovering with fetch + reset to origin/{base_branch}"
+        )
+        return _cu._run_shell(f"git reset --hard origin/{base_branch}", config.project_root)
+
+    _cu._log(
+        f"⚠ WORKSPACE  ref update for {base_branch} failed — "
+        f"recovering with fetch + branch -f origin/{base_branch}"
+    )
+    return _cu._run_shell(
+        f"git branch -f {base_branch} origin/{base_branch}",
+        config.project_root,
+    )
+
+
 def pull_base_branch(config: ForgeConfig) -> bool:
     """Pull the base branch once before parallel workspace creation.
     Uses --ff-only (checked out) or fetch origin base:base (not checked out).
@@ -504,48 +584,31 @@ def pull_base_branch(config: ForgeConfig) -> bool:
 
     _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
     with FETCH_LOCK:
-        if current_branch.strip() == base_branch:
-            ok_pull, pull_out = _cu._run_shell(
-                f"git pull --ff-only origin {base_branch}", config.project_root
-            )
-        else:
-            ok_pull, pull_out = _cu._run_shell(
-                f"git fetch origin {base_branch}:{base_branch}", config.project_root
-            )
+        current_branch = current_branch.strip()
+        ok_pull, pull_out = _sync_base_branch(config, current_branch)
         if not ok_pull and "incorrect old value" in pull_out:
             _cu._log("⚠ WORKSPACE  fetch race detected — retrying fetch once")
             time.sleep(1)
-            if current_branch.strip() == base_branch:
-                ok_pull, pull_out = _cu._run_shell(
-                    f"git pull --ff-only origin {base_branch}", config.project_root
-                )
-            else:
-                ok_pull, pull_out = _cu._run_shell(
-                    f"git fetch origin {base_branch}:{base_branch}", config.project_root
-                )
+            ok_pull, pull_out = _sync_base_branch(config, current_branch)
+        ahead, behind = _branch_sync_delta(config, base_branch)
+        if not ok_pull and ahead == 0 and behind and behind > 0:
+            ok_pull, pull_out = _recover_base_branch_sync(
+                config,
+                current_branch=current_branch,
+                pull_out=pull_out,
+                ahead=ahead,
+                behind=behind,
+            )
     if ok_pull:
         _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
     else:
         _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
-        try:
-            ok_a, a = _cu._run_shell(
-                f"git rev-list --count origin/{base_branch}..{base_branch}", config.project_root
+        if ahead is not None and behind is not None and ahead > 0 and behind > 0:
+            raise RuntimeError(
+                f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin"
+                f" (local is {ahead} ahead, {behind} behind)."
+                f" Run: git rebase origin/{base_branch}"
             )
-            ok_b, b = _cu._run_shell(
-                f"git rev-list --count {base_branch}..origin/{base_branch}", config.project_root
-            )
-            if ok_a and ok_b:
-                ahead, behind = int(a.strip()), int(b.strip())
-                if ahead > 0 and behind > 0:
-                    raise RuntimeError(
-                        f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin"
-                        f" (local is {ahead} ahead, {behind} behind)."
-                        f" Run: git rebase origin/{base_branch}"
-                    )
-        except RuntimeError:
-            raise
-        except Exception:
-            pass
         raise RuntimeError(
             f"WORKSPACE abort: pull failed for base branch '{base_branch}' — {pull_out.strip()}"
         )
