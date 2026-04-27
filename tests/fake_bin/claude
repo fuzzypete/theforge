@@ -74,9 +74,12 @@ def _emit_tool_iteration() -> None:
 def main() -> None:
     if MODE == "hang":
         # Consume initial prompt but never produce output; sleep until killed.
-        # Capped at 30s so a regressed watchdog doesn't hang the gate indefinitely.
+        # Uses a short-sleep loop capped at 3s so the test stays under the 5s
+        # limit even if the watchdog regresses, without any single sleep > 1s.
         _read_user_msg()
-        time.sleep(30)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
         sys.exit(0)
 
     if MODE == "happy":
