@@ -1125,6 +1125,42 @@ def run_sprint(
     except ValueError as exc:
         raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
 
+    current_story_entries_by_ref: dict[str, dict] = {}
+
+    def _record_current_story_entry(
+        slug: str,
+        outcome: str,
+        *,
+        error: str | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        task_ctx = slug_to_context.get(slug)
+        if task_ctx is None:
+            return
+        task, _source, canonical_ref = task_ctx
+        display_key = (
+            f"Issue #{canonical_ref.split(':')[1]}"
+            if canonical_ref.startswith("issue:")
+            else canonical_ref
+        )
+        current_story_entries_by_ref[canonical_ref] = {
+            "path": display_key,
+            "slug": slug,
+            "outcome": outcome,
+            "verdict": None,
+            "cost_usd": 0.0,
+            "story_run_id": run_id,
+            "preflight": None,
+            "preflight_original_verdict": None,
+            "preflight_source_run_id": None,
+            "error": error,
+            "error_type": error_type,
+            "outcome_code": error_type or outcome.lower(),
+            "merge": False,
+            "batch": 0,
+            "depends_on": list(getattr(task, "depends_on", None) or []),
+        }
+
     # Dependencies already satisfied outside this sprint still count as landed
     # for deferred integration ordering.
     merged_slugs.update(satisfied_slugs)
@@ -1144,6 +1180,7 @@ def run_sprint(
                 else:
                     dag.mark_skipped(slug)
                     specs_skipped += 1
+                    _record_current_story_entry(slug, "SKIPPED", error=triage.reason)
 
     auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - merged_slugs
     if (
@@ -1163,6 +1200,7 @@ def run_sprint(
         _log(f"SKIPPED {slug} (blocked: {', '.join(blocked_by)})")
         dag.mark_skipped(slug)
         specs_skipped += 1
+        _record_current_story_entry(slug, "SKIPPED", error=f"blocked: {', '.join(blocked_by)}")
 
     # Stories dropped pre-launch (e.g. re-exec collision) never enter the DAG.
     # They surface with a distinct DROPPED/PRESERVED outcome in sprint-audit and
@@ -1179,10 +1217,12 @@ def run_sprint(
             _log(f"PRESERVED {slug} (escalated worktree held for review)")
             dag.mark_skipped(slug)
             specs_skipped += 1
+            _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")
         else:
             _log(f"DROPPED {slug} (reason: {reason})")
             dag.mark_skipped(slug)
             specs_failed += 1
+            _record_current_story_entry(slug, "DROPPED", error=reason, error_type="dropped")
 
     # Persist resume-time already-completed stories before any possible re-exec
     # handoff so later generations can recover the full logical sprint history.
@@ -1521,6 +1561,13 @@ def run_sprint(
                                 " \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} (budget exhausted)")
+                    _record_current_story_entry(
+                        task.slug,
+                        "SKIPPED",
+                        error=(
+                            f"budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
+                        ),
+                    )
                     if _state_writer is not None:
                         _state_writer.update(task.slug, status="skipped")
                     continue
@@ -1592,8 +1639,12 @@ def run_sprint(
                     if unmet:
                         dep_list = ", ".join(unmet)
                         _log(f"SKIPPED {t.slug} (dependency failed: {dep_list})")
+                        _record_current_story_entry(
+                            t.slug, "SKIPPED", error=f"dependency failed: {dep_list}"
+                        )
                     else:
                         _log(f"SKIPPED {t.slug} (blocked)")
+                        _record_current_story_entry(t.slug, "SKIPPED", error="blocked")
                     dag.mark_skipped(t.slug)
                     specs_skipped += 1
                     if _state_writer is not None:
@@ -1978,6 +2029,7 @@ def run_sprint(
             triage_actions_by_ref={
                 canonical_ref: triage.action for canonical_ref, triage in triages.items()
             },
+            current_story_entries_by_ref=current_story_entries_by_ref,
         )
 
     if _state_writer is not None:
