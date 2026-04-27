@@ -261,7 +261,7 @@ def cmd_check_story_config(args: argparse.Namespace) -> int:
         f"diff touches non-mutable keys: {violating}. "
         f"Allowed story-mutable top-level keys: {allowed}. "
         f"To override for this issue, add `{ALLOW_MUTATE_FORGE_YAML_KEY}: true` "
-        "to the issue's leading YAML metadata block.",
+        "to the issue's leading YAML metadata block or the local story file frontmatter.",
         file=sys.stderr,
     )
     return 1
