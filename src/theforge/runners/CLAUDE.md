@@ -16,8 +16,11 @@ results.
   the subsystem.
 - Provider adapters must maintain schema integrity. Do not silently coerce or
   discard malformed outputs in ways that hide contract violations.
-- Tests for runner behavior must mock subprocesses and external CLIs; never make
-  real provider calls part of the test suite.
+- **Never invoke real provider CLIs** in the default gate (credentials, cost, non-determinism).
+- **Runner lifecycle tests must use fake-CLI subprocess fixtures** (`tests/fake_bin/`),
+  not subprocess mocks. Mocking `Popen`/`subprocess.run` is appropriate only for
+  non-runner code paths; it cannot catch pipe-lifecycle bugs (stdin/stdout EOF,
+  process exit timing, watchdog behaviour).
 - Keep provider-specific code isolated to adapters or dedicated runner modules
   rather than spreading conditional logic throughout shared APIs.
 

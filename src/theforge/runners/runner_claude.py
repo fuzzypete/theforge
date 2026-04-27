@@ -417,6 +417,14 @@ def _run_claude(
                 proc.kill()
                 timed_out = True
                 break
+            # Break as soon as the result event arrives — the stream is complete.
+            # Closing stdin immediately lets the subprocess exit cleanly rather
+            # than blocking until the watchdog fires (#1054).
+            try:
+                if stripped and json.loads(stripped).get("type") == "result":
+                    break
+            except (json.JSONDecodeError, ValueError):
+                pass
 
         stuck_monitor.finalize()
         # Close stdin now that the stream is done (or the proc was killed) so
