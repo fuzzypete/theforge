@@ -240,7 +240,8 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - New coordinator behaviour → add a `tests/test_coord_*.py` file matching the phase
 - New runner behaviour → `tests/test_runner_*.py`
 - `make gate` runs in a scrubbed environment: agent credentials, CLI auth state, and dotenv autoload inputs are stripped before tests execute.
-- Mock subprocess; never invoke real agent CLIs in tests. Any forgotten runner/provider mock in the default gate suite should fail fast under the gate scrub sentinel.
+- **Never invoke real provider CLIs** (`claude`, `codex`, `gemini`, etc.) in the default gate — they require credentials, cost money, and are non-deterministic. Any forgotten real-CLI call should fail fast under the gate scrub sentinel.
+- **Use fake-CLI subprocess fixtures for runner lifecycle tests.** Runner tests that exercise subprocess lifecycle (pipe semantics, stdin/stdout EOF, process exit timing, watchdog behaviour) must use a real subprocess with a fake binary (see `tests/fake_bin/`). Mocking `subprocess.Popen`/`subprocess.run` is appropriate only for non-runner code paths where lifecycle semantics are not under test.
 - Tests that legitimately require real credentials must be marked `@pytest.mark.network_integration` and run via `make test-integration`; they are not part of `make gate`.
 - **Never use `fcntl.flock` in tests that also use `threading`.** pytest runs with
   `-n auto --dist worksteal` (xdist), which forks worker processes. A forked worker

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,8 +15,10 @@ import pytest
 import theforge.runners.runner_claude as runner_claude_mod
 from theforge.agent_types import AgentResult
 from theforge.config import ModelProfile
+from theforge.config.types import StuckDetectionConfig
 from theforge.log_level import LogLevel, set_log_level
 from theforge.runners import run_agent, run_agent_pool
+from theforge.runners.runner_claude import _run_claude
 
 
 def _make_stream_mock(lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
@@ -760,3 +764,134 @@ def test_claude_launcher_invokes_cmd_directly(dev_profile: ModelProfile, tmp_pat
         run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
     cmd = mock_popen.call_args[0][0]
     assert cmd[0] == "claude"
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle tests — real subprocess, fake-CLI fixture
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeLifecycle:
+    """Real-subprocess lifecycle tests for the Claude CLI runner.
+
+    Uses tests/fake_bin/claude rather than mocking subprocess.Popen, so the
+    tests exercise real pipe semantics (stdin/stdout EOF, process exit timing,
+    watchdog behaviour) that Popen mocks cannot detect.
+
+    The fake binary is controlled by the FAKE_CLAUDE_MODE env var injected
+    via a monkeypatched build_workspace_env.
+    """
+
+    _FAKE_BIN: ClassVar[Path] = Path(__file__).parent / "fake_bin"
+
+    @pytest.fixture(autouse=True)
+    def _ensure_executable(self) -> None:
+        script = self._FAKE_BIN / "claude"
+        script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    def _patch_env(self, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+        """Patch runner_claude.build_workspace_env to put fake_bin first on PATH."""
+        fake_bin = self._FAKE_BIN
+        from theforge.workspace_env import build_workspace_env as _orig
+
+        def _build(
+            workspace_path: Path,
+            base_env: object = None,
+            *,
+            extra: object = None,
+        ) -> dict:
+            env = _orig(workspace_path, base_env, extra=extra)  # type: ignore[arg-type]
+            env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+            env["FAKE_CLAUDE_MODE"] = mode
+            return env
+
+        monkeypatch.setattr("theforge.runners.runner_claude.build_workspace_env", _build)
+
+    def _make_profile(self, timeout_seconds: int = 10, **kwargs: object) -> ModelProfile:
+        return ModelProfile(
+            name="dev",
+            cli="claude",
+            model="claude-sonnet-4-5",
+            budget_usd=2.0,
+            timeout_seconds=timeout_seconds,
+            allowed_tools=("Bash",),
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_happy_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Fake claude emits a complete result event; runner returns success."""
+        self._patch_env(monkeypatch, "happy")
+        result = _run_claude(
+            prompt="do the thing",
+            profile=self._make_profile(),
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        assert result.success is True
+        assert result.output == "Task complete."
+        assert result.session_id == "fake-session-abc123"
+        assert result.exit_code == 0
+
+    def test_stdin_close_no_hang(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Runner closes stdin after stdout closes; subprocess exits without timing out.
+
+        Regression test for #1054: before the fix, stdin was never closed so a
+        subprocess that waits for stdin-EOF before exiting would deadlock until
+        the watchdog fired, producing a timeout failure even when a complete
+        result had been emitted.
+        """
+        self._patch_env(monkeypatch, "wait_stdin")
+        profile = self._make_profile(timeout_seconds=5)
+        start = time.monotonic()
+        result = _run_claude(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        elapsed = time.monotonic() - start
+        assert result.success is True, f"expected success; got output={result.output!r}"
+        assert result.output == "Task complete."
+        assert elapsed < 4.0, (
+            f"runner took {elapsed:.2f}s — likely stdin-close deadlock regression (#1054)"
+        )
+
+    def test_wall_clock_timeout_no_output(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Subprocess that never produces output is killed by watchdog; runner returns failure."""
+        self._patch_env(monkeypatch, "hang")
+        profile = self._make_profile(timeout_seconds=2)
+        start = time.monotonic()
+        result = _run_claude(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        elapsed = time.monotonic() - start
+        assert result.success is False
+        assert elapsed < 5.0, f"runner took {elapsed:.2f}s — watchdog did not fire in time"
+
+    def test_nudge_delivery(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Runner writes stuck-detection nudge to stdin; subprocess receives it and responds."""
+        self._patch_env(monkeypatch, "nudge")
+        profile = self._make_profile(
+            timeout_seconds=10,
+            phase="dev",
+            stuck_detection=StuckDetectionConfig(
+                enabled=True,
+                repeat_threshold=2,
+                post_nudge_iterations=10,
+                no_progress_iterations=10,
+                error_threshold=10,
+            ),
+        )
+        result = _run_claude(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        assert result.success is True
+        assert result.output == "Task complete."

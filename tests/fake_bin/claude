@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Fake claude CLI for runner lifecycle subprocess tests.
+
+Controlled via FAKE_CLAUDE_MODE environment variable:
+  happy       — read initial prompt, emit result event, exit 0 (default)
+  wait_stdin  — emit result event then block on stdin WITHOUT closing stdout.
+                Stdout stays open; the runner's for-loop can only exit once it
+                breaks on the result event (new behaviour) or the watchdog kills
+                (old behaviour). Tests that the runner's break-on-result path
+                fires before the watchdog so the subprocess exits cleanly.
+  hang        — read initial prompt, emit nothing, sleep for up to 30s.
+                Capped to avoid gate hangs if the watchdog ever regresses.
+  nudge       — emit two identical tool-call iterations to trigger stuck-
+                detection nudge, then read the nudge from stdin and respond
+                with a result event (nudge delivery test)
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+
+MODE = os.environ.get("FAKE_CLAUDE_MODE", "happy")
+
+_RESULT_EVENT = {
+    "type": "result",
+    "result": "Task complete.",
+    "session_id": "fake-session-abc123",
+    "total_cost_usd": 0.001,
+    "is_error": False,
+}
+
+_TOOL_CALL = {
+    "type": "tool_use",
+    "id": "t1",
+    "name": "Bash",
+    "input": {"command": "echo loop"},
+}
+
+_TOOL_RESULT_ITEM = {
+    "type": "tool_result",
+    "tool_use_id": "t1",
+    "content": "loop",
+}
+
+
+def _emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _read_user_msg() -> str | None:
+    """Read and return the content of the next user message from stdin, or None on EOF."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        if msg.get("type") == "user":
+            return str(msg.get("message", {}).get("content", ""))
+    return None
+
+
+def _emit_tool_iteration() -> None:
+    """Emit one assistant tool-use + user tool-result pair (identical each call)."""
+    _emit({"type": "assistant", "message": {"role": "assistant", "content": [_TOOL_CALL]}})
+    _emit({"type": "user", "message": {"role": "user", "content": [_TOOL_RESULT_ITEM]}})
+
+
+def main() -> None:
+    if MODE == "hang":
+        # Consume initial prompt but never produce output; sleep until killed.
+        # Uses a short-sleep loop capped at 3s so the test stays under the 5s
+        # limit even if the watchdog regresses, without any single sleep > 1s.
+        _read_user_msg()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+        sys.exit(0)
+
+    if MODE == "happy":
+        _read_user_msg()
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
+    if MODE == "wait_stdin":
+        # Emit result event then block on stdin WITHOUT closing stdout.
+        # Stdout stays open so the runner's for-loop cannot exit by seeing EOF —
+        # it can only exit by breaking on the result event (the fix for #1054).
+        # Without the break-on-result fix the loop blocks, the watchdog fires
+        # after the timeout, and the result is a kill-failure even though the
+        # result event was captured. With the fix the loop exits early, stdin is
+        # closed, and this subprocess unblocks and exits cleanly with code 0.
+        _read_user_msg()
+        _emit(_RESULT_EVENT)
+        sys.stdout.flush()
+        # Block until runner closes our stdin (EOF); stdout intentionally open.
+        sys.stdin.read()
+        sys.exit(0)
+
+    if MODE == "nudge":
+        # Emit two identical tool-use iterations so the runner's stuck-detection
+        # fires a nudge after the second (repeat_threshold=2 in the test profile).
+        # Then read the nudge from stdin and respond with a result event.
+        # Sequence:
+        #   subprocess emits 4 lines → runner reads them → nudge sent to stdin
+        #   subprocess reads nudge → emits result line → exits
+        _read_user_msg()
+        _emit_tool_iteration()  # iteration 1: _repeat_count rises to 1
+        _emit_tool_iteration()  # iteration 2: _repeat_count reaches 2, nudge fires
+        sys.stdout.flush()
+        # Wait for the nudge message the runner writes to our stdin.
+        _read_user_msg()
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
+    # Unknown mode — exit non-zero so tests see it immediately.
+    sys.stderr.write(f"fake claude: unknown FAKE_CLAUDE_MODE={MODE!r}\n")
+    sys.exit(1)
+
+
+main()
