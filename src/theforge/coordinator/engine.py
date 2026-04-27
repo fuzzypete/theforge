@@ -470,6 +470,18 @@ def _coordinator_loop(
                                 "new_timeout_seconds": _new_timeout,
                                 "reason": "timeout",
                             }
+                            # Persist sprint-level flag immediately so subsequent stories
+                            # in the same sprint see it even if this run crashes later.
+                            if state.sprint_name:
+                                _esc_flag = (
+                                    config.project_root
+                                    / ".forge"
+                                    / "sprints"
+                                    / state.sprint_name
+                                    / "timeout_escalation_used"
+                                )
+                                _esc_flag.parent.mkdir(parents=True, exist_ok=True)
+                                _esc_flag.touch()
                             _log(
                                 f"  Timeout escalation:"
                                 f" {_old_timeout_model} → {_new_timeout_model}"
@@ -566,6 +578,16 @@ def run_task(
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
     state.story_content = story_content
     _sprint_name = sprint_name  # passed to _make_story_log_dir for sprint nesting
+    state.sprint_name = sprint_name
+
+    # Pre-populate timeout_escalation_used from sprint-level flag so only one escalation
+    # fires across all stories in the same sprint, not just within a single story run.
+    if sprint_name:
+        _sprint_esc_flag = (
+            config.project_root / ".forge" / "sprints" / sprint_name / "timeout_escalation_used"
+        )
+        if _sprint_esc_flag.exists():
+            state.timeout_escalation_used = True
 
     # ── Structured logger ──────────────────────────────────────────
     _run_id = run_id or _generate_run_id()

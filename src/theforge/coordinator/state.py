@@ -239,6 +239,7 @@ class CoordinatorState:
     phase: Phase = Phase.INIT
     started_at: str | None = None  # ISO timestamp set at INIT
     run_id: str | None = None  # stable 12-char hex run identity; set at engine entry
+    sprint_name: str | None = None  # set when run is part of a sprint; used for cross-story flags
     story_content: str | None = None  # story text as loaded before any runtime mutation
     workspace_path: Path | None = None
     branch_name: str | None = None

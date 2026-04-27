@@ -261,3 +261,71 @@ class TestTimeoutNoReEscalation:
         # The audit records the first escalation only
         assert result.state.timeout_escalation_audit["original_model"] == "sonnet"
         assert result.state.timeout_escalation_audit["new_model"] == "opus"
+
+
+class TestTimeoutEscalationSprintSticky:
+    """Timeout escalation is sprint-sticky: only one escalation fires per sprint
+    even across different stories (separate run_task calls with the same sprint_name)."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_second_story_in_sprint_does_not_escalate(
+        self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+    ):
+        """Story A escalates; story B in the same sprint sees the flag and does not escalate."""
+        sprint_name = "test-sprint-sticky"
+        config_a = _make_escalation_config(tmp_path, models=["claude/sonnet", "claude/opus"])
+        config_b = _make_escalation_config(tmp_path, models=["claude/sonnet", "claude/opus"])
+
+        # Story A: times out once, escalates, then succeeds
+        task_a = _make_task(tmp_path)
+        workspace_a = tmp_path / task_a.slug
+        workspace_a.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace_a, ["FAIL", "PASS"])
+        dev_call_a = {"n": 0}
+
+        def dev_side_effect_a(**kwargs):
+            dev_call_a["n"] += 1
+            if dev_call_a["n"] == 1:
+                return _timeout_result()
+            return _make_agent_result(success=True, output="Done.", session_id="sess-a")
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev.side_effect = dev_side_effect_a
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+        ]
+
+        result_a = run_task(config_a, task_a, sprint_name=sprint_name)
+        assert result_a.state.timeout_escalation_used is True
+        assert result_a.state.timeout_escalation_audit is not None
+
+        # Story B: times out, but the sprint flag is set so no escalation should fire
+        task_b_name = tmp_path / "spec_b.md"
+        task_b_name.write_text("# Story B\n\nSecond story.", encoding="utf-8")
+        from theforge.task import TaskStory
+
+        task_b = TaskStory(name="Story B", story_path=task_b_name, slug="story-b")
+        workspace_b = tmp_path / "story-b"
+        workspace_b.mkdir()
+
+        # Reset mocks for story B: gate FAIL then PASS (timeout resume without escalation)
+        mock_shell.side_effect = _shell_with_gate(workspace_b, ["FAIL", "PASS"])
+        dev_call_b = {"n": 0}
+
+        def dev_side_effect_b(**kwargs):
+            dev_call_b["n"] += 1
+            if dev_call_b["n"] == 1:
+                return _timeout_result(session_id="sess-b")
+            return _make_agent_result(success=True, output="Done.", session_id="sess-b")
+
+        mock_dev.side_effect = dev_side_effect_b
+
+        result_b = run_task(config_b, task_b, sprint_name=sprint_name)
+
+        # Story B should NOT have triggered a new escalation (flag was already set)
+        assert result_b.state.timeout_escalation_used is True  # pre-populated from flag file
+        assert result_b.state.timeout_escalation_audit is None  # no new escalation fired
