@@ -67,6 +67,27 @@ from .state import (
 from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_worktree_eval
 
 
+def _perform_dev_model_escalation(
+    config: ForgeConfig,
+) -> tuple[str, str, ForgeConfig] | None:
+    """Bump the dev model to the next higher-capability model in the escalation chain.
+
+    Returns (old_model_name, new_model_name, new_config) or None when no larger
+    model is available. Callers are responsible for updating state flags and emitting
+    audit records appropriate to their escalation reason.
+    """
+    curr_key = _find_registry_key_for_profile(config.dev_profile)
+    if curr_key is None:
+        return None
+    next_key = _escalate_dev_model(curr_key, config.models)
+    if next_key is None:
+        return None
+    next_info = MODEL_REGISTRY[next_key]
+    old_model = config.dev_profile.model
+    new_dev = apply_model_info(config.dev_profile, next_info)
+    return old_model, next_info.model, _dc_replace(config, dev_profile=new_dev)
+
+
 def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
     """Build a profile_name → verdict dict from the last cycle's reviewer results."""
     verdicts: dict[str, str] = {}
@@ -975,33 +996,27 @@ def _run_review_phase(
             state.total_dev_cost < (state.adaptive_dev_budget_usd or config.dev_profile.budget_usd)
         )
     ):
-        _curr_key = _find_registry_key_for_profile(config.dev_profile)
-        if _curr_key is not None:
-            _next_key = _escalate_dev_model(_curr_key, config.models)
-            if _next_key is not None:
-                _next_info = MODEL_REGISTRY[_next_key]
-                _p1_file = next(
-                    (f.file for f in parsed_review.findings if f.severity == "P1"),
-                    "unknown",
-                )
-                _log(
-                    f"  Dev escalation: {config.dev_profile.model} → {_next_info.model}"
-                    f" (persistent P1 in {_p1_file})"
-                )
-                _old_model = config.dev_profile.model
-                _new_dev = apply_model_info(config.dev_profile, _next_info)
-                config = _dc_replace(config, dev_profile=_new_dev)
-                state.dev_escalated = True
-                _prev_result = state.review_results[-2]
-                _persistent_descs = _persistent_p1_descriptions(
-                    parsed_review.findings, _prev_result.findings
-                )
-                state.escalation_note = (
-                    f"MODEL ESCALATION: A P1 finding persisted across review cycles. "
-                    f"The previous model ({_old_model}) was unable to resolve it. "
-                    f"You are now running on an upgraded model ({_next_info.model}). "
-                    f"Persistent finding(s): {'; '.join(_persistent_descs)}"
-                )
+        _esc = _perform_dev_model_escalation(config)
+        if _esc is not None:
+            _old_model, _new_model_name, config = _esc
+            _p1_file = next(
+                (f.file for f in parsed_review.findings if f.severity == "P1"),
+                "unknown",
+            )
+            _log(
+                f"  Dev escalation: {_old_model} → {_new_model_name} (persistent P1 in {_p1_file})"
+            )
+            state.dev_escalated = True
+            _prev_result = state.review_results[-2]
+            _persistent_descs = _persistent_p1_descriptions(
+                parsed_review.findings, _prev_result.findings
+            )
+            state.escalation_note = (
+                f"MODEL ESCALATION: A P1 finding persisted across review cycles. "
+                f"The previous model ({_old_model}) was unable to resolve it. "
+                f"You are now running on an upgraded model ({_new_model_name}). "
+                f"Persistent finding(s): {'; '.join(_persistent_descs)}"
+            )
 
     if state.review_cycle >= _adaptive_review_max:
         if interactive:

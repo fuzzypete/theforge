@@ -556,6 +556,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             if result.landing_status is not None
             else None
         ),
+        "timeout_escalation": state.timeout_escalation_audit,
         "escalation": (
             {
                 "reason": state.escalate_reason,

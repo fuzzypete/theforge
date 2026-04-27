@@ -338,6 +338,10 @@ class CoordinatorState:
     error_type: str | None = None
     sandboxed: bool = False  # True if sandbox isolation was available at dev-phase entry
     dev_escalated: bool = False  # True once model escalation has occurred this run
+    timeout_escalation_used: bool = (
+        False  # True once a timeout escalation has fired this sprint; gates re-escalation
+    )
+    timeout_escalation_audit: dict | None = None  # original/new model+timeout recorded for audit
     plan_escalated: bool = False  # True once plan model escalation has occurred this run
     plan_escalation_note: str | None = None  # escalation context injected into regen prompt
     retry_reason: RetryReason | None = None  # see RetryReason enum for valid values

@@ -211,8 +211,13 @@ def _run_log_context(
 
 # ── Phase handlers ────────────────────────────────────────────────────
 from .dev_phase import _run_dev_phase  # noqa: E402
-from .review_phase import _ReviewOutcome, _run_review_only_phase, _run_review_phase  # noqa: E402
-from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402
+from .review_phase import (  # noqa: E402
+    _perform_dev_model_escalation,
+    _ReviewOutcome,
+    _run_review_only_phase,
+    _run_review_phase,
+)
+from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402,I001
 from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
 
 
@@ -442,6 +447,34 @@ def _coordinator_loop(
                         prefix = "Gate validation failed: "
                         if state.human_feedback.startswith(prefix):
                             gate_result = f"FAIL - {state.human_feedback.removeprefix(prefix)}"
+                    if config.retry.auto_model_escalation and not state.timeout_escalation_used:
+                        _esc = _perform_dev_model_escalation(config)
+                        if _esc is not None:
+                            from .util import resolve_timeout_with_active  # noqa: PLC0415
+
+                            _old_timeout_model, _new_timeout_model, config = _esc
+                            _orig_timeout = state.adaptive_dev_timeout_seconds
+                            _new_timeout, _ = resolve_timeout_with_active(
+                                config.dev_profile.timeout_seconds,
+                                config.dev_profile.timeout_medium_seconds,
+                                config.dev_profile.timeout_large_seconds,
+                                state.preflight_complexity,
+                                state.preflight_complexity_score,
+                            )
+                            state.adaptive_dev_timeout_seconds = _new_timeout
+                            state.timeout_escalation_used = True
+                            state.timeout_escalation_audit = {
+                                "original_model": _old_timeout_model,
+                                "new_model": _new_timeout_model,
+                                "original_timeout_seconds": _orig_timeout,
+                                "new_timeout_seconds": _new_timeout,
+                                "reason": "timeout",
+                            }
+                            _log(
+                                f"  Timeout escalation:"
+                                f" {_old_timeout_model} → {_new_timeout_model}"
+                                f" (timeout {_orig_timeout}s → {_new_timeout}s)"
+                            )
                     _set_timeout_resume(state, gate_result)
                 continue
 
