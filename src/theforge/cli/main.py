@@ -10,6 +10,7 @@ from theforge.cli import (
     check_config,
     daemon,
     eval_cmd,
+    forge_yaml_guard,
     hooks,
     ideate,
     index,
@@ -52,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     index.register_parser(subparsers)
     providers.register_parser(subparsers)
     check_config.register_parser(subparsers)
+    forge_yaml_guard.register_parser(subparsers)
     audit.register_parser(subparsers)
     telemetry.register_parser(subparsers)
     daemon.register_parser(subparsers)
@@ -85,6 +87,7 @@ def main() -> None:
         "index": index.cmd_index,
         "check-providers": providers.cmd_check_providers,
         "check-config": check_config.cmd_check_config,
+        "check-story-config": forge_yaml_guard.cmd_check_story_config,
         "audit": audit.cmd_audit,
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,

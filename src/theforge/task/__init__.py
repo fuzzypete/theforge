@@ -11,8 +11,10 @@ from .plan_parser import PlanData, PlanStep, parse_plan_output
 from .plan_prompts import build_plan_prompt, build_plan_review_prompt, build_preflight_prompt
 from .review_prompts import build_review_prompt, build_synthesis_prompt
 from .story import (
+    ALLOW_MUTATE_FORGE_YAML_KEY,
     TaskSpec,
     TaskStory,
+    frontmatter_allows_forge_yaml_mutation,
     load_spec,
     load_story,
     parse_spec_frontmatter,
@@ -35,8 +37,10 @@ __all__ = [
     "build_preflight_prompt",
     "build_review_prompt",
     "build_synthesis_prompt",
+    "ALLOW_MUTATE_FORGE_YAML_KEY",
     "TaskSpec",
     "TaskStory",
+    "frontmatter_allows_forge_yaml_mutation",
     "load_spec",
     "load_story",
     "parse_spec_frontmatter",

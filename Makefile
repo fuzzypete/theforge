@@ -29,6 +29,7 @@ test-parallel:
 gate:
 	@mkdir -p .forge/index .forge && \
 	forge index && \
+	forge check-story-config && \
 	$(SCRUBBED_GATE_CMD)
 
 # Transitional alias retained for one release while the scrubbed gate rolls out.
