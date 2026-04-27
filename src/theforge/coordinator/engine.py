@@ -1028,6 +1028,16 @@ def _run_resume_coordinator(
         return setup
     state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
+    state.sprint_name = sprint_name
+
+    # Mirror the sprint-sticky timeout-escalation guard from run_task so resumed
+    # stories see the flag written by an earlier story in the same sprint.
+    if sprint_name:
+        _sprint_esc_flag = (
+            config.project_root / ".forge" / "sprints" / sprint_name / "timeout_escalation_used"
+        )
+        if _sprint_esc_flag.exists():
+            state.timeout_escalation_used = True
 
     if cached_preflight_state is not None:
         from .preflight import _apply_preflight_config  # noqa: PLC0415

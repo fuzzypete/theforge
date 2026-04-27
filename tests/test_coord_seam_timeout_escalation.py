@@ -30,7 +30,7 @@ from theforge.config import (  # noqa: E402
     WorkspaceConfig,
 )
 from theforge.coordinator.audit import generate_audit_log  # noqa: E402
-from theforge.coordinator.engine import run_task  # noqa: E402
+from theforge.coordinator.engine import run_from_dev, run_task  # noqa: E402
 from theforge.runners import AgentResult  # noqa: E402
 
 
@@ -147,3 +147,62 @@ def test_timeout_escalation_seam(mock_shell, mock_dev, mock_preflight, mock_pool
     assert te["reason"] == "timeout"
     assert "original_timeout_seconds" in te
     assert "new_timeout_seconds" in te
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.engine._check_behind_origin")
+def test_resume_path_reads_sprint_flag(
+    mock_origin, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    """run_from_dev with sprint_name pre-set flag does not escalate again.
+
+    Simulates a sprint where story A already escalated (flag file exists) and
+    story B is resumed via run_from_dev. Story B times out but must not escalate.
+    """
+    config = _make_seam_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    # Write the sprint-level flag as if story A already escalated
+    sprint_name = "test-resume-sprint"
+    flag_path = tmp_path / ".forge" / "sprints" / sprint_name / "timeout_escalation_used"
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    flag_path.touch()
+
+    mock_origin.return_value = None  # skip remote check
+    # Gate: FAIL (timeout resume), then PASS
+    mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+
+    dev_call = {"n": 0}
+
+    def dev_side_effect(**kwargs):
+        dev_call["n"] += 1
+        if dev_call["n"] == 1:
+            return AgentResult(
+                success=False,
+                output="Partial work.",
+                session_id="sess-resume",
+                cost_usd=0.10,
+                exit_code=-9,
+                raw={},
+                profile_name="dev",
+            )
+        return _make_agent_result(success=True, output="Done.", session_id="sess-resume")
+
+    mock_preflight.return_value = _PREFLIGHT_RESULT
+    mock_dev.side_effect = dev_side_effect
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+    ]
+
+    result = run_from_dev(config, task, workspace, sprint_name=sprint_name, no_pull=True)
+
+    assert result.success is True
+    # Flag was pre-loaded: used=True but no new escalation fired
+    assert result.state.timeout_escalation_used is True
+    assert result.state.timeout_escalation_audit is None  # no new escalation
+    assert result.state.sprint_name == sprint_name
