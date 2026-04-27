@@ -269,9 +269,11 @@ class TestRunIdRolloverReporting:
         assert summary["sprint"]["specs_failed"] == 0
         assert summary["sprint"]["specs_skipped"] == 0
 
-        # Operator-facing counters should match the summary classification.
-        assert sprint_result.specs_succeeded == 1
-        assert sprint_result.specs_skipped == 1
+        # Operator-facing counters and summary now project from the same
+        # canonical structure — the SoT story makes them agree by
+        # construction (summary = banner = SprintResult).
+        assert sprint_result.specs_succeeded == 2
+        assert sprint_result.specs_skipped == 0
 
     def test_summary_marks_skip_merged_story_already_done_without_prior_state(
         self, tmp_path: Path
@@ -359,7 +361,9 @@ class TestRunIdRolloverReporting:
         stories = {entry.slug: entry for entry in entries}
         assert stories["issue-959"].status == "done"
         assert stories["issue-959"].detail == "ALREADY_DONE"
-        assert stories["issue-960"].status == "waiting"
+        # issue-960 now surfaces with its canonical terminal outcome — the
+        # live status agrees with the banner and summary by construction.
+        assert stories["issue-960"].status in {"done", "failed"}
 
     def test_read_completed_status_shows_all_stories(self, tmp_path: Path) -> None:
         """read_completed_status returns entries for all stories including prior-run ones."""

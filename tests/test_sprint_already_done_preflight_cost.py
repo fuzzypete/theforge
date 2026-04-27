@@ -107,10 +107,12 @@ class TestSprintAlreadyDonePreflightCost:
         ):
             result = run_sprint(config, manifest_path, no_pull=True)
 
-        assert result.specs_skipped == 1, (
-            f"Expected 1 skipped story (ALREADY_DONE), got {result.specs_skipped}"
+        # ALREADY_DONE is a terminal succeeded outcome under the canonical
+        # state model — closed-at-fetch issues surface as DONE everywhere.
+        assert result.specs_succeeded == 1, (
+            f"Expected 1 succeeded story (ALREADY_DONE), got {result.specs_succeeded}"
         )
-        assert result.specs_succeeded == 0
+        assert result.specs_skipped == 0
         assert result.specs_failed == 0
         assert result.total_cost_usd == pytest.approx(PREFLIGHT_COST_USD, abs=1e-6), (
             f"Sprint total ${result.total_cost_usd:.4f} must include batch preflight "

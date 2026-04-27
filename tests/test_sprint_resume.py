@@ -929,8 +929,10 @@ class TestSprintDependencies:
             result = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 2  # both specs ran
-        assert result.specs_skipped == 1  # spec-a counted as skipped (ALREADY_DONE)
-        assert result.specs_succeeded == 1  # spec-b succeeded
+        # ALREADY_DONE is a terminal succeeded outcome under the canonical
+        # state model — both specs count as succeeded.
+        assert result.specs_skipped == 0
+        assert result.specs_succeeded == 2
         assert result.stopped_reason is None  # no halt
 
     def test_resume_cleans_stale_lock_and_pending_files(self, tmp_path: Path) -> None:

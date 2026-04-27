@@ -529,6 +529,7 @@ def _write_sprint_summary(
     skipped_issues: "list | None" = None,
     triage_actions_by_ref: "dict[str, str] | None" = None,
     current_story_entries_by_ref: "dict[str, dict] | None" = None,
+    story_state: "object | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -737,21 +738,56 @@ def _write_sprint_summary(
             }
         )
 
-    # Recompute all aggregate metrics from spec_entries so prior-run stories
-    # contributed by the accumulated state are included in the totals.
-    effective_specs_total = len(spec_entries)
-    effective_cost_usd = round(sum(e.get("cost_usd", 0.0) for e in spec_entries), 4)
-    effective_succeeded = sum(1 for e in spec_entries if e.get("outcome") == "DONE")
-    effective_failed = sum(
-        1
-        for e in spec_entries
-        if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", "PRESERVED", None)
-    )
-    effective_skipped = sum(
-        1
-        for e in spec_entries
-        if e.get("outcome") in ("ALREADY_DONE", "SKIPPED", "PRESERVED", None)
-    )
+    # Project totals from the canonical SprintStoryState when supplied — by
+    # construction these counts equal the banner counts in the same run. If
+    # no canonical state was passed (legacy callers), fall back to recomputing
+    # from spec_entries; the canonical path is the single source of truth.
+    if story_state is not None and hasattr(story_state, "counts"):
+        canonical_counts = story_state.counts()
+        effective_specs_total = canonical_counts["total"]
+        effective_succeeded = canonical_counts["succeeded"]
+        effective_failed = canonical_counts["failed"]
+        effective_skipped = canonical_counts["skipped"]
+        effective_cost_usd = round(
+            sum(getattr(e, "cost_usd", 0.0) for e in story_state.stories()), 4
+        )
+        # Inject any shape-gate-skipped stories (and other canonical-only
+        # entries that aren't in canonical_refs) so the summary surfaces them.
+        canonical_slugs_in_entries = {e.get("slug") for e in spec_entries if e.get("slug")}
+        for entry in story_state.stories():
+            if entry.slug in canonical_slugs_in_entries:
+                continue
+            outcome_name = entry.outcome.name
+            spec_entries.append(
+                {
+                    "path": entry.path,
+                    "slug": entry.slug,
+                    "outcome": outcome_name,
+                    "verdict": None,
+                    "cost_usd": entry.cost_usd,
+                    "preflight": None,
+                    "error": entry.reason,
+                    "error_type": None,
+                    "merge": False,
+                    "batch": 0,
+                    "depends_on": list(entry.depends_on),
+                    "drop_reason": entry.reason,
+                }
+            )
+    else:
+        effective_specs_total = len(spec_entries)
+        effective_cost_usd = round(sum(e.get("cost_usd", 0.0) for e in spec_entries), 4)
+        effective_succeeded = sum(1 for e in spec_entries if e.get("outcome") == "DONE")
+        effective_failed = sum(
+            1
+            for e in spec_entries
+            if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", "PRESERVED", None)
+        )
+        effective_skipped = sum(
+            1
+            for e in spec_entries
+            if e.get("outcome") in ("ALREADY_DONE", "SKIPPED", "PRESERVED", None)
+        )
 
     summary = {
         "sprint": {

@@ -60,6 +60,7 @@ from .manifest import (
 from .query import normalize_dependency_plan
 from .sources import StorySource
 from .state_writer import SprintStateWriter
+from .story_state import SprintStoryState, StoryOutcome
 
 _UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
 
@@ -820,40 +821,44 @@ def _classify_and_record(
     result: CoordinatorResult,
     dag: StoryDAG,
     merged_slugs: set[str],
-) -> tuple[int, int, int]:
-    """Classify result and update DAG state. Returns (succeeded, failed, skipped) deltas."""
+    story_state: "SprintStoryState | None" = None,
+) -> StoryOutcome:
+    """Classify result and update DAG state.
+
+    Returns the canonical :class:`StoryOutcome` for the story. When
+    ``story_state`` is supplied, the outcome is also recorded there — this is
+    the single source of truth that all surfaces project from.
+    """
     preflight_verdict = result.state.preflight_verdict
     landing_status = getattr(result, "landing_status", None)
-    delta_succeeded = 0
-    delta_failed = 0
-    delta_skipped = 0
 
     if preflight_verdict == "ALREADY_DONE":
-        delta_skipped = 1
+        outcome = StoryOutcome.ALREADY_DONE
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
-        return delta_succeeded, delta_failed, delta_skipped
-
-    if landing_status == "landed":
-        delta_succeeded = 1
+    elif landing_status == "landed":
+        outcome = StoryOutcome.DONE
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
     elif landing_status == "failed":
-        delta_failed = 1
+        outcome = StoryOutcome.FAILED
         dag.mark_skipped(task.slug)
     elif landing_status == "pending_integration":
         # Approved but merge deferred or queued — counts as succeeded, not yet in DAG
-        delta_succeeded = 1
+        outcome = StoryOutcome.DONE
         dag.mark_skipped(task.slug)
     elif result.success:
         # No merge operation performed (on_approve=none or similar)
-        delta_succeeded = 1
+        outcome = StoryOutcome.DONE
         dag.mark_skipped(task.slug)
     else:
-        delta_failed = 1
+        outcome = StoryOutcome.FAILED
         dag.mark_skipped(task.slug)
 
-    return delta_succeeded, delta_failed, delta_skipped
+    if story_state is not None:
+        story_state.transition(task.slug, outcome=outcome, cost_usd=result.state.total_cost)
+
+    return outcome
 
 
 def _refresh_external_satisfied(
@@ -1059,12 +1064,66 @@ def run_sprint(
             f'TheForge: sprint started \u2014 "{resolved.name}"',
             f"{total} stories \u00b7 budget ${resolved.budget_usd:.2f}",
         )
-    specs_succeeded = 0
-    specs_failed = 0
-    specs_skipped = 0
+    # Canonical sprint story state — single source of truth for every
+    # operator-facing surface (forge status, banner, summary, notifications).
+    # No local counters are kept; counts are projected from this structure.
+    _story_state = SprintStoryState()
+    # Pre-populate from prior-run accumulated state so cross-process resume
+    # invocations see the full logical sprint in counts and projections.
+    if _sprint_id is not None:
+        from .audit import _load_accumulated_stories as _preload  # noqa: PLC0415
+
+        for _prior in _preload(_sprint_id, config.project_root):
+            _prior_slug = _prior.get("slug")
+            if not _prior_slug:
+                continue
+            _prior_outcome = (_prior.get("outcome") or "").upper()
+            _outcome_map = {
+                "DONE": StoryOutcome.DONE,
+                "ALREADY_DONE": StoryOutcome.ALREADY_DONE,
+                "SKIPPED": StoryOutcome.SKIPPED,
+                "PRESERVED": StoryOutcome.PRESERVED,
+                "DROPPED": StoryOutcome.DROPPED,
+                "ESCALATE": StoryOutcome.ESCALATED,
+                "FAILED": StoryOutcome.FAILED,
+            }
+            _mapped_outcome = _outcome_map.get(_prior_outcome)
+            if _mapped_outcome is None:
+                continue
+            _story_state.register(
+                _prior_slug,
+                _prior.get("path", _prior_slug),
+                outcome=_mapped_outcome,
+                cost_usd=float(_prior.get("cost_usd", 0.0) or 0.0),
+                canonical_ref=_prior.get("canonical_ref"),
+            )
+    _state_writer: SprintStateWriter | None = None
     stopped_reason: str | None = None
     ci_halt_slug: str | None = None
     merged_slugs: set[str] = set()
+
+    def _set_outcome(slug: str, outcome: StoryOutcome | str, **fields: object) -> None:
+        """Transition a story's canonical outcome.
+
+        All count-affecting events flow through this helper so the canonical
+        structure is the only place the runner records outcomes. The state
+        writer (when present) shares the same SprintStoryState instance and
+        the on-disk live status file is updated in lockstep.
+        """
+        if not _story_state.has(slug):
+            ctx = slug_to_context.get(slug)
+            if ctx is not None:
+                _t, _src, _ref = ctx
+                _key = f"Issue #{_ref.split(':')[1]}" if _ref.startswith("issue:") else _ref
+                _story_state.register(slug, _key, canonical_ref=_ref)
+            else:
+                _story_state.register(slug, slug)
+        if _state_writer is not None:
+            # Writer holds the same instance; this both transitions outcome
+            # AND atomically rewrites the live .state file.
+            _state_writer.update(slug, status=outcome, **fields)
+        else:
+            _story_state.transition(slug, outcome=outcome, **fields)
 
     # Derive slug_to_spec from unified context mapping
     slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
@@ -1176,10 +1235,17 @@ def run_sprint(
                 if triage.action == "skip_merged":
                     merged_slugs.add(slug)
                     dag.mark_complete(slug)
-                    specs_skipped += 1
+                    # Preserve preloaded prior-run outcome (e.g., DONE) when
+                    # accumulated state already has a stronger terminal —
+                    # otherwise mark SKIPPED for the legacy aggregate contract.
+                    _existing = _story_state.get(slug)
+                    if _existing is None or not _existing.outcome.is_succeeded:
+                        _set_outcome(slug, StoryOutcome.SKIPPED, reason=triage.reason)
                 else:
                     dag.mark_skipped(slug)
-                    specs_skipped += 1
+                    _existing = _story_state.get(slug)
+                    if _existing is None or not _existing.outcome.is_succeeded:
+                        _set_outcome(slug, StoryOutcome.SKIPPED, reason=triage.reason)
                     _record_current_story_entry(slug, "SKIPPED", error=triage.reason)
 
     auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - merged_slugs
@@ -1199,8 +1265,9 @@ def run_sprint(
     for slug, blocked_by in blocked_slugs.items():
         _log(f"SKIPPED {slug} (blocked: {', '.join(blocked_by)})")
         dag.mark_skipped(slug)
-        specs_skipped += 1
-        _record_current_story_entry(slug, "SKIPPED", error=f"blocked: {', '.join(blocked_by)}")
+        _blocked_reason = f"blocked: {', '.join(blocked_by)}"
+        _set_outcome(slug, StoryOutcome.SKIPPED, reason=_blocked_reason)
+        _record_current_story_entry(slug, "SKIPPED", error=_blocked_reason)
 
     # Stories dropped pre-launch (e.g. re-exec collision) never enter the DAG.
     # They surface with a distinct DROPPED/PRESERVED outcome in sprint-audit and
@@ -1216,12 +1283,12 @@ def run_sprint(
         if reason == "preserved-escalated":
             _log(f"PRESERVED {slug} (escalated worktree held for review)")
             dag.mark_skipped(slug)
-            specs_skipped += 1
+            _set_outcome(slug, StoryOutcome.PRESERVED, reason=reason)
             _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")
         else:
             _log(f"DROPPED {slug} (reason: {reason})")
             dag.mark_skipped(slug)
-            specs_failed += 1
+            _set_outcome(slug, StoryOutcome.DROPPED, reason=reason)
             _record_current_story_entry(slug, "DROPPED", error=reason, error_type="dropped")
 
     # Persist resume-time already-completed stories before any possible re-exec
@@ -1304,7 +1371,6 @@ def run_sprint(
 
     # Initialise live state file for forge sprint-status (only when a CLI run_id
     # is present — headless/test invocations without a run_id skip this).
-    _state_writer: SprintStateWriter | None = None
     if run_id:
         _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
         _initial_stories: list[dict] = []
@@ -1375,8 +1441,54 @@ def run_sprint(
             config.project_root,
             resolved.name,
             sprint_id=_sprint_id,
+            story_state=_story_state,
         )
         _state_writer.init(_initial_stories)
+        # Register shape-gate-skipped issues in the canonical structure so
+        # forge status surfaces them with the gate reason. They are visible
+        # to every operator surface from this point on.
+        for _sk in skipped_issues or []:
+            _sk_dict = _sk.as_dict() if hasattr(_sk, "as_dict") else dict(_sk)
+            _sk_num = _sk_dict.get("issue_number")
+            if _sk_num is None:
+                continue
+            _sk_slug = f"issue-{_sk_num}"
+            if _story_state.has(_sk_slug):
+                continue
+            _sk_codes = _sk_dict.get("reason_codes") or []
+            _sk_reason = (
+                ", ".join(_sk_codes)
+                if _sk_codes
+                else (_sk_dict.get("detail") or _sk_dict.get("source") or "shape-gate")
+            )
+            _state_writer.register(
+                _sk_slug,
+                f"Issue #{_sk_num}",
+                outcome=StoryOutcome.SKIPPED,
+                reason=_sk_reason,
+                detail={
+                    "shape_gate_source": _sk_dict.get("source"),
+                    "shape_gate_codes": list(_sk_codes),
+                    "final_outcome": "SKIPPED",
+                },
+            )
+    elif skipped_issues or []:
+        # Headless invocation (no run_id) — still register skipped issues in
+        # the canonical structure so summary projects them.
+        for _sk in skipped_issues or []:
+            _sk_dict = _sk.as_dict() if hasattr(_sk, "as_dict") else dict(_sk)
+            _sk_num = _sk_dict.get("issue_number")
+            if _sk_num is None:
+                continue
+            _sk_slug = f"issue-{_sk_num}"
+            _sk_codes = _sk_dict.get("reason_codes") or []
+            _sk_reason = ", ".join(_sk_codes) if _sk_codes else "shape-gate"
+            _story_state.register(
+                _sk_slug,
+                f"Issue #{_sk_num}",
+                outcome=StoryOutcome.SKIPPED,
+                reason=_sk_reason,
+            )
 
     # Parallel scheduling state
     active: dict[str, Future[object]] = {}
@@ -1546,7 +1658,10 @@ def run_sprint(
                     cumulative = prior_cost + accumulated_cost
                 if cumulative >= resolved.budget_usd:
                     dag.mark_skipped(task.slug)
-                    specs_skipped += 1
+                    _budget_reason = (
+                        f"budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
+                    )
+                    _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=_budget_reason)
                     if stopped_reason is None:
                         stopped_reason = (
                             f"Budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
@@ -1642,13 +1757,16 @@ def run_sprint(
                         _record_current_story_entry(
                             t.slug, "SKIPPED", error=f"dependency failed: {dep_list}"
                         )
+                        _set_outcome(
+                            t.slug,
+                            StoryOutcome.SKIPPED,
+                            reason=f"dependency failed: {dep_list}",
+                        )
                     else:
                         _log(f"SKIPPED {t.slug} (blocked)")
                         _record_current_story_entry(t.slug, "SKIPPED", error="blocked")
+                        _set_outcome(t.slug, StoryOutcome.SKIPPED, reason="blocked")
                     dag.mark_skipped(t.slug)
-                    specs_skipped += 1
-                    if _state_writer is not None:
-                        _state_writer.update(t.slug, status="skipped")
                 break
 
             # No active workers but queued PRs are still in flight.
@@ -1670,8 +1788,7 @@ def run_sprint(
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
                     else:
-                        specs_succeeded -= 1
-                        specs_failed += 1
+                        _set_outcome(_qp_slug, StoryOutcome.FAILED)
                         _qp_result.landing_status = "failed"
                         _qp_result.success = False
                         if _qp_poll["status"] == "timeout":
@@ -1752,10 +1869,8 @@ def run_sprint(
                     _write_story_audit(
                         config, slug_to_context[slug][0], _timeout_result, sprint_id=_sprint_id
                     )
-                    if _state_writer is not None:
-                        _state_writer.update(slug, status="failed", phase="ESCALATE")
+                    _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
                     dag.mark_skipped(slug)
-                    specs_failed += 1
                 active.clear()
                 stopped_reason = stopped_reason or f"Worker timeout (>{worker_timeout_seconds}s)"
                 continue
@@ -1792,10 +1907,8 @@ def run_sprint(
                     _write_story_audit(
                         config, slug_to_context[slug][0], _exc_result, sprint_id=_sprint_id
                     )
-                    if _state_writer is not None:
-                        _state_writer.update(slug, status="failed", phase="ESCALATE")
+                    _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
                     dag.mark_skipped(slug)
-                    specs_failed += 1
                     continue
                 del active[slug]
                 story_times[slug] = (t0, t1)
@@ -1811,18 +1924,20 @@ def run_sprint(
                 dur = _fmt_duration(elapsed)
                 _log(f"{icon} {slug}   ${spec_cost:.2f}  {dur}")
 
-                if _state_writer is not None:
-                    _done_status = (
-                        "done"
-                        if (result.success or result.state.preflight_verdict == "ALREADY_DONE")
-                        else "failed"
-                    )
-                    if (
-                        task.story_path is None
-                        and task.github_issue is not None
-                        and result.phase == Phase.PREFLIGHT
-                    ):
-                        _done_status = "waiting"
+                _done_status = (
+                    "done"
+                    if (result.success or result.state.preflight_verdict == "ALREADY_DONE")
+                    else "failed"
+                )
+                if (
+                    task.story_path is None
+                    and task.github_issue is not None
+                    and result.phase == Phase.PREFLIGHT
+                ):
+                    _done_status = "waiting"
+                # Live status update — does not commit a terminal outcome to
+                # the canonical structure when the slug is still preflighting.
+                if _state_writer is not None and _done_status == "waiting":
                     _state_writer.update(
                         slug,
                         status=_done_status,
@@ -1830,10 +1945,15 @@ def run_sprint(
                         cost_usd=result.state.total_cost,
                     )
 
-                ds, df, dsk = _classify_and_record(task, result, dag, merged_slugs)
-                specs_succeeded += ds
-                specs_failed += df
-                specs_skipped += dsk
+                _classify_outcome = _classify_and_record(
+                    task, result, dag, merged_slugs, story_state=_story_state
+                )
+                _set_outcome(
+                    task.slug,
+                    _classify_outcome,
+                    phase=result.phase.name,
+                    cost_usd=result.state.total_cost,
+                )
 
                 # Dependent stories in parallel mode need scheduler-side local merge
                 # even when on_approve is "none" and auto_merge is False.
@@ -1854,9 +1974,10 @@ def run_sprint(
                     if not integrated:
                         pending_integration[slug] = (task, result)
                     elif result.landing_status == "failed":
-                        # Optimistic classify counted this as succeeded; landing failed.
-                        specs_succeeded -= ds
-                        specs_failed += 1
+                        # Optimistic classify recorded this as DONE; landing
+                        # failed — correct the canonical outcome (terminal-to-
+                        # terminal correction is permitted).
+                        _set_outcome(slug, StoryOutcome.FAILED)
                     changed = True
                     while changed:
                         changed = False
@@ -1866,9 +1987,7 @@ def run_sprint(
                             if _attempt_integration(pending_slug, pending_task, pending_result):
                                 del pending_integration[pending_slug]
                                 if pending_result.landing_status == "failed":
-                                    # Correct the optimistic classify for this pending story
-                                    specs_succeeded -= 1
-                                    specs_failed += 1
+                                    _set_outcome(pending_slug, StoryOutcome.FAILED)
                                 changed = True
                 else:
                     _write_story_audit(config, task, result, sprint_id=_sprint_id)
@@ -1905,9 +2024,9 @@ def run_sprint(
                 merged_slugs.add(slug)
                 dag.mark_complete(slug)
                 result.landing_status = "landed"
+                _set_outcome(slug, StoryOutcome.DONE)
             else:
-                specs_succeeded -= 1
-                specs_failed += 1
+                _set_outcome(slug, StoryOutcome.FAILED)
                 result.landing_status = "failed"
                 result.success = False
                 if poll_result["status"] == "timeout":
@@ -1926,6 +2045,12 @@ def run_sprint(
     duration = (finished_at - started_at).total_seconds()
 
     final_cost = accumulated_cost + prior_cost
+    # Banner, summary, notifications, and SprintResult all project from the
+    # same canonical structure — by construction they cannot disagree.
+    _canonical_counts = _story_state.counts()
+    specs_succeeded = _canonical_counts["succeeded"]
+    specs_failed = _canonical_counts["failed"]
+    specs_skipped = _canonical_counts["skipped"]
     sprint_result = SprintResult(
         name=resolved.name,
         specs_total=total,
@@ -2030,6 +2155,7 @@ def run_sprint(
                 canonical_ref: triage.action for canonical_ref, triage in triages.items()
             },
             current_story_entries_by_ref=current_story_entries_by_ref,
+            story_state=_story_state,
         )
 
     if _state_writer is not None:
