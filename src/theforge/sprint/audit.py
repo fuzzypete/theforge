@@ -213,6 +213,57 @@ def _load_story_summary_entry_from_audit(
     }
 
 
+def _parse_summary_timestamp(value: object) -> datetime.datetime | None:
+    """Parse sprint-summary timestamps of the form 2026-04-25T12:05:00Z."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _story_outcome_rank(entry: dict) -> int:
+    """Higher rank wins when timing information is unavailable or tied."""
+    outcome = entry.get("outcome")
+    if outcome == "DONE":
+        return 5
+    if outcome == "ALREADY_DONE":
+        return 4
+    if outcome in {"SKIPPED", "PRESERVED", "DROPPED"}:
+        return 3
+    if outcome == "ESCALATE":
+        return 1
+    return 2
+
+
+def _select_historical_story_entry(prior: dict | None, audit_entry: dict | None) -> dict | None:
+    """Choose the best historical story entry between accumulated state and audit.yaml."""
+    if prior is None:
+        return audit_entry
+    if audit_entry is None:
+        return prior
+
+    prior_finished = _parse_summary_timestamp(prior.get("finished_at"))
+    audit_finished = _parse_summary_timestamp(audit_entry.get("finished_at"))
+    if (
+        prior_finished is not None
+        and audit_finished is not None
+        and prior_finished != audit_finished
+    ):
+        return audit_entry if audit_finished > prior_finished else prior
+    if prior_finished is not None and audit_finished is None:
+        return prior
+    if audit_finished is not None and prior_finished is None:
+        return (
+            audit_entry if _story_outcome_rank(audit_entry) > _story_outcome_rank(prior) else prior
+        )
+
+    if _story_outcome_rank(audit_entry) > _story_outcome_rank(prior):
+        return audit_entry
+    return prior
+
+
 def _write_sprint_audit(
     manifest: SprintManifest | ResolvedSprint,
     result: SprintResult,
@@ -477,6 +528,7 @@ def _write_sprint_summary(
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
     triage_actions_by_ref: "dict[str, str] | None" = None,
+    current_story_entries_by_ref: "dict[str, dict] | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -493,6 +545,7 @@ def _write_sprint_summary(
     dropped_slugs = dropped_slugs or {}
     skipped_issues = skipped_issues or []
     triage_actions_by_ref = triage_actions_by_ref or {}
+    current_story_entries_by_ref = current_story_entries_by_ref or {}
 
     # Load prior accumulated story entries from the sprint-level state file.
     # Keyed by canonical_ref so we can substitute them for stories not in
@@ -596,15 +649,22 @@ def _write_sprint_summary(
             entry["depends_on"] = list(getattr(tasks_by_slug.get(slug), "depends_on", None) or [])
             spec_entries.append(entry)
             accumulated_for_state.append({"canonical_ref": canonical_ref, **entry})
+        elif canonical_ref in current_story_entries_by_ref:
+            current_entry = dict(current_story_entries_by_ref[canonical_ref])
+            spec_entries.append(current_entry)
+            accumulated_for_state.append({"canonical_ref": canonical_ref, **current_entry})
         elif canonical_ref in prior_by_ref:
             # Story ran under an earlier run_id — use its accumulated data instead
             # of emitting a SKIPPED entry (which would hide a completed story).
-            prior = _load_story_summary_entry_from_audit(sprint_log_dir, canonical_ref, slug)
-            if prior is None:
-                prior = prior_by_ref[canonical_ref]
-            entry = {k: v for k, v in prior.items() if k != "canonical_ref"}
+            historical_entry = _select_historical_story_entry(
+                prior_by_ref[canonical_ref],
+                _load_story_summary_entry_from_audit(sprint_log_dir, canonical_ref, slug),
+            )
+            if historical_entry is None:
+                historical_entry = prior_by_ref[canonical_ref]
+            entry = {k: v for k, v in historical_entry.items() if k != "canonical_ref"}
             spec_entries.append(entry)
-            accumulated_for_state.append(prior)
+            accumulated_for_state.append({"canonical_ref": canonical_ref, **entry})
         else:
             drop_reason = dropped_slugs.get(slug)
             triage_action = triage_actions_by_ref.get(canonical_ref)
