@@ -14,7 +14,11 @@ import yaml
 
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
-from theforge.task import ALLOW_MUTATE_FORGE_YAML_KEY
+from theforge.task import (
+    ALLOW_MUTATE_FORGE_YAML_KEY,
+    frontmatter_allows_forge_yaml_mutation,
+    parse_story_frontmatter,
+)
 
 _ALLOWED_TOP_LEVEL_KEYS = frozenset({"assignment", "models"})
 
@@ -71,6 +75,51 @@ def _issue_number_from_branch(branch: str) -> int | None:
     return None
 
 
+def _branch_slug(branch: str) -> str:
+    """Return the branch leaf used for slug or filename matching."""
+    return branch.rsplit("/", 1)[-1]
+
+
+def _iter_local_story_paths(repo_root: Path) -> list[Path]:
+    """Return candidate local story files under the repository root."""
+    candidates: list[Path] = []
+    for path in repo_root.rglob("*.md"):
+        relative_parts = path.relative_to(repo_root).parts
+        if any(part.startswith(".") for part in relative_parts):
+            continue
+        candidates.append(path)
+    return sorted(candidates)
+
+
+def _matches_story_issue(frontmatter: dict[str, Any], issue_number: int) -> bool:
+    """Return whether story frontmatter references the current issue."""
+    raw_issue = frontmatter.get("github_issue")
+    try:
+        return int(raw_issue) == issue_number
+    except (TypeError, ValueError):
+        return False
+
+
+def _local_story_override_active(repo_root: Path, branch: str) -> bool:
+    """Return whether a matching local story file opts into forge.yaml mutations."""
+    issue_number = _issue_number_from_branch(branch)
+    slug = _branch_slug(branch)
+
+    for story_path in _iter_local_story_paths(repo_root):
+        frontmatter = parse_story_frontmatter(story_path)
+        if not frontmatter:
+            continue
+
+        if issue_number is not None and _matches_story_issue(frontmatter, issue_number):
+            return frontmatter_allows_forge_yaml_mutation(frontmatter)
+
+        story_slug = frontmatter.get("slug")
+        if story_slug == slug or story_path.stem == slug:
+            return frontmatter_allows_forge_yaml_mutation(frontmatter)
+
+    return False
+
+
 def _load_issue_metadata(repo_root: Path, issue_number: int) -> dict[str, Any]:
     """Best-effort fetch of issue body metadata for explicit guard overrides."""
     proc = subprocess.run(
@@ -108,6 +157,8 @@ def _issue_override_active(repo_root: Path) -> bool:
         branch = _current_branch(repo_root)
     except RuntimeError:
         return False
+    if _local_story_override_active(repo_root, branch):
+        return True
     issue_number = _issue_number_from_branch(branch)
     if issue_number is None:
         return False

@@ -123,6 +123,35 @@ def test_evaluate_forge_yaml_guard_honors_issue_override(tmp_path: Path) -> None
     assert result.violating_keys == ("workspace",)
 
 
+def test_evaluate_forge_yaml_guard_honors_local_story_override(tmp_path: Path) -> None:
+    (tmp_path / "forge.yaml").write_text("workspace:\n  auto_push: false\n", encoding="utf-8")
+    story = tmp_path / "stories" / "backlog" / "config-story.md"
+    story.parent.mkdir(parents=True)
+    story.write_text(
+        (
+            "---\n"
+            "github_issue: 1001\n"
+            "allow_mutate_forge_yaml: true\n"
+            "---\n"
+            "# Config story\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
+            MagicMock(returncode=0, stdout="workspace:\n  auto_push: true\n", stderr=""),
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
+        ]
+
+        result = evaluate_forge_yaml_guard(tmp_path, base_branch="main")
+
+    assert result.ok is True
+    assert result.override_active is True
+    assert result.violating_keys == ("workspace",)
+
+
 def test_cmd_check_story_config_prints_violating_keys(capsys, tmp_path: Path) -> None:
     config_path = tmp_path / "forge.yaml"
     config_path.write_text("project: test\n", encoding="utf-8")
