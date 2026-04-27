@@ -71,6 +71,20 @@ _TERMINAL_OUTCOMES = {
 }
 
 
+_CANONICAL_TO_LEGACY_STATUS = {
+    StoryOutcome.WAITING: "waiting",
+    StoryOutcome.RUNNING: "running",
+    StoryOutcome.BLOCKED: "blocked",
+    StoryOutcome.DONE: "done",
+    StoryOutcome.ALREADY_DONE: "done",
+    StoryOutcome.FAILED: "failed",
+    StoryOutcome.ESCALATED: "failed",
+    StoryOutcome.SKIPPED: "skipped",
+    StoryOutcome.PRESERVED: "preserved",
+    StoryOutcome.DROPPED: "failed",
+}
+
+
 # Mapping from legacy live-status string ("running", "done", "failed",
 # "skipped", "blocked", "preserved", "waiting") to canonical outcome.
 _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
@@ -117,17 +131,30 @@ class StoryStateEntry:
     extras: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
+        # ``status`` is the legacy live-status field that ``read_live_status``
+        # in status_reader.py understands (waiting/running/done/failed/
+        # skipped/preserved/blocked). Canonical outcomes such as
+        # ``already_done`` are mapped down to those legacy buckets so the
+        # live .state file remains compatible. ``outcome`` keeps the full
+        # canonical value for surfaces that want it.
+        legacy_status = _CANONICAL_TO_LEGACY_STATUS.get(self.outcome, self.outcome.value)
+        merged_detail = dict(self.detail)
+        # Surface ALREADY_DONE (and other canonical-only outcomes) as
+        # ``final_outcome`` in the detail so the live status renders the
+        # full canonical outcome the operator needs.
+        if self.outcome.is_terminal and "final_outcome" not in merged_detail:
+            merged_detail["final_outcome"] = self.outcome.name
         d: dict = {
             "slug": self.slug,
             "path": self.path,
-            "status": self.outcome.value,
+            "status": legacy_status,
             "outcome": self.outcome.value,
             "phase": self.phase,
             "cost_usd": self.cost_usd,
             "bundle_candidate": self.bundle_candidate,
             "blocked_by": list(self.blocked_by),
             "complexity": self.complexity,
-            "detail": deepcopy(self.detail),
+            "detail": deepcopy(merged_detail),
             "reason": self.reason,
             "canonical_ref": self.canonical_ref,
             "depends_on": list(self.depends_on),
