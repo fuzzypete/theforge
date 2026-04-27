@@ -19,7 +19,14 @@ from theforge.config import (
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.redact import redact
 from theforge.coordinator.state import CoordinatorResult
-from theforge.task import TaskStory, build_dev_prompt, build_review_prompt, load_story
+from theforge.task import (
+    TaskStory,
+    build_dev_prompt,
+    build_review_prompt,
+    frontmatter_allows_forge_yaml_mutation,
+    load_story,
+    parse_story_frontmatter,
+)
 
 _SECRETS_FILE = ".forge/.env"
 
@@ -35,38 +42,8 @@ def _find_config(start: Path | None = None) -> Path | None:
 
 
 def _parse_story_frontmatter(story_path: Path) -> dict:
-    """Extract YAML frontmatter from a story file.
-
-    Story files can optionally have YAML frontmatter delimited by ---:
-
-        ---
-        name: Phase 6H: per-user export
-        slug: export-service
-        test_target: tests/test_export.py
-        ---
-
-        # Story content starts here...
-
-    If no frontmatter is present, returns empty dict.
-    """
-    text = story_path.read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        return {}
-
-    # Find closing ---
-    end = text.find("---", 3)
-    if end == -1:
-        return {}
-
-    frontmatter = text[3:end].strip()
-    try:
-        result = yaml.safe_load(frontmatter) or {}
-    except yaml.YAMLError:
-        return {}
-
-    if not isinstance(result, dict):
-        return {}
-    return result
+    """Backward-compatible wrapper around the shared story frontmatter parser."""
+    return parse_story_frontmatter(story_path)
 
 
 def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
@@ -88,6 +65,7 @@ def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
         test_target=fm.get("test_target"),
         gate_override=fm.get("gate"),
         github_issue=github_issue,
+        allow_mutate_forge_yaml=frontmatter_allows_forge_yaml_mutation(fm),
     )
 
 

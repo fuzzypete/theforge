@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from ..coordinator.state import CoordinatorResult
-from ..task import TaskStory
+from ..task import TaskStory, frontmatter_allows_forge_yaml_mutation, parse_story_frontmatter
 
 if TYPE_CHECKING:
     from .sources import StorySource
@@ -172,17 +172,7 @@ def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[
 def _build_task_from_story(story_path: Path) -> TaskStory:
     """Build a TaskStory from a story file using frontmatter if available."""
     # Import here to avoid circular imports; cli._build_task is essentially the same logic
-    text = story_path.read_text(encoding="utf-8")
-    fm: dict = {}
-    if text.startswith("---"):
-        end = text.find("---", 3)
-        if end != -1:
-            try:
-                parsed = yaml.safe_load(text[3:end].strip()) or {}
-                if isinstance(parsed, dict):
-                    fm = parsed
-            except yaml.YAMLError:
-                pass
+    fm = parse_story_frontmatter(story_path)
 
     slug = fm.get("slug") or story_path.stem
     name = fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title())
@@ -206,6 +196,7 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         gate_override=fm.get("gate"),
         depends_on=depends_on,
         github_issue=github_issue,
+        allow_mutate_forge_yaml=frontmatter_allows_forge_yaml_mutation(fm),
     )
 
 

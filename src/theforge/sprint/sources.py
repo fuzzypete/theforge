@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import yaml
 
-from ..task import TaskStory
+from ..task import ALLOW_MUTATE_FORGE_YAML_KEY, TaskStory
 from .manifest import _build_task_from_story
 
 if TYPE_CHECKING:
@@ -99,6 +99,19 @@ class FileSource:
 class GitHubIssueSource:
     """Loads story specs from GitHub issues via the gh CLI."""
 
+    def _parse_issue_metadata(self, body: str) -> dict:
+        """Return parsed leading YAML metadata from an issue body, if present."""
+        metadata_match = _ISSUE_FRONTMATTER_RE.match(body)
+        if metadata_match is None:
+            return {}
+        try:
+            metadata = yaml.safe_load(metadata_match.group("yaml")) or {}
+        except yaml.YAMLError:
+            return {}
+        if not isinstance(metadata, dict):
+            return {}
+        return metadata
+
     def _fetch_issue_blockers(self, number: int, project_root: Path) -> list[int]:
         """Return issue numbers that block this issue.
 
@@ -167,14 +180,8 @@ class GitHubIssueSource:
 
         Free-form prose is intentionally excluded from this parser.
         """
-        metadata_match = _ISSUE_FRONTMATTER_RE.match(body)
-        if metadata_match is None:
-            return []
-        try:
-            metadata = yaml.safe_load(metadata_match.group("yaml")) or {}
-        except yaml.YAMLError:
-            return []
-        if not isinstance(metadata, dict):
+        metadata = self._parse_issue_metadata(body)
+        if not metadata:
             return []
 
         raw_deps = metadata.get("depends_on", [])
@@ -263,6 +270,7 @@ class GitHubIssueSource:
 
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")
+        metadata = self._parse_issue_metadata(body)
         blockers = self._fetch_issue_blockers(number, project_root)
         if not blockers:
             blockers = self._parse_issue_blockers_from_body_metadata(body)
@@ -279,6 +287,7 @@ class GitHubIssueSource:
             inferred_dependencies=blocker_slugs,
             dependency_warnings=dependency_warnings,
             github_issue=number,
+            allow_mutate_forge_yaml=metadata.get(ALLOW_MUTATE_FORGE_YAML_KEY) is True,
         )
 
     def on_complete(

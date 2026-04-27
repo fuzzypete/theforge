@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+ALLOW_MUTATE_FORGE_YAML_KEY = "allow_mutate_forge_yaml"
+
 
 @dataclass(frozen=True)
 class TaskStory:
@@ -20,6 +22,7 @@ class TaskStory:
     inferred_dependencies: list[str] = field(default_factory=list)  # inferred from GH blockers
     dependency_warnings: list[str] = field(default_factory=list)  # non-authoritative prose matches
     github_issue: int | None = None  # GH issue number; PR will include "Closes #N"
+    allow_mutate_forge_yaml: bool = False  # explicit opt-in for forge.yaml guard override
 
 
 # Backward-compat alias
@@ -71,8 +74,17 @@ def parse_story_frontmatter(story_path: Path) -> dict:
     # AttributeError when _is_gate_skip() calls .lower() on a non-string.
     if "gate" in result and not isinstance(result["gate"], str):
         result = {k: v for k, v in result.items() if k != "gate"}
+    if ALLOW_MUTATE_FORGE_YAML_KEY in result and not isinstance(
+        result[ALLOW_MUTATE_FORGE_YAML_KEY], bool
+    ):
+        result = {k: v for k, v in result.items() if k != ALLOW_MUTATE_FORGE_YAML_KEY}
 
     return result
+
+
+def frontmatter_allows_forge_yaml_mutation(frontmatter: dict) -> bool:
+    """Return whether story metadata explicitly opts into forge.yaml mutations."""
+    return frontmatter.get(ALLOW_MUTATE_FORGE_YAML_KEY) is True
 
 
 # Backward-compat alias
