@@ -450,29 +450,14 @@ def _coordinator_loop(
                     if config.retry.auto_model_escalation and not state.timeout_escalation_used:
                         _esc = _perform_dev_model_escalation(config)
                         if _esc is not None:
-                            from .util import resolve_timeout_with_active  # noqa: PLC0415
-
-                            _old_timeout_model, _new_timeout_model, config = _esc
-                            _orig_timeout = state.adaptive_dev_timeout_seconds
-                            _new_timeout, _ = resolve_timeout_with_active(
-                                config.dev_profile.timeout_seconds,
-                                config.dev_profile.timeout_medium_seconds,
-                                config.dev_profile.timeout_large_seconds,
-                                state.preflight_complexity,
-                                state.preflight_complexity_score,
-                            )
-                            state.adaptive_dev_timeout_seconds = _new_timeout
-                            state.timeout_escalation_used = True
-                            state.timeout_escalation_audit = {
-                                "original_model": _old_timeout_model,
-                                "new_model": _new_timeout_model,
-                                "original_timeout_seconds": _orig_timeout,
-                                "new_timeout_seconds": _new_timeout,
-                                "reason": "timeout",
-                            }
-                            # Persist sprint-level flag immediately so subsequent stories
-                            # in the same sprint see it even if this run crashes later.
+                            # Atomically claim the sprint-level escalation slot
+                            # BEFORE mutating config/state so parallel sprint
+                            # workers cannot both escalate. O_CREAT|O_EXCL is the
+                            # claim primitive: FileExistsError ⇒ peer won race.
+                            _claimed = True
                             if state.sprint_name:
+                                import os  # noqa: PLC0415
+
                                 _esc_flag = (
                                     config.project_root
                                     / ".forge"
@@ -481,12 +466,45 @@ def _coordinator_loop(
                                     / "timeout_escalation_used"
                                 )
                                 _esc_flag.parent.mkdir(parents=True, exist_ok=True)
-                                _esc_flag.touch()
-                            _log(
-                                f"  Timeout escalation:"
-                                f" {_old_timeout_model} → {_new_timeout_model}"
-                                f" (timeout {_orig_timeout}s → {_new_timeout}s)"
-                            )
+                                try:
+                                    _fd = os.open(
+                                        str(_esc_flag),
+                                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                                        0o644,
+                                    )
+                                    os.close(_fd)
+                                except FileExistsError:
+                                    _claimed = False
+                            if not _claimed:
+                                # Peer worker already escalated — record the gate
+                                # and continue with timeout resume on current model.
+                                state.timeout_escalation_used = True
+                            else:
+                                from .util import resolve_timeout_with_active  # noqa: PLC0415
+
+                                _old_timeout_model, _new_timeout_model, config = _esc
+                                _orig_timeout = state.adaptive_dev_timeout_seconds
+                                _new_timeout, _ = resolve_timeout_with_active(
+                                    config.dev_profile.timeout_seconds,
+                                    config.dev_profile.timeout_medium_seconds,
+                                    config.dev_profile.timeout_large_seconds,
+                                    state.preflight_complexity,
+                                    state.preflight_complexity_score,
+                                )
+                                state.adaptive_dev_timeout_seconds = _new_timeout
+                                state.timeout_escalation_used = True
+                                state.timeout_escalation_audit = {
+                                    "original_model": _old_timeout_model,
+                                    "new_model": _new_timeout_model,
+                                    "original_timeout_seconds": _orig_timeout,
+                                    "new_timeout_seconds": _new_timeout,
+                                    "reason": "timeout",
+                                }
+                                _log(
+                                    f"  Timeout escalation:"
+                                    f" {_old_timeout_model} → {_new_timeout_model}"
+                                    f" (timeout {_orig_timeout}s → {_new_timeout}s)"
+                                )
                     _set_timeout_resume(state, gate_result)
                 continue
 
