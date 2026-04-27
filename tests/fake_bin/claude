@@ -3,10 +3,13 @@
 
 Controlled via FAKE_CLAUDE_MODE environment variable:
   happy       — read initial prompt, emit result event, exit 0 (default)
-  wait_stdin  — emit result event, close stdout, then wait for stdin to close
-                (tests that the runner closes stdin so the subprocess can exit)
-  hang        — read initial prompt, emit nothing, sleep until killed
-                (wall-clock timeout with no output test)
+  wait_stdin  — emit result event then block on stdin WITHOUT closing stdout.
+                Stdout stays open; the runner's for-loop can only exit once it
+                breaks on the result event (new behaviour) or the watchdog kills
+                (old behaviour). Tests that the runner's break-on-result path
+                fires before the watchdog so the subprocess exits cleanly.
+  hang        — read initial prompt, emit nothing, sleep for up to 30s.
+                Capped to avoid gate hangs if the watchdog ever regresses.
   nudge       — emit two identical tool-call iterations to trigger stuck-
                 detection nudge, then read the nudge from stdin and respond
                 with a result event (nudge delivery test)
@@ -71,8 +74,9 @@ def _emit_tool_iteration() -> None:
 def main() -> None:
     if MODE == "hang":
         # Consume initial prompt but never produce output; sleep until killed.
+        # Capped at 30s so a regressed watchdog doesn't hang the gate indefinitely.
         _read_user_msg()
-        time.sleep(10000)
+        time.sleep(30)
         sys.exit(0)
 
     if MODE == "happy":
@@ -81,16 +85,17 @@ def main() -> None:
         sys.exit(0)
 
     if MODE == "wait_stdin":
-        # Emit complete result, close stdout, then block until stdin is closed.
-        # Simulates a CLI that waits for its input pipe to drain before exiting.
-        # With the runner's proc.stdin.close() fix, stdin closes quickly and
-        # the subprocess exits cleanly; without it the runner would hang until
-        # the watchdog fires.
+        # Emit result event then block on stdin WITHOUT closing stdout.
+        # Stdout stays open so the runner's for-loop cannot exit by seeing EOF —
+        # it can only exit by breaking on the result event (the fix for #1054).
+        # Without the break-on-result fix the loop blocks, the watchdog fires
+        # after the timeout, and the result is a kill-failure even though the
+        # result event was captured. With the fix the loop exits early, stdin is
+        # closed, and this subprocess unblocks and exits cleanly with code 0.
         _read_user_msg()
         _emit(_RESULT_EVENT)
         sys.stdout.flush()
-        sys.stdout.close()
-        # Block until runner closes stdin (EOF).
+        # Block until runner closes our stdin (EOF); stdout intentionally open.
         sys.stdin.read()
         sys.exit(0)
 
