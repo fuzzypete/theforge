@@ -182,7 +182,10 @@ def render_frame(
     from theforge.sprint.status_reader import read_live_status
 
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    err_buf = io.StringIO()
+    # Capture stderr too: a mid-loop failure (e.g. state file just removed)
+    # would otherwise scroll the terminal and break the in-place redraw math.
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err_buf):
         rc = display_sprint_status(run_id, project_root)
     base = buf.getvalue()
     snapshot_ok = rc == 0
@@ -309,7 +312,10 @@ def run_watch_loop(
             if max_frames is not None and frame >= max_frames:
                 return 0
             try:
-                sleep(interval)
+                # Defense-in-depth: argparse already rejects non-positive
+                # intervals, but clamp here so a programmatic caller can't
+                # crash the loop with time.sleep(-1).
+                sleep(max(0.0, float(interval)))
             except KeyboardInterrupt:
                 return 0
     except KeyboardInterrupt:

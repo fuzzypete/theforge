@@ -45,6 +45,44 @@ class TestWatchArgParsing:
         assert ns.watch == 3
         assert ns.no_color is True
 
+    def test_watch_zero_rejected(self) -> None:
+        parser = self._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["status", "--watch", "0"])
+
+    def test_watch_negative_rejected(self) -> None:
+        parser = self._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["status", "--watch", "-1"])
+
+    def test_watch_non_integer_rejected(self) -> None:
+        parser = self._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["status", "--watch", "abc"])
+
+
+class TestCmdStatusInvalidWatch:
+    def test_negative_watch_via_namespace_returns_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Direct Namespace callers (bypassing argparse) still get rejected."""
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        from tests.test_cli_status import _make_forge_config
+
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=None, recent=False, last=False, watch=-1, no_color=False)
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            rc = cmd_status(args)
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "positive integer" in err
+
 
 # ── color_enabled ─────────────────────────────────────────────────────────────
 

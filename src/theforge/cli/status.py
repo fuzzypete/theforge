@@ -308,6 +308,13 @@ def cmd_status(args: object) -> int:
     watch_interval: int | None = getattr(args, "watch", None)
     no_color: bool = getattr(args, "no_color", False)
 
+    if watch_interval is not None and watch_interval <= 0:
+        print(
+            f"--watch interval must be a positive integer (got {watch_interval}).",
+            file=sys.stderr,
+        )
+        return 2
+
     # ── --recent: compact run list ────────────────────────────────────────
     if recent:
         return _show_recent_runs(project_root)
@@ -676,6 +683,28 @@ def cmd_decide(args: object) -> int:
     return 0
 
 
+def _positive_watch_interval(raw: str) -> int:
+    """argparse type for ``--watch SECONDS``: require a positive integer.
+
+    Rejects 0 and negatives so the watch loop never sleeps for a non-positive
+    duration (which would crash on ``time.sleep(-1)``) and never busy-loops at
+    interval 0.
+    """
+    import argparse  # noqa: PLC0415
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            f"--watch requires an integer number of seconds, got {raw!r}"
+        ) from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"--watch interval must be a positive integer (got {value})"
+        )
+    return value
+
+
 def register_parsers(subparsers: object) -> None:
     """Register status/logs/stop/decide subcommand parsers."""
     # forge status
@@ -705,12 +734,13 @@ def register_parsers(subparsers: object) -> None:
         "--watch",
         nargs="?",
         const=2,
-        type=int,
+        type=_positive_watch_interval,
         default=None,
         metavar="SECONDS",
         help=(
-            "Live-update mode: re-render every SECONDS (default 2). "
-            "Falls back to single snapshot if stdout is not a TTY."
+            "Live-update mode: re-render every SECONDS (must be a positive "
+            "integer; default 2). Falls back to single snapshot if stdout is "
+            "not a TTY."
         ),
     )
     status_parser.add_argument(
