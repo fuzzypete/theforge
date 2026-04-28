@@ -22,6 +22,7 @@ class StoryStatusEntry:
     blocked_by: list[str] = field(default_factory=list)
     bundle_candidate: bool = False
     elapsed_seconds: float | None = None
+    stage: str = ""
     detail: str = ""
     complexity: str | None = None
 
@@ -119,7 +120,73 @@ def _normalize_complexity(value: object) -> str | None:
     return value.strip().lower()
 
 
-def _detail_from_live_story(story: dict) -> tuple[str, str | None]:
+def _nonempty_str(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _format_usage_stage(used: object, maximum: object, label: str) -> str:
+    if isinstance(used, int) and isinstance(maximum, int) and maximum > 0:
+        return f"{label}={used}/{maximum}"
+    if isinstance(used, int) and used > 0:
+        return f"{label}={used}"
+    return ""
+
+
+def _format_terminal_stage(iteration_usage: dict | None) -> str:
+    if not isinstance(iteration_usage, dict):
+        return ""
+    review_raw = iteration_usage.get("review")
+    dev_raw = iteration_usage.get("dev")
+    review = review_raw if isinstance(review_raw, dict) else {}
+    dev = dev_raw if isinstance(dev_raw, dict) else {}
+    review_used = review.get("used")
+    dev_used = dev.get("used")
+
+    parts: list[str] = []
+    if isinstance(review_used, int) and review_used > 0:
+        parts.append(f"{review_used} cyc")
+    if isinstance(dev_used, int) and dev_used > 0:
+        parts.append(f"{dev_used} iter")
+    return " / ".join(parts)
+
+
+def _review_detail(verdict: object, p1: object, p2: object) -> str:
+    verdict_text = _nonempty_str(verdict)
+    if isinstance(p1, int) and isinstance(p2, int):
+        count_text = f"{p1}P1 {p2}P2"
+        return f"{verdict_text} {count_text}".strip() if verdict_text else count_text
+    return verdict_text or ""
+
+
+def _classify_wait_reason(blocked_by: list[str]) -> str:
+    if not blocked_by:
+        return ""
+    joined = " ".join(blocked_by).lower()
+    if "budget" in joined:
+        return "budget"
+    if "parallel" in joined or "saturated" in joined:
+        return "parallel cap"
+    return "dependency"
+
+
+def _waiting_detail(blocked_by: list[str]) -> str:
+    if not blocked_by:
+        return "waiting"
+    if all(item.startswith("issue-") for item in blocked_by):
+        return f"depends on {', '.join(blocked_by)}"
+    return "; ".join(blocked_by)
+
+
+def _terminal_phase(outcome: str, depends_on: list[str]) -> str | None:
+    if outcome == "SKIPPED" and depends_on:
+        return "waiting"
+    return outcome or None
+
+
+def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None]:
     phase_val = story.get("phase")
     status_val = story.get("status", "waiting")
     blocked_by_val = list(story.get("blocked_by") or [])
@@ -129,65 +196,150 @@ def _detail_from_live_story(story: dict) -> tuple[str, str | None]:
     if not isinstance(detail_data, dict):
         detail_data = {}
 
-    if status_val == "blocked" and blocked_by_val:
-        return f"blocked by: {', '.join(blocked_by_val)}", complexity
+    if status_val in {"waiting", "blocked"} and blocked_by_val:
+        return _classify_wait_reason(blocked_by_val), _waiting_detail(blocked_by_val), complexity
 
     if phase_val == "PREFLIGHT":
         verdict = detail_data.get("preflight_verdict")
         sufficiency = detail_data.get("preflight_sufficiency")
         parts = [part for part in (verdict, sufficiency) if isinstance(part, str) and part]
         if parts:
-            return " / ".join(parts), complexity
+            return "", " / ".join(parts), complexity
         if status_val == "waiting":
-            return "waiting", complexity
-        return "—", complexity
+            return "", "waiting", complexity
+        return "", "—", complexity
 
     if status_val == "waiting":
-        return "waiting", complexity
+        return "", "waiting", complexity
 
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
         if isinstance(final_outcome, str) and final_outcome:
-            return final_outcome, complexity
+            return "", final_outcome, complexity
         if status_val == "failed" and phase_val:
-            return phase_val, complexity
-        return "—", complexity
+            return "", phase_val, complexity
+        return "", "—", complexity
 
     if phase_val == "PLAN":
         current = detail_data.get("plan_attempt")
         maximum = detail_data.get("plan_max_attempts")
-        if isinstance(current, int) and isinstance(maximum, int) and maximum > 0:
-            return f"plan {current}/{maximum}", complexity
-        return "plan", complexity
+        stage = _format_usage_stage(current, maximum, "attempt")
+        return stage, "planning", complexity
 
     if phase_val == "DEV":
-        cycle = detail_data.get("review_cycle")
         iteration = detail_data.get("dev_iteration")
-        if isinstance(cycle, int) and isinstance(iteration, int):
-            return f"c{cycle + 1} i{iteration}", complexity
-        return "dev", complexity
+        stage = _format_usage_stage(iteration, detail_data.get("dev_max_iterations"), "iter")
+        if not stage and isinstance(iteration, int):
+            stage = f"iter={iteration}"
+        current_finding = _nonempty_str(detail_data.get("current_finding"))
+        files_touched = detail_data.get("files_touched")
+        last_gate = _nonempty_str(detail_data.get("last_gate_result"))
+        detail_parts: list[str] = []
+        if current_finding:
+            detail_parts.append(current_finding)
+        if isinstance(files_touched, int):
+            detail_parts.append(f"{files_touched} files touched")
+        if last_gate:
+            detail_parts.append(f"last gate {last_gate}")
+        return stage, " | ".join(detail_parts) or "running", complexity
 
     if phase_val == "REVIEW":
+        cycle = detail_data.get("review_cycle")
+        stage = _format_usage_stage(cycle, detail_data.get("review_max_cycles"), "cycle")
+        if not stage and isinstance(cycle, int):
+            stage = f"cycle={cycle}"
         p1 = detail_data.get("review_p1")
         p2 = detail_data.get("review_p2")
-        if isinstance(p1, int) and isinstance(p2, int):
-            return f"{p1} P1, {p2} P2", complexity
-        return "review", complexity
+        detail = _review_detail(detail_data.get("review_verdict"), p1, p2)
+        return stage, detail or "running", complexity
 
-    if phase_val == "VALIDATE":
+    if phase_val in {"GATE", "VALIDATE"}:
         gate = detail_data.get("gate_status")
         if isinstance(gate, str) and gate:
-            return gate, complexity
-        return "running", complexity
+            return "", gate, complexity
+        return "", "running", complexity
 
     if phase_val == "PLAN_REVIEW":
         current = detail_data.get("plan_attempt")
         maximum = detail_data.get("plan_max_attempts")
-        if isinstance(current, int) and isinstance(maximum, int) and maximum > 0:
-            return f"plan review {current}/{maximum}", complexity
-        return "plan review", complexity
+        stage = _format_usage_stage(current, maximum, "cycle")
+        detail = _review_detail(
+            detail_data.get("review_verdict"),
+            detail_data.get("review_p1"),
+            detail_data.get("review_p2"),
+        )
+        return stage, detail or "reviewing plan", complexity
 
-    return "", complexity
+    if phase_val == "WORKSPACE":
+        return (
+            _nonempty_str(detail_data.get("workspace_stage")) or "",
+            _nonempty_str(detail_data.get("command")) or "creating workspace",
+            complexity,
+        )
+
+    return "", "", complexity
+
+
+def _stage_and_detail_from_completed_story(
+    story: dict,
+    audit_data: dict | None,
+) -> tuple[str, str, str | None]:
+    outcome = str(story.get("outcome", ""))
+    depends_on = list(story.get("depends_on") or [])
+    preflight_data = (audit_data or {}).get("preflight")
+    preflight = preflight_data if isinstance(preflight_data, dict) else {}
+    if outcome == "SKIPPED" and depends_on:
+        return (
+            _classify_wait_reason(depends_on),
+            _waiting_detail(depends_on),
+            _normalize_complexity(preflight.get("complexity")),
+        )
+
+    complexity = _normalize_complexity(preflight.get("complexity"))
+    stage = _format_terminal_stage(story.get("iteration_usage"))
+
+    detail = ""
+    if isinstance(audit_data, dict):
+        reviews = audit_data.get("reviews")
+        if isinstance(reviews, list) and reviews:
+            last_review = reviews[-1]
+            if isinstance(last_review, dict):
+                finding_counts = last_review.get("findings_by_severity")
+                p1 = p2 = None
+                if isinstance(finding_counts, dict):
+                    p1 = finding_counts.get("P1", 0)
+                    p2 = finding_counts.get("P2", 0)
+                detail = _review_detail(last_review.get("verdict"), p1, p2)
+                summary = _nonempty_str(last_review.get("summary"))
+                if summary and not detail:
+                    detail = summary
+                elif summary and detail:
+                    detail = f"{detail} — {summary}"
+        if not detail:
+            outcome_block = audit_data.get("outcome")
+            if isinstance(outcome_block, dict):
+                message = _nonempty_str(outcome_block.get("message"))
+                if message:
+                    detail = message
+        if not detail:
+            error = _nonempty_str(audit_data.get("error"))
+            if error:
+                detail = error
+
+    if not detail:
+        verdict = _nonempty_str(story.get("verdict"))
+        if verdict == "APPROVE":
+            detail = "APPROVE"
+        elif verdict:
+            detail = verdict
+        elif outcome == "DONE":
+            detail = "APPROVE"
+        elif outcome == "ALREADY_DONE":
+            detail = "ALREADY_DONE"
+        else:
+            detail = outcome
+
+    return stage, detail, complexity
 
 
 def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
@@ -218,10 +370,11 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         cost_usd = float(story.get("cost_usd", 0.0))
 
         status = _outcome_to_status(outcome)
-        phase = outcome if status in ("running", "failed") else None
+        phase = _terminal_phase(outcome, list(story.get("depends_on") or []))
 
         bundle_candidate = False
         complexity = None
+        audit_data: dict | None = None
         if slug:
             audit_path = sprint_log_dir / slug / "audit.yaml"
             if audit_path.exists():
@@ -238,17 +391,11 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
 
         raw_depends_on = story.get("depends_on") or []
         blocked_by = list(raw_depends_on) if status == "skipped" and raw_depends_on else []
-
-        if outcome == "ESCALATE":
-            detail = "ESCALATE"
-        elif outcome == "ALREADY_DONE":
-            detail = "ALREADY_DONE"
-        elif outcome == "DONE":
-            detail = "APPROVE"
-        elif status == "skipped" and raw_depends_on:
-            detail = f"blocked by: {', '.join(raw_depends_on)}"
-        else:
-            detail = ""
+        stage, detail, derived_complexity = _stage_and_detail_from_completed_story(
+            story, audit_data
+        )
+        if complexity is None:
+            complexity = derived_complexity
 
         entries.append(
             StoryStatusEntry(
@@ -260,6 +407,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 blocked_by=blocked_by,
                 bundle_candidate=bundle_candidate,
                 elapsed_seconds=None,
+                stage=stage,
                 detail=detail,
                 complexity=complexity,
             )
@@ -300,18 +448,22 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
         status_val = story.get("status", "waiting")
         phase_val = story.get("phase")
         blocked_by_val = list(story.get("blocked_by") or [])
-        detail, complexity = _detail_from_live_story(story)
+        phase_display = phase_val
+        if status_val in {"waiting", "blocked"} and blocked_by_val:
+            phase_display = "waiting"
+        stage, detail, complexity = _stage_and_detail_from_live_story(story)
 
         entries.append(
             StoryStatusEntry(
                 slug=slug,
                 path=story.get("path", slug),
                 status=status_val,
-                phase=phase_val,
+                phase=phase_display,
                 cost_usd=float(story.get("cost_usd", 0.0)),
                 blocked_by=blocked_by_val,
                 bundle_candidate=bool(story.get("bundle_candidate", False)),
                 elapsed_seconds=None,
+                stage=stage,
                 detail=detail,
                 complexity=complexity,
             )
@@ -332,12 +484,16 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                     slug=slug,
                     path=story.get("path", slug),
                     status=_outcome_to_status(str(story.get("outcome", "SKIPPED"))),
-                    phase=None,
+                    phase=_terminal_phase(
+                        str(story.get("outcome", "SKIPPED")),
+                        list(story.get("depends_on") or []),
+                    ),
                     cost_usd=float(story.get("cost_usd", 0.0)),
                     blocked_by=list(story.get("depends_on") or []),
                     bundle_candidate=False,
                     elapsed_seconds=None,
-                    detail=str(story.get("outcome", "")),
+                    stage=_format_terminal_stage(story.get("iteration_usage")),
+                    detail=_nonempty_str(story.get("verdict")) or str(story.get("outcome", "")),
                     complexity=None,
                 )
             )
