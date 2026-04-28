@@ -558,38 +558,42 @@ class TestClassifyAndRecord:
 
     def test_success_no_merge_skips_for_dag(self) -> None:
         """Success without merge counts as finished but does not unlock dependents."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert ds == 1
-        assert df == 0
-        assert dsk == 0
+        assert outcome is StoryOutcome.DONE
         assert "a" not in merged_slugs
         # A should not be re-dispatched forever, and B must remain blocked.
         assert dag.ready() == []
 
     def test_success_with_merge_completes_for_dag(self) -> None:
-        """landing_status=landed → specs_succeeded, dag.mark_complete (unlocks deps)."""
+        """landing_status=landed → DONE, dag.mark_complete (unlocks deps)."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
 
         result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert ds == 1
+        assert outcome is StoryOutcome.DONE
         assert "a" in merged_slugs
         # B now ready (a completed)
         assert {t.slug for t in dag.ready()} == {"b"}
 
     def test_already_done_completes_for_dag(self) -> None:
-        """ALREADY_DONE → specs_skipped, dag.mark_complete (satisfies deps)."""
+        """ALREADY_DONE → terminal succeeded outcome, dag.mark_complete."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
@@ -598,29 +602,33 @@ class TestClassifyAndRecord:
         result = _make_coordinator_result(
             success=True, cost=0.0, preflight_verdict="ALREADY_DONE", phase=Phase.DONE
         )
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert ds == 0
-        assert dsk == 1
+        assert outcome is StoryOutcome.ALREADY_DONE
+        assert outcome.is_succeeded
         assert "a" in merged_slugs
         assert {t.slug for t in dag.ready()} == {"b"}
 
     def test_failure_skips_for_dag(self) -> None:
-        """Failure → specs_failed, dag.mark_skipped."""
+        """Failure → FAILED, dag.mark_skipped."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
 
         result = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert df == 1
+        assert outcome is StoryOutcome.FAILED
         assert "a" not in merged_slugs
         assert dag.ready() == []
 
     def test_landing_failed_counts_as_delta_failed(self) -> None:
         """landing_status=failed is classified as a failed story, not a success."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
@@ -628,17 +636,17 @@ class TestClassifyAndRecord:
 
         # success=True but landing_status=failed — the merge step failed after approval.
         result = _make_coordinator_result(success=True, cost=1.0, landing_status="failed")
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert ds == 0, "landing_status=failed must not increment delta_succeeded"
-        assert df == 1, "landing_status=failed must increment delta_failed"
-        assert dsk == 0
+        assert outcome is StoryOutcome.FAILED
         assert "a" not in merged_slugs
         # B must remain blocked: a failed to land, so it cannot satisfy a's dependency.
         assert dag.ready() == []
 
     def test_landing_pending_integration_does_not_mark_complete(self) -> None:
         """landing_status=pending_integration does not mark the story complete or unblock deps."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
@@ -647,26 +655,26 @@ class TestClassifyAndRecord:
         result = _make_coordinator_result(
             success=True, cost=1.0, landing_status="pending_integration"
         )
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert ds == 1
-        assert df == 0
+        assert outcome is StoryOutcome.DONE
         assert "a" not in merged_slugs
         # B must remain blocked: a is only queued, not landed.
         assert dag.ready() == []
 
     def test_landing_landed_marks_complete_and_unblocks_deps(self) -> None:
         """landing_status=landed is the only merge-pr state that satisfies dependency gating."""
+        from theforge.sprint.story_state import StoryOutcome
+
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
 
         result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert ds == 1
-        assert df == 0
+        assert outcome is StoryOutcome.DONE
         assert "a" in merged_slugs
         # B is now ready because a landed.
         assert {t.slug for t in dag.ready()} == {"b"}

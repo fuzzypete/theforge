@@ -313,8 +313,9 @@ class TestRunSprint:
         assert sprint_result.specs_skipped == 0
         assert sprint_result.stopped_reason is None
 
-    def test_already_done_counted_as_skipped(self, tmp_path: Path) -> None:
-        """ALREADY_DONE specs count as skipped, not succeeded or failed."""
+    def test_already_done_counted_as_succeeded(self, tmp_path: Path) -> None:
+        """ALREADY_DONE is a terminal succeeded outcome — closed-at-fetch
+        issues must surface in summary counts (per the SoT-state story)."""
         _make_spec_file(tmp_path, "Done Spec", "done-spec")
         manifest_path = _make_manifest(tmp_path, ["done-spec.md"], budget=10.0)
         config = _make_config(tmp_path)
@@ -326,8 +327,8 @@ class TestRunSprint:
         with patch("theforge.sprint.runner.run_task", return_value=result):
             sprint_result = run_sprint(config, manifest_path)
 
-        assert sprint_result.specs_succeeded == 0
-        assert sprint_result.specs_skipped == 1
+        assert sprint_result.specs_succeeded == 1
+        assert sprint_result.specs_skipped == 0
         assert sprint_result.specs_failed == 0
 
     def test_budget_exceeded_stops_sprint(self, tmp_path: Path) -> None:
