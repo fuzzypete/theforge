@@ -112,3 +112,46 @@ def test_sprint_audit_skipped_empty_when_not_supplied(tmp_path: Path) -> None:
     )
     audit_yaml = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
     assert audit_yaml["skipped"] == []
+
+
+def test_sprint_audit_records_closed_dependency_slugs(tmp_path: Path) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    manifest = ResolvedSprint(
+        name="test-sprint",
+        budget_usd=10.0,
+        stories=[],
+        max_parallel=1,
+        closed_dependency_slugs={"issue-99", "issue-42"},
+    )
+
+    _write_sprint_audit(
+        manifest=manifest,
+        result=_make_result(),
+        canonical_refs=[],
+        started_at=now,
+        finished_at=now,
+        duration=0.0,
+        project_root=tmp_path,
+    )
+
+    audit_yaml = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
+    assert audit_yaml["closed_dependency_slugs"] == [
+        {"slug": "issue-42", "source": "remote_closed"},
+        {"slug": "issue-99", "source": "remote_closed"},
+    ]
+
+    empty_root = tmp_path / "empty"
+    _write_sprint_audit(
+        manifest=_make_manifest(),
+        result=_make_result(),
+        canonical_refs=[],
+        started_at=now,
+        finished_at=now,
+        duration=0.0,
+        project_root=empty_root,
+    )
+
+    empty_audit_yaml = yaml.safe_load(
+        (empty_root / ".forge" / "audits" / "sprint-audit.yaml").read_text()
+    )
+    assert empty_audit_yaml["closed_dependency_slugs"] == []

@@ -490,6 +490,12 @@ def _write_sprint_audit(
             if isinstance(getattr(manifest, "baseline_gate", None), dict)
             else None
         ),
+        # TODO(issue-817): Distinguishing externally closed dependencies from
+        # earlier-resume completion would require finer provenance on ResolvedSprint.
+        "closed_dependency_slugs": [
+            {"slug": slug, "source": "remote_closed"}
+            for slug in sorted(getattr(manifest, "closed_dependency_slugs", set()))
+        ],
         "specs": spec_entries,
         "skipped": [s.as_dict() if hasattr(s, "as_dict") else dict(s) for s in skipped_issues],
         "iteration_usage_distribution": usage_distribution,
