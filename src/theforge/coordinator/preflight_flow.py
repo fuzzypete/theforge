@@ -186,9 +186,16 @@ def _run_preflight_phase(
     _ensure_runners()
 
     state.phase = Phase.PREFLIGHT
-    if state_update_fn is not None:
-        state_update_fn({"phase": "PREFLIGHT", "iteration": 0, "cost_usd": state.total_cost})
     preflight_profile = config.preflight_profile
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "PREFLIGHT",
+                "iteration": 0,
+                "cost_usd": state.total_cost,
+                "current_model": preflight_profile.model,
+            }
+        )
     _log_phase(state.phase, preflight_profile.model)
     if logger:
         logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
@@ -292,6 +299,7 @@ def _run_preflight_phase(
                 "iteration": 0,
                 "cost_usd": state.total_cost,
                 "complexity": state.preflight_complexity,
+                "current_model": preflight_profile.model,
                 "detail": {
                     "preflight_verdict": verdict,
                     "preflight_sufficiency": state.preflight_sufficiency,
