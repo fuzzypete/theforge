@@ -321,6 +321,75 @@ class TestRenderFrame:
         # Spinner should NOT appear for a stalled story.
         assert status_watch.SPINNER_FRAMES[0] not in text
 
+    def _render(
+        self,
+        tmp_path: Path,
+        entries: list,
+        *,
+        now_fn=None,
+        last_mtime=None,
+        state: dict | None = None,
+    ) -> str:
+        if state is None:
+            state = {"costs": {}, "interval": 2.0}
+        with (
+            patch("theforge.cli.sprint_status.display_sprint_status", return_value=0),
+            patch("theforge.sprint.status_reader.read_live_status", return_value=entries),
+            patch.object(status_watch, "_last_audit_mtime", return_value=last_mtime),
+        ):
+            text, _ok, _err = status_watch.render_frame(
+                "run-x",
+                tmp_path,
+                state,
+                frame_idx=0,
+                color=False,
+                now_fn=now_fn,
+            )
+        return text
+
+    def test_header_uses_activity_and_event_age(self, tmp_path: Path) -> None:
+        text = self._render(tmp_path, [])
+        assert "ACTIVITY" in text
+        assert "EVENT AGE" in text
+        assert "ACT" not in text.split("ACTIVITY")[0]  # old short header gone
+        assert "EVT AGE" not in text
+
+    def test_running_live_label(self, tmp_path: Path) -> None:
+        entries = [_entry("story-a", status="running")]
+        text = self._render(
+            tmp_path,
+            entries,
+            now_fn=lambda: 1000.0,
+            last_mtime=999.0,
+        )
+        assert "live" in text
+
+    def test_running_stalled_label(self, tmp_path: Path) -> None:
+        entries = [_entry("story-a", status="running")]
+        text = self._render(
+            tmp_path,
+            entries,
+            now_fn=lambda: 1000.0,
+            last_mtime=900.0,  # 100s ago — past stall threshold
+        )
+        assert "stalled" in text
+
+    def test_done_label(self, tmp_path: Path) -> None:
+        text = self._render(tmp_path, [_entry("story-a", status="done")])
+        assert "done" in text
+
+    def test_failed_label(self, tmp_path: Path) -> None:
+        text = self._render(tmp_path, [_entry("story-a", status="failed")])
+        assert "failed" in text
+
+    def test_skipped_label(self, tmp_path: Path) -> None:
+        text = self._render(tmp_path, [_entry("story-a", status="skipped")])
+        assert "skipped" in text
+
+    def test_blocked_label(self, tmp_path: Path) -> None:
+        text = self._render(tmp_path, [_entry("story-a", status="blocked")])
+        assert "blocked" in text
+
 
 # ── run_watch_loop ────────────────────────────────────────────────────────────
 
