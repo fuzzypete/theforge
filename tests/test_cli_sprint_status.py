@@ -80,7 +80,7 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
                 "bundle_candidate": False,
                 "blocked_by": [],
                 "complexity": "medium",
-                "detail": {"review_cycle": 0, "dev_iteration": 2},
+                "detail": {"dev_iteration": 2, "dev_max_iterations": 3},
             },
             {
                 "slug": "issue-2",
@@ -106,12 +106,14 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
     assert e1.cost_usd == pytest.approx(0.12)
     assert e1.bundle_candidate is False
     assert e1.complexity == "medium"
-    assert e1.detail == "c1 i2"
+    assert e1.stage == "iter=2/3"
+    assert e1.detail == "running"
 
     e2 = entries[1]
     assert e2.slug == "issue-2"
     assert e2.status == "waiting"
     assert e2.bundle_candidate is True
+    assert e2.stage == ""
     assert e2.detail == "waiting"
 
 
@@ -139,7 +141,10 @@ def test_read_live_status_blocked_story(tmp_path: Path) -> None:
     assert entries is not None
     assert len(entries) == 1
     assert entries[0].status == "blocked"
+    assert entries[0].phase == "waiting"
+    assert entries[0].stage == "dependency"
     assert entries[0].blocked_by == ["issue-98"]
+    assert entries[0].detail == "depends on issue-98"
 
 
 def test_read_live_status_merges_accumulated_prior_run_stories(tmp_path: Path) -> None:
@@ -272,9 +277,13 @@ def test_read_completed_status_outcome_mapping(tmp_path: Path) -> None:
 
     by_slug = {e.slug: e for e in entries}
     assert by_slug["s1"].status == "done"
+    assert by_slug["s1"].phase == "DONE"
     assert by_slug["s2"].status == "done"
+    assert by_slug["s2"].phase == "ALREADY_DONE"
     assert by_slug["s3"].status == "skipped"
+    assert by_slug["s3"].phase == "SKIPPED"
     assert by_slug["s4"].status == "failed"
+    assert by_slug["s4"].phase == "ESCALATE"
 
 
 def test_read_completed_status_bundle_candidate_from_audit(tmp_path: Path) -> None:
@@ -327,10 +336,54 @@ def test_read_completed_status_blocked_by_from_depends_on(tmp_path: Path) -> Non
     by_slug = {e.slug: e for e in entries}
 
     assert by_slug["issue-6"].status == "skipped"
+    assert by_slug["issue-6"].phase == "waiting"
+    assert by_slug["issue-6"].stage == "dependency"
     assert by_slug["issue-6"].blocked_by == ["issue-5"]
+    assert by_slug["issue-6"].detail == "depends on issue-5"
     # Non-skipped stories should not show depends_on as blocked_by
     assert by_slug["issue-5"].blocked_by == []
     assert by_slug["issue-7"].blocked_by == []
+
+
+def test_read_completed_status_uses_audit_for_terminal_stage_and_detail(tmp_path: Path) -> None:
+    from theforge.sprint.status_reader import read_completed_status
+
+    stories = [
+        {
+            "slug": "issue-8",
+            "path": "Issue #8",
+            "outcome": "DONE",
+            "cost_usd": 0.3,
+            "verdict": "APPROVE",
+            "iteration_usage": {
+                "dev": {"used": 1, "max": 3},
+                "review": {"used": 2, "max": 3},
+            },
+        }
+    ]
+    summary_path = _make_summary_file(tmp_path, "audit-sprint", "run-audit", stories)
+
+    audit_dir = tmp_path / ".forge" / "logs" / "audit-sprint" / "issue-8"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_data = {
+        "preflight": {"complexity": "medium"},
+        "reviews": [
+            {
+                "verdict": "APPROVE",
+                "summary": "No findings remain.",
+                "findings_by_severity": {"P1": 0, "P2": 0},
+            }
+        ],
+    }
+    with open(audit_dir / "audit.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(audit_data, f)
+
+    entries = read_completed_status(summary_path)
+
+    assert len(entries) == 1
+    assert entries[0].stage == "2 cyc / 1 iter"
+    assert entries[0].detail == "APPROVE 0P1 0P2 — No findings remain."
+    assert entries[0].complexity == "medium"
 
 
 # ── cmd_sprint_status (output) ───────────────────────────────────────────────
@@ -449,7 +502,7 @@ def test_cmd_sprint_status_live_sprint(tmp_path: Path) -> None:
                 "bundle_candidate": False,
                 "blocked_by": [],
                 "complexity": "medium",
-                "detail": {"review_cycle": 0, "dev_iteration": 2},
+                "detail": {"dev_iteration": 2, "dev_max_iterations": 3},
             },
             {
                 "slug": "issue-21",
@@ -474,9 +527,10 @@ def test_cmd_sprint_status_live_sprint(tmp_path: Path) -> None:
     assert "Issue #20" in output
     assert "DEV" in output
     assert "medium" in output
-    assert "c1 i2" in output
+    assert "iter=2/3" in output
     assert "Issue #21" in output
-    assert "PROCEED / needs_planning" in output
+    assert "PROCEED" in output
+    assert "needs_planning" in output
 
 
 def test_cmd_sprint_status_blocked_story_shows_dependency(tmp_path: Path) -> None:
@@ -582,6 +636,8 @@ def test_display_sprint_status_row_shows_status_and_detail(tmp_path: Path) -> No
     # status column
     assert "done" in output
     assert "failed" in output
+    assert "DONE" in output
+    assert "ESCALATE" in output
     # detail column for DONE → "APPROVE", for ESCALATE → "ESCALATE"
     assert "APPROVE" in output
     assert "ESCALATE" in output
@@ -625,6 +681,7 @@ def test_display_sprint_status_live_row_shows_phase_and_status(tmp_path: Path) -
     assert "running" in output
     assert "DEV" in output
     assert "blocked" in output
+    assert "dependency" in output
     assert "issue-10" in output  # blocked_by appears in detail
 
 
@@ -667,10 +724,50 @@ def test_display_sprint_status_column_header_present(tmp_path: Path) -> None:
     assert code == 0
     assert "STATUS" in output
     assert "PHASE" in output
+    assert "STAGE" in output
     assert "COMPLEXITY" in output
     assert "COST" in output
     assert "ELAPSED" in output
     assert "DETAIL" in output
+
+
+def test_display_sprint_status_wraps_long_detail_without_truncation(tmp_path: Path) -> None:
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "wrap-run.pid").write_text("99997\nwrap-sprint\n")
+
+    long_detail = (
+        "addressing 1P1 (plan_flow.py:187) while coordinating a long descriptive message "
+        "that should wrap onto a continuation line without losing any content"
+    )
+    _make_state_file(
+        tmp_path,
+        "wrap-run",
+        "wrap-sprint",
+        [
+            {
+                "slug": "issue-60",
+                "path": "Issue #60",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 0.11,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "detail": {
+                    "dev_iteration": 2,
+                    "current_finding": long_detail,
+                },
+            }
+        ],
+    )
+
+    code, output = _run_sprint_status(tmp_path, "wrap-run")
+
+    assert code == 0
+    assert "addressing 1P1" in output
+    assert "(plan_flow.py:187)" in output
+    assert "without losing any" in output
+    assert "content" in output
 
 
 # ── SprintStateWriter ────────────────────────────────────────────────────────

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
+import textwrap
 from pathlib import Path
 
 
@@ -129,11 +131,11 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
 
     # Column header
     header = (
-        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'COMPLEXITY':<10}  "
-        f"{'COST':>7}  {'ELAPSED':>7}  DETAIL"
+        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'STAGE':<16}  "
+        f"{'COMPLEXITY':<10}  {'COST':>7}  {'ELAPSED':>7}  DETAIL"
     )
     print(header)
-    print("  " + "-" * 96)
+    print("  " + "-" * (len(header) - 2))
 
     # Separate bundle candidates from regular stories
     bundle_entries = [e for e in entries if e.bundle_candidate]
@@ -204,22 +206,61 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     path = getattr(entry, "path", getattr(entry, "slug", ""))
     status = getattr(entry, "status", "waiting")
     phase = getattr(entry, "phase", None)
+    stage = getattr(entry, "stage", "")
     cost_usd = getattr(entry, "cost_usd", 0.0)
     elapsed_s = getattr(entry, "elapsed_seconds", None)
     detail = getattr(entry, "detail", "")
     complexity = getattr(entry, "complexity", None)
 
     phase_str = phase if phase else "—"
+    stage_str = stage if stage else "—"
     complexity_str = complexity if complexity else "—"
     cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
     elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
 
-    line = (
-        f"{icon} {path:<28}  {status:<8}  {phase_str:<12}  {complexity_str:<10}  "
-        f"{cost_str:>7}  {elapsed_str:>7}  {detail}"
-    )
     prefix = " " * indent
-    print(f"{prefix}{line}")
+    detail_width = _detail_column_width(indent)
+    path_lines = _wrap_cell(path, 28)
+    phase_lines = _wrap_cell(phase_str, 12)
+    stage_lines = _wrap_cell(stage_str, 16)
+    detail_lines = _wrap_cell(detail if detail else "—", detail_width)
+
+    line_count = max(len(path_lines), len(phase_lines), len(stage_lines), len(detail_lines))
+    for index in range(line_count):
+        icon_cell = icon if index == 0 else " "
+        status_cell = status if index == 0 else ""
+        complexity_cell = complexity_str if index == 0 else ""
+        cost_cell = cost_str if index == 0 else ""
+        elapsed_cell = elapsed_str if index == 0 else ""
+        line = (
+            f"{icon_cell} {path_lines[index] if index < len(path_lines) else '':<28}  "
+            f"{status_cell:<8}  "
+            f"{phase_lines[index] if index < len(phase_lines) else '':<12}  "
+            f"{stage_lines[index] if index < len(stage_lines) else '':<16}  "
+            f"{complexity_cell:<10}  {cost_cell:>7}  {elapsed_cell:>7}  "
+            f"{detail_lines[index] if index < len(detail_lines) else ''}"
+        )
+        print(f"{prefix}{line}")
+
+
+def _detail_column_width(indent: int) -> int:
+    """Return an adaptive width for DETAIL so values wrap instead of truncating."""
+    terminal_width = shutil.get_terminal_size((140, 20)).columns
+    fixed_width = indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 16 + 2 + 10 + 2 + 7 + 2 + 7 + 2
+    return max(20, terminal_width - fixed_width)
+
+
+def _wrap_cell(value: str, width: int) -> list[str]:
+    """Wrap a cell value to the requested width without dropping content."""
+    if width <= 0:
+        return [value] if value else [""]
+    wrapped = textwrap.wrap(
+        value,
+        width=width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return wrapped or [""]
 
 
 def register_parser(subparsers: object) -> None:
