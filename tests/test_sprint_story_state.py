@@ -98,7 +98,10 @@ def test_outcome_terminal_classification() -> None:
     assert StoryOutcome.ESCALATED.is_failed is True
     assert StoryOutcome.SKIPPED.is_skipped is True
     assert StoryOutcome.PRESERVED.is_skipped is True
-    assert StoryOutcome.DROPPED.is_skipped is True
+    # DROPPED stays in the failed bucket — operator surfaces (sprint-status
+    # and sprint-audit) all treat launch-guard drops as failures.
+    assert StoryOutcome.DROPPED.is_failed is True
+    assert StoryOutcome.DROPPED.is_skipped is False
 
 
 def test_transition_unknown_slug_returns_none() -> None:

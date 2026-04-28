@@ -53,11 +53,16 @@ class StoryOutcome(str, Enum):
 
     @property
     def is_failed(self) -> bool:
-        return self in {StoryOutcome.FAILED, StoryOutcome.ESCALATED}
+        # DROPPED (launch-guard collisions, etc.) historically counts as a
+        # failure in sprint-audit and forge sprint-status. Keeping it in the
+        # failed bucket here preserves cross-surface agreement: canonical
+        # counts, summary, notifications, banner, and completed status all
+        # report DROPPED as failed.
+        return self in {StoryOutcome.FAILED, StoryOutcome.ESCALATED, StoryOutcome.DROPPED}
 
     @property
     def is_skipped(self) -> bool:
-        return self in {StoryOutcome.SKIPPED, StoryOutcome.PRESERVED, StoryOutcome.DROPPED}
+        return self in {StoryOutcome.SKIPPED, StoryOutcome.PRESERVED}
 
 
 _TERMINAL_OUTCOMES = {

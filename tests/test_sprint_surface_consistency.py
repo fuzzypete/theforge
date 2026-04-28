@@ -192,7 +192,7 @@ def test_banner_counts_match_summary_counts() -> None:
         (StoryOutcome.ESCALATED, "failed"),
         (StoryOutcome.SKIPPED, "skipped"),
         (StoryOutcome.PRESERVED, "skipped"),
-        (StoryOutcome.DROPPED, "skipped"),
+        (StoryOutcome.DROPPED, "failed"),
     ],
 )
 def test_terminal_outcomes_projected_to_correct_bucket(
@@ -338,6 +338,46 @@ def MagicMock_with_root(tmp_path: Path):
     from types import SimpleNamespace
 
     return SimpleNamespace(project_root=tmp_path)
+
+
+def test_dropped_story_classified_as_failed_across_all_surfaces(tmp_path: Path) -> None:
+    """A launch-guard DROPPED story (e.g. active-worktree collision) must
+    surface as ``failed`` in every operator-facing place: canonical counts,
+    live status reader, sprint-summary aggregates, notifications, and the
+    completed-status projection. DROPPED in the skipped bucket would put the
+    canonical model out of sync with status_reader._outcome_to_status, which
+    has always mapped DROPPED to ``failed``."""
+    from theforge.sprint.status_reader import _outcome_to_status
+
+    state = SprintStoryState()
+    state.register("a", "Issue #1", outcome=StoryOutcome.DROPPED, reason="active worktree")
+    state.register("b", "Issue #2", outcome=StoryOutcome.DONE)
+
+    counts = state.counts()
+    # DROPPED is failed everywhere — banner, notifications, summary all
+    # project this same value via state.counts().
+    assert counts == {"total": 2, "succeeded": 1, "failed": 1, "skipped": 0}
+
+    # status_reader (completed status projection) agrees: outcome="DROPPED"
+    # also resolves to legacy status "failed".
+    assert _outcome_to_status("DROPPED") == "failed"
+
+    # Live .state file projects DROPPED to legacy ``failed`` too — the
+    # operator never sees DROPPED bucketed as skipped on any surface.
+    writer = SprintStateWriter(
+        run_id="run-drop",
+        project_root=tmp_path,
+        sprint_name="sprint-drop",
+        story_state=state,
+    )
+    writer.init([])  # entries already registered above
+    on_disk = yaml.safe_load(
+        (tmp_path / ".forge" / "runs" / "run-drop.state").read_text(encoding="utf-8")
+    )
+    a_row = next(s for s in on_disk["stories"] if s["slug"] == "a")
+    assert a_row["status"] == "failed"
+    assert a_row["outcome"] == "dropped"
+    assert a_row["detail"]["final_outcome"] == "DROPPED"
 
 
 def test_headless_invocation_registers_shape_gate_skipped_in_canonical() -> None:
