@@ -259,9 +259,7 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
 def _detail_column_width(indent: int) -> int:
     """Return an adaptive width for DETAIL so values wrap instead of truncating."""
     terminal_width = shutil.get_terminal_size((140, 20)).columns
-    fixed_width = (
-        indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 24 + 2 + 16 + 2 + 10 + 2 + 7 + 2 + 7 + 2
-    )
+    fixed_width = indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 24 + 2 + 16 + 2 + 10 + 2 + 7 + 2 + 7 + 2
     return max(20, terminal_width - fixed_width)
 
 

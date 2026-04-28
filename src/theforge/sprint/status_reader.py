@@ -427,9 +427,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
             complexity = derived_complexity
 
         dev_model_raw = story.get("dev_model")
-        model_val = (
-            dev_model_raw if isinstance(dev_model_raw, str) and dev_model_raw else None
-        )
+        model_val = dev_model_raw if isinstance(dev_model_raw, str) and dev_model_raw else None
 
         entries.append(
             StoryStatusEntry(
