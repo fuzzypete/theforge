@@ -208,7 +208,9 @@ def render_frame(
     overlay_lines.append("")
     title = f"── Live  refresh={interval:g}s  Ctrl-C to exit ──"
     overlay_lines.append(_c(title, DIM, color))
-    overlay_lines.append(f"{'STORY':<30}  {'ACT':<3}  {'ΔCOST':>8}  {'EVT AGE':>8}")
+    _ACT_COL = 10
+    hdr = f"{'STORY':<30}  {'ACTIVITY':<{_ACT_COL}}  {'ΔCOST':>8}  {'EVENT AGE':>9}"
+    overlay_lines.append(hdr)
 
     for e in entries:
         slug = getattr(e, "slug", "") or ""
@@ -229,17 +231,26 @@ def render_frame(
         status = getattr(e, "status", "waiting")
         if status == "running":
             if stalled:
-                act = _c(STALL_CHAR, DIM, color)
+                label = f"{STALL_CHAR} stalled"
+                act = _c(label, DIM, color)
             else:
-                act = _c(spinner, GREEN, color)
+                label = f"{spinner} live"
+                act = _c(label, GREEN, color)
         elif status == "done":
-            act = _c(DONE_CHAR, GREEN, color)
+            label = f"{DONE_CHAR} done"
+            act = _c(label, GREEN, color)
         elif status == "failed":
-            act = _c(FAIL_CHAR, RED, color)
-        elif status == "skipped" or status == "blocked":
-            act = _c(STALL_CHAR, DIM, color)
+            label = f"{FAIL_CHAR} failed"
+            act = _c(label, RED, color)
+        elif status == "skipped":
+            label = f"{STALL_CHAR} skipped"
+            act = _c(label, DIM, color)
+        elif status == "blocked":
+            label = f"{STALL_CHAR} blocked"
+            act = _c(label, DIM, color)
         else:
-            act = WAIT_CHAR
+            label = WAIT_CHAR
+            act = label
 
         delta_str = _format_delta(delta)
         if color and delta != 0 and abs(delta) >= 0.005:
@@ -247,8 +258,8 @@ def render_frame(
 
         path = getattr(e, "path", slug) or slug
         path_disp = path if len(path) <= 30 else path[:29] + "…"
-        act_pad = act + " " * 2
-        overlay_lines.append(f"{path_disp:<30}  {act_pad}  {delta_str:>8}  {age_str:>8}")
+        act_padded = act + " " * max(0, _ACT_COL - len(label))
+        overlay_lines.append(f"{path_disp:<30}  {act_padded}  {delta_str:>8}  {age_str:>9}")
 
     state["costs"] = new_costs
     return base + "\n".join(overlay_lines) + "\n", snapshot_ok, err_buf.getvalue()
