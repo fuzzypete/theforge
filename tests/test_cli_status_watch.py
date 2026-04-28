@@ -483,6 +483,35 @@ class TestCmdStatusWatchRouting:
         assert kwargs["color"] is False
         assert loop.call_args.args[2] == 3.0
 
+    def test_tty_watch_waits_through_sprint_startup_window(self, tmp_path: Path) -> None:
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = self._config(tmp_path)
+        args = argparse.Namespace(run_id=None, recent=False, last=False, watch=3, no_color=False)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-1.pid").write_text("123\nissues-test\n")
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status._find_active_run_id", return_value="run-1"),
+            patch("theforge.cli.status._is_sprint_run", side_effect=[False, False, True]),
+            patch("theforge.cli.status.time.sleep"),
+            patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.01, 0.02]),
+            patch("theforge.cli.status_watch.is_tty", return_value=True),
+            patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            rc = cmd_status(args)
+
+        assert rc == 0
+        loop.assert_called_once()
+
     def test_tty_single_run_falls_back(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
