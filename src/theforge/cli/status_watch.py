@@ -176,21 +176,6 @@ def render_frame(
     return base + "\n".join(overlay_lines) + "\n"
 
 
-def _validate_target(run_id: str, project_root: Path) -> tuple[bool, str | None]:
-    """Confirm the run can be located and is a sprint.
-
-    Returns (ok, error_message). Watch mode requires a sprint run; single
-    runs and unresolvable IDs fall back to the snapshot path.
-    """
-    from theforge.cli.status import _is_sprint_run, _resolve_run_id
-
-    if not _resolve_run_id(run_id, project_root):
-        return False, f"No run found with ID {run_id!r}."
-    if not _is_sprint_run(run_id, project_root):
-        return False, "Watch mode is only available for sprint runs."
-    return True, None
-
-
 def run_watch_loop(
     run_id: str,
     project_root: Path,
