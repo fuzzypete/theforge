@@ -170,13 +170,16 @@ def render_frame(
     *,
     color: bool,
     now_fn: Any = None,
-) -> tuple[str, bool]:
-    """Return ``(text, ok)`` for one watch-mode frame.
+) -> tuple[str, bool, str]:
+    """Return ``(text, ok, captured_stderr)`` for one watch-mode frame.
 
     ``ok`` is False when the underlying snapshot reported it could not read
     sprint state (non-zero return) — the caller propagates that as a
-    non-zero exit on the first frame. ``state`` is mutated to record per-slug
-    cost so the next frame can compute deltas.
+    non-zero exit on the first frame and forwards ``captured_stderr`` to
+    the real ``sys.stderr`` so the operator sees the diagnostic. Mid-loop
+    callers must NOT print the stderr buffer or it will scroll past the
+    in-place CURSOR_UP redraw region. ``state`` is mutated to record
+    per-slug cost so the next frame can compute deltas.
     """
     from theforge.cli.sprint_status import display_sprint_status
     from theforge.sprint.status_reader import read_live_status
@@ -248,7 +251,7 @@ def render_frame(
         overlay_lines.append(f"{path_disp:<30}  {act_pad}  {delta_str:>8}  {age_str:>8}")
 
     state["costs"] = new_costs
-    return base + "\n".join(overlay_lines) + "\n", snapshot_ok
+    return base + "\n".join(overlay_lines) + "\n", snapshot_ok, err_buf.getvalue()
 
 
 def run_watch_loop(
@@ -284,7 +287,9 @@ def run_watch_loop(
             cursor_hidden = True
         while True:
             try:
-                body, snapshot_ok = render_frame(run_id, project_root, state, frame, color=color)
+                body, snapshot_ok, captured_err = render_frame(
+                    run_id, project_root, state, frame, color=color
+                )
             except Exception as exc:  # noqa: BLE001
                 if frame == 0:
                     print(
@@ -295,9 +300,23 @@ def run_watch_loop(
                 # Transient failure mid-loop — keep the previous frame on screen.
                 body = None
                 snapshot_ok = True
+                captured_err = ""
 
             if frame == 0 and not snapshot_ok:
-                # display_sprint_status already wrote its diagnostic to stderr.
+                # First frame failed: forward the snapshot's diagnostic that
+                # render_frame captured. There is no in-place redraw region
+                # yet, so printing to stderr is safe. (Mid-loop captures stay
+                # discarded so they can't scroll past the CURSOR_UP region.)
+                if captured_err:
+                    sys.stderr.write(captured_err)
+                    if not captured_err.endswith("\n"):
+                        sys.stderr.write("\n")
+                    sys.stderr.flush()
+                else:
+                    print(
+                        "forge status --watch: failed to read sprint state.",
+                        file=sys.stderr,
+                    )
                 return 1
 
             if body is not None:

@@ -204,7 +204,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=None),
         ):
-            text, ok = status_watch.render_frame(
+            text, ok, _err = status_watch.render_frame(
                 "run-x", tmp_path, state, frame_idx=0, color=False
             )
 
@@ -228,7 +228,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=None),
         ):
-            text, _ok = status_watch.render_frame(
+            text, _ok, _err = status_watch.render_frame(
                 "run-x", tmp_path, state, frame_idx=1, color=False
             )
 
@@ -252,7 +252,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=evt_time),
         ):
-            text, _ok = status_watch.render_frame(
+            text, _ok, _err = status_watch.render_frame(
                 "run-x",
                 tmp_path,
                 state,
@@ -280,7 +280,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=evt_time),
         ):
-            text, _ok = status_watch.render_frame(
+            text, _ok, _err = status_watch.render_frame(
                 "run-x",
                 tmp_path,
                 state,
@@ -308,7 +308,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=evt_time),
         ):
-            text, _ok = status_watch.render_frame(
+            text, _ok, _err = status_watch.render_frame(
                 "run-x",
                 tmp_path,
                 state,
@@ -333,7 +333,7 @@ class TestRunWatchLoop:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value=("frame-body\n", True),
+                return_value=("frame-body\n", True, ""),
             ),
             patch.object(status_watch, "is_tty", return_value=False),
         ):
@@ -361,7 +361,7 @@ class TestRunWatchLoop:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value=("frame-body\n", True),
+                return_value=("frame-body\n", True, ""),
             ),
             patch.object(status_watch, "is_tty", return_value=False),
         ):
@@ -406,7 +406,7 @@ class TestRunWatchLoop:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value=("frame-body\n", True),
+                return_value=("frame-body\n", True, ""),
             ),
             patch.object(status_watch, "is_tty", return_value=True),
         ):
@@ -524,7 +524,7 @@ class TestSnapshotFailurePropagates:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value=("", False),
+                return_value=("", False, "snapshot diag\n"),
             ),
             patch.object(status_watch, "is_tty", return_value=False),
         ):
@@ -538,6 +538,65 @@ class TestSnapshotFailurePropagates:
             )
 
         assert rc == 1
+        # The captured diagnostic from display_sprint_status must reach stderr
+        # so the operator sees WHY the watch session refused to start.
+        err = capsys.readouterr().err
+        assert "snapshot diag" in err
+
+    def test_first_frame_failure_falls_back_when_no_captured_diagnostic(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """If the snapshot returned non-zero but emitted nothing, we still surface a message."""
+        with (
+            patch.object(
+                status_watch,
+                "render_frame",
+                return_value=("", False, ""),
+            ),
+            patch.object(status_watch, "is_tty", return_value=False),
+        ):
+            rc = status_watch.run_watch_loop(
+                "run-x",
+                tmp_path,
+                interval=0.01,
+                color=False,
+                sleep_fn=lambda _s: None,
+                max_frames=1,
+            )
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "failed to read sprint state" in err
+
+
+class TestRenderFrameCapturesStderr:
+    """render_frame must keep stderr OUT of the terminal but RETURN it for the caller."""
+
+    def test_render_frame_returns_captured_stderr(self, tmp_path: Path) -> None:
+        def fake_display(_run_id: str, _project_root: Path) -> int:
+            import sys as _sys
+
+            print("boom: cannot read state", file=_sys.stderr)
+            return 1
+
+        with (
+            patch(
+                "theforge.cli.sprint_status.display_sprint_status",
+                side_effect=fake_display,
+            ),
+            patch(
+                "theforge.sprint.status_reader.read_live_status",
+                return_value=[],
+            ),
+        ):
+            text, ok, captured_err = status_watch.render_frame(
+                "run-x", tmp_path, {"costs": {}, "interval": 2.0}, 0, color=False
+            )
+
+        assert ok is False
+        assert "boom: cannot read state" in captured_err
+        # stdout/text path stays clean
+        assert "boom" not in text
 
 
 class TestNoFullScreenClear:
@@ -550,7 +609,7 @@ class TestNoFullScreenClear:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value=("line1\nline2\n", True),
+                return_value=("line1\nline2\n", True, ""),
             ),
             patch.object(status_watch, "is_tty", return_value=False),
         ):
