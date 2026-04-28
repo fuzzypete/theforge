@@ -980,9 +980,7 @@ class TestRedirectChainResolution:
         accumulated = _load_accumulated_stories(sprint_id, tmp_path)
         assert {s["canonical_ref"] for s in accumulated} >= {"issue:119", "issue:169"}
 
-    def test_summary_carries_forward_prior_stories_with_story_state(
-        self, tmp_path: Path
-    ) -> None:
+    def test_summary_carries_forward_prior_stories_with_story_state(self, tmp_path: Path) -> None:
         """Same scenario as the previous test, but exercising the canonical
         story_state projection path used by the live runner. story_state is
         pre-populated from accumulated state (as runner.py does at startup),
