@@ -14,13 +14,13 @@ forced a triage decision. Findings accumulated forever.
 
 ## Acceptance Criteria
 
-- Forge findings are created with `forge-finding` + `needs-triage` labels; a
-  triage hook assigns one of `triage-fix-now` / `triage-fix-soon` /
-  `triage-punt` during intake, and the old `accepted-risk`, `release-risk`,
-  and `release-blocker` labels are retired from the label schema.
-- The release-readiness report lists counts for each triage label grouped by
-  milestone, writes a JSON report under the audit trail, and emits a prompt
-  summary for human review.
+- Forge findings are created with `forge-finding` + `needs-triage` labels,
+  and triage is represented by removing `needs-triage` once the finding has
+  been reviewed; the old `accepted-risk`, `release-risk`, and
+  `release-blocker` labels are retired from the label schema.
+- The release-readiness report lists counts for open `needs-triage`
+  forge-findings grouped by milestone, writes a JSON report under the audit
+  trail, and emits a prompt summary for human review.
 - Release cut fails (exit non-zero) when the target milestone contains any
   finding with the `needs-triage` label; the release workflow phase blocks
   until triage is complete.
@@ -35,5 +35,5 @@ forced a triage decision. Findings accumulated forever.
   proposer/reviewer/resolver model profiles, release-report thresholds, and
   per-label retention policy; config validation rejects unknown keys.
 - The sprint planning phase reads the latest release-readiness report and
-  refuses to include any finding whose triage label is `needs-triage`; it
-  emits a log line and an audit entry explaining each skipped issue.
+  refuses to include any finding that still carries `needs-triage`; it emits
+  a log line and an audit entry explaining each skipped issue.

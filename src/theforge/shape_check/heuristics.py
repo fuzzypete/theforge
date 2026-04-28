@@ -39,17 +39,7 @@ SEED_VOCABULARY: frozenset[str] = frozenset(
     }
 )
 
-_TERMINAL_TRIAGE_LABELS: frozenset[str] = frozenset(
-    {
-        "triage-accepted",
-        "triage-rejected",
-        "triage-dup",
-        "triage-closed",
-        "triage-fix-now",
-        "triage-fix-soon",
-        "triage-punt",
-    }
-)
+_NEEDS_TRIAGE_LABEL = "needs-triage"
 
 _TRACKING_PHRASES = (
     "tracking issue",
@@ -224,15 +214,12 @@ def check_untriaged_finding(title: str, body: str, labels: Iterable[str]) -> Rea
     lset = _lower_labels(labels)
     if "forge-finding" not in lset:
         return None
-    if lset & _TERMINAL_TRIAGE_LABELS:
+    if _NEEDS_TRIAGE_LABEL not in lset:
         return None
     return Reason(
         code="untriaged_finding",
         severity=Severity.BLOCKING,
-        detail=(
-            "forge-finding has no terminal triage label "
-            "(e.g. triage-accepted/rejected/dup/closed)."
-        ),
+        detail="finding still has needs-triage label; remove needs-triage after triage",
     )
 
 
