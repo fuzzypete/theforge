@@ -167,14 +167,18 @@ class TestSuperseded:
 
 class TestUntriagedFinding:
     def test_untriaged(self):
-        r = check_untriaged_finding("T", "body", ["forge-finding"])
+        r = check_untriaged_finding("T", "body", ["forge-finding", "needs-triage"])
         assert r is not None and r.code == "untriaged_finding"
+        assert "needs-triage" in r.detail
 
     def test_triaged(self):
-        assert check_untriaged_finding("T", "body", ["forge-finding", "triage-accepted"]) is None
+        assert check_untriaged_finding("T", "body", ["forge-finding"]) is None
+
+    def test_other_labels_do_not_block_triaged_finding(self):
+        assert check_untriaged_finding("T", "body", ["forge-finding", "p2"]) is None
 
     def test_not_a_finding(self):
-        assert check_untriaged_finding("T", "body", ["bug"]) is None
+        assert check_untriaged_finding("T", "body", ["bug", "needs-triage"]) is None
 
 
 class TestImplementationDesignDump:
@@ -302,7 +306,7 @@ class TestCheckAggregation:
         assert result.suggested_action is SuggestedAction.CLOSE
 
     def test_untriaged_finding(self):
-        result = check("P2 something", WELL_FORMED_AC, ["forge-finding"])
+        result = check("P2 something", WELL_FORMED_AC, ["forge-finding", "needs-triage"])
         assert result.shape is Shape.NEEDS_GROOMING
         assert result.suggested_action is SuggestedAction.CLARIFY
         assert any(r.code == "untriaged_finding" for r in result.reasons)
