@@ -53,6 +53,34 @@ def _follow_redirect_chain(run_id: str, project_root: Path, max_hops: int = 20) 
     return current
 
 
+def find_live_state_path(run_id: str, project_root: Path) -> Path | None:
+    """Return the best available live sprint state file for ``run_id``.
+
+    During sprint re-exec startup, the new worker writes ``<old>.redirect`` and
+    ``<new>.pid`` before ``<new>.state`` exists. In that window, surface the
+    predecessor ``.state`` so status commands keep rendering the sprint view.
+    """
+    import json  # noqa: PLC0415
+
+    runs_dir = project_root / ".forge" / "runs"
+    state_path = runs_dir / f"{run_id}.state"
+    if state_path.exists():
+        return state_path
+
+    for redirect_file in runs_dir.glob("*.redirect"):
+        try:
+            data = json.loads(redirect_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("new_run_id") != run_id:
+            continue
+        predecessor_state = runs_dir / f"{redirect_file.stem}.state"
+        if predecessor_state.exists():
+            return predecessor_state
+
+    return None
+
+
 def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
     """Scan .forge/logs/*/sprint-summary.yaml for the file containing run_id.
 
@@ -426,8 +454,8 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
     entries from prior process generations so live status reflects the full
     logical sprint across re-exec boundaries.
     """
-    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
-    if not state_path.exists():
+    state_path = find_live_state_path(run_id, project_root)
+    if state_path is None:
         return None
     try:
         with open(state_path, encoding="utf-8") as f:
