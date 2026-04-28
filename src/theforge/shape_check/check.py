@@ -12,6 +12,7 @@ from theforge.shape_check.heuristics import (
     check_epic_or_tracking,
     check_implementation_design_dump,
     check_missing_acceptance_criteria,
+    check_missing_example,
     check_no_observable_done_state,
     check_superseded,
     check_too_many_behavioral_clusters,
@@ -52,6 +53,7 @@ def check(
         check_superseded,
         check_untriaged_finding,
         check_missing_acceptance_criteria,
+        check_missing_example,
         check_no_observable_done_state,
         check_implementation_design_dump,
     ):

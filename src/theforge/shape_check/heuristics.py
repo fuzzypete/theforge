@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from theforge.shape_check.parsing import (
     extract_ac_section,
     extract_bullets,
+    extract_section,
     extract_top_level_bullet_blocks,
     fenced_code_blocks,
     has_heading,
@@ -61,6 +62,12 @@ _TRACKING_PHRASES = (
 )
 
 _BUG_LABELS: frozenset[str] = frozenset({"bug"})
+_EXAMPLE_SECTION_PATTERNS = (
+    r"example(?:s)?",
+    r"what it should look like",
+    r"target(?: sketch| output| state)?",
+)
+_EXAMPLE_MIN_CONTENT_CHARS = 30
 
 _OBSERVABLE_VERBS = (
     "returns",
@@ -147,6 +154,57 @@ def check_missing_acceptance_criteria(
         severity=Severity.BLOCKING,
         detail="No acceptance criteria section with a bullet/checklist found.",
     )
+
+
+def _extract_example_section(body: str) -> str | None:
+    for pattern in _EXAMPLE_SECTION_PATTERNS:
+        section = extract_section(body, pattern)
+        if section is not None:
+            return section
+    return None
+
+
+def _has_structured_example_content(section: str) -> bool:
+    if fenced_code_blocks(section):
+        return True
+    lines = [line.rstrip() for line in section.splitlines()]
+    if any(re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", line) for line in lines):
+        return True
+
+    table_like_lines = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.count("|") >= 2:
+            table_like_lines += 1
+            if table_like_lines >= 2:
+                return True
+        elif stripped:
+            table_like_lines = 0
+    return False
+
+
+def check_missing_example(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    if is_bug_format_issue(body, labels):
+        return None
+    section = _extract_example_section(body)
+    if section is None:
+        return Reason(
+            code="missing_example",
+            severity=Severity.ADVISORY,
+            detail="No recognizable example section found for this feature-format issue.",
+        )
+
+    content_chars = len(re.sub(r"\s+", "", section))
+    if content_chars < _EXAMPLE_MIN_CONTENT_CHARS or not _has_structured_example_content(section):
+        return Reason(
+            code="missing_example",
+            severity=Severity.ADVISORY,
+            detail=(
+                "Example section is present but not substantive; include a concrete list, "
+                "table, or fenced example."
+            ),
+        )
+    return None
 
 
 _SUPERSEDED_RE = re.compile(r"superseded\s+by\s+#\d+", re.IGNORECASE)

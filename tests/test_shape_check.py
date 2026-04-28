@@ -20,6 +20,7 @@ from theforge.shape_check.heuristics import (
     check_epic_or_tracking,
     check_implementation_design_dump,
     check_missing_acceptance_criteria,
+    check_missing_example,
     check_no_observable_done_state,
     check_superseded,
     check_too_many_behavioral_clusters,
@@ -87,6 +88,68 @@ class TestMissingAcceptanceCriteria:
 
     def test_present(self):
         assert check_missing_acceptance_criteria("T", WELL_FORMED_AC, []) is None
+
+
+class TestMissingExample:
+    def test_present_and_substantive(self):
+        body = textwrap.dedent(
+            """\
+            ## Proposed solution
+            Add a shape-check heuristic.
+
+            ## What it should look like
+            - Running `forge shape-check` on a feature issue with no example emits an advisory.
+            - Adding the example section clears that advisory in the output.
+
+            ## Acceptance Criteria
+            - The CLI emits an advisory when the section is missing.
+            """
+        )
+        assert check_missing_example("T", body, ["enhancement"]) is None
+
+    def test_present_but_empty(self):
+        body = textwrap.dedent(
+            """\
+            ## What it should look like
+            Soon.
+
+            ## Acceptance Criteria
+            - The CLI emits an advisory when the section is missing.
+            """
+        )
+        r = check_missing_example("T", body, ["enhancement"])
+        assert r is not None and r.code == "missing_example"
+
+    def test_present_via_alternate_heading(self):
+        body = textwrap.dedent(
+            """\
+            ## Target
+            ```text
+            $ forge shape-check
+            advisory: missing_example
+            ```
+
+            ## Acceptance Criteria
+            - The CLI emits an advisory when the section is missing.
+            """
+        )
+        assert check_missing_example("T", body, ["enhancement"]) is None
+
+    def test_fully_absent(self):
+        r = check_missing_example("T", WELL_FORMED_AC, ["enhancement"])
+        assert r is not None and r.code == "missing_example"
+
+    def test_bug_format_issue_is_exempt(self):
+        body = textwrap.dedent(
+            """\
+            ## What happened
+            The shape-check emitted a warning.
+
+            ## What was expected
+            Bug reports should not require example sections.
+            """
+        )
+        assert check_missing_example("T", body, ["bug"]) is None
 
 
 class TestSuperseded:
@@ -263,6 +326,14 @@ class TestCheckAggregation:
         result = check("Something", "## What\nprose only", [])
         assert result.shape is Shape.NEEDS_GROOMING
         assert result.suggested_action is SuggestedAction.CLARIFY
+
+    def test_missing_example_is_advisory_only(self):
+        result = check("Feature", WELL_FORMED_AC, ["enhancement"])
+        assert result.shape is Shape.RUNNABLE
+        assert result.suggested_action is SuggestedAction.PROCEED
+        assert any(
+            r.code == "missing_example" and r.severity is Severity.ADVISORY for r in result.reasons
+        )
 
     def test_bug_label_without_ac_is_runnable(self):
         result = check("Bug: command exits incorrectly", "## What\nprose only", ["bug"])
