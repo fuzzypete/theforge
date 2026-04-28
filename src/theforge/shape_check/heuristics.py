@@ -39,17 +39,17 @@ SEED_VOCABULARY: frozenset[str] = frozenset(
     }
 )
 
-_TERMINAL_TRIAGE_LABELS: frozenset[str] = frozenset(
-    {
-        "triage-accepted",
-        "triage-rejected",
-        "triage-dup",
-        "triage-closed",
-        "triage-fix-now",
-        "triage-fix-soon",
-        "triage-punt",
-    }
-)
+# `needs-triage` is the canonical triage signal across the rest of the
+# project: the post-run hook applies it when a finding is filed, the
+# release script counts open findings carrying it, and operators add or
+# remove it when triaging. Earlier versions of this heuristic looked for
+# one of seven `triage-*` labels (triage-accepted / triage-rejected /
+# triage-dup / triage-closed / triage-fix-now / triage-fix-soon /
+# triage-punt) which were never created in the repository and had no
+# consumer outside this file — so the gate could never pass for any
+# real-world forge-finding. Use the single shared label instead.
+# See #1075.
+_NEEDS_TRIAGE_LABEL = "needs-triage"
 
 _TRACKING_PHRASES = (
     "tracking issue",
@@ -224,14 +224,16 @@ def check_untriaged_finding(title: str, body: str, labels: Iterable[str]) -> Rea
     lset = _lower_labels(labels)
     if "forge-finding" not in lset:
         return None
-    if lset & _TERMINAL_TRIAGE_LABELS:
+    # Triaged ⇔ `needs-triage` removed. See _NEEDS_TRIAGE_LABEL above for
+    # why this single label replaces the old triage-* vocabulary.
+    if _NEEDS_TRIAGE_LABEL not in lset:
         return None
     return Reason(
         code="untriaged_finding",
         severity=Severity.BLOCKING,
         detail=(
-            "forge-finding has no terminal triage label "
-            "(e.g. triage-accepted/rejected/dup/closed)."
+            "forge-finding still carries the `needs-triage` label; "
+            "an operator must remove it to mark the finding triaged."
         ),
     )
 

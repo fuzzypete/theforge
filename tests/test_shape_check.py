@@ -166,15 +166,30 @@ class TestSuperseded:
 
 
 class TestUntriagedFinding:
-    def test_untriaged(self):
-        r = check_untriaged_finding("T", "body", ["forge-finding"])
+    def test_untriaged_when_needs_triage_present(self):
+        # The post-run hook applies `needs-triage` when a forge-finding is
+        # filed; the heuristic must block until an operator removes it.
+        r = check_untriaged_finding(
+            "T", "body", ["forge-finding", "needs-triage"]
+        )
         assert r is not None and r.code == "untriaged_finding"
 
-    def test_triaged(self):
-        assert check_untriaged_finding("T", "body", ["forge-finding", "triage-accepted"]) is None
+    def test_triaged_when_needs_triage_absent(self):
+        # Operator-triaged finding (label removed) → no block.
+        assert (
+            check_untriaged_finding("T", "body", ["forge-finding"]) is None
+        )
 
     def test_not_a_finding(self):
         assert check_untriaged_finding("T", "body", ["bug"]) is None
+
+    def test_not_a_finding_with_needs_triage_does_not_block(self):
+        # `needs-triage` on a non-finding (e.g. a bug awaiting routing) is
+        # outside this heuristic's scope.
+        assert (
+            check_untriaged_finding("T", "body", ["bug", "needs-triage"])
+            is None
+        )
 
 
 class TestImplementationDesignDump:
@@ -302,7 +317,14 @@ class TestCheckAggregation:
         assert result.suggested_action is SuggestedAction.CLOSE
 
     def test_untriaged_finding(self):
-        result = check("P2 something", WELL_FORMED_AC, ["forge-finding"])
+        # Per #1075 the gate is now keyed on `needs-triage`: a finding still
+        # carrying the label is untriaged. (A finding without it has been
+        # operator-triaged.)
+        result = check(
+            "P2 something",
+            WELL_FORMED_AC,
+            ["forge-finding", "needs-triage"],
+        )
         assert result.shape is Shape.NEEDS_GROOMING
         assert result.suggested_action is SuggestedAction.CLARIFY
         assert any(r.code == "untriaged_finding" for r in result.reasons)
