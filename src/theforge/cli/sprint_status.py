@@ -18,6 +18,7 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
     import yaml
 
     from theforge.sprint.status_reader import (
+        find_live_state_path,
         find_sprint_summary,
         read_completed_status,
         read_live_status,
@@ -36,9 +37,9 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
     if is_live:
         entries = read_live_status(run_id, project_root)
         if entries is not None:
-            sprint_name = _read_sprint_name_from_state(
-                project_root / ".forge" / "runs" / f"{run_id}.state"
-            )
+            state_path = find_live_state_path(run_id, project_root)
+            if state_path is not None:
+                sprint_name = _read_sprint_name_from_state(state_path)
         # Approximate elapsed from the process start time via detach
         try:
             from theforge import detach as _detach
