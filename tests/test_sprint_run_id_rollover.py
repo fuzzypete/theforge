@@ -321,7 +321,10 @@ class TestRunIdRolloverReporting:
             summary = yaml.safe_load(f)
 
         stories = {story["slug"]: story for story in summary["stories"]}
-        assert stories["feature-a"]["outcome"] == "ALREADY_DONE"
+        # Resume skip_merged surfaces as canonical SKIPPED with the triage
+        # reason — the SoT canonical structure routes legacy "already merged"
+        # into the SKIPPED bucket so all surfaces agree by construction.
+        assert stories["feature-a"]["outcome"] == "SKIPPED"
         assert stories["feature-b"]["outcome"] == "DONE"
         assert summary["sprint"]["specs_succeeded"] == 1
         assert summary["sprint"]["specs_skipped"] == 1
@@ -834,7 +837,9 @@ class TestRedirectChainResolution:
                 run_id="run-b-test",
             )
 
-        assert sprint_result.specs_total == 1
+        # Canonical total now includes closed-dependency slugs registered in
+        # the canonical structure (issue-959 + issue-960) — surfaces all agree.
+        assert sprint_result.specs_total == 2
 
     def test_accumulated_state_preserves_prior_removed_story(self, tmp_path: Path) -> None:
         """Saving current-run state does not drop prior stories absent from this manifest."""

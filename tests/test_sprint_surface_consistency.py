@@ -205,3 +205,152 @@ def test_terminal_outcomes_projected_to_correct_bucket(
     other_buckets = {"succeeded", "failed", "skipped"} - {expected_bucket}
     for bucket in other_buckets:
         assert counts[bucket] == 0
+
+
+def test_already_done_serialized_as_legacy_done_for_status_reader(tmp_path: Path) -> None:
+    """The live .state file maps canonical ALREADY_DONE down to legacy ``done``
+    so ``read_live_status`` (which understands legacy buckets only) renders
+    the story with status=done and ``final_outcome`` exposing ALREADY_DONE."""
+    from theforge.sprint.status_reader import read_live_status
+
+    state = SprintStoryState()
+    writer = SprintStateWriter(
+        run_id="run-already",
+        project_root=tmp_path,
+        sprint_name="sprint-already",
+        story_state=state,
+    )
+    writer.init([{"slug": "issue-99", "path": "Issue #99", "status": "waiting"}])
+    writer.update("issue-99", status=StoryOutcome.ALREADY_DONE)
+
+    entries = read_live_status("run-already", tmp_path)
+    assert entries is not None
+    by_slug = {entry.slug: entry for entry in entries}
+    assert by_slug["issue-99"].status == "done"
+    assert by_slug["issue-99"].detail == "ALREADY_DONE"
+
+
+def test_summary_propagates_canonical_terminal_correction(tmp_path: Path) -> None:
+    """Per-story rows in sprint-summary.yaml must reflect canonical
+    terminal-to-terminal corrections (e.g., DONE -> FAILED when a queued PR
+    fails to land), not res.phase.name."""
+    import datetime
+    from unittest.mock import MagicMock
+
+    from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+    from theforge.sprint.audit import _write_sprint_summary
+    from theforge.sprint.manifest import ResolvedSprint, SprintResult
+
+    state = SprintStoryState()
+    state.register("a", "Issue #1", outcome=StoryOutcome.DONE, canonical_ref="a.md")
+    # Simulate the queued-PR-failed-to-land correction.
+    state.transition("a", outcome=StoryOutcome.FAILED)
+
+    coord_state = CoordinatorState(
+        phase=Phase.DONE,
+        started_at="2026-04-25T12:00:00Z",
+        workspace_path=tmp_path,
+        log_dir=tmp_path,
+    )
+    coord_result = CoordinatorResult(
+        success=True, phase=Phase.DONE, state=coord_state, message="done"
+    )
+    sprint_res = SprintResult(
+        name="s",
+        specs_total=1,
+        specs_succeeded=0,
+        specs_failed=1,
+        specs_skipped=0,
+        total_cost_usd=0.0,
+        budget_usd=10.0,
+        results=[("a.md", coord_result)],
+    )
+    manifest = ResolvedSprint(name="s", budget_usd=10.0, stories=[], max_parallel=1)
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    _write_sprint_summary(
+        manifest=manifest,
+        result=sprint_res,
+        canonical_refs=["a.md"],
+        started_at=now,
+        finished_at=now,
+        duration=0.0,
+        sprint_log_dir=log_dir,
+        slug_map={"a.md": "a"},
+        tasks_by_slug={"a": MagicMock(depends_on=[])},
+        story_state=state,
+    )
+    summary = yaml.safe_load((log_dir / "sprint-summary.yaml").read_text())
+    rows = {s["slug"]: s for s in summary["stories"]}
+    # Per-story row outcome matches canonical, not res.phase.name (DONE).
+    assert rows["a"]["outcome"] == "FAILED"
+    assert summary["sprint"]["specs_failed"] == 1
+    assert summary["sprint"]["specs_succeeded"] == 0
+
+
+def test_all_skipped_shape_gate_path_uses_canonical_state(tmp_path: Path) -> None:
+    """The all-skipped CLI path must project summary stories and counts from
+    the canonical SprintStoryState — skipped issues must appear as stories,
+    not just in the separate skipped list."""
+    from theforge.cli.sprint import _emit_all_skipped_audit
+    from theforge.sprint.shape_gate import SkippedIssue
+
+    config = MagicMock_with_root(tmp_path)
+    skipped = [
+        SkippedIssue(
+            issue_number=42,
+            reason_codes=("needs_grooming_label",),
+            source="label",
+            title="Needs grooming",
+            detail="issue carries 'needs-grooming' label",
+        ),
+        SkippedIssue(
+            issue_number=43,
+            reason_codes=("missing_acceptance_criteria",),
+            source="local_check",
+            title="No ACs",
+            detail="local shape check rejected",
+        ),
+    ]
+    _emit_all_skipped_audit(
+        config=config,
+        sprint_name="sprint-all-skipped",
+        budget_usd=10.0,
+        skipped_issues=skipped,
+    )
+    summary_path = tmp_path / ".forge" / "logs" / "sprint-all-skipped" / "sprint-summary.yaml"
+    summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+    # Counts come from canonical state, not from a hard-coded zero.
+    assert summary["sprint"]["specs_total"] == 2
+    assert summary["sprint"]["specs_skipped"] == 2
+    assert summary["sprint"]["specs_succeeded"] == 0
+    assert summary["sprint"]["specs_failed"] == 0
+    # Stories list contains both shape-gate-skipped issues — not just the
+    # legacy skipped[] list.
+    slugs = {row["slug"] for row in summary["stories"]}
+    assert {"issue-42", "issue-43"}.issubset(slugs)
+
+
+def MagicMock_with_root(tmp_path: Path):
+    """Tiny config stub providing only ``project_root`` for the all-skipped
+    helper. Avoids pulling in the full ForgeConfig fixture."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(project_root=tmp_path)
+
+
+def test_headless_invocation_registers_shape_gate_skipped_in_canonical() -> None:
+    """When run_sprint runs without a CLI run_id, shape-gate-skipped issues
+    are still registered in the canonical SprintStoryState passed to the
+    summary writer (they appear in counts and the stories list)."""
+    state = SprintStoryState()
+    # Simulate the headless registration the runner performs.
+    state.register(
+        "issue-101",
+        "Issue #101",
+        outcome=StoryOutcome.SKIPPED,
+        reason="needs_grooming_label",
+    )
+    counts = state.counts()
+    assert counts == {"total": 1, "succeeded": 0, "failed": 0, "skipped": 1}

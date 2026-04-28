@@ -2051,9 +2051,13 @@ def run_sprint(
     specs_succeeded = _canonical_counts["succeeded"]
     specs_failed = _canonical_counts["failed"]
     specs_skipped = _canonical_counts["skipped"]
+    # Canonical total: include canonical-only stories (shape-gate skips,
+    # closed-at-fetch ALREADY_DONE, etc.) so SprintResult/banner/summary
+    # /notifications all report the same total.
+    canonical_total = _canonical_counts["total"] or total
     sprint_result = SprintResult(
         name=resolved.name,
-        specs_total=total,
+        specs_total=canonical_total,
         specs_succeeded=specs_succeeded,
         specs_failed=specs_failed,
         specs_skipped=specs_skipped,
@@ -2077,15 +2081,23 @@ def run_sprint(
         total_duration_s=round(_sprint_elapsed, 2),
     )
     if notify:
+        # Notifications project from canonical counts/total so every
+        # operator surface reports the same numbers by construction.
         if config.notifications.backend != "none":
             _notify(
                 f"TheForge: {resolved.name}",
-                f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed",
+                (
+                    f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed, "
+                    f"⊘ {specs_skipped} skipped"
+                ),
             )
         if config.notifications.ntfy is not None:
             _ntfy_title = f'TheForge: sprint done \u2014 "{resolved.name}"'
             _ntfy_body_lines = [
-                f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
+                (
+                    f"{canonical_total} stories: {specs_succeeded} succeeded "
+                    f"\u00b7 {specs_failed} failed \u00b7 {specs_skipped} skipped"
+                ),
                 f"Total cost: ${final_cost:.2f}   Duration: {_sprint_dur}",
             ]
             if stopped_reason:
@@ -2101,7 +2113,10 @@ def run_sprint(
 
             _sc_title = f'TheForge sprint complete \u2014 "{resolved.name}"'
             _sc_body_lines = [
-                f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
+                (
+                    f"{canonical_total} stories: {specs_succeeded} succeeded "
+                    f"\u00b7 {specs_failed} failed \u00b7 {specs_skipped} skipped"
+                ),
                 f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
             ]
             if stopped_reason:

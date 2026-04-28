@@ -251,7 +251,38 @@ def _emit_all_skipped_audit(
 
     from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
     from theforge.sprint.manifest import ResolvedSprint, SprintResult
+    from theforge.sprint.story_state import SprintStoryState, StoryOutcome
 
+    # Build a canonical SprintStoryState containing every shape-gate-skipped
+    # issue so the all-skipped audit/summary projects from the same SoT
+    # structure run_sprint() uses. Counts and the per-story list both flow
+    # from this single source.
+    story_state = SprintStoryState()
+    for sk in skipped_issues or []:
+        sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
+        sk_num = sk_dict.get("issue_number")
+        if sk_num is None:
+            continue
+        sk_slug = f"issue-{sk_num}"
+        sk_codes = sk_dict.get("reason_codes") or []
+        sk_reason = (
+            ", ".join(sk_codes)
+            if sk_codes
+            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
+        )
+        story_state.register(
+            sk_slug,
+            f"Issue #{sk_num}",
+            outcome=StoryOutcome.SKIPPED,
+            reason=sk_reason,
+            canonical_ref=f"issue:{sk_num}",
+            detail={
+                "shape_gate_source": sk_dict.get("source"),
+                "shape_gate_codes": list(sk_codes),
+                "final_outcome": "SKIPPED",
+            },
+        )
+    canonical_counts = story_state.counts()
     manifest = ResolvedSprint(
         name=sprint_name,
         budget_usd=budget_usd,
@@ -260,10 +291,10 @@ def _emit_all_skipped_audit(
     )
     result = SprintResult(
         name=sprint_name,
-        specs_total=0,
-        specs_succeeded=0,
-        specs_failed=0,
-        specs_skipped=0,
+        specs_total=canonical_counts["total"],
+        specs_succeeded=canonical_counts["succeeded"],
+        specs_failed=canonical_counts["failed"],
+        specs_skipped=canonical_counts["skipped"],
         total_cost_usd=0.0,
         budget_usd=budget_usd,
         results=[],
@@ -291,6 +322,7 @@ def _emit_all_skipped_audit(
             duration=0.0,
             sprint_log_dir=log_dir,
             skipped_issues=skipped_issues,
+            story_state=story_state,
         )
     except Exception as exc:
         print(
