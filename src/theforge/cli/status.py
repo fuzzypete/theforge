@@ -305,6 +305,15 @@ def cmd_status(args: object) -> int:
     recent = getattr(args, "recent", False)
     last = getattr(args, "last", False)
     explicit_run_id: str | None = getattr(args, "run_id", None)
+    watch_interval: int | None = getattr(args, "watch", None)
+    no_color: bool = getattr(args, "no_color", False)
+
+    if watch_interval is not None and watch_interval <= 0:
+        print(
+            f"--watch interval must be a positive integer (got {watch_interval}).",
+            file=sys.stderr,
+        )
+        return 2
 
     # ── --recent: compact run list ────────────────────────────────────────
     if recent:
@@ -338,6 +347,21 @@ def cmd_status(args: object) -> int:
         _pending.cleanup_stale(project_root)
         _show_pending_decisions(_pending, project_root)
         return 0
+
+    # ── Watch mode (TTY-only; falls back to snapshot otherwise) ───────────
+    if watch_interval is not None:
+        from theforge.cli import status_watch
+
+        if status_watch.is_tty() and _is_sprint_run(target_run_id, project_root):
+            color = status_watch.color_enabled(no_color)
+            return status_watch.run_watch_loop(
+                target_run_id,
+                project_root,
+                float(watch_interval),
+                color=color,
+            )
+        # Non-TTY or non-sprint run: silently fall back to single snapshot so
+        # piped/redirected output and CI captures stay clean.
 
     # ── Display run status ────────────────────────────────────────────────
     if _is_sprint_run(target_run_id, project_root):
@@ -659,6 +683,28 @@ def cmd_decide(args: object) -> int:
     return 0
 
 
+def _positive_watch_interval(raw: str) -> int:
+    """argparse type for ``--watch SECONDS``: require a positive integer.
+
+    Rejects 0 and negatives so the watch loop never sleeps for a non-positive
+    duration (which would crash on ``time.sleep(-1)``) and never busy-loops at
+    interval 0.
+    """
+    import argparse  # noqa: PLC0415
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            f"--watch requires an integer number of seconds, got {raw!r}"
+        ) from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"--watch interval must be a positive integer (got {value})"
+        )
+    return value
+
+
 def register_parsers(subparsers: object) -> None:
     """Register status/logs/stop/decide subcommand parsers."""
     # forge status
@@ -683,6 +729,26 @@ def register_parsers(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Show the most recent completed or failed run",
+    )
+    status_parser.add_argument(
+        "--watch",
+        nargs="?",
+        const=2,
+        type=_positive_watch_interval,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Live-update mode: re-render every SECONDS (must be a positive "
+            "integer; default 2). Falls back to single snapshot if stdout is "
+            "not a TTY."
+        ),
+    )
+    status_parser.add_argument(
+        "--no-color",
+        dest="no_color",
+        action="store_true",
+        default=False,
+        help="Disable ANSI color in watch mode (NO_COLOR env var also honored).",
     )
 
     # forge logs
