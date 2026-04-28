@@ -776,6 +776,8 @@ def _make_worker_phase_fn(
                         update_kwargs["complexity"] = updates["complexity"]
                     if "cost_usd" in updates:
                         update_kwargs["cost_usd"] = updates["cost_usd"]
+                    if "current_model" in updates:
+                        update_kwargs["current_model"] = updates["current_model"]
                     if _detail_updates:
                         update_kwargs["detail"] = _detail_updates
                     state_writer.update(slug, **update_kwargs)

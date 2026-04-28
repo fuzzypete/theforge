@@ -352,6 +352,20 @@ def _run_plan_phase(
             allowed_tools=config.preflight_profile.allowed_tools,
         )
         plan_profile = _apply_provider_fallback(plan_profile, config.provider_fallbacks)
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "PLAN",
+                "iteration": 0,
+                "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
+                "current_model": plan_profile.model,
+                "detail": {
+                    "plan_attempt": state.plan_regen_count + 1,
+                    "plan_max_attempts": config.retry.max_plan_regen_attempts,
+                },
+            }
+        )
     _log_phase(state.phase, plan_profile.model)
     logger._safe_emit("phase_start", phase="PLAN", iteration=0)
 

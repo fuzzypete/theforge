@@ -25,6 +25,7 @@ class StoryStatusEntry:
     stage: str = ""
     detail: str = ""
     complexity: str | None = None
+    model: str | None = None
 
 
 def _follow_redirect_chain(run_id: str, project_root: Path, max_hops: int = 20) -> str:
@@ -425,6 +426,9 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         if complexity is None:
             complexity = derived_complexity
 
+        dev_model_raw = story.get("dev_model")
+        model_val = dev_model_raw if isinstance(dev_model_raw, str) and dev_model_raw else None
+
         entries.append(
             StoryStatusEntry(
                 slug=slug,
@@ -438,6 +442,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 stage=stage,
                 detail=detail,
                 complexity=complexity,
+                model=model_val,
             )
         )
 
@@ -481,6 +486,12 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             phase_display = "waiting"
         stage, detail, complexity = _stage_and_detail_from_live_story(story)
 
+        if status_val in {"skipped", "blocked"}:
+            model_val: str | None = None
+        else:
+            model_raw = story.get("current_model")
+            model_val = model_raw if isinstance(model_raw, str) and model_raw else None
+
         entries.append(
             StoryStatusEntry(
                 slug=slug,
@@ -494,6 +505,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 stage=stage,
                 detail=detail,
                 complexity=complexity,
+                model=model_val,
             )
         )
         if slug:

@@ -610,12 +610,20 @@ def _write_sprint_summary(
                 if getattr(res.state, "review_iteration_telemetry", [])
                 else None
             )
+            _dev_results_list = list(getattr(res.state, "dev_results", []) or [])
+            _dev_model: str | None = None
+            if _dev_results_list:
+                _last_dev = _dev_results_list[-1]
+                _model_used = getattr(_last_dev, "model_used", None)
+                if isinstance(_model_used, str) and _model_used:
+                    _dev_model = _model_used
             entry: dict = {
                 "path": display_key,
                 "slug": slug,
                 "outcome": outcome,
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),
+                "dev_model": _dev_model,
                 "story_run_id": run_id,
                 "preflight": preflight,
                 "preflight_original_verdict": getattr(
@@ -689,6 +697,7 @@ def _write_sprint_summary(
                 "outcome": drop_outcome,
                 "verdict": None,
                 "cost_usd": 0.0,
+                "dev_model": None,
                 "preflight": None,
                 "error": drop_reason,
                 "error_type": "dropped" if drop_reason else None,

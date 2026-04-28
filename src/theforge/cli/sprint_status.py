@@ -132,7 +132,7 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
 
     # Column header
     header = (
-        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'STAGE':<16}  "
+        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'MODEL':<24}  {'STAGE':<16}  "
         f"{'COMPLEXITY':<10}  {'COST':>7}  {'ELAPSED':>7}  DETAIL"
     )
     print(header)
@@ -212,10 +212,14 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     elapsed_s = getattr(entry, "elapsed_seconds", None)
     detail = getattr(entry, "detail", "")
     complexity = getattr(entry, "complexity", None)
+    model = getattr(entry, "model", None)
 
     phase_str = phase if phase else "—"
     stage_str = stage if stage else "—"
     complexity_str = complexity if complexity else "—"
+    model_str = model if model else "—"
+    if len(model_str) > 24:
+        model_str = model_str[:24]
     cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
     elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
 
@@ -223,10 +227,17 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     detail_width = _detail_column_width(indent)
     path_lines = _wrap_cell(path, 28)
     phase_lines = _wrap_cell(phase_str, 12)
+    model_lines = _wrap_cell(model_str, 24)
     stage_lines = _wrap_cell(stage_str, 16)
     detail_lines = _wrap_cell(detail if detail else "—", detail_width)
 
-    line_count = max(len(path_lines), len(phase_lines), len(stage_lines), len(detail_lines))
+    line_count = max(
+        len(path_lines),
+        len(phase_lines),
+        len(model_lines),
+        len(stage_lines),
+        len(detail_lines),
+    )
     for index in range(line_count):
         icon_cell = icon if index == 0 else " "
         status_cell = status if index == 0 else ""
@@ -237,6 +248,7 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
             f"{icon_cell} {path_lines[index] if index < len(path_lines) else '':<28}  "
             f"{status_cell:<8}  "
             f"{phase_lines[index] if index < len(phase_lines) else '':<12}  "
+            f"{model_lines[index] if index < len(model_lines) else '':<24}  "
             f"{stage_lines[index] if index < len(stage_lines) else '':<16}  "
             f"{complexity_cell:<10}  {cost_cell:>7}  {elapsed_cell:>7}  "
             f"{detail_lines[index] if index < len(detail_lines) else ''}"
@@ -247,7 +259,7 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
 def _detail_column_width(indent: int) -> int:
     """Return an adaptive width for DETAIL so values wrap instead of truncating."""
     terminal_width = shutil.get_terminal_size((140, 20)).columns
-    fixed_width = indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 16 + 2 + 10 + 2 + 7 + 2 + 7 + 2
+    fixed_width = indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 24 + 2 + 16 + 2 + 10 + 2 + 7 + 2 + 7 + 2
     return max(20, terminal_width - fixed_width)
 
 

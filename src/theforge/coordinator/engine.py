@@ -357,6 +357,7 @@ def _coordinator_loop(
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost,
                         "complexity": state.preflight_complexity,
+                        "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,
                             "dev_iteration": state.dev_iteration,
@@ -377,6 +378,21 @@ def _coordinator_loop(
             )
             if escalation is not None:
                 return escalation
+
+            if state.dev_escalated and state_update_fn is not None:
+                state_update_fn(
+                    {
+                        "phase": "DEV",
+                        "iteration": state.dev_iteration,
+                        "cost_usd": state.total_cost,
+                        "complexity": state.preflight_complexity,
+                        "current_model": config.dev_profile.model,
+                        "detail": {
+                            "review_cycle": state.review_cycle,
+                            "dev_iteration": state.dev_iteration,
+                        },
+                    }
+                )
 
             # ── Startup failure guard ──────────────────────────────
             if state.dev_results and state.dev_results[-1].startup_failure:

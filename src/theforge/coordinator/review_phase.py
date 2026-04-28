@@ -531,6 +531,7 @@ def _run_review_phase(
                 "iteration": state.review_cycle + 1,
                 "cost_usd": state.total_cost,
                 "complexity": state.preflight_complexity,
+                "current_model": f"panel({len(config.review_pool)})",
             }
         )
     if logger:
