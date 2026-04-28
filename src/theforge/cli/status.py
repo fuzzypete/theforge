@@ -13,6 +13,8 @@ from theforge.cli.shared import _find_config
 from theforge.config import load_config
 
 _SENTINEL_EOF = "[forge test sentinel EOF]"
+_WATCH_SPRINT_STARTUP_GRACE_SECONDS = 5.0
+_WATCH_SPRINT_STARTUP_POLL_SECONDS = 0.1
 
 
 def _follow_log_with_redirect(
@@ -93,6 +95,40 @@ def _is_sprint_run(run_id: str, project_root: Path) -> bool:
         except (OSError, ValueError, json.JSONDecodeError):
             pass
     return False
+
+
+def _await_watchable_sprint_run(
+    run_id: str,
+    project_root: Path,
+    *,
+    grace_seconds: float = _WATCH_SPRINT_STARTUP_GRACE_SECONDS,
+    poll_seconds: float = _WATCH_SPRINT_STARTUP_POLL_SECONDS,
+) -> bool:
+    """Wait briefly for a live run to become recognizable as a sprint.
+
+    `forge sprint` writes its PID file before the initial sprint `.state` file,
+    leaving a short startup window where `forge status --watch` would otherwise
+    misclassify the run as a single-run snapshot and exit immediately.
+
+    Only waits while the target run is still live. Historical runs and ordinary
+    `forge run` invocations continue to fall back immediately.
+    """
+    if _is_sprint_run(run_id, project_root):
+        return True
+
+    pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
+    if not pid_file.exists():
+        return False
+
+    deadline = time.monotonic() + max(0.0, grace_seconds)
+    while time.monotonic() < deadline:
+        time.sleep(max(0.0, poll_seconds))
+        if _is_sprint_run(run_id, project_root):
+            return True
+        if not pid_file.exists():
+            return False
+
+    return _is_sprint_run(run_id, project_root)
 
 
 def _find_most_recent_run(project_root: Path) -> tuple[str, bool] | None:
@@ -352,7 +388,7 @@ def cmd_status(args: object) -> int:
     if watch_interval is not None:
         from theforge.cli import status_watch
 
-        if status_watch.is_tty() and _is_sprint_run(target_run_id, project_root):
+        if status_watch.is_tty() and _await_watchable_sprint_run(target_run_id, project_root):
             color = status_watch.color_enabled(no_color)
             return status_watch.run_watch_loop(
                 target_run_id,

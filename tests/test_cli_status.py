@@ -430,6 +430,48 @@ class TestIsSprintRun:
             assert _is_sprint_run("newrun", tmp_path) is False
 
 
+class TestAwaitWatchableSprintRun:
+    def test_returns_true_immediately_when_already_sprint(self, tmp_path: Path) -> None:
+        from theforge.cli.status import _await_watchable_sprint_run
+
+        with patch("theforge.cli.status._is_sprint_run", return_value=True):
+            assert _await_watchable_sprint_run("run-1", tmp_path) is True
+
+    def test_waits_for_live_run_to_become_sprint(self, tmp_path: Path) -> None:
+        from theforge.cli.status import _await_watchable_sprint_run
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-1.pid").write_text("123\nslug\n")
+
+        with (
+            patch("theforge.cli.status._is_sprint_run", side_effect=[False, False, True]),
+            patch("theforge.cli.status.time.sleep"),
+            patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.01, 0.02]),
+        ):
+            assert _await_watchable_sprint_run("run-1", tmp_path, grace_seconds=1.0) is True
+
+    def test_returns_false_without_wait_for_non_live_run(self, tmp_path: Path) -> None:
+        from theforge.cli.status import _await_watchable_sprint_run
+
+        with patch("theforge.cli.status._is_sprint_run", return_value=False):
+            assert _await_watchable_sprint_run("run-1", tmp_path) is False
+
+    def test_returns_false_after_grace_window_expires(self, tmp_path: Path) -> None:
+        from theforge.cli.status import _await_watchable_sprint_run
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-1.pid").write_text("123\nslug\n")
+
+        with (
+            patch("theforge.cli.status._is_sprint_run", return_value=False),
+            patch("theforge.cli.status.time.sleep"),
+            patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.2, 1.1]),
+        ):
+            assert _await_watchable_sprint_run("run-1", tmp_path, grace_seconds=1.0) is False
+
+
 def test_sprint_status_absent_from_cli_parser() -> None:
     """forge sprint-status must not appear in the built CLI parser."""
     from theforge.cli.main import build_parser
