@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
-from theforge.coordinator.engine import run_task
+from theforge.coordinator.engine import run_from_dev, run_task
 from theforge.coordinator.state import CoordinatorState, Phase
 
 
@@ -246,3 +246,77 @@ criteria_checked: []
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_cache_validation["status"] == "invalidated"
         assert result.state.preflight_cache_validation["reason"] == "worktree_head_changed"
+
+
+class TestResumeStaleCacheRerunsPreflight:
+    """Regression: resume path must re-run preflight when the cache is invalid.
+
+    The bug: in a multi-batch sprint, when a story resumes after the base branch
+    advanced (a prior batch merged), the cache is correctly detected as
+    invalidated — but ``_run_resume_coordinator`` previously had no else branch
+    to re-run preflight. The state stayed at its default ``preflight_verdict =
+    "SKIPPED"`` with no complexity / work_type / likely_files, and dev ran blind.
+    """
+
+    def test_run_from_dev_invalid_cache_reruns_preflight(self, tmp_path):
+        """run_from_dev with stale cache must re-run preflight, not leave it SKIPPED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="PROCEED",
+            preflight_reason="Stale cached verdict.",
+            preflight_complexity="medium",
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+            preflight_cache_snapshot={
+                "worktree_head": "old-head",
+                "evaluation_base_branch": "main",
+                "evaluation_base_branch_head": "old-base-head",
+            },
+        )
+
+        fresh_preflight = _make_agent_result(
+            output="""\
+```yaml
+verdict: BLOCKED
+complexity: large
+sufficiency: needs_planning
+work_type: feature
+reason: "Cannot proceed; spec ambiguous after base advance."
+criteria_checked: []
+```
+""",
+            profile_name="preflight",
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if rendered.startswith("git rev-parse "):
+                # worktree HEAD differs from cached snapshot → invalidates cache
+                return (True, "new-head" if str(cwd) == str(workspace) else "new-base-head")
+            return (True, "")
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                return_value=fresh_preflight,
+            ) as mock_preflight,
+            patch("theforge.coordinator.engine._check_behind_origin"),
+        ):
+            result = run_from_dev(config, task, workspace, cached_preflight_state=cached_state)
+
+        # Preflight was re-run (the bug: this was 0 before the fix).
+        assert mock_preflight.call_count == 1
+        # The fresh verdict replaces the stale SKIPPED default.
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert result.state.preflight_complexity == "large"
+        assert result.state.preflight_work_type == "feature"
+        # Validation record reflects the invalidation reason.
+        assert result.state.preflight_cache_validation["status"] == "invalidated"
+        # BLOCKED → ESCALATE; the run terminates without dev/review.
+        assert result.phase == Phase.ESCALATE

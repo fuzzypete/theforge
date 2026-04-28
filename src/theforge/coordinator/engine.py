@@ -1069,6 +1069,31 @@ def _run_resume_coordinator(
         if cache_valid:
             apply_cached_preflight_state(state, cached_preflight_state)
             config = _apply_preflight_config(config, state)
+        else:
+            # Cache invalidated mid-sprint (e.g., base branch advanced after a
+            # prior batch merged): re-run preflight against the current base so
+            # downstream phases get fresh complexity/work_type/likely_files
+            # rather than the default SKIPPED state. Without this, dev runs
+            # blind and typically loops without producing changes.
+            from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
+
+            config, _pf_result, _pf_already_done_loop = _run_preflight_phase(
+                state,
+                config,
+                task,
+                story_content,
+                workspace_path,
+                branch_name,
+                notify=notify,
+                logger=logger,
+                task_start=_task_start,
+                state_update_fn=state_update_fn,
+                stop_phase=None,
+            )
+            if _pf_result is not None:
+                return _pf_result
+            if _pf_already_done_loop:
+                skip_dev_first_iter = True
 
     with _run_log_context(config, logger, task, state, _task_start):
         base_branch = config.workspace.base_branch
