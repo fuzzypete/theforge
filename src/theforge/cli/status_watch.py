@@ -40,8 +40,10 @@ def CURSOR_UP(n: int) -> str:
 GREEN = "\x1b[32m"
 RED = "\x1b[31m"
 DIM = "\x1b[2m"
-BOLD = "\x1b[1m"
 RESET = "\x1b[0m"
+
+# Terminals that don't support ANSI color sequences.
+COLORLESS_TERMS = frozenset({"dumb", "unknown", ""})
 
 
 def is_tty(stream: Any = None) -> bool:
@@ -55,12 +57,24 @@ def is_tty(stream: Any = None) -> bool:
 
 
 def color_enabled(no_color_flag: bool, stream: Any = None) -> bool:
-    """Decide whether to emit ANSI color sequences."""
+    """Decide whether to emit ANSI color sequences.
+
+    Disables color when:
+    - ``--no-color`` was passed,
+    - the ``NO_COLOR`` environment variable is set (https://no-color.org),
+    - stdout is not a TTY,
+    - or ``TERM`` indicates a colorless terminal (``dumb``, ``unknown``, unset).
+    """
     if no_color_flag:
         return False
     if os.environ.get("NO_COLOR"):
         return False
-    return is_tty(stream)
+    if not is_tty(stream):
+        return False
+    term = os.environ.get("TERM", "").strip().lower()
+    if term in COLORLESS_TERMS:
+        return False
+    return True
 
 
 def _c(text: str, code: str, color: bool) -> str:

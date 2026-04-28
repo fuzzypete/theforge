@@ -69,12 +69,44 @@ class TestColorEnabled:
 
     def test_tty_with_no_overrides_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "xterm-256color")
 
         class FakeStream:
             def isatty(self) -> bool:
                 return True
 
         assert status_watch.color_enabled(False, FakeStream()) is True
+
+    def test_term_dumb_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Colorless TTYs (TERM=dumb) must not receive ANSI color sequences."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "dumb")
+
+        class FakeStream:
+            def isatty(self) -> bool:
+                return True
+
+        assert status_watch.color_enabled(False, FakeStream()) is False
+
+    def test_term_unset_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("TERM", raising=False)
+
+        class FakeStream:
+            def isatty(self) -> bool:
+                return True
+
+        assert status_watch.color_enabled(False, FakeStream()) is False
+
+    def test_term_unknown_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "unknown")
+
+        class FakeStream:
+            def isatty(self) -> bool:
+                return True
+
+        assert status_watch.color_enabled(False, FakeStream()) is False
 
 
 # ── Format helpers ────────────────────────────────────────────────────────────
