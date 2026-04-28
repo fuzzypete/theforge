@@ -28,8 +28,14 @@ WAIT_CHAR = " "
 
 HIDE_CURSOR = "\x1b[?25l"
 SHOW_CURSOR = "\x1b[?25h"
-CLEAR_SCREEN = "\x1b[2J"
-CURSOR_HOME = "\x1b[H"
+CLEAR_BELOW = "\x1b[0J"  # erase from cursor to end of screen
+CARRIAGE_RETURN = "\r"
+
+
+def CURSOR_UP(n: int) -> str:
+    """ANSI: move cursor up N lines (no-op when N<=0)."""
+    return f"\x1b[{n}A" if n > 0 else ""
+
 
 GREEN = "\x1b[32m"
 RED = "\x1b[31m"
@@ -76,22 +82,70 @@ def _format_delta(delta: float) -> str:
     return f"{sign}${abs(delta):.2f}"
 
 
-def _last_audit_mtime(slug: str, project_root: Path) -> float | None:
-    """Most recent mtime of any per-story audit.yaml under .forge/logs/*/<slug>/."""
-    if not slug:
-        return None
+def _resolve_sprint_log_dir(run_id: str, project_root: Path) -> Path | None:
+    """Return the per-run log directory `.forge/logs/<sprint_name>/` for run_id.
+
+    Resolution order:
+    1. The live `.state` file at `.forge/runs/<run_id>.state` records
+       ``sprint_name`` — that is the canonical mapping for in-flight runs.
+    2. Otherwise, scan `.forge/logs/*/sprint-summary.yaml` for an entry whose
+       ``sprint.run_id`` matches (covers completed sprints).
+
+    Returns ``None`` when no directory can be resolved (e.g. logs not yet
+    created on the very first frame). Restricting the audit-mtime lookup to
+    this directory prevents stale events from previous sprint runs that
+    happened to use the same story slug from leaking into the live display.
+    """
+    import yaml  # noqa: PLC0415
+
     logs_dir = project_root / ".forge" / "logs"
+    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
+    if state_path.exists():
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            sprint_name = data.get("sprint_name", "") if isinstance(data, dict) else ""
+            if sprint_name:
+                candidate = logs_dir / sprint_name
+                if candidate.exists():
+                    return candidate
+        except Exception:
+            pass
+
     if not logs_dir.exists():
         return None
-    best: float | None = None
-    for audit in logs_dir.glob(f"*/{slug}/audit.yaml"):
-        try:
-            m = audit.stat().st_mtime
-        except OSError:
-            continue
-        if best is None or m > best:
-            best = m
-    return best
+    try:
+        for summary in logs_dir.glob("*/sprint-summary.yaml"):
+            try:
+                with open(summary, encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                if not isinstance(data, dict):
+                    continue
+                sp = data.get("sprint", {})
+                if isinstance(sp, dict) and sp.get("run_id") == run_id:
+                    return summary.parent
+            except Exception:
+                continue
+    except OSError:
+        return None
+    return None
+
+
+def _last_audit_mtime(
+    slug: str, run_id: str, project_root: Path, sprint_log_dir: Path | None
+) -> float | None:
+    """Most recent mtime of `<sprint_log_dir>/<slug>/audit.yaml` for the active run.
+
+    Restricted to the resolved sprint log directory so a story that ran in a
+    prior sprint with the same slug cannot surface its old timestamp here.
+    """
+    if not slug or sprint_log_dir is None:
+        return None
+    audit = sprint_log_dir / slug / "audit.yaml"
+    try:
+        return audit.stat().st_mtime
+    except OSError:
+        return None
 
 
 def render_frame(
@@ -102,19 +156,24 @@ def render_frame(
     *,
     color: bool,
     now_fn: Any = None,
-) -> str:
-    """Return the full text for one watch-mode frame.
+) -> tuple[str, bool]:
+    """Return ``(text, ok)`` for one watch-mode frame.
 
-    Mutates ``state`` to record per-slug cost and audit-event timestamps so the
-    next frame can compute deltas. ``state`` should be reused across frames.
+    ``ok`` is False when the underlying snapshot reported it could not read
+    sprint state (non-zero return) — the caller propagates that as a
+    non-zero exit on the first frame. ``state`` is mutated to record per-slug
+    cost so the next frame can compute deltas.
     """
     from theforge.cli.sprint_status import display_sprint_status
     from theforge.sprint.status_reader import read_live_status
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        display_sprint_status(run_id, project_root)
+        rc = display_sprint_status(run_id, project_root)
     base = buf.getvalue()
+    snapshot_ok = rc == 0
+
+    sprint_log_dir = _resolve_sprint_log_dir(run_id, project_root)
 
     entries = read_live_status(run_id, project_root) or []
     now = (now_fn or time.time)()
@@ -138,7 +197,7 @@ def render_frame(
         delta = cost - prev
         new_costs[slug] = cost
 
-        last_evt = _last_audit_mtime(slug, project_root)
+        last_evt = _last_audit_mtime(slug, run_id, project_root, sprint_log_dir)
         if last_evt is None:
             age_str = "—"
             stalled = False
@@ -168,12 +227,11 @@ def render_frame(
 
         path = getattr(e, "path", slug) or slug
         path_disp = path if len(path) <= 30 else path[:29] + "…"
-        # ``act`` may contain ANSI codes; pad based on visible width (1 char).
         act_pad = act + " " * 2
         overlay_lines.append(f"{path_disp:<30}  {act_pad}  {delta_str:>8}  {age_str:>8}")
 
     state["costs"] = new_costs
-    return base + "\n".join(overlay_lines) + "\n"
+    return base + "\n".join(overlay_lines) + "\n", snapshot_ok
 
 
 def run_watch_loop(
@@ -187,13 +245,20 @@ def run_watch_loop(
 ) -> int:
     """Drive the watch redraw loop.
 
-    Returns 0 on clean exit (Ctrl-C or max_frames reached) and non-zero if the
-    sprint state cannot be read at all on the first attempt.
+    Returns 0 on clean exit (Ctrl-C or max_frames reached) and non-zero when
+    the underlying sprint snapshot cannot be read on the first frame.
+
+    Redraws are in-place: after the first frame we record the line count and
+    on each subsequent frame issue ``CURSOR_UP(n) + CARRIAGE_RETURN +
+    CLEAR_BELOW`` to overwrite only the previously-rendered region. The
+    operator's terminal scrollback is preserved and the visible screen is
+    never cleared.
     """
     sleep = sleep_fn or time.sleep
 
     state: dict = {"costs": {}, "interval": float(interval)}
     frame = 0
+    prev_lines = 0
     cursor_hidden = False
     try:
         if color or is_tty():
@@ -202,7 +267,7 @@ def run_watch_loop(
             cursor_hidden = True
         while True:
             try:
-                body = render_frame(run_id, project_root, state, frame, color=color)
+                body, snapshot_ok = render_frame(run_id, project_root, state, frame, color=color)
             except Exception as exc:  # noqa: BLE001
                 if frame == 0:
                     print(
@@ -212,10 +277,19 @@ def run_watch_loop(
                     return 1
                 # Transient failure mid-loop — keep the previous frame on screen.
                 body = None
+                snapshot_ok = True
+
+            if frame == 0 and not snapshot_ok:
+                # display_sprint_status already wrote its diagnostic to stderr.
+                return 1
 
             if body is not None:
-                sys.stdout.write(CLEAR_SCREEN + CURSOR_HOME + body)
+                if frame == 0:
+                    sys.stdout.write(body)
+                else:
+                    sys.stdout.write(CURSOR_UP(prev_lines) + CARRIAGE_RETURN + CLEAR_BELOW + body)
                 sys.stdout.flush()
+                prev_lines = body.count("\n")
 
             frame += 1
             if max_frames is not None and frame >= max_frames:

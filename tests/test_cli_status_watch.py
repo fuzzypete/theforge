@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -133,9 +134,12 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=None),
         ):
-            text = status_watch.render_frame("run-x", tmp_path, state, frame_idx=0, color=False)
+            text, ok = status_watch.render_frame(
+                "run-x", tmp_path, state, frame_idx=0, color=False
+            )
 
         # First frame: no prior cost recorded → delta is 0 → rendered as em-dash.
+        assert ok is True
         assert "story-a" in text
         assert state["costs"] == {"story-a": 1.50}
 
@@ -154,7 +158,9 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=None),
         ):
-            text = status_watch.render_frame("run-x", tmp_path, state, frame_idx=1, color=False)
+            text, _ok = status_watch.render_frame(
+                "run-x", tmp_path, state, frame_idx=1, color=False
+            )
 
         assert "+$0.60" in text
         assert state["costs"] == {"story-a": 2.10}
@@ -176,7 +182,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=evt_time),
         ):
-            text = status_watch.render_frame(
+            text, _ok = status_watch.render_frame(
                 "run-x",
                 tmp_path,
                 state,
@@ -204,7 +210,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=evt_time),
         ):
-            text = status_watch.render_frame(
+            text, _ok = status_watch.render_frame(
                 "run-x",
                 tmp_path,
                 state,
@@ -232,7 +238,7 @@ class TestRenderFrame:
             ),
             patch.object(status_watch, "_last_audit_mtime", return_value=evt_time),
         ):
-            text = status_watch.render_frame(
+            text, _ok = status_watch.render_frame(
                 "run-x",
                 tmp_path,
                 state,
@@ -257,7 +263,7 @@ class TestRunWatchLoop:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value="frame-body\n",
+                return_value=("frame-body\n", True),
             ),
             patch.object(status_watch, "is_tty", return_value=False),
         ):
@@ -285,7 +291,7 @@ class TestRunWatchLoop:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value="frame-body\n",
+                return_value=("frame-body\n", True),
             ),
             patch.object(status_watch, "is_tty", return_value=False),
         ):
@@ -330,7 +336,7 @@ class TestRunWatchLoop:
             patch.object(
                 status_watch,
                 "render_frame",
-                return_value="frame-body\n",
+                return_value=("frame-body\n", True),
             ),
             patch.object(status_watch, "is_tty", return_value=True),
         ):
@@ -433,3 +439,102 @@ class TestCmdStatusWatchRouting:
 
         assert rc == 0
         loop.assert_not_called()
+
+
+# ── Review-feedback regression coverage ──────────────────────────────────────
+
+
+class TestSnapshotFailurePropagates:
+    """display_sprint_status returning non-zero on first frame must exit non-zero."""
+
+    def test_first_frame_snapshot_failure_exits_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch.object(
+                status_watch,
+                "render_frame",
+                return_value=("", False),
+            ),
+            patch.object(status_watch, "is_tty", return_value=False),
+        ):
+            rc = status_watch.run_watch_loop(
+                "run-x",
+                tmp_path,
+                interval=0.01,
+                color=False,
+                sleep_fn=lambda _s: None,
+                max_frames=1,
+            )
+
+        assert rc == 1
+
+
+class TestNoFullScreenClear:
+    """Redraw must not issue ANSI clear-screen (\\x1b[2J)."""
+
+    def test_redraw_uses_cursor_up_not_clear_screen(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch.object(
+                status_watch,
+                "render_frame",
+                return_value=("line1\nline2\n", True),
+            ),
+            patch.object(status_watch, "is_tty", return_value=False),
+        ):
+            status_watch.run_watch_loop(
+                "run-x",
+                tmp_path,
+                interval=0.01,
+                color=False,
+                sleep_fn=lambda _s: None,
+                max_frames=3,
+            )
+
+        out = capsys.readouterr().out
+        # No full-screen clear sequence anywhere in the redraw output.
+        assert "\x1b[2J" not in out
+        # In-place redraw uses cursor-up + erase-below on subsequent frames.
+        assert "\x1b[2A" in out  # CURSOR_UP(2) for the 2-line body
+        assert status_watch.CLEAR_BELOW in out
+
+
+class TestAuditMtimeRunScoping:
+    """`_last_audit_mtime` must look only inside the resolved sprint log dir."""
+
+    def test_returns_none_when_sprint_log_dir_is_none(self, tmp_path: Path) -> None:
+        result = status_watch._last_audit_mtime("story-a", "run-x", tmp_path, sprint_log_dir=None)
+        assert result is None
+
+    def test_reads_only_from_passed_sprint_dir(self, tmp_path: Path) -> None:
+        # Create two sibling sprint log dirs containing the same slug.
+        old_dir = tmp_path / ".forge" / "logs" / "old-sprint"
+        cur_dir = tmp_path / ".forge" / "logs" / "current-sprint"
+        (old_dir / "story-a").mkdir(parents=True)
+        (cur_dir / "story-a").mkdir(parents=True)
+        old_audit = old_dir / "story-a" / "audit.yaml"
+        cur_audit = cur_dir / "story-a" / "audit.yaml"
+        old_audit.write_text("old")
+        cur_audit.write_text("cur")
+
+        # Make the OLD audit newer than the current to prove scoping.
+        os.utime(old_audit, (2_000_000_000, 2_000_000_000))
+        os.utime(cur_audit, (1_000_000_000, 1_000_000_000))
+
+        result = status_watch._last_audit_mtime(
+            "story-a", "run-x", tmp_path, sprint_log_dir=cur_dir
+        )
+        assert result == 1_000_000_000
+
+    def test_resolve_sprint_log_dir_from_state_file(self, tmp_path: Path) -> None:
+        sprint_name = "sprint-2025-04-27"
+        sprint_dir = tmp_path / ".forge" / "logs" / sprint_name
+        sprint_dir.mkdir(parents=True)
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-x.state").write_text(f"sprint_name: {sprint_name}\n")
+
+        resolved = status_watch._resolve_sprint_log_dir("run-x", tmp_path)
+        assert resolved == sprint_dir
