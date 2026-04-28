@@ -694,6 +694,12 @@ def _write_sprint_summary(
                 entry["drop_reason"] = drop_reason
             spec_entries.append(entry)
 
+    # Carry forward stories completed in earlier resumes whose canonical_ref
+    # is absent from this resume's manifest (e.g., issues that closed between
+    # resumes and were dropped at manifest re-resolution). Without this, the
+    # final resume's summary would silently omit stories that already landed
+    # under earlier run_ids, and totals would reflect only the last resume's
+    # working set instead of the full sprint lifespan. See issue #958.
     for canonical_ref, prior in prior_by_ref.items():
         if canonical_ref in seen_refs:
             continue

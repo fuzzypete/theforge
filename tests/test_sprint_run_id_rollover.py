@@ -894,3 +894,186 @@ class TestRedirectChainResolution:
 
         accumulated = _load_accumulated_stories(sprint_id, tmp_path)
         assert {story["canonical_ref"] for story in accumulated} == {"feature-a.md"}
+
+    def test_summary_carries_forward_prior_stories_absent_from_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """Stories completed in earlier resumes must appear in the final summary
+        even when the final resume's manifest no longer references them.
+
+        Reproduces the bug: a sprint launched against [#119, #169, #510] has
+        #119 and #169 merge in resume N. By resume N+1, those issues are closed
+        and the re-resolved manifest only contains #510. The summary written by
+        the final resume must still surface #119 and #169 as DONE, and the
+        totals must reflect the full sprint lifespan (3 succeeded, not 1).
+        """
+        from theforge.sprint.audit import _write_sprint_summary
+        from theforge.sprint.manifest import SprintManifest, SprintResult
+
+        sprint_name = "issues-119,169,510"
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        prior_stories = [
+            {
+                "canonical_ref": "issue:119",
+                "slug": "issue-119",
+                "path": "Issue #119",
+                "outcome": "DONE",
+                "verdict": "APPROVE",
+                "cost_usd": 1.5,
+                "merge": True,
+                "story_run_id": "run-a",
+            },
+            {
+                "canonical_ref": "issue:169",
+                "slug": "issue-169",
+                "path": "Issue #169",
+                "outcome": "DONE",
+                "verdict": "APPROVE",
+                "cost_usd": 2.5,
+                "merge": True,
+                "story_run_id": "run-a",
+            },
+        ]
+        _save_accumulated_stories(sprint_id, sprint_name, tmp_path, prior_stories)
+
+        # Final resume: only issue:510 remains in the re-resolved manifest.
+        manifest = SprintManifest(name=sprint_name, budget_usd=50.0, stories=["issue:510"])
+        result = SprintResult(
+            name=sprint_name,
+            specs_total=1,
+            specs_succeeded=1,
+            specs_failed=0,
+            specs_skipped=0,
+            total_cost_usd=3.0,
+            budget_usd=50.0,
+            results=[],
+            stopped_reason=None,
+        )
+        sprint_log_dir = tmp_path / ".forge" / "logs" / sprint_name
+
+        _write_sprint_summary(
+            manifest=manifest,
+            result=result,
+            canonical_refs=["issue:510"],
+            started_at=datetime.datetime.now(datetime.timezone.utc),
+            finished_at=datetime.datetime.now(datetime.timezone.utc),
+            duration=1.0,
+            sprint_log_dir=sprint_log_dir,
+            slug_map={"issue:510": "issue-510"},
+            run_id="run-c",
+            sprint_id=sprint_id,
+            project_root=tmp_path,
+        )
+
+        summary = yaml.safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
+        slugs = {s["slug"] for s in summary["stories"]}
+        assert slugs == {"issue-119", "issue-169", "issue-510"}, (
+            f"Summary missing prior-resume stories: {slugs}"
+        )
+        by_slug = {s["slug"]: s for s in summary["stories"]}
+        assert by_slug["issue-119"]["outcome"] == "DONE"
+        assert by_slug["issue-169"]["outcome"] == "DONE"
+        # Totals reflect the full sprint lifespan, not just the final resume.
+        assert summary["sprint"]["specs_total"] == 3
+        # Accumulated state must retain the prior stories so subsequent resumes
+        # also see the full lifespan.
+        accumulated = _load_accumulated_stories(sprint_id, tmp_path)
+        assert {s["canonical_ref"] for s in accumulated} >= {"issue:119", "issue:169"}
+
+    def test_summary_carries_forward_prior_stories_with_story_state(self, tmp_path: Path) -> None:
+        """Same scenario as the previous test, but exercising the canonical
+        story_state projection path used by the live runner. story_state is
+        pre-populated from accumulated state (as runner.py does at startup),
+        and the summary's totals come from story_state.counts() — so prior
+        stories absent from canonical_refs must still be represented.
+        """
+        from theforge.sprint.audit import _write_sprint_summary
+        from theforge.sprint.manifest import SprintManifest, SprintResult
+        from theforge.sprint.story_state import SprintStoryState, StoryOutcome
+
+        sprint_name = "issues-119,169,510"
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        prior_stories = [
+            {
+                "canonical_ref": "issue:119",
+                "slug": "issue-119",
+                "path": "Issue #119",
+                "outcome": "DONE",
+                "cost_usd": 1.5,
+                "merge": True,
+            },
+            {
+                "canonical_ref": "issue:169",
+                "slug": "issue-169",
+                "path": "Issue #169",
+                "outcome": "DONE",
+                "cost_usd": 2.5,
+                "merge": True,
+            },
+        ]
+        _save_accumulated_stories(sprint_id, sprint_name, tmp_path, prior_stories)
+
+        # Simulate the runner pre-populating canonical state from accumulated
+        # state, then registering and completing the current-resume story.
+        story_state = SprintStoryState()
+        story_state.register(
+            "issue-119",
+            "Issue #119",
+            outcome=StoryOutcome.DONE,
+            cost_usd=1.5,
+            canonical_ref="issue:119",
+        )
+        story_state.register(
+            "issue-169",
+            "Issue #169",
+            outcome=StoryOutcome.DONE,
+            cost_usd=2.5,
+            canonical_ref="issue:169",
+        )
+        story_state.register(
+            "issue-510",
+            "Issue #510",
+            outcome=StoryOutcome.DONE,
+            cost_usd=3.0,
+            canonical_ref="issue:510",
+        )
+
+        manifest = SprintManifest(name=sprint_name, budget_usd=50.0, stories=["issue:510"])
+        result = SprintResult(
+            name=sprint_name,
+            specs_total=3,
+            specs_succeeded=3,
+            specs_failed=0,
+            specs_skipped=0,
+            total_cost_usd=7.0,
+            budget_usd=50.0,
+            results=[],
+            stopped_reason=None,
+        )
+        sprint_log_dir = tmp_path / ".forge" / "logs" / sprint_name
+
+        _write_sprint_summary(
+            manifest=manifest,
+            result=result,
+            canonical_refs=["issue:510"],
+            started_at=datetime.datetime.now(datetime.timezone.utc),
+            finished_at=datetime.datetime.now(datetime.timezone.utc),
+            duration=1.0,
+            sprint_log_dir=sprint_log_dir,
+            slug_map={"issue:510": "issue-510"},
+            run_id="run-c",
+            sprint_id=sprint_id,
+            project_root=tmp_path,
+            story_state=story_state,
+        )
+
+        summary = yaml.safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
+        slugs = {s["slug"] for s in summary["stories"]}
+        assert slugs == {"issue-119", "issue-169", "issue-510"}, (
+            f"Summary missing prior-resume stories: {slugs}"
+        )
+        # Totals project from canonical story_state and must include prior
+        # stories that were pre-populated from accumulated state.
+        assert summary["sprint"]["specs_total"] == 3
+        assert summary["sprint"]["specs_succeeded"] == 3
+        assert summary["sprint"]["specs_failed"] == 0
