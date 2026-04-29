@@ -219,7 +219,6 @@ class TestCoordinatorDirtyWorktree:
         assert any(
             c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
         )
-        assert mock_subprocess.call_args[0][0] == ["git", "commit", "-m", mock.ANY]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -546,6 +545,12 @@ class TestDevZeroChangeGuard:
                     result.returncode = 0
                     result.stdout = b"abc123"
                     return result
+                if "rev-list" in cmd:
+                    # validate-phase zero-commits guard: pretend branch has commits ahead
+                    result = mock.Mock()
+                    result.returncode = 0
+                    result.stdout = "1\n"
+                    return result
                 if "diff" in cmd and "--quiet" in cmd:
                     result = mock.Mock()
                     result.returncode = 0  # no diff
@@ -612,6 +617,12 @@ class TestDevZeroChangeGuard:
                     result = mock.Mock()
                     result.returncode = 0
                     result.stdout = b"abc123"
+                    return result
+                if "rev-list" in cmd:
+                    # validate-phase zero-commits guard: pretend branch has commits ahead
+                    result = mock.Mock()
+                    result.returncode = 0
+                    result.stdout = "1\n"
                     return result
                 if "diff" in cmd and "--quiet" in cmd:
                     result = mock.Mock()
@@ -684,6 +695,11 @@ class TestDevZeroChangeGuard:
                     r = mock.Mock()
                     r.returncode = 0
                     r.stdout = b"abc123"
+                    return r
+                if "rev-list" in cmd:
+                    r = mock.Mock()
+                    r.returncode = 0
+                    r.stdout = "1\n"
                     return r
                 if "diff" in cmd and "--quiet" in cmd:
                     r = mock.Mock()
@@ -777,6 +793,11 @@ class TestDevZeroChangeGuard:
                     r = mock.Mock()
                     r.returncode = 0
                     r.stdout = f"commit{dev_trace['n']}".encode()
+                    return r
+                if "rev-list" in cmd:
+                    r = mock.Mock()
+                    r.returncode = 0
+                    r.stdout = "1\n"
                     return r
                 if "diff" in cmd and "--quiet" in cmd:
                     r = mock.Mock()

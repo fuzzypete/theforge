@@ -18,6 +18,7 @@ from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
 
+from .commit_guard import _has_commits_ahead_of_base
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
@@ -647,6 +648,26 @@ def _run_dev_phase(
 
     if not dev_result.success:
         _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
+        # ── Zero-commit guard (any failed dev iteration) ─────────────────
+        # If the dev agent exited with failure (non-zero or signal-killed) and
+        # the worktree has no new commits ahead of base, escalate immediately
+        # rather than letting an empty diff flow through to a fake APPROVE.
+        if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Dev agent failed (exit={dev_result.exit_code}) and produced no commits "
+                "ahead of base — escalating to avoid an empty-diff APPROVE"
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("escalate", reason=state.error, phase="DEV")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
 
     # ── Zero-change guard (review-driven retry only) ─────────────────
     # If the coordinator retried DEV after review REQUEST_CHANGES and the dev

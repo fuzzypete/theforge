@@ -15,6 +15,7 @@ from theforge.config import ForgeConfig
 from theforge.task import TaskStory
 
 from . import util as _cu
+from .commit_guard import _has_commits_ahead_of_base
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
 from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
 from .logging import StructuredLogger
@@ -322,6 +323,25 @@ def _run_validate_phase(
                         state=state,
                         message=state.error,
                     )
+
+        # ── Zero-commits guard ──────────────────────────────────────
+        # A trivially passing gate over an empty worktree is not a real PASS;
+        # treat it as a missing-work failure rather than letting it advance to
+        # REVIEW where the empty diff would silently approve.
+        if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+            state.phase = Phase.ESCALATE
+            state.error = (
+                "Gate exited PASS but branch has no commits ahead of base — "
+                "treating empty worktree as missing-work failure"
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+            _escalate_notify(task, state, notify, config)
+            return _ValidateOutcome.ESCALATE, CoordinatorResult(
+                success=False, phase=state.phase, state=state, message=state.error
+            )
 
     elif gate_decision in ("FAIL", "BLOCKED"):
         if state.budget.is_exhausted():
