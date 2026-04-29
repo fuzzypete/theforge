@@ -221,7 +221,7 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     if len(model_str) > 24:
         model_str = model_str[:24]
     cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
-    elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
+    elapsed_str = _format_story_elapsed(elapsed_s)
 
     prefix = " " * indent
     detail_width = _detail_column_width(indent)
@@ -254,6 +254,18 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
             f"{detail_lines[index] if index < len(detail_lines) else ''}"
         )
         print(f"{prefix}{line}")
+
+
+def _format_story_elapsed(elapsed_s: float | None) -> str:
+    """Format story elapsed time for display."""
+    if elapsed_s is None:
+        return "—"
+    total_seconds = max(0, int(elapsed_s))
+    if total_seconds >= 3600:
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        return f"{hours}h {minutes}m"
+    return f"{total_seconds // 60}m"
 
 
 def _detail_column_width(indent: int) -> int:
