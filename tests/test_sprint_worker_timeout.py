@@ -34,7 +34,6 @@ def _make_preflight_state(
 
 def _make_done_story_result(success: bool = True) -> CoordinatorResult:
     state = CoordinatorState()
-    state.total_cost = 0.0
     return CoordinatorResult(
         success=success,
         phase=Phase.DONE if success else Phase.ESCALATE,

@@ -32,9 +32,14 @@ def test_run_sprint_timeout_writes_story_audit(tmp_path: Path) -> None:
 
     with (
         patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+        ),
         patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
         patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
+        patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 4000.0, 4000.0]),
     ):
         run_sprint(config, manifest)
 

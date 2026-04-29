@@ -28,8 +28,13 @@ _subprocess_run = subprocess.run
 # coordinator's own version runs regardless of what the installed package provides.
 _SUBPROCESS_EVAL = Path(__file__).parent / "_subprocess_eval.py"
 
-MEDIUM_HEADROOM_FACTOR = 1.5
-LARGE_HEADROOM_FACTOR = 2.5
+# Adaptive timeout fallback uses the same default headroom factor across
+# surfaces when forge.yaml does not provide an explicit complexity-tier
+# override. Keep the legacy medium/large names as public aliases for tests and
+# existing call sites.
+DEFAULT_TIMEOUT_HEADROOM_FACTOR = 1.5
+MEDIUM_HEADROOM_FACTOR = DEFAULT_TIMEOUT_HEADROOM_FACTOR
+LARGE_HEADROOM_FACTOR = DEFAULT_TIMEOUT_HEADROOM_FACTOR
 
 # ── Log level ─────────────────────────────────────────────────────────
 

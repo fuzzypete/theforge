@@ -14,7 +14,7 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 google = ["google-genai>=1.0"]
 all = ["openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]
-dev = ["pytest", "pytest-xdist", "pytest-timeout", "ruff"]
+dev = ["pytest", "pytest-xdist", "ruff"]
 
 [project.scripts]
 forge = "theforge.cli:main"
@@ -27,7 +27,7 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 norecursedirs = [".forge"]
 pythonpath = ["src", "tests"]
-addopts = "-n auto --dist worksteal --timeout=10 --timeout-method=thread"
+addopts = "-n auto --dist worksteal"
 markers = [
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
 ]

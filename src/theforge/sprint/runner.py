@@ -25,10 +25,9 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import (
-    LARGE_HEADROOM_FACTOR,
-    MEDIUM_HEADROOM_FACTOR,
     _fmt_duration,
     _generate_run_id,
+    resolve_timeout,
 )
 from ..coordinator.workspace import sweep_orphan_worktrees
 from ..log_util import _log_line
@@ -89,17 +88,7 @@ def derive_worker_timeout(
     complexity_score: int | None = None,
 ) -> int:
     """Derive a per-story worker timeout from sprint defaults and complexity."""
-    if complexity_score is not None:
-        if complexity_score >= 8:
-            return round(base * LARGE_HEADROOM_FACTOR)
-        if complexity_score >= 6:
-            return round(base * MEDIUM_HEADROOM_FACTOR)
-        return base
-    if complexity == "large":
-        return round(base * LARGE_HEADROOM_FACTOR)
-    if complexity == "medium":
-        return round(base * MEDIUM_HEADROOM_FACTOR)
-    return base
+    return resolve_timeout(base, None, None, complexity, complexity_score)
 
 
 def _read_prior_sprint_cost(project_root: Path) -> float:
@@ -1195,15 +1184,30 @@ def run_sprint(
     for task, _src, _canonical_ref in task_entries:
         if resolved.worker_timeout_seconds is not None:
             story_worker_timeouts[task.slug] = resolved.worker_timeout_seconds
+            _log(
+                f"  Worker timeout {task.slug}: {resolved.worker_timeout_seconds}s "
+                "(manifest override)"
+            )
             continue
         _state = preflight_states.get(task.slug)
         if _state is None:
             story_worker_timeouts[task.slug] = base_worker_timeout_seconds
+            _log(
+                f"  Worker timeout {task.slug}: {base_worker_timeout_seconds}s "
+                "(base default; no preflight state)"
+            )
             continue
-        story_worker_timeouts[task.slug] = derive_worker_timeout(
+        _timeout_seconds = derive_worker_timeout(
             base_worker_timeout_seconds,
             _state.preflight_complexity,
             _state.preflight_complexity_score,
+        )
+        story_worker_timeouts[task.slug] = _timeout_seconds
+        _source = "derived" if _timeout_seconds != base_worker_timeout_seconds else "base default"
+        _complexity = _state.preflight_complexity or "unknown"
+        _log(
+            f"  Worker timeout {task.slug}: {_timeout_seconds}s "
+            f"({_complexity} complexity, {_source})"
         )
     if resume:
         _register_resumed_story_footprints(triages, preflight_states)
