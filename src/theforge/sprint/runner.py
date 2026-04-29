@@ -24,7 +24,11 @@ from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from ..coordinator.util import _fmt_duration, _generate_run_id
+from ..coordinator.util import (
+    _fmt_duration,
+    _generate_run_id,
+    resolve_timeout,
+)
 from ..coordinator.workspace import sweep_orphan_worktrees
 from ..log_util import _log_line
 from ..task import TaskStory
@@ -76,6 +80,15 @@ def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
     from ..coordinator.workspace import _deindex_forge_artifacts  # noqa: PLC0415
 
     _deindex_forge_artifacts(config.project_root)
+
+
+def derive_worker_timeout(
+    base: int,
+    complexity: str | None,
+    complexity_score: int | None = None,
+) -> int:
+    """Derive a per-story worker timeout from sprint defaults and complexity."""
+    return resolve_timeout(base, None, None, complexity, complexity_score)
 
 
 def _read_prior_sprint_cost(project_root: Path) -> float:
@@ -958,11 +971,7 @@ def run_sprint(
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
     )
-    worker_timeout_seconds = (
-        resolved.worker_timeout_seconds
-        if resolved.worker_timeout_seconds is not None
-        else config.sprint.worker_timeout_seconds
-    )
+    base_worker_timeout_seconds = config.sprint.worker_timeout_seconds
 
     # Build unified context mapping: (task, source, canonical_ref) per entry
     task_entries = resolved.stories
@@ -1171,6 +1180,35 @@ def run_sprint(
         max_parallel=max_parallel,
         notify=notify,
     )
+    story_worker_timeouts: dict[str, int] = {}
+    for task, _src, _canonical_ref in task_entries:
+        if resolved.worker_timeout_seconds is not None:
+            story_worker_timeouts[task.slug] = resolved.worker_timeout_seconds
+            _log(
+                f"  Worker timeout {task.slug}: {resolved.worker_timeout_seconds}s "
+                "(manifest override)"
+            )
+            continue
+        _state = preflight_states.get(task.slug)
+        if _state is None:
+            story_worker_timeouts[task.slug] = base_worker_timeout_seconds
+            _log(
+                f"  Worker timeout {task.slug}: {base_worker_timeout_seconds}s "
+                "(base default; no preflight state)"
+            )
+            continue
+        _timeout_seconds = derive_worker_timeout(
+            base_worker_timeout_seconds,
+            _state.preflight_complexity,
+            _state.preflight_complexity_score,
+        )
+        story_worker_timeouts[task.slug] = _timeout_seconds
+        _source = "derived" if _timeout_seconds != base_worker_timeout_seconds else "base default"
+        _complexity = _state.preflight_complexity or "unknown"
+        _log(
+            f"  Worker timeout {task.slug}: {_timeout_seconds}s "
+            f"({_complexity} complexity, {_source})"
+        )
     if resume:
         _register_resumed_story_footprints(triages, preflight_states)
     bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)
@@ -1494,6 +1532,7 @@ def run_sprint(
 
     # Parallel scheduling state
     active: dict[str, Future[object]] = {}
+    story_deadlines: dict[str, float] = {}
     cost_lock = threading.Lock()
     story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
     batch_assignments: dict[str, int] = {}
@@ -1739,6 +1778,9 @@ def run_sprint(
                     preflight_states,
                 )
                 active[task.slug] = fut
+                story_deadlines[task.slug] = time.monotonic() + float(
+                    story_worker_timeouts[task.slug]
+                )
 
             _log(
                 f"[debug] post-submit: active={list(active.keys())}"
@@ -1813,39 +1855,45 @@ def run_sprint(
             # this, gated workers block in _run_fresh waiting for their gate
             # while the scheduler blocks here waiting for a future to finish
             # — a deadlock.
-            _wt_float = float(worker_timeout_seconds)
-            _poll_interval = 2.0 if plan_gates else _wt_float
-            _total_waited = 0.0
             done_futs: set = set()
-            while not done_futs and _total_waited < _wt_float:
-                _current_interval = _poll_interval
+            expired_slugs: list[str] = []
+            while not done_futs and not expired_slugs:
+                _now = time.monotonic()
+                _time_to_next_deadline = max(
+                    0.0,
+                    min(story_deadlines[slug] - _now for slug in active),
+                )
+                _poll_interval = 2.0 if plan_gates else _time_to_next_deadline
                 done_futs, _ = wait(
                     list(active.values()),
                     return_when=FIRST_COMPLETED,
-                    timeout=_current_interval,
+                    timeout=_poll_interval,
                 )
                 if not done_futs and use_plan_gates:
                     # Service plan gates while polling
                     _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
-                    # All gates released — switch to long poll
-                    if not plan_gates:
-                        _poll_interval = _wt_float
-                _total_waited += _current_interval
+                _now = time.monotonic()
+                expired_slugs = [
+                    slug
+                    for slug, fut in active.items()
+                    if fut not in done_futs and _now >= story_deadlines[slug]
+                ]
 
             _log(f"[debug] wait() returned: {len(done_futs)} done")
             batch_number += 1
 
-            if not done_futs:
-                # Timeout: all active workers hung for >worker_timeout_seconds — cancel and fail
-                for g_slug, _gate in plan_gates.items():
-                    _log(f"TIMEOUT releasing plan gate for {g_slug}")
-                    _gate.set()
-                plan_gates.clear()
-                for slug, fut in list(active.items()):
+            if expired_slugs:
+                for slug in expired_slugs:
+                    if slug in plan_gates:
+                        _log(f"TIMEOUT releasing plan gate for {slug}")
+                        plan_gates[slug].set()
+                        del plan_gates[slug]
+                    fut = active.pop(slug)
+                    story_deadlines.pop(slug, None)
                     fut.cancel()
                     _log(
                         f"TIMEOUT {slug} (worker unresponsive after "
-                        f"{worker_timeout_seconds}s — marking as failed)"
+                        f"{story_worker_timeouts[slug]}s — marking as failed)"
                     )
                     spec_str = slug_to_spec[slug]
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
@@ -1857,14 +1905,14 @@ def run_sprint(
                             config.project_root / config.workspace.path_pattern.format(slug=slug)
                         ),
                         log_dir=_make_story_log_dir(config, slug, resolved.name),
-                        error=f"Worker timeout (>{worker_timeout_seconds}s)",
+                        error=f"Worker timeout (>{story_worker_timeouts[slug]}s)",
                         error_type="TimeoutError",
                     )
                     _timeout_result = CoordinatorResult(
                         success=False,
                         phase=Phase.ESCALATE,
                         state=_timeout_state,
-                        message=f"Worker thread timed out after {worker_timeout_seconds}s",
+                        message=f"Worker thread timed out after {story_worker_timeouts[slug]}s",
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
                     results.append((spec_str, _timeout_result))
@@ -1873,8 +1921,6 @@ def run_sprint(
                     )
                     _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
                     dag.mark_skipped(slug)
-                active.clear()
-                stopped_reason = stopped_reason or f"Worker timeout (>{worker_timeout_seconds}s)"
                 continue
 
             for slug, fut in list(active.items()):
@@ -1885,6 +1931,7 @@ def run_sprint(
                 except Exception as exc:
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
                     del active[slug]
+                    story_deadlines.pop(slug, None)
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
                     story_started_at = story_times.get(slug, (failed_at, failed_at))[0]
@@ -1913,6 +1960,7 @@ def run_sprint(
                     dag.mark_skipped(slug)
                     continue
                 del active[slug]
+                story_deadlines.pop(slug, None)
                 story_times[slug] = (t0, t1)
 
                 with cost_lock:
