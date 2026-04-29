@@ -293,12 +293,13 @@ class TestStructuredLoggingIntegration:
             assert "task" in entry
             assert "event" in entry
 
+    @patch("theforge.assignment._has_auth", return_value=True)
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_phase_end_includes_complexity_routing_fields(
-        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_has_auth, tmp_path
     ):
         log_file = tmp_path / "forge.log"
         config = replace(
