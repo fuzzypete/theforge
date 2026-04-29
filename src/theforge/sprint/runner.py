@@ -64,7 +64,7 @@ from .manifest import (
 from .query import normalize_dependency_plan
 from .sources import StorySource
 from .state_writer import SprintStateWriter
-from .story_state import SprintStoryState, StoryOutcome
+from .story_state import SprintStoryState, StoryOutcome, coerce_outcome
 
 _UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
 
@@ -1129,6 +1129,9 @@ def run_sprint(
                 _story_state.register(slug, _key, canonical_ref=_ref)
             else:
                 _story_state.register(slug, slug)
+        canonical_outcome = coerce_outcome(outcome)
+        if canonical_outcome.is_terminal and "finished_at" not in fields:
+            fields["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if _state_writer is not None:
             # Writer holds the same instance; this both transitions outcome
             # AND atomically rewrites the live .state file.
@@ -1743,7 +1746,11 @@ def run_sprint(
                     flush=True,
                 )
                 if _state_writer is not None:
-                    _state_writer.update(task.slug, status="running")
+                    _state_writer.update(
+                        task.slug,
+                        status="running",
+                        started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    )
 
                 # Create plan gate for fresh parallel runs
                 gate: threading.Event | None = None

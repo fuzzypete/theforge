@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -156,6 +157,43 @@ def _nonempty_str(value: object) -> str | None:
     return stripped or None
 
 
+def _parse_status_timestamp(value: object) -> datetime.datetime | None:
+    """Parse persisted UTC timestamps from sprint summary or live state data."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _elapsed_seconds_from_bounds(started_at: object, finished_at: object) -> float | None:
+    started_at_dt = _parse_status_timestamp(started_at)
+    finished_at_dt = _parse_status_timestamp(finished_at)
+    if started_at_dt is None or finished_at_dt is None:
+        return None
+    elapsed = (finished_at_dt - started_at_dt).total_seconds()
+    return elapsed if elapsed >= 0 else None
+
+
+def _elapsed_seconds_from_live_story(story: dict) -> float | None:
+    """Compute elapsed time for a live state entry when timestamps are available."""
+    started_at_dt = _parse_status_timestamp(story.get("started_at"))
+    if started_at_dt is None:
+        return None
+
+    finished_at_dt = _parse_status_timestamp(story.get("finished_at"))
+    if finished_at_dt is not None:
+        elapsed = (finished_at_dt - started_at_dt).total_seconds()
+        return elapsed if elapsed >= 0 else None
+
+    if story.get("status") == "running":
+        elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at_dt).total_seconds()
+        return elapsed if elapsed >= 0 else None
+
+    return None
+
+
 def _format_usage_stage(used: object, maximum: object, label: str) -> str:
     if isinstance(used, int) and isinstance(maximum, int) and maximum > 0:
         return f"{label}={used}/{maximum}"
@@ -243,8 +281,17 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
 
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
+        skip_reason = _nonempty_str(story.get("reason")) if status_val == "skipped" else None
+        if (
+            skip_reason
+            and isinstance(final_outcome, str)
+            and final_outcome in {"SKIPPED", "DROPPED"}
+        ):
+            return "", skip_reason, complexity
         if isinstance(final_outcome, str) and final_outcome:
             return "", final_outcome, complexity
+        if skip_reason:
+            return "", skip_reason, complexity
         if status_val == "failed" and phase_val:
             return "", phase_val, complexity
         return "", "—", complexity
@@ -361,6 +408,12 @@ def _stage_and_detail_from_completed_story(
             detail = "APPROVE"
         elif verdict:
             detail = verdict
+        elif outcome in {"SKIPPED", "DROPPED"}:
+            detail = (
+                _nonempty_str(story.get("error"))
+                or _nonempty_str(story.get("drop_reason"))
+                or outcome
+            )
         elif outcome == "DONE":
             detail = "APPROVE"
         elif outcome == "ALREADY_DONE":
@@ -438,7 +491,10 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 cost_usd=cost_usd,
                 blocked_by=blocked_by,
                 bundle_candidate=bundle_candidate,
-                elapsed_seconds=None,
+                elapsed_seconds=_elapsed_seconds_from_bounds(
+                    story.get("started_at"),
+                    story.get("finished_at"),
+                ),
                 stage=stage,
                 detail=detail,
                 complexity=complexity,
@@ -501,7 +557,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 cost_usd=float(story.get("cost_usd", 0.0)),
                 blocked_by=blocked_by_val,
                 bundle_candidate=bool(story.get("bundle_candidate", False)),
-                elapsed_seconds=None,
+                elapsed_seconds=_elapsed_seconds_from_live_story(story),
                 stage=stage,
                 detail=detail,
                 complexity=complexity,
@@ -519,21 +575,26 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             slug = story.get("slug", "")
             if not slug or slug in seen_slugs:
                 continue
+            outcome = str(story.get("outcome", "SKIPPED"))
+            depends_on = list(story.get("depends_on") or [])
+            detail = _nonempty_str(story.get("verdict")) or outcome
+            if outcome in {"SKIPPED", "DROPPED"} or depends_on:
+                _, detail, _ = _stage_and_detail_from_completed_story(story, None)
             entries.append(
                 StoryStatusEntry(
                     slug=slug,
                     path=story.get("path", slug),
-                    status=_outcome_to_status(str(story.get("outcome", "SKIPPED"))),
-                    phase=_terminal_phase(
-                        str(story.get("outcome", "SKIPPED")),
-                        list(story.get("depends_on") or []),
-                    ),
+                    status=_outcome_to_status(outcome),
+                    phase=_terminal_phase(outcome, depends_on),
                     cost_usd=float(story.get("cost_usd", 0.0)),
-                    blocked_by=list(story.get("depends_on") or []),
+                    blocked_by=depends_on,
                     bundle_candidate=False,
-                    elapsed_seconds=None,
+                    elapsed_seconds=_elapsed_seconds_from_bounds(
+                        story.get("started_at"),
+                        story.get("finished_at"),
+                    ),
                     stage=_format_terminal_stage(story.get("iteration_usage")),
-                    detail=_nonempty_str(story.get("verdict")) or str(story.get("outcome", "")),
+                    detail=detail,
                     complexity=None,
                 )
             )
