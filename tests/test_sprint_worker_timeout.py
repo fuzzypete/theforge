@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,8 +15,33 @@ from tests.test_sprint_parallel import (
     _make_spec_file,
 )
 from theforge.config import SprintConfig
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.util import LARGE_HEADROOM_FACTOR, MEDIUM_HEADROOM_FACTOR
 from theforge.sprint import run_sprint
 from theforge.sprint.manifest import ResolvedSprint, load_sprint_manifest
+from theforge.sprint.runner import derive_worker_timeout
+
+
+def _make_preflight_state(
+    complexity: str | None,
+    complexity_score: int | None = None,
+) -> CoordinatorState:
+    state = CoordinatorState()
+    state.preflight_complexity = complexity
+    state.preflight_complexity_score = complexity_score
+    return state
+
+
+def _make_done_story_result(success: bool = True) -> CoordinatorResult:
+    state = CoordinatorState()
+    state.total_cost = 0.0
+    return CoordinatorResult(
+        success=success,
+        phase=Phase.DONE if success else Phase.ESCALATE,
+        state=state,
+        message="Done." if success else "Failed.",
+    )
+
 
 # ── SprintConfig defaults ─────────────────────────────────────────────────────
 
@@ -30,6 +56,24 @@ def test_sprint_config_custom_timeout() -> None:
     """SprintConfig accepts an explicit worker_timeout_seconds."""
     cfg = SprintConfig(worker_timeout_seconds=7200)
     assert cfg.worker_timeout_seconds == 7200
+
+
+class TestDeriveWorkerTimeout:
+    def test_large_complexity_uses_large_headroom(self) -> None:
+        assert derive_worker_timeout(3600, "large") == round(3600 * LARGE_HEADROOM_FACTOR)
+
+    def test_medium_complexity_uses_medium_headroom(self) -> None:
+        assert derive_worker_timeout(3600, "medium") == round(3600 * MEDIUM_HEADROOM_FACTOR)
+
+    def test_small_complexity_uses_base(self) -> None:
+        assert derive_worker_timeout(3600, "small") == 3600
+
+    def test_none_complexity_uses_base(self) -> None:
+        assert derive_worker_timeout(3600, None) == 3600
+
+    def test_score_based_path_matches_string_path(self) -> None:
+        assert derive_worker_timeout(3600, "medium", 6) == round(3600 * MEDIUM_HEADROOM_FACTOR)
+        assert derive_worker_timeout(3600, "large", 8) == round(3600 * LARGE_HEADROOM_FACTOR)
 
 
 # ── SprintManifest parsing ────────────────────────────────────────────────────
@@ -126,10 +170,29 @@ class TestWorkerTimeoutPrecedence:
         """Manifest worker_timeout_seconds=120 overrides config default of 3600."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         manifest_path = self._make_manifest(tmp_path, timeout=120)
-        # Config uses the default 3600 but manifest says 120.
-        config = _make_config(tmp_path)
+        config = _make_config_with_sprint(tmp_path, sprint_max_parallel=1)
 
         wait_calls: list[float] = []
+
+        class _NeverDoneFuture:
+            def cancel(self):
+                return True
+
+            def result(self):
+                raise AssertionError("should not be called")
+
+        class _FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def submit(self, _fn, _config, task, *args, **kwargs):
+                return _NeverDoneFuture()
 
         def _fake_wait(futs, *, return_when, timeout):
             wait_calls.append(timeout)
@@ -137,13 +200,17 @@ class TestWorkerTimeoutPrecedence:
 
         with (
             patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+            ),
             patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
+            patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 0.0, 121.0]),
         ):
             run_sprint(config, manifest_path)
 
-        # The poll loop uses the configured timeout as its ceiling.
-        # At least one wait() call should use 120.0 (not 3600.0) as the timeout.
         assert any(t == pytest.approx(120.0) for t in wait_calls), (
             f"Expected a wait() call with timeout=120.0 but got: {wait_calls}"
         )
@@ -157,19 +224,99 @@ class TestWorkerTimeoutPrecedence:
 
         wait_calls: list[float] = []
 
+        class _NeverDoneFuture:
+            def cancel(self):
+                return True
+
+            def result(self):
+                raise AssertionError("should not be called")
+
+        class _FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def submit(self, _fn, _config, task, *args, **kwargs):
+                return _NeverDoneFuture()
+
         def _fake_wait(futs, *, return_when, timeout):
             wait_calls.append(timeout)
             return (set(), set())
 
         with (
             patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+            ),
             patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
+            patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 0.0, 3601.0]),
         ):
             run_sprint(config, manifest_path)
 
         assert any(t == pytest.approx(3600.0) for t in wait_calls), (
             f"Expected a wait() call with timeout=3600.0 but got: {wait_calls}"
+        )
+
+    def test_large_preflight_derives_timeout_when_manifest_omits(self, tmp_path: Path) -> None:
+        """A large story derives a larger worker timeout when no explicit override exists."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = self._make_manifest(tmp_path, timeout=None)
+        config = _make_config_with_sprint(tmp_path, sprint_max_parallel=1)
+        wait_calls: list[float] = []
+
+        class _DoneFuture:
+            def __init__(self, task):
+                self._task = task
+
+            def cancel(self):
+                return False
+
+            def result(self):
+                t0 = t1 = datetime.datetime.now(datetime.timezone.utc)
+                return (self._task, _make_done_story_result(), 0.0, t0, t1)
+
+        class _FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def submit(self, _fn, _config, task, *args, **kwargs):
+                return _DoneFuture(task)
+
+        def _fake_wait(futs, *, return_when, timeout):
+            wait_calls.append(timeout)
+            return ({next(iter(futs))}, set())
+
+        with (
+            patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+            ),
+            patch(
+                "theforge.sprint.runner.run_batch_preflight",
+                return_value={"story-a": _make_preflight_state("large", 8)},
+            ),
+            patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
+            patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
+        ):
+            run_sprint(config, manifest_path)
+
+        assert any(t == pytest.approx(round(3600 * LARGE_HEADROOM_FACTOR)) for t in wait_calls), (
+            f"Expected wait() to use the derived large-story timeout, got: {wait_calls}"
         )
 
     def test_resolved_sprint_timeout_overrides_config(self, tmp_path: Path) -> None:
@@ -192,19 +339,99 @@ class TestWorkerTimeoutPrecedence:
 
         wait_calls: list[float] = []
 
+        class _NeverDoneFuture:
+            def cancel(self):
+                return True
+
+            def result(self):
+                raise AssertionError("should not be called")
+
+        class _FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def submit(self, _fn, _config, task, *args, **kwargs):
+                return _NeverDoneFuture()
+
         def _fake_wait(futs, *, return_when, timeout):
             wait_calls.append(timeout)
             return (set(), set())
 
         with (
             patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+            ),
             patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
+            patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 0.0, 61.0]),
         ):
             run_sprint(config, resolved)
 
         assert any(t == pytest.approx(60.0) for t in wait_calls), (
             f"Expected a wait() call with timeout=60.0 but got: {wait_calls}"
+        )
+
+    def test_manifest_timeout_wins_over_complexity_derivation(self, tmp_path: Path) -> None:
+        """A manifest timeout override wins even when preflight marks the story as large."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = self._make_manifest(tmp_path, timeout=7200)
+        config = _make_config_with_sprint(tmp_path, sprint_max_parallel=1)
+        wait_calls: list[float] = []
+
+        class _DoneFuture:
+            def __init__(self, task):
+                self._task = task
+
+            def cancel(self):
+                return False
+
+            def result(self):
+                t0 = t1 = datetime.datetime.now(datetime.timezone.utc)
+                return (self._task, _make_done_story_result(), 0.0, t0, t1)
+
+        class _FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def submit(self, _fn, _config, task, *args, **kwargs):
+                return _DoneFuture(task)
+
+        def _fake_wait(futs, *, return_when, timeout):
+            wait_calls.append(timeout)
+            return ({next(iter(futs))}, set())
+
+        with (
+            patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+            ),
+            patch(
+                "theforge.sprint.runner.run_batch_preflight",
+                return_value={"story-a": _make_preflight_state("large", 8)},
+            ),
+            patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
+            patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
+        ):
+            run_sprint(config, manifest_path)
+
+        assert any(t == pytest.approx(7200.0) for t in wait_calls), (
+            f"Expected manifest override timeout=7200.0 but got: {wait_calls}"
         )
 
     def test_manifest_none_is_sentinel_for_config_fallback(self, tmp_path: Path) -> None:
@@ -232,7 +459,11 @@ def test_timeout_error_message_uses_configured_value(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
 
     class _NeverDoneFuture:
+        def __init__(self):
+            self.cancel_called = False
+
         def cancel(self):
+            self.cancel_called = True
             return True
 
         def result(self):
@@ -253,19 +484,125 @@ def test_timeout_error_message_uses_configured_value(tmp_path: Path) -> None:
 
     with (
         patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+        ),
         patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
         patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
+        patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 50.0, 50.0]),
     ):
         result = run_sprint(config, manifest)
 
-    assert result.stopped_reason is not None
-    assert "42" in result.stopped_reason, (
-        f"Expected '42' in stopped_reason, got: {result.stopped_reason!r}"
-    )
-    # Verify story result also has timeout message with configured value
     assert result.results
     _, story_result = result.results[0]
     assert "42" in story_result.message, (
         f"Expected '42' in story result message, got: {story_result.message!r}"
     )
+
+
+def test_per_story_deadline_expires_only_the_elapsed_future(tmp_path: Path, capsys) -> None:
+    """A timed-out story is cancelled independently while other active workers continue."""
+    spec_a = _make_spec_file(tmp_path, "Story A", "story-a")
+    spec_b = _make_spec_file(tmp_path, "Story B", "story-b")
+    manifest = tmp_path / "sprint.yaml"
+    manifest.write_text(
+        yaml.dump(
+            {
+                "name": "Parallel",
+                "budget_usd": 5.0,
+                "stories": [spec_a.name, spec_b.name],
+                "max_parallel": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = _make_config_with_sprint(tmp_path, sprint_max_parallel=2)
+
+    class _NeverDoneFuture:
+        def __init__(self):
+            self.cancel_called = False
+
+        def cancel(self):
+            self.cancel_called = True
+            return True
+
+        def result(self):
+            raise AssertionError("should not be called")
+
+    class _DoneFuture:
+        def __init__(self, task):
+            self._task = task
+            self.cancel_called = False
+
+        def cancel(self):
+            self.cancel_called = True
+            return False
+
+        def result(self):
+            t0 = t1 = datetime.datetime.now(datetime.timezone.utc)
+            return (self._task, _make_done_story_result(), 0.0, t0, t1)
+
+    hanging_future = _NeverDoneFuture()
+    completed_future = None
+
+    class _FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            self._submitted = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, _fn, _config, task, *args, **kwargs):
+            nonlocal completed_future
+            self._submitted += 1
+            if self._submitted == 1:
+                return hanging_future
+            completed_future = _DoneFuture(task)
+            return completed_future
+
+    wait_calls = 0
+
+    def _fake_wait(futs, *, return_when, timeout):
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            return (set(), set())
+        return ({completed_future}, set())
+
+    with (
+        patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+        ),
+        patch(
+            "theforge.sprint.runner.run_batch_preflight",
+            return_value={
+                "story-a": _make_preflight_state("small", 3),
+                "story-b": _make_preflight_state("large", 8),
+            },
+        ),
+        patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
+        patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
+        patch(
+            "theforge.sprint.runner.time.monotonic",
+            side_effect=[0.0, 0.0, 4000.0, 4000.0, 4001.0, 4001.0],
+        ),
+    ):
+        result = run_sprint(config, manifest)
+
+    stderr = capsys.readouterr().err
+    assert "TIMEOUT story-a (worker unresponsive after 3600s — marking as failed)" in stderr
+    assert hanging_future.cancel_called is True
+    assert completed_future is not None
+    assert completed_future.cancel_called is False
+    assert len(result.results) == 2
+    assert {spec for spec, _res in result.results} == {"story-a.md", "story-b.md"}
+    by_spec = dict(result.results)
+    assert by_spec["story-a.md"].success is False
+    assert by_spec["story-b.md"].success is True

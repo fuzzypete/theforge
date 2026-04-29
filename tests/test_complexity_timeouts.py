@@ -21,7 +21,12 @@ from theforge.config import (
     load_config,
 )
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.util import resolve_timeout
+from theforge.coordinator.util import (
+    LARGE_HEADROOM_FACTOR,
+    MEDIUM_HEADROOM_FACTOR,
+    resolve_timeout,
+    resolve_timeout_with_active,
+)
 from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
@@ -58,27 +63,42 @@ class TestResolveTimeout:
     def test_large_complexity_uses_large_override(self):
         assert resolve_timeout(600, 900, 1800, "large") == 1800
 
-    def test_medium_override_absent_falls_back_to_base(self):
-        assert resolve_timeout(600, None, 1800, "medium") == 600
+    def test_medium_override_absent_derives_from_base(self):
+        assert resolve_timeout(600, None, 1800, "medium") == round(600 * MEDIUM_HEADROOM_FACTOR)
 
-    def test_large_override_absent_falls_back_to_base(self):
-        assert resolve_timeout(600, 900, None, "large") == 600
+    def test_large_override_absent_derives_from_base(self):
+        assert resolve_timeout(600, 900, None, "large") == round(600 * LARGE_HEADROOM_FACTOR)
 
-    def test_large_score_without_large_override_falls_back_to_base_not_medium(self):
-        assert resolve_timeout(600, 900, None, "large", 8) == 600
-        assert resolve_timeout(600, 900, None, "large", 10) == 600
+    def test_large_score_without_large_override_derives_large_not_medium(self):
+        derived = round(600 * LARGE_HEADROOM_FACTOR)
+        assert resolve_timeout(600, 900, None, "large", 8) == derived
+        assert resolve_timeout(600, 900, None, "large", 10) == derived
 
     def test_large_score_ignores_medium_override_when_large_override_missing(self):
-        assert resolve_timeout(600, 900, None, "medium", 8) == 600
+        assert resolve_timeout(600, 900, None, "medium", 8) == round(600 * LARGE_HEADROOM_FACTOR)
 
-    def test_both_overrides_absent_always_returns_base(self):
-        assert resolve_timeout(600, None, None, "large") == 600
-        assert resolve_timeout(600, None, None, "medium") == 600
+    def test_both_overrides_absent_derives_for_medium_and_large(self):
+        assert resolve_timeout(600, None, None, "large") == round(600 * LARGE_HEADROOM_FACTOR)
+        assert resolve_timeout(600, None, None, "medium") == round(600 * MEDIUM_HEADROOM_FACTOR)
         assert resolve_timeout(600, None, None, "small") == 600
         assert resolve_timeout(600, None, None, None) == 600
 
     def test_unknown_complexity_falls_back_to_base(self):
         assert resolve_timeout(600, 900, 1800, "unknown") == 600
+
+    def test_resolve_timeout_with_active_marks_derived_tiers_active(self):
+        timeout, override_active = resolve_timeout_with_active(600, None, None, "large", 8)
+        assert timeout == round(600 * LARGE_HEADROOM_FACTOR)
+        assert override_active is True
+
+        timeout, override_active = resolve_timeout_with_active(600, None, None, "medium", 6)
+        assert timeout == round(600 * MEDIUM_HEADROOM_FACTOR)
+        assert override_active is True
+
+    def test_resolve_timeout_with_active_keeps_base_for_low_score(self):
+        timeout, override_active = resolve_timeout_with_active(600, None, None, "medium", 3)
+        assert timeout == 600
+        assert override_active is False
 
 
 # ── Shared test helpers ────────────────────────────────────────────────
@@ -415,10 +435,10 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dev_falls_back_to_base_when_no_override(
+    def test_dev_derives_large_timeout_when_no_override(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """run_agent uses base timeout when no complexity overrides are set."""
+        """run_agent derives a large timeout when no complexity overrides are set."""
         config = _make_config(tmp_path)  # DEFAULT_DEV_PROFILE has no medium/large overrides
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -438,7 +458,9 @@ class TestDevPhaseTimeout:
 
         assert result.success is True
         dev_profile_used = _get_call_profile(mock_agent, 0)
-        assert dev_profile_used.timeout_seconds == DEFAULT_DEV_PROFILE.timeout_seconds
+        assert dev_profile_used.timeout_seconds == round(
+            DEFAULT_DEV_PROFILE.timeout_seconds * LARGE_HEADROOM_FACTOR
+        )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -594,10 +616,17 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_falls_back_to_base_when_no_override(
-        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    def test_plan_derives_large_timeout_when_no_override(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+        capsys,
     ):
-        """PLAN phase uses base timeout when no medium/large overrides are configured."""
+        """PLAN phase derives a large timeout when no medium/large overrides are configured."""
         plan = PlanConfig(enabled=True, timeout=600, validate_spec=False)
         config = _make_config(tmp_path, plan=plan)
         task = _make_task(tmp_path)
@@ -620,7 +649,12 @@ class TestPlanPhaseTimeout:
         assert result.success is True
         # call[0]=plan (preflight now handled by mock_preflight)
         plan_profile_used = _get_call_profile(mock_agent, 0)
-        assert plan_profile_used.timeout_seconds == 600
+        assert plan_profile_used.timeout_seconds == round(600 * LARGE_HEADROOM_FACTOR)
+        stderr = capsys.readouterr().err
+        assert (
+            f"Plan timeout: {round(600 * LARGE_HEADROOM_FACTOR)}s (large complexity, derived)"
+            in stderr
+        )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -659,7 +693,7 @@ class TestPlanPhaseTimeout:
 
         assert result.success is True
         stderr = capsys.readouterr().err
-        assert "Plan timeout: 600s (large complexity)" in stderr
+        assert "Plan timeout: 600s (large complexity, explicit override)" in stderr
 
 
 # ── load_config: new fields parsing ───────────────────────────────────

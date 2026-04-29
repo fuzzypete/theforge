@@ -27,7 +27,7 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 norecursedirs = [".forge"]
 pythonpath = ["src", "tests"]
-addopts = "-n auto --dist worksteal"
+addopts = "-n auto --dist worksteal --timeout=10 --timeout-method=thread"
 markers = [
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
 ]

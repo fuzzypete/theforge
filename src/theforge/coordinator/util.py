@@ -28,6 +28,9 @@ _subprocess_run = subprocess.run
 # coordinator's own version runs regardless of what the installed package provides.
 _SUBPROCESS_EVAL = Path(__file__).parent / "_subprocess_eval.py"
 
+MEDIUM_HEADROOM_FACTOR = 1.5
+LARGE_HEADROOM_FACTOR = 2.5
+
 # ── Log level ─────────────────────────────────────────────────────────
 
 _LOG_LEVEL: LogLevel = LogLevel.PROGRESS
@@ -114,22 +117,35 @@ def resolve_timeout_with_active(
 ) -> tuple[int, bool]:
     """Return ``(timeout, override_active)`` for the given complexity inputs.
 
-    Score-native routing must preserve the legacy fallback contract for each
-    threshold independently: large-score stories use the large override when it
-    exists, otherwise base; medium-score stories use the medium override when it
-    exists, otherwise base. Large stories must not cascade into the medium
-    override when the large override is unset.
+    Score-native routing preserves tier isolation: large-score stories use the
+    large tier and medium-score stories use the medium tier. When an explicit
+    tier override is absent, the timeout is derived from the base timeout using
+    the corresponding headroom factor instead of silently falling back to base.
+    Large stories must not cascade into the medium tier when the large tier is
+    unset.
     """
+
+    def _derived_timeout(factor: float) -> int:
+        return round(base * factor)
+
     if complexity_score is not None:
         if complexity_score >= 8:
-            return (large, True) if large is not None else (base, False)
+            if large is not None:
+                return large, True
+            return _derived_timeout(LARGE_HEADROOM_FACTOR), True
         if complexity_score >= 6:
-            return (medium, True) if medium is not None else (base, False)
+            if medium is not None:
+                return medium, True
+            return _derived_timeout(MEDIUM_HEADROOM_FACTOR), True
         return base, False
-    if complexity == "large" and large is not None:
-        return large, True
-    if complexity == "medium" and medium is not None:
-        return medium, True
+    if complexity == "large":
+        if large is not None:
+            return large, True
+        return _derived_timeout(LARGE_HEADROOM_FACTOR), True
+    if complexity == "medium":
+        if medium is not None:
+            return medium, True
+        return _derived_timeout(MEDIUM_HEADROOM_FACTOR), True
     return base, False
 
 

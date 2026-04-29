@@ -22,6 +22,7 @@ from theforge.coordinator.state import (
     Phase,
     ReviewIterationTelemetry,
 )
+from theforge.coordinator.util import LARGE_HEADROOM_FACTOR, MEDIUM_HEADROOM_FACTOR
 
 
 def _make_adaptive_config(tmp_path: Path, **retry_overrides):
@@ -137,7 +138,9 @@ def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
     assert state.adaptive_review_max > 0
     assert state.adaptive_dev_max <= config.retry.max_dev_iterations_cap
     assert state.adaptive_review_max <= config.retry.max_review_cycles_cap
-    assert state.adaptive_dev_timeout_seconds == config.dev_profile.timeout_seconds
+    assert state.adaptive_dev_timeout_seconds == round(
+        config.dev_profile.timeout_seconds * LARGE_HEADROOM_FACTOR
+    )
     assert state.adaptive_dev_budget_usd == config.dev_profile.budget_usd
     assert state.adaptive_limits_audit.get("enabled") is True
     assert state.adaptive_limits_audit.get("complexity_score_used") == 9
@@ -379,6 +382,6 @@ def test_explicit_dev_override_wins_over_computed_limits(tmp_path: Path):
             pass
 
     assert state.adaptive_dev_max == 4
-    assert state.adaptive_dev_timeout_seconds == 1200
+    assert state.adaptive_dev_timeout_seconds == round(1200 * MEDIUM_HEADROOM_FACTOR)
     assert state.adaptive_dev_budget_usd == 12.0
     assert "explicit dev forge.yaml override" in state.adaptive_limits_audit["rationale"]

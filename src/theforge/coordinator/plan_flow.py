@@ -326,7 +326,19 @@ def _run_plan_phase(
         state.preflight_complexity_score,
     )
     if _plan_override_active:
-        _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
+        _derived_timeout = False
+        if state.preflight_complexity_score is not None:
+            if state.preflight_complexity_score >= 8:
+                _derived_timeout = config.plan.timeout_large is None
+            elif state.preflight_complexity_score >= 6:
+                _derived_timeout = config.plan.timeout_medium is None
+        elif state.preflight_complexity == "large":
+            _derived_timeout = config.plan.timeout_large is None
+        elif state.preflight_complexity == "medium":
+            _derived_timeout = config.plan.timeout_medium is None
+        _source = "derived" if _derived_timeout else "explicit override"
+        _detail = f"{state.preflight_complexity} complexity, {_source}"
+        _log(f"  Plan timeout: {_plan_timeout}s ({_detail})")
     else:
         _log(f"  Plan timeout: {_plan_timeout}s")
 
