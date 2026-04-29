@@ -137,7 +137,10 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
 
     assert outcome is _ValidateOutcome.PASS
     assert result is None
-    commit_run.assert_called_once()
+    # The dirty-worktree auto-commit must run exactly once; the new zero-commits
+    # guard adds follow-up `git rev-list` calls to the same patched subprocess.run.
+    commit_calls = [c for c in commit_run.call_args_list if c.args[0][:2] == ["git", "commit"]]
+    assert len(commit_calls) == 1
     assert len(state.dev_iteration_telemetry) == 1
     telemetry = state.dev_iteration_telemetry[0]
     assert telemetry.gate_result == "PASS"

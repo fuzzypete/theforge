@@ -19,6 +19,7 @@ from theforge.review import (
 )
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
+from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
 from .logging import StructuredLogger
 from .notify import (
@@ -920,6 +921,33 @@ def _run_review_phase(
     _effective_approve = parsed_review.verdict == "APPROVE" or (
         parsed_review.verdict == "REQUEST_CHANGES" and not _blocking_p1
     )
+
+    # ── Empty-diff guard ────────────────────────────────────────────
+    # APPROVE on a branch with zero commits ahead of base is a workflow failure,
+    # not a real approval — refuse to advance to DONE.
+    if _effective_approve and not _has_commits_ahead_of_base(
+        workspace_path, config.workspace.base_branch
+    ):
+        state.phase = Phase.ESCALATE
+        state.error = (
+            "Review verdict APPROVE on a branch with no commits ahead of base — "
+            "refusing to mark DONE on an empty diff"
+        )
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=state.error,
+            ),
+            config,
+        )
 
     if _effective_approve and _nonblocking_p1s:
         _nb_descs = "; ".join(r.description[:80] for r in _nonblocking_p1s)
