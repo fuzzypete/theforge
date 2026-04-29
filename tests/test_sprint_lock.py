@@ -264,7 +264,7 @@ class TestCleanupStoryLocks:
         lock_path.write_text("424242|old-start\n", encoding="utf-8")
 
         with (
-            patch("theforge.sprint.lock._is_pid_alive", return_value=False),
+            patch("theforge.detach._is_pid_alive", return_value=False),
             patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=False),
         ):
             cleaned = cleanup_story_locks(["story-a"], tmp_path, pid=424242)
@@ -278,7 +278,7 @@ class TestCleanupStoryLocks:
         lock_path.write_text("424242|other-start\n", encoding="utf-8")
 
         with (
-            patch("theforge.sprint.lock._is_pid_alive", return_value=True),
+            patch("theforge.detach._is_pid_alive", return_value=True),
             patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=False),
         ):
             cleaned = cleanup_story_locks(["story-a"], tmp_path, pid=424242)

@@ -9,8 +9,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from theforge import detach as _detach_mod
 from theforge.artifacts import ESCALATED_MARKER_PATH
-from theforge.detach import _is_pid_alive
 from theforge.pid import _current_process_fingerprint, _pid_matches_fingerprint
 
 _LOCK_METADATA_SEPARATOR = "|"
@@ -233,9 +233,9 @@ def cleanup_story_locks(
                     if owner_fingerprint is None:
                         should_remove = True
                     else:
-                        should_remove = not _is_pid_alive(owner_pid) or _pid_matches_fingerprint(
-                            owner_pid, owner_fingerprint
-                        )
+                        should_remove = not _detach_mod._is_pid_alive(
+                            owner_pid
+                        ) or _pid_matches_fingerprint(owner_pid, owner_fingerprint)
             if should_remove:
                 lock_path.unlink(missing_ok=True)
                 cleaned.append(slug)
