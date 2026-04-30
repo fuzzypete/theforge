@@ -12,6 +12,7 @@ import yaml
 
 from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile
+from theforge.config.types import StuckDetectionConfig
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import append_convention_retry_findings
 from theforge.sessions import save_sessions
@@ -64,6 +65,38 @@ _RUNNER_FAILURE_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 _SHELL_ERROR_PREFIXES = ("bash:", "sh:", "zsh:")
+
+
+def _scale_stuck_for_complexity(
+    cfg: StuckDetectionConfig,
+    complexity: str | None,
+    plan_file_count: int,
+) -> StuckDetectionConfig:
+    """Return a StuckDetectionConfig with thresholds scaled by complexity and plan size.
+
+    LARGE/medium stories legitimately need more pre-modification exploration; flat
+    thresholds false-terminate competent dev agents. Scaling raises (never lowers)
+    no_progress_iterations and post_nudge_iterations:
+      - no_progress_iterations: base × multiplier(complexity), plus plan_file_count
+        so a plan touching many files gives the agent room to read each one.
+      - post_nudge_iterations: base × multiplier(complexity), giving complex stories
+        a meaningful grace window after the nudge.
+    """
+    np_mult = cfg.no_progress_multipliers.get(complexity or "", 1.0) if complexity else 1.0
+    pn_mult = cfg.post_nudge_multipliers.get(complexity or "", 1.0) if complexity else 1.0
+    scaled_no_progress = max(
+        cfg.no_progress_iterations,
+        round(cfg.no_progress_iterations * np_mult) + max(plan_file_count, 0),
+    )
+    scaled_post_nudge = max(
+        cfg.post_nudge_iterations,
+        round(cfg.post_nudge_iterations * pn_mult),
+    )
+    return _dc_replace(
+        cfg,
+        no_progress_iterations=scaled_no_progress,
+        post_nudge_iterations=scaled_post_nudge,
+    )
 
 
 def _summarize_runner_failure(output: str, indicators: tuple[str, ...]) -> str:
@@ -512,11 +545,29 @@ def _run_dev_phase(
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
     else:
         _log(f"  Dev timeout: {_dev_timeout}s")
+    _plan_files = plan_file_list(state.plan_structured)
+    _scaled_stuck = _scale_stuck_for_complexity(
+        config.stuck_detection,
+        state.preflight_complexity,
+        len(_plan_files),
+    )
+    if (
+        _scaled_stuck.no_progress_iterations != config.stuck_detection.no_progress_iterations
+        or _scaled_stuck.post_nudge_iterations != config.stuck_detection.post_nudge_iterations
+    ):
+        _log_verbose(
+            f"  Stuck-detection scaled for {state.preflight_complexity} "
+            f"({len(_plan_files)} plan files): "
+            f"no_progress={_scaled_stuck.no_progress_iterations} "
+            f"(base {config.stuck_detection.no_progress_iterations}), "
+            f"post_nudge={_scaled_stuck.post_nudge_iterations} "
+            f"(base {config.stuck_detection.post_nudge_iterations})"
+        )
     _dev_profile = _dc_replace(
         config.dev_profile,
         timeout_seconds=_dev_timeout,
         max_iterations=state.adaptive_dev_max or config.dev_profile.max_iterations,
-        stuck_detection=config.stuck_detection,
+        stuck_detection=_scaled_stuck,
     )
 
     _dev_start = time.monotonic()

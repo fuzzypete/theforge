@@ -106,6 +106,15 @@ class StuckDetectionConfig:
     repeat_threshold: int = 4  # consecutive identical (name+args) tool calls → stuck
     error_threshold: int = 4  # consecutive identical error tool results → stuck
     post_nudge_iterations: int = 3  # M — iterations after nudge before termination
+    # Per-complexity multipliers applied to no_progress_iterations and post_nudge_iterations.
+    # LARGE/medium stories often need more pre-modification exploration; flat thresholds
+    # false-terminate competent dev agents. Scaling is applied in dev_phase.py.
+    no_progress_multipliers: dict[str, float] = field(
+        default_factory=lambda: {"small": 1.0, "medium": 1.5, "large": 2.5}
+    )
+    post_nudge_multipliers: dict[str, float] = field(
+        default_factory=lambda: {"small": 1.0, "medium": 1.5, "large": 2.0}
+    )
 
 
 @dataclass(frozen=True)
