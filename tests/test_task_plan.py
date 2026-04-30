@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from theforge.coordinator.context_scope import plan_file_list
 from theforge.task import (
     PlanData,
     TaskStory,
@@ -36,6 +37,12 @@ def _minimal_plan_yaml(description: str = "do it") -> str:
         "      action: modify\n"
         "      details: change the code\n"
     )
+
+
+def _parse_plan_files(text: str) -> list[str]:
+    plan = parse_plan_output(text)
+    assert plan is not None
+    return plan_file_list(plan)
 
 
 class TestBuildDevPromptStructuredHandoff:
@@ -443,6 +450,127 @@ class TestParsePlanOutputYamlMarker:
         result = parse_plan_output(yaml_input)
         assert result is not None
         assert result["steps"][0]["description"] == "plain step"
+
+
+class TestParsePlanOutputFileCounting:
+    def test_prose_before_fenced_plan_still_counts_files(self):
+        plan_text = (
+            "I inspected the repo and here is the plan.\n\n"
+            "```yaml\n"
+            "plan:\n"
+            "  approach: Keep the change tight.\n"
+            "  steps:\n"
+            "    - id: 1\n"
+            "      description: Update the implementation\n"
+            "      files:\n"
+            "        - src/app.py\n"
+            "        - tests/test_app.py\n"
+            "      action: modify\n"
+            "      details: Make the behavior match the spec.\n"
+            "```\n"
+        )
+
+        assert _parse_plan_files(plan_text) == ["src/app.py", "tests/test_app.py"]
+
+    def test_prose_before_bare_plan_still_counts_files(self):
+        plan_text = (
+            "Plan follows.\n\n"
+            "plan:\n"
+            "  approach: Update the parser.\n"
+            "  steps:\n"
+            "    - id: 1\n"
+            "      description: Fix plan extraction\n"
+            "      files:\n"
+            "        - src/theforge/task/plan_parser.py\n"
+            "      action: modify\n"
+            "      details: Parse the structured block.\n"
+        )
+
+        assert _parse_plan_files(plan_text) == ["src/theforge/task/plan_parser.py"]
+
+    def test_distinct_file_count_survives_multi_step_plan_shapes(self):
+        plan_text = """\
+plan:
+  approach: Cover each caller with a small step.
+  steps:
+    - id: 1
+      description: Touch the parser
+      files:
+        - src/theforge/task/plan_parser.py
+      action: modify
+      details: Parse plan YAML more robustly.
+    - id: 2
+      description: Wire the coordinator path
+      files:
+        - src/theforge/coordinator/plan_flow.py
+        - src/theforge/coordinator/dev_phase.py
+      action: modify
+      details: Preserve the parsed plan across phases.
+      depends_on: [1]
+    - id: 3
+      description: Cover helper behavior
+      files:
+        - src/theforge/coordinator/context_scope.py
+        - tests/test_coord_context_assembly.py
+      action: modify
+      details: Assert deduped file extraction.
+      depends_on: [1]
+    - id: 4
+      description: Add parser coverage
+      files:
+        - tests/test_task_plan.py
+      action: modify
+      details: Cover prose-prefixed plans.
+      depends_on: [1]
+    - id: 5
+      description: Reuse the parser file in another step
+      files:
+        - src/theforge/task/plan_parser.py
+      action: modify
+      details: Reconfirm the same target is only counted once.
+      depends_on: [1]
+    - id: 6
+      description: Validate the end-to-end flow
+      files:
+        - tests/test_coord_context_assembly.py
+        - src/theforge/coordinator/dev_phase.py
+      action: modify
+      details: Confirm the scaled count reaches the audit log.
+      depends_on: [2, 3, 4]
+"""
+
+        assert _parse_plan_files(plan_text) == [
+            "src/theforge/task/plan_parser.py",
+            "src/theforge/coordinator/plan_flow.py",
+            "src/theforge/coordinator/dev_phase.py",
+            "src/theforge/coordinator/context_scope.py",
+            "tests/test_coord_context_assembly.py",
+            "tests/test_task_plan.py",
+        ]
+
+    def test_empty_or_null_file_lists_do_not_count(self):
+        plan_text = """\
+plan:
+  approach: Handle sparse steps safely.
+  steps:
+    - id: 1
+      description: Empty file list
+      files: []
+      action: modify
+      details: No targets declared yet.
+    - id: 2
+      description: Null file list
+      files: null
+      action: modify
+      details: Provider omitted the list value.
+    - id: 3
+      description: Real target
+      files: [src/real.py, tests/test_real.py]
+      action: modify
+      details: Only declared paths should count.
+"""
+
+        assert _parse_plan_files(plan_text) == ["src/real.py", "tests/test_real.py"]
 
 
 class TestPromptContextPack:

@@ -31,6 +31,33 @@ class PlanData(_PlanDataRequired, total=False):
     risks: list[dict]
 
 
+def _extract_plan_block(text: str) -> str | None:
+    """Return the rooted ``plan:`` YAML block from mixed agent output."""
+
+    lines = text.strip().splitlines()
+    start_index: int | None = None
+    base_indent = 0
+
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("plan:"):
+            start_index = index
+            base_indent = len(line) - len(line.lstrip())
+            break
+
+    if start_index is None:
+        return None
+
+    block: list[str] = []
+    for index, line in enumerate(lines[start_index:], start=start_index):
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if index > start_index and stripped and indent <= base_indent:
+            break
+        block.append(line[base_indent:] if len(line) >= base_indent else line)
+
+    return "\n".join(block).strip() or None
+
+
 def parse_plan_output(text: str) -> PlanData | None:
     """Parse structured YAML plan output from a plan agent.
 
@@ -38,23 +65,12 @@ def parse_plan_output(text: str) -> PlanData | None:
     structured plan YAML (e.g. freeform markdown fallback).
     """
     stripped = text.strip()
-
-    # Strip fenced code block if present (```yaml ... ```)
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        # Remove first line (```yaml or ```) and last line (```)
-        inner = lines[1:]
-        if inner and inner[-1].strip() == "```":
-            inner = inner[:-1]
-        stripped = "\n".join(inner).strip()
-
-    # Detect YAML plan: starts with 'plan:' or '---' followed by 'plan:'
-    if not (stripped.startswith("plan:") or stripped.startswith("---")):
+    if not stripped:
         return None
 
-    # Strip YAML document markers if present
-    if stripped.startswith("---"):
-        stripped = stripped[3:].strip()
+    stripped = _extract_plan_block(stripped)
+    if stripped is None:
+        return None
 
     try:
         data = yaml.safe_load(stripped)
