@@ -75,3 +75,16 @@ def test_build_preflight_prompt_output_under_uncertainty() -> None:
 
     assert "You MUST always produce output" in prompt
     assert "Withholding output" in prompt
+
+
+def test_build_preflight_prompt_marks_concurrency_and_multiphase_work_as_large() -> None:
+    task = TaskStory(name="Bug fix", slug="bug-fix")
+
+    prompt = build_preflight_prompt(task, story_content="## Spec\n\n- Example")
+
+    assert "Treat the following as **LARGE (score 8+) even if the local edit count" in prompt
+    assert "Concurrency control" in prompt
+    assert "Lifecycle or cancellation propagation across module boundaries" in prompt
+    assert "Multi-phase state-machine modifications" in prompt
+    assert "Cross-module coordinator surgery" in prompt
+    assert "regardless of provider model, story wording, product area, or" in prompt

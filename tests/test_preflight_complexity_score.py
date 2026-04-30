@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from theforge.config import (
     DEFAULT_VALIDATION,
     MODEL_REGISTRY,
@@ -22,6 +24,7 @@ from theforge.coordinator.preflight import (
     COMPLEXITY_SCORE_MAX,
     COMPLEXITY_SCORE_MIN,
     _apply_complexity_adaptation,
+    _detect_large_preflight_story_categories,
     _parse_preflight_complexity_score,
     band_to_score,
     score_to_band,
@@ -174,6 +177,39 @@ def test_parse_score_malformed_yaml_returns_none():
 def test_parse_score_non_numeric_value():
     # Non-integer value with no fallback — the field is effectively missing.
     assert _parse_preflight_complexity_score(_yaml_output(complexity_score="huge")) is None
+
+
+@pytest.mark.parametrize(
+    ("story_text", "expected_category"),
+    [
+        (
+            "Acceptance criteria require inter-thread coordination and concurrent worker"
+            " shutdown semantics across the runtime.",
+            "concurrency control",
+        ),
+        (
+            "Thread a cancellation signal through the sprint runner, coordinator loop,"
+            " and every phase function so lifecycle state propagates across module"
+            " boundaries.",
+            "lifecycle/cancellation propagation across module boundaries",
+        ),
+        (
+            "Modify phase handoffs at every phase boundary so the coordinator state"
+            " machine carries the new signal across phases.",
+            "multi-phase state-machine modifications",
+        ),
+        (
+            "Coordinate runner, engine, and phase-module changes together because"
+            " correctness depends on all sites changing in lockstep.",
+            "cross-module coordinator surgery",
+        ),
+    ],
+)
+def test_detect_large_preflight_story_categories_for_representative_stories(
+    story_text: str, expected_category: str
+):
+    matches = _detect_large_preflight_story_categories(story_text)
+    assert expected_category in matches
 
 
 # ── consumer: dev-tier routing diverges from enum-only routing ────────

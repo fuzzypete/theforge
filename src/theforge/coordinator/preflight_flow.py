@@ -38,6 +38,7 @@ from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
     _apply_preflight_config,
+    _detect_large_preflight_story_categories,
     _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
     _parse_preflight_complexity_score,
@@ -367,6 +368,23 @@ def _run_preflight_phase(
                 "  ↑ contract_change=true: upgrading complexity small→medium "
                 "(cross-cutting blast radius)"
             )
+
+        large_story_categories = _detect_large_preflight_story_categories(story_content)
+        if large_story_categories and (
+            complexity != "large"
+            or state.preflight_complexity_score is None
+            or state.preflight_complexity_score < 8
+        ):
+            complexity = "large"
+            state.preflight_complexity = complexity
+            if state.preflight_complexity_score is None or state.preflight_complexity_score < 8:
+                state.preflight_complexity_score = 8
+            override_reason = (
+                "coordinator override: upgraded complexity to large for "
+                + ", ".join(large_story_categories)
+            )
+            state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
+            _log(f"  ↑ {override_reason}")
 
         _log(f"  Complexity: {complexity} (from preflight)")
         _log(f"  Sufficiency: {sufficiency}")

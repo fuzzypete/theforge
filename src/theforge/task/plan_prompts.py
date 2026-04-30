@@ -142,6 +142,20 @@ def build_preflight_prompt(
           of a phase of the state machine, changes that touch >10 files or
           require coordinated migration across the codebase.
 
+        Treat the following as **LARGE (score 8+) even if the local edit count
+        looks modest**:
+        - Concurrency control: threads, processes, async cancellation,
+          inter-thread/inter-process coordination
+        - Lifecycle or cancellation propagation across module boundaries
+        - Multi-phase state-machine modifications, phase-boundary changes, or
+          phase handoff changes
+        - Cross-module coordinator surgery where correctness depends on runner /
+          engine / phase sites changing together
+
+        Size the **category of work**, not just the apparent line count. Apply
+        this rule regardless of provider model, story wording, product area, or
+        repository language.
+
         Keep the enum consistent with the score using the default mapping
         (1–3 → small, 4–7 → medium, 8–10 → large) unless you have a specific
         reason to diverge. If a change touches a shared interface field,
