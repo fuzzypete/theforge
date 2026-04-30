@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,10 @@ def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
         "error_threshold": (int, defaults.error_threshold),
         "post_nudge_iterations": (int, defaults.post_nudge_iterations),
     }
+    multiplier_fields = {
+        "no_progress_multipliers": defaults.no_progress_multipliers,
+        "post_nudge_multipliers": defaults.post_nudge_multipliers,
+    }
     kwargs: dict[str, Any] = {}
     for key, (typ, default) in fields.items():
         val = raw.get(key, default)
@@ -198,6 +203,34 @@ def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
                     f"forge.yaml 'stuck_detection.{key}' must be a positive int, got {val!r}"
                 )
         kwargs[key] = val
+    for key, default in multiplier_fields.items():
+        if key not in raw:
+            kwargs[key] = default
+            continue
+        val = raw[key]
+        if not isinstance(val, dict):
+            raise ValueError(
+                f"forge.yaml 'stuck_detection.{key}' must be a mapping, got {type(val).__name__}"
+            )
+        parsed: dict[str, float] = {}
+        for k, v in val.items():
+            if not isinstance(k, str):
+                raise ValueError(
+                    f"forge.yaml 'stuck_detection.{key}' keys must be strings, "
+                    f"got {type(k).__name__}"
+                )
+            if (
+                isinstance(v, bool)
+                or not isinstance(v, (int, float))
+                or not math.isfinite(v)
+                or v <= 0
+            ):
+                raise ValueError(
+                    f"forge.yaml 'stuck_detection.{key}.{k}' must be a finite positive number, "
+                    f"got {v!r}"
+                )
+            parsed[k] = float(v)
+        kwargs[key] = parsed
     return StuckDetectionConfig(**kwargs)
 
 
