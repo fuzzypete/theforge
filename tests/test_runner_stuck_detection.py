@@ -894,3 +894,14 @@ class TestStuckDetectionConfigParsing:
                 assert "no_progress_multipliers" in str(exc) and "positive" in str(exc)
             else:
                 raise AssertionError(f"expected ValueError for {bad!r}")
+
+    def test_parse_rejects_non_finite_multiplier_value(self):
+        from theforge.config.load import _parse_stuck_detection
+
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            try:
+                _parse_stuck_detection({"post_nudge_multipliers": {"large": bad}})
+            except ValueError as exc:
+                assert "post_nudge_multipliers" in str(exc) and "finite" in str(exc)
+            else:
+                raise AssertionError(f"expected ValueError for {bad!r}")

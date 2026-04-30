@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -218,9 +219,15 @@ def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
                     f"forge.yaml 'stuck_detection.{key}' keys must be strings, "
                     f"got {type(k).__name__}"
                 )
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+            if (
+                isinstance(v, bool)
+                or not isinstance(v, (int, float))
+                or not math.isfinite(v)
+                or v <= 0
+            ):
                 raise ValueError(
-                    f"forge.yaml 'stuck_detection.{key}.{k}' must be a positive number, got {v!r}"
+                    f"forge.yaml 'stuck_detection.{key}.{k}' must be a finite positive number, "
+                    f"got {v!r}"
                 )
             parsed[k] = float(v)
         kwargs[key] = parsed
