@@ -42,7 +42,7 @@ def test_compute_synthetic_edges_example_chain() -> None:
     }
 
 
-def test_inject_synthetic_deps_merges_without_duplicates() -> None:
+def test_inject_synthetic_deps_writes_to_collision_deps() -> None:
     tasks = [
         _task("story-12", 12),
         _task("story-15", 15, depends_on=["base", "story-12"]),
@@ -50,7 +50,10 @@ def test_inject_synthetic_deps_merges_without_duplicates() -> None:
 
     augmented = inject_synthetic_deps(tasks, {"story-15": ["story-12", "extra"]})
 
-    assert augmented[1].depends_on == ["base", "extra", "story-12"]
+    # depends_on (hard edges) must be untouched; collision edges land in
+    # collision_deps so the DAG can release them on terminal-but-not-merged.
+    assert augmented[1].depends_on == ["base", "story-12"]
+    assert augmented[1].collision_deps == ["extra", "story-12"]
 
 
 def test_compute_synthetic_edges_ignores_missing_likely_files() -> None:

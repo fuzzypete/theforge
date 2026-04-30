@@ -230,19 +230,30 @@ class StoryDAG:
 
     def __init__(self, tasks: list[TaskStory], satisfied: set[str] | None = None) -> None:
         self._tasks: dict[str, TaskStory] = {t.slug: t for t in tasks}
-        self._deps: dict[str, set[str]] = {t.slug: set(t.depends_on) for t in tasks}
+        self._hard_deps: dict[str, set[str]] = {t.slug: set(t.depends_on) for t in tasks}
+        self._soft_deps: dict[str, set[str]] = {t.slug: set(t.collision_deps) for t in tasks}
         self._completed: set[str] = (
             set(satisfied) if satisfied else set()
         )  # satisfied: merged or ALREADY_DONE
         self._finished: set[str] = set()  # all done: any outcome
 
     def ready(self) -> list[TaskStory]:
-        """Return tasks that are not finished and whose deps are all completed."""
+        """Return tasks that are not finished and whose deps are all released.
+
+        Hard deps (``depends_on``) must be in ``_completed``. Soft deps
+        (``collision_deps``) release on any terminal state — completed OR
+        finished — because the upstream reaching a terminal-but-not-merged
+        state means the collision the synthetic edge guarded against does
+        not exist on disk, so the downstream can proceed.
+        """
         return [
             task
             for slug, task in self._tasks.items()
             if slug not in self._finished
-            and all(dep in self._completed for dep in self._deps[slug])
+            and all(dep in self._completed for dep in self._hard_deps[slug])
+            and all(
+                dep in self._completed or dep in self._finished for dep in self._soft_deps[slug]
+            )
         ]
 
     def mark_complete(self, slug: str) -> None:
@@ -260,8 +271,19 @@ class StoryDAG:
         return len(self._finished) == len(self._tasks)
 
     def unmet_deps(self, slug: str) -> list[str]:
-        """Dependency slugs that are not yet completed (for skip messages)."""
-        return [dep for dep in self._deps[slug] if dep not in self._completed]
+        """Dependency slugs that genuinely block this story (for skip messages).
+
+        Hard deps are unmet when not yet completed. Soft (collision) deps are
+        unmet only when their upstream has not reached any terminal state —
+        a terminal-but-not-merged upstream releases the soft edge.
+        """
+        unmet = [dep for dep in self._hard_deps[slug] if dep not in self._completed]
+        unmet.extend(
+            dep
+            for dep in self._soft_deps[slug]
+            if dep not in self._completed and dep not in self._finished
+        )
+        return unmet
 
     def remaining(self) -> list[TaskStory]:
         """Tasks not yet finished (not in _finished)."""

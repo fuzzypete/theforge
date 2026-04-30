@@ -263,6 +263,6 @@ def inject_synthetic_deps(
         if task.slug not in synthetic:
             augmented.append(task)
             continue
-        merged = sorted(set(task.depends_on) | set(synthetic[task.slug]))
-        augmented.append(replace(task, depends_on=merged))
+        merged = sorted(set(task.collision_deps) | set(synthetic[task.slug]))
+        augmented.append(replace(task, collision_deps=merged))
     return augmented

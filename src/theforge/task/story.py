@@ -19,6 +19,9 @@ class TaskStory:
     test_target: str | None = None  # stack-neutral test target substituted into gate_command
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
+    collision_deps: list[str] = field(
+        default_factory=list
+    )  # slugs injected by collision detection; soft edges that release on any terminal upstream
     inferred_dependencies: list[str] = field(default_factory=list)  # inferred from GH blockers
     dependency_warnings: list[str] = field(default_factory=list)  # non-authoritative prose matches
     github_issue: int | None = None  # GH issue number; PR will include "Closes #N"
