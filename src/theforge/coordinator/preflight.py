@@ -36,6 +36,97 @@ _COMPLEXITY_TO_LEVEL: dict[str, str] = {
     "large": "HIGH",
 }
 
+_CONCURRENCY_CONTROL_TERMS = (
+    "thread",
+    "threads",
+    "process",
+    "processes",
+    "async",
+    "asynchronous",
+    "asyncio",
+    "concurrency",
+    "concurrent",
+    "inter thread",
+    "inter process",
+)
+
+_CANCELLATION_TERMS = (
+    "cancel",
+    "cancellation",
+    "abort signal",
+    "stop signal",
+    "shutdown",
+    "lifecycle",
+)
+
+_CROSS_BOUNDARY_TERMS = (
+    "propagate",
+    "propagation",
+    "thread through",
+    "threads through",
+    "threading through",
+    "across module",
+    "across modules",
+    "module boundaries",
+    "boundary",
+    "boundaries",
+    "handoff",
+    "handoffs",
+)
+
+_PHASE_TRANSITION_TERMS = (
+    "multi phase",
+    "multiple phases",
+    "phase transition",
+    "phase transitions",
+    "phase boundary",
+    "phase boundaries",
+    "phase handoff",
+    "phase handoffs",
+    "across phases",
+    "every phase",
+    "state machine",
+)
+
+_COORDINATOR_COMPONENT_TERMS = (
+    "runner",
+    "engine",
+    "coordinator",
+    "coordinator loop",
+    "phase",
+    "phases",
+)
+
+_COORDINATION_CHANGE_TERMS = (
+    "modify",
+    "modifies",
+    "modification",
+    "change",
+    "changes",
+    "changing",
+    "update",
+    "updates",
+    "thread",
+    "threads",
+    "propagate",
+    "propagation",
+    "coordinate",
+    "coordinated",
+    "together",
+    "all sites",
+    "correctness depends",
+)
+
+_CROSS_MODULE_TERMS = (
+    "cross module",
+    "cross modules",
+    "multi module",
+    "multi modules",
+    "module boundaries",
+    "all sites",
+    "correctness depends",
+)
+
 # Integer complexity scale bounds. Preflight emits a score in this range;
 # out-of-range or missing scores fall back to the legacy three-level enum.
 COMPLEXITY_SCORE_MIN = 1
@@ -68,6 +159,61 @@ def band_to_score(band: str) -> int:
     if norm == "large":
         return 9
     return 5  # medium or unknown
+
+
+def _normalize_story_text_for_match(text: str) -> str:
+    """Normalize free-form story text for coarse phrase matching."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return f" {normalized} " if normalized else " "
+
+
+def _contains_any_phrase(normalized_text: str, phrases: tuple[str, ...]) -> bool:
+    """Return True when any normalized phrase appears in normalized_text."""
+    return any(
+        f" {_normalize_story_text_for_match(phrase).strip()} " in normalized_text
+        for phrase in phrases
+    )
+
+
+def _count_phrase_hits(normalized_text: str, phrases: tuple[str, ...]) -> int:
+    """Count how many distinct normalized phrases appear in normalized_text."""
+    return sum(
+        1
+        for phrase in phrases
+        if f" {_normalize_story_text_for_match(phrase).strip()} " in normalized_text
+    )
+
+
+def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
+    """Return LARGE-trigger categories detected directly from story text.
+
+    These categories are deterministic coordinator-side guardrails for work that
+    tends to be under-sized by local edit count alone.
+    """
+    normalized = _normalize_story_text_for_match(story_content)
+    matched: list[str] = []
+
+    if _contains_any_phrase(normalized, _CONCURRENCY_CONTROL_TERMS):
+        matched.append("concurrency control")
+
+    if _contains_any_phrase(normalized, _CANCELLATION_TERMS) and (
+        _contains_any_phrase(normalized, _CROSS_BOUNDARY_TERMS)
+        or _count_phrase_hits(normalized, _COORDINATOR_COMPONENT_TERMS) >= 2
+    ):
+        matched.append("lifecycle/cancellation propagation across module boundaries")
+
+    if _contains_any_phrase(normalized, _PHASE_TRANSITION_TERMS) and _contains_any_phrase(
+        normalized, _COORDINATION_CHANGE_TERMS
+    ):
+        matched.append("multi-phase state-machine modifications")
+
+    if _count_phrase_hits(normalized, _COORDINATOR_COMPONENT_TERMS) >= 2 and (
+        _contains_any_phrase(normalized, _CROSS_MODULE_TERMS)
+        or _contains_any_phrase(normalized, _COORDINATION_CHANGE_TERMS)
+    ):
+        matched.append("cross-module coordinator surgery")
+
+    return list(dict.fromkeys(matched))
 
 
 def score_to_dev_tier(score: int) -> str:

@@ -342,6 +342,70 @@ likely_files:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_concurrency_multiphase_story_upgrades_medium_preflight_to_large_for_routing(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Concurrency-sensitive coordinator surgery is force-sized to LARGE."""
+        config = _make_smart_config(tmp_path)
+        task = _make_task(tmp_path)
+        task.story_path.write_text(
+            """# Test Spec
+
+Thread a per-story cancellation signal through the sprint runner, coordinator loop,
+and every phase function. Insert cancellation checks at each phase boundary and
+update the state machine handoff so cleanup does not emit duplicate terminal records.
+""",
+            encoding="utf-8",
+        )
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="""```yaml
+verdict: PROCEED
+complexity: medium
+complexity_score: 5
+work_type: bug
+contract_change: false
+reason: "Looks like a medium multi-file coordinator fix."
+sufficiency: implementation_ready
+sufficiency_reason: "Spec is detailed."
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "Cancellation signal reaches every phase boundary"
+    satisfied: false
+    evidence: "Not found in codebase"
+```""",
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_complexity == "large"
+        assert result.state.preflight_complexity_score == 8
+        assert any(
+            "coordinator override: upgraded complexity to large" in warning
+            for warning in result.state.preflight_warnings
+        )
+        audit = result.state.complexity_routing_audit
+        assert audit is not None
+        assert audit["complexity"] == "large"
+        assert audit["complexity_score"] == 8
+        assert audit["derived_dev_model"] == "opus"
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_preflight_cost_in_audit(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
