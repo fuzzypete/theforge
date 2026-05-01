@@ -1023,3 +1023,62 @@ def test_stage_and_detail_failed_with_stale_done_does_not_leak() -> None:
     assert "APPROVE" not in detail
     # The display should reflect the current run's escalation, not a stale APPROVE.
     assert detail in {"ESCALATED", "ESCALATE"}
+
+
+def test_completed_failed_story_with_stale_verdict_does_not_show_approve() -> None:
+    """Completed FAILED row with stale verdict=APPROVE must not render APPROVE."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-1070",
+        "path": "Issue #1070",
+        "outcome": "FAILED",
+        "verdict": "APPROVE",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
+    assert "APPROVE" not in detail
+    assert detail == "FAILED"
+
+
+def test_completed_escalated_story_with_stale_verdict_does_not_show_approve() -> None:
+    """Completed ESCALATED row with stale verdict=APPROVE must not render APPROVE."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-1070",
+        "path": "Issue #1070",
+        "outcome": "ESCALATED",
+        "verdict": "APPROVE",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
+    assert "APPROVE" not in detail
+    assert detail == "ESCALATED"
+
+
+def test_completed_skipped_story_with_stale_verdict_does_not_show_approve() -> None:
+    """Completed SKIPPED row with stale verdict=APPROVE must not render APPROVE."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-1080",
+        "path": "Issue #1080",
+        "outcome": "SKIPPED",
+        "verdict": "APPROVE",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
+    assert "APPROVE" not in detail
+    assert detail == "SKIPPED"
+
+
+def test_completed_done_story_verdict_is_preserved() -> None:
+    """Completed DONE row with verdict=APPROVE should still render APPROVE."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-1000",
+        "path": "Issue #1000",
+        "outcome": "DONE",
+        "verdict": "APPROVE",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
+    assert detail == "APPROVE"

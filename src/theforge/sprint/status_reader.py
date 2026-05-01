@@ -410,7 +410,10 @@ def _stage_and_detail_from_completed_story(
                 detail = error
 
     if not detail:
-        verdict = _nonempty_str(story.get("verdict"))
+        # Only trust a top-level verdict for success outcomes. A stale APPROVE
+        # on a FAILED/ESCALATED/SKIPPED row from a prior run must not leak.
+        _success_outcome = outcome in {"DONE", "ALREADY_DONE"}
+        verdict = _nonempty_str(story.get("verdict")) if _success_outcome else None
         if verdict == "APPROVE":
             detail = "APPROVE"
         elif verdict:
