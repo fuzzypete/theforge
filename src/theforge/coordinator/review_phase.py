@@ -1013,9 +1013,9 @@ def _run_review_phase(
         _prev_result = state.review_results[-2]
         _is_persistent_p1 = _has_persistent_p1(parsed_review.findings, _prev_result.findings)
 
-    _persistent_tag = " (persistent)" if _is_persistent_p1 else ""
+    _persistent_tag = " (persistent-P1)" if _is_persistent_p1 else ""
     _log(
-        f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1  {_p2_count} P2{_persistent_tag}"
+        f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1{_persistent_tag}  {_p2_count} P2"
         f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
     )
 
