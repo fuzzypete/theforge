@@ -383,22 +383,33 @@ def _run_preflight_phase(
                 "(cross-cutting blast radius)"
             )
 
-        large_story_categories = _detect_large_preflight_story_categories(story_content)
-        if large_story_categories and (
-            complexity != "large"
-            or state.preflight_complexity_score is None
-            or state.preflight_complexity_score < 8
-        ):
-            complexity = "large"
-            state.preflight_complexity = complexity
-            if state.preflight_complexity_score is None or state.preflight_complexity_score < 8:
-                state.preflight_complexity_score = 8
-            override_reason = (
-                "coordinator override: upgraded complexity to large for "
-                + ", ".join(large_story_categories)
-            )
-            state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
-            _log(f"  ↑ {override_reason}")
+        # Bug stories describe symptom context (what went wrong, what was expected),
+        # not fix scope. The keyword patterns match domain vocabulary in the bug
+        # description, not the shape of the change required. Skip the override for
+        # bugs — the preflight LLM reads the codebase and should size bugs correctly.
+        # The override is load-bearing only for feature/refactor/mechanical stories
+        # where imperative spec language reflects genuine cross-cutting scope.
+        if work_type != "bug":
+            large_story_categories = _detect_large_preflight_story_categories(story_content)
+            if large_story_categories and (
+                complexity != "large"
+                or state.preflight_complexity_score is None
+                or state.preflight_complexity_score < 8
+            ):
+                complexity = "large"
+                state.preflight_complexity = complexity
+                score_too_low = (
+                    state.preflight_complexity_score is None
+                    or state.preflight_complexity_score < 8
+                )
+                if score_too_low:
+                    state.preflight_complexity_score = 8
+                override_reason = (
+                    "coordinator override: upgraded complexity to large for "
+                    + ", ".join(large_story_categories)
+                )
+                state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
+                _log(f"  ↑ {override_reason}")
 
         _log(f"  Complexity: {complexity} (from preflight)")
         _log(f"  Sufficiency: {sufficiency}")

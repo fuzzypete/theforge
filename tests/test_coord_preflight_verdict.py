@@ -368,7 +368,7 @@ update the state machine handoff so cleanup does not emit duplicate terminal rec
 verdict: PROCEED
 complexity: medium
 complexity_score: 5
-work_type: bug
+work_type: feature
 contract_change: false
 reason: "Looks like a medium multi-file coordinator fix."
 sufficiency: implementation_ready
@@ -400,6 +400,80 @@ criteria_checked:
         assert audit["complexity"] == "large"
         assert audit["complexity_score"] == 8
         assert audit["derived_dev_model"] == "opus"
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_bug_story_with_lifecycle_vocabulary_not_upgraded_to_large(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Bug stories that mention lifecycle/cancellation context must not be upgraded.
+
+        Regression for issue #1150: the coordinator override was firing on bug *context*
+        (what the bug is about) rather than fix *shape* (what change is required). A
+        display fix in cli/status.py that describes 'prior terminal story state during
+        resumed run' should stay at MEDIUM — the preflight LLM rates the fix correctly
+        from the codebase; the keyword override must not re-classify it.
+        """
+        config = _make_smart_config(tmp_path)
+        task = _make_task(tmp_path)
+        task.story_path.write_text(
+            """# forge status MODEL column shows panel(N) during resumed run
+
+## What happened
+
+The MODEL column in forge status shows panel(N) instead of the model name when
+the sprint is resumed and reuses prior terminal story state from a previous run.
+The coordinator loop carries prior lifecycle state across phases, so the resumed
+run displays stale panel references from the earlier lifecycle/cancellation flow.
+
+## What was expected
+
+The MODEL column should always show the current model name from the active run,
+not a panel reference inherited from prior terminal state.
+""",
+            encoding="utf-8",
+        )
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="""```yaml
+verdict: PROCEED
+complexity: medium
+complexity_score: 5
+work_type: bug
+contract_change: false
+reason: "Single-file display fix in cli/status.py."
+sufficiency: implementation_ready
+sufficiency_reason: "Fix is localised to status rendering."
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "MODEL column shows model name"
+    satisfied: false
+    evidence: "Wrong value returned in status render path"
+```""",
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_complexity == "medium"
+        assert result.state.preflight_complexity_score == 5
+        assert not any(
+            "coordinator override: upgraded complexity to large" in warning
+            for warning in (result.state.preflight_warnings or [])
+        )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
