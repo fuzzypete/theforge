@@ -45,6 +45,16 @@ class StoryTriage:
     slug: str = ""
 
 
+@dataclass(frozen=True)
+class MergeEvidence:
+    """Structured merge detection result for resume triage."""
+
+    merged: bool
+    source: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+
+
 def _has_prior_review_approve(
     project_root: Path,
     slug: str,
@@ -104,36 +114,87 @@ def _has_base_commit_referencing_issue(
         return False
 
 
-def _is_branch_merged(
+def _lookup_merged_pr_for_branch(
+    branch: str,
+    project_root: Path,
+) -> MergeEvidence | None:
+    """Return merged PR metadata for ``branch`` when GitHub reports one."""
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--state",
+                "closed",
+                "--json",
+                "number,url,mergedAt",
+            ],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "[]")
+        if not isinstance(data, list):
+            return None
+        merged_prs: list[tuple[str, int, str | None]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            merged_at = item.get("mergedAt")
+            number = item.get("number")
+            url = item.get("url")
+            if not isinstance(merged_at, str) or not merged_at:
+                continue
+            if not isinstance(number, int):
+                continue
+            merged_prs.append((merged_at, number, url if isinstance(url, str) else None))
+        if not merged_prs:
+            return None
+        _merged_at, pr_number, pr_url = max(merged_prs, key=lambda item: item[0])
+        return MergeEvidence(
+            merged=True,
+            source="github_pr",
+            pr_number=pr_number,
+            pr_url=pr_url,
+        )
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+        return None
+
+
+def _with_pr_metadata(
+    evidence: MergeEvidence,
+    branch: str,
+    project_root: Path,
+    issue_number: int | None,
+) -> MergeEvidence:
+    """Attach merged-PR metadata when GitHub can identify the landing PR."""
+    if not evidence.merged or issue_number is None or evidence.pr_number is not None:
+        return evidence
+    merged_pr = _lookup_merged_pr_for_branch(branch, project_root)
+    if merged_pr is None:
+        return evidence
+    return MergeEvidence(
+        merged=True,
+        source=evidence.source,
+        pr_number=merged_pr.pr_number,
+        pr_url=merged_pr.pr_url,
+    )
+
+
+def _branch_merge_evidence(
     branch: str,
     base_branch: str,
     project_root: Path,
     slug: str | None = None,
-) -> bool:
-    """Return True if branch has been merged into base_branch.
-
-    Three detection paths handle the merge strategies theforge uses:
-
-    1. Regular merge commit (git merge --no-edit fallback):
-       --is-ancestor passes AND branch..base_branch count > 0 (base advanced
-       past the branch tip via a merge commit) AND base_branch..branch count > 0
-       (the branch had unique commits before merge).
-
-    2. Fast-forward merge (git merge --ff-only, preferred):
-       After an FF merge, branch and base point at the same commit, so
-       branch..base_branch count == 0.
-
-    3. Squash merge (configured default):
-       The feature branch tip remains an ancestor of base because it was based
-       on base, but the squash commit on base is a new commit with no parent
-       relationship to the branch. Git topology alone therefore cannot prove
-       the merge. Issue-backed branches first look for a base commit that
-       references the issue, then fall back to the forge APPROVE audit trail
-       when slug is provided.
-
-    A branch that was merely created at base HEAD (count == 0, no audit entry)
-    correctly returns False.
-    """
+) -> MergeEvidence:
+    """Return structured merge evidence for ``branch`` against ``base_branch``."""
+    no_merge = MergeEvidence(merged=False)
     issue_number = _issue_number_from_slug(slug) if slug is not None else None
     if issue_number is None:
         issue_number = _issue_number_from_ref(branch)
@@ -171,29 +232,86 @@ def _is_branch_merged(
                 if unique_count > 0:
                     # Regular merge: base has moved past branch and branch had
                     # unique work of its own.
-                    return issue_is_closed
+                    if issue_is_closed:
+                        return _with_pr_metadata(
+                            MergeEvidence(merged=True, source="topology"),
+                            branch,
+                            project_root,
+                            issue_number,
+                        )
+                    return no_merge
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
     if not issue_is_closed:
-        return False
+        return no_merge
 
     if issue_number is not None and _has_base_commit_referencing_issue(
         project_root,
         base_branch,
         issue_number,
     ):
-        return True
+        return _with_pr_metadata(
+            MergeEvidence(merged=True, source="issue_commit"),
+            branch,
+            project_root,
+            issue_number,
+        )
 
     # Fast-forward merges at the same tip and squash merges both need the audit
     # trail fallback. In real squash merges, --is-ancestor returns non-zero, so
     # this check must live outside the topology-success branch above.
     if slug is not None:
         try:
-            return _has_prior_review_approve(project_root, slug, base_branch, branch)
+            if _has_prior_review_approve(project_root, slug, base_branch, branch):
+                return _with_pr_metadata(
+                    MergeEvidence(merged=True, source="audit"),
+                    branch,
+                    project_root,
+                    issue_number,
+                )
         except Exception:
-            return False
-    return False
+            return no_merge
+
+    merged_pr = (
+        _lookup_merged_pr_for_branch(branch, project_root) if issue_number is not None else None
+    )
+    if merged_pr is not None:
+        return merged_pr
+    return no_merge
+
+
+def _is_branch_merged(
+    branch: str,
+    base_branch: str,
+    project_root: Path,
+    slug: str | None = None,
+) -> bool:
+    """Return True if branch has been merged into base_branch.
+
+    Three detection paths handle the merge strategies theforge uses:
+
+    1. Regular merge commit (git merge --no-edit fallback):
+       --is-ancestor passes AND branch..base_branch count > 0 (base advanced
+       past the branch tip via a merge commit) AND base_branch..branch count > 0
+       (the branch had unique commits before merge).
+
+    2. Fast-forward merge (git merge --ff-only, preferred):
+       After an FF merge, branch and base point at the same commit, so
+       branch..base_branch count == 0.
+
+    3. Squash merge (configured default):
+       The feature branch tip remains an ancestor of base because it was based
+       on base, but the squash commit on base is a new commit with no parent
+       relationship to the branch. Git topology alone therefore cannot prove
+       the merge. Issue-backed branches first look for a base commit that
+       references the issue, then fall back to the forge APPROVE audit trail
+       when slug is provided.
+
+    A branch that was merely created at base HEAD (count == 0, no audit entry)
+    correctly returns False.
+    """
+    return _branch_merge_evidence(branch, base_branch, project_root, slug=slug).merged
 
 
 def _is_issue_closed(issue_number: int, project_root: Path) -> bool:
@@ -449,9 +567,12 @@ def _triage_spec(
     # 2. Check if already merged to base branch.
     # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
     # for fast-forward merges where branch and base land on the same commit.
-    if _is_branch_merged(branch, base_branch, project_root, slug=slug):
+    merge_evidence = _branch_merge_evidence(branch, base_branch, project_root, slug=slug)
+    if merge_evidence.merged:
         merged_reason = f"already merged to {base_branch}"
-        if _has_prior_review_approve(project_root, slug, base_branch, branch):
+        if merge_evidence.pr_number is not None:
+            merged_reason = f"already merged in PR #{merge_evidence.pr_number}, skipping"
+        elif merge_evidence.source == "audit":
             merged_reason = f"prior APPROVE in audit trail; already merged to {base_branch}"
         return StoryTriage(
             story_path=story_path,

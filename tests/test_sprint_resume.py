@@ -326,6 +326,48 @@ class TestTriageSpec:
         assert triage.action == "skip_merged"
         assert "merged" in triage.reason
 
+    def test_triage_issue_merged_via_closed_pr_uses_pr_specific_reason(
+        self, tmp_path: Path
+    ) -> None:
+        """Closed merged PRs are skipped before workspace setup with a PR-specific reason."""
+        _make_spec_file(tmp_path, "Issue 1102", "issue-1102")
+        config = _make_config(tmp_path)
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if cmd[:3] == ["gh", "pr", "list"]:
+                m.returncode = 0
+                m.stdout = (
+                    '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
+                    '"mergedAt":"2026-05-01T12:34:56Z"}]'
+                )
+            elif cmd[:2] == ["git", "log"] and "--grep=(#1102)" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"2"
+            elif "--is-ancestor" in cmd:
+                m.returncode = 1
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            patch("theforge.sprint.dag._is_issue_closed", return_value=True),
+            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        ):
+            triage = _triage_spec("issue-1102.md", config, tmp_path)
+
+        assert triage.action == "skip_merged"
+        assert triage.reason == "already merged in PR #1111, skipping"
+
     def test_triage_same_tip_failed_landing_audit_stays_full(self, tmp_path: Path) -> None:
         """A zero-delta APPROVE with failed landing stays eligible during resume."""
         import json
