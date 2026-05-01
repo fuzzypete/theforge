@@ -248,6 +248,30 @@ class TestHasReviewApprove:
         with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
+    def test_require_landed_rejects_failed_landing(self, tmp_path: Path) -> None:
+        """Landed-only mode ignores APPROVE records whose landing failed."""
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        record = {
+            "task": {"slug": "my-spec"},
+            "landing_status": "failed",
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        assert has_review_approve(tmp_path, "my-spec", require_landed=True) is False
+
+    def test_require_landed_accepts_landed_approve(self, tmp_path: Path) -> None:
+        """Landed-only mode keeps working for APPROVE records that actually landed."""
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        record = {
+            "task": {"slug": "my-spec"},
+            "landing_status": "landed",
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        assert has_review_approve(tmp_path, "my-spec", require_landed=True) is True
+
     def test_no_approve_record_with_base_branch(self, tmp_path: Path) -> None:
         """Returns False when no APPROVE record exists (baseline for new signature)."""
         audits = tmp_path / ".forge" / "audits"

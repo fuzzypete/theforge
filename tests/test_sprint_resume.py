@@ -299,6 +299,7 @@ class TestTriageSpec:
         audits_dir.mkdir(parents=True)
         record = {
             "task": {"slug": "feature-a"},
+            "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
         (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
@@ -325,6 +326,44 @@ class TestTriageSpec:
         assert triage.action == "skip_merged"
         assert "merged" in triage.reason
 
+    def test_triage_same_tip_failed_landing_audit_stays_full(self, tmp_path: Path) -> None:
+        """A zero-delta APPROVE with failed landing stays eligible during resume."""
+        import json
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        record = {
+            "task": {"slug": "feature-a"},
+            "landing_status": "failed",
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"0"
+            elif "--is-ancestor" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "full"
+        assert triage.reason == "branch is at main HEAD with 0 commits ahead"
+
     def test_triage_same_tip_worktree_with_prior_approve_skips_when_merged(
         self, tmp_path: Path
     ) -> None:
@@ -341,6 +380,7 @@ class TestTriageSpec:
         audits_dir.mkdir(parents=True)
         record = {
             "task": {"slug": "feature-a"},
+            "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
         (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
@@ -366,6 +406,47 @@ class TestTriageSpec:
 
         assert triage.action == "skip_merged"
         assert "merged" in triage.reason
+
+    def test_triage_open_issue_with_landed_audit_stays_full(self, tmp_path: Path) -> None:
+        """An open issue is contradictory evidence and must not be skipped as merged."""
+        import json
+
+        _make_spec_file(tmp_path, "Issue 1071", "issue-1071")
+        config = _make_config(tmp_path)
+
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        record = {
+            "task": {"slug": "issue-1071"},
+            "landing_status": "landed",
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"0"
+            elif "--is-ancestor" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            patch("theforge.sprint.dag._is_issue_closed", return_value=False),
+        ):
+            triage = _triage_spec("issue-1071.md", config, tmp_path)
+
+        assert triage.action == "full"
+        assert triage.reason == "branch is at main HEAD with 0 commits ahead"
 
     def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
         """Worktree has commits ahead and prior APPROVE in audit trail → skip."""
