@@ -51,13 +51,14 @@ def _has_prior_review_approve(
     base_branch: str,
     branch: str,
 ) -> bool:
-    """Return True when audit history shows a prior APPROVE for this story.
+    """Return True when audit history shows a landed APPROVE for this story.
 
     Resume merged detection needs the persisted review outcome even when the
     feature branch still appears ahead of base (squash merges rewrite commits,
     so git topology alone cannot prove the merge). This helper intentionally
-    bypasses the stale-branch guard inside has_review_approve and only answers
-    the audit-history question.
+    bypasses the stale-branch guard inside has_review_approve, but it still
+    requires landing evidence so a zero-delta APPROVE or failed merge attempt
+    does not satisfy the story during resume.
     """
     return has_review_approve(
         project_root,
@@ -65,6 +66,7 @@ def _has_prior_review_approve(
         base_branch,
         branch,
         allow_unmerged_commits=True,
+        require_landed=True,
     )
 
 
@@ -132,6 +134,11 @@ def _is_branch_merged(
     A branch that was merely created at base HEAD (count == 0, no audit entry)
     correctly returns False.
     """
+    issue_number = _issue_number_from_slug(slug) if slug is not None else None
+    if issue_number is None:
+        issue_number = _issue_number_from_ref(branch)
+    issue_is_closed = issue_number is None or _is_issue_closed(issue_number, project_root)
+
     try:
         merge_result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, base_branch],
@@ -164,13 +171,13 @@ def _is_branch_merged(
                 if unique_count > 0:
                     # Regular merge: base has moved past branch and branch had
                     # unique work of its own.
-                    return True
+                    return issue_is_closed
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
-    issue_number = _issue_number_from_slug(slug) if slug is not None else None
-    if issue_number is None:
-        issue_number = _issue_number_from_ref(branch)
+    if not issue_is_closed:
+        return False
+
     if issue_number is not None and _has_base_commit_referencing_issue(
         project_root,
         base_branch,

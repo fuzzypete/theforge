@@ -42,6 +42,7 @@ def has_review_approve(
     branch: str | None = None,
     *,
     allow_unmerged_commits: bool = False,
+    require_landed: bool = False,
 ) -> bool:
     """Return True if any prior run for slug produced a review APPROVE.
 
@@ -60,6 +61,8 @@ def has_review_approve(
             formatted with slug). If None, defaults to 'feat/<slug>'.
         allow_unmerged_commits: When True, return APPROVE based solely on audit
             history without rejecting branches that still appear ahead of base.
+        require_landed: When True, only count APPROVE records whose landing
+            status shows story-specific work actually landed on the base branch.
     """
     history_path = project_root / ".forge" / "audits" / "history.jsonl"
     if not history_path.exists():
@@ -80,6 +83,14 @@ def has_review_approve(
                 task_info = record.get("task", {})
                 if task_info.get("slug") != slug:
                     continue
+                if require_landed:
+                    landing_status = record.get("landing_status")
+                    if landing_status is None:
+                        landing_event = record.get("landing_event")
+                        if isinstance(landing_event, dict) and landing_event.get("landed") is True:
+                            landing_status = "landed"
+                    if landing_status != "landed":
+                        continue
                 for review in record.get("reviews", []):
                     if review.get("verdict") == "APPROVE":
                         if not allow_unmerged_commits:
