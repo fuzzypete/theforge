@@ -727,6 +727,85 @@ class TestRedirectChainResolution:
         assert summary["sprint"]["specs_succeeded"] == 2
         assert summary["sprint"]["total_cost_usd"] == pytest.approx(10.44)
 
+    def test_live_state_does_not_show_running_story_as_skipped_from_prior_state(
+        self, tmp_path: Path
+    ) -> None:
+        """A story actively running in the current run must not be shown as
+        skipped due to a terminal outcome persisted from an earlier run.
+
+        Regression: when a prior resume left a story with outcome=SKIPPED in
+        the sprint-wide accumulated state (e.g. an unsatisfied dependency),
+        seeding the canonical structure with that terminal outcome locked
+        the story in SKIPPED via the monotonicity invariant. Subsequent
+        transitions to RUNNING were rejected, while phase/cost continued to
+        update, producing a live row that combined "skipped" status with
+        active phase and cost — the exact symptom from issue #1146.
+        """
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-b.md"])
+        config = _make_config(tmp_path)
+        sprint_name = "Test Sprint"
+
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        _save_accumulated_stories(
+            sprint_id,
+            sprint_name,
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-b.md",
+                    "slug": "feature-b",
+                    "path": "feature-b.md",
+                    "outcome": "SKIPPED",
+                    "verdict": None,
+                    "cost_usd": 0.31,
+                    "story_run_id": "run-prior",
+                    "preflight": None,
+                    "merge": False,
+                    "batch": 0,
+                    "depends_on": [],
+                }
+            ],
+        )
+
+        full_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="full",
+            reason="ready to run",
+            worktree_path=None,
+            slug="feature-b",
+        )
+
+        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+            return full_triage
+
+        captured: dict[str, object] = {}
+
+        def _capture_live_state(*args, **kwargs):
+            entries = read_live_status("run-current", tmp_path)
+            assert entries is not None
+            by_slug = {entry.slug: entry for entry in entries}
+            captured["live"] = by_slug.get("feature-b")
+            return _make_coordinator_result(success=True, cost=2.5)
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
+            patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state),
+        ):
+            run_sprint(config, manifest_path, resume=True, run_id="run-current")
+
+        live = captured.get("live")
+        assert live is not None, "feature-b should appear in live status while running"
+        # The running story must not display the terminal "skipped" status from
+        # the prior run's accumulated state.
+        assert live.status != "skipped", (
+            f"feature-b shown as skipped while actively running: {live!r}"
+        )
+        # Detail must not be the stale terminal "SKIPPED" carried from prior state.
+        assert live.detail != "SKIPPED", (
+            f"feature-b detail leaked stale terminal outcome: {live!r}"
+        )
+
     def test_live_state_includes_prior_run_skip_merged_story(self, tmp_path: Path) -> None:
         """Live status keeps prior-run completed stories visible after resume triage."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")

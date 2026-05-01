@@ -1092,14 +1092,26 @@ def run_sprint(
     _story_state = SprintStoryState()
     # Pre-populate from prior-run accumulated state so cross-process resume
     # invocations see the full logical sprint in counts and projections.
+    # Stories present in the current run are seeded only when their prior
+    # outcome is succeeded (DONE / ALREADY_DONE); the resume triage handler
+    # below preserves those terminal states. A non-succeeded terminal outcome
+    # (SKIPPED, DROPPED, FAILED, etc.) from a prior run must NOT be seeded
+    # for a story that re-enters the current run, because monotonicity would
+    # then reject the transition to RUNNING — producing a live row that shows
+    # the story as skipped/failed while phase, model, and cost continue to
+    # advance from the active run.
     if _sprint_id is not None:
         from .audit import _load_accumulated_stories as _preload  # noqa: PLC0415
 
+        _current_run_slugs = set(slug_to_context.keys())
+        _succeeded_outcomes = {"DONE", "ALREADY_DONE"}
         for _prior in _preload(_sprint_id, config.project_root):
             _prior_slug = _prior.get("slug")
             if not _prior_slug:
                 continue
             _prior_outcome = (_prior.get("outcome") or "").upper()
+            if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
+                continue
             _outcome_map = {
                 "DONE": StoryOutcome.DONE,
                 "ALREADY_DONE": StoryOutcome.ALREADY_DONE,
