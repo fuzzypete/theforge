@@ -9,6 +9,10 @@ context. When working inside `coordinator/`, `runners/`, `sprint/`, `task/`,
 root guide. Treat local `Invariants` sections as hard constraints and `Context`
 sections as navigational guidance.
 
+`CONVENTIONS.md` at the repo root is the canonical home for repo-versioned
+project conventions and migrated project lessons. User memory is reserved for
+operator-local preferences that do not apply to every contributor.
+
 ---
 
 ## Current State — Start Here

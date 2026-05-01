@@ -304,6 +304,7 @@ _ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
         "SECURITY.md",
         "CLAUDE.md",
         "AGENTS.md",
+        "CONVENTIONS.md",
         # Orchestrator config
         "forge.yaml",
     }
