@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from ..config import ForgeConfig
+from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
 from ..coordinator.gate import run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, get_worker_slug, set_worker_slug
@@ -104,17 +105,24 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
         return 0.0
 
 
-def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
-    """Run the configured gate on the sprint merge base before any agent work starts."""
+def _project_root_is_git_checkout(project_root: Path) -> bool:
+    """Return True when the project root is inside a git checkout."""
 
     git_dir_check = subprocess.run(
         ["git", "rev-parse", "--git-dir"],
-        cwd=config.project_root,
+        cwd=project_root,
         capture_output=True,
         text=True,
         check=False,
     )
-    if git_dir_check.returncode != 0:
+    return git_dir_check.returncode == 0
+
+
+def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
+    """Run the configured gate on the sprint merge base before any agent work starts."""
+
+    base_branch = config.workspace.base_branch
+    if not _project_root_is_git_checkout(config.project_root):
         now = datetime.datetime.now(datetime.timezone.utc)
         return {
             "status": "skipped",
@@ -131,7 +139,7 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     started_monotonic = time.monotonic()
     merge_base = subprocess.run(
-        ["git", "merge-base", "HEAD", config.workspace.base_branch],
+        ["git", "merge-base", "HEAD", base_branch],
         cwd=config.project_root,
         capture_output=True,
         text=True,
@@ -151,7 +159,7 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "command": config.validation.gate_command,
             "message": (
                 "Broken baseline: unable to determine merge base against "
-                f"{config.workspace.base_branch}: {stderr or 'git merge-base failed'}"
+                f"{base_branch}: {stderr or 'git merge-base failed'}"
             ),
         }
 
@@ -169,7 +177,7 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "command": config.validation.gate_command,
             "message": (
                 "Broken baseline: unable to determine merge base against "
-                f"{config.workspace.base_branch}: empty merge-base result"
+                f"{base_branch}: empty merge-base result"
             ),
         }
 
@@ -263,6 +271,24 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "Broken baseline: configured gate failed on sprint merge base "
             f"{merge_base_ref} before any dev work started ({error or 'Gate returned FAIL'})"
         )
+        try:
+            local_sha = subprocess.check_output(
+                ["git", "rev-parse", base_branch],
+                cwd=config.project_root,
+                text=True,
+            ).strip()
+            origin_sha = subprocess.check_output(
+                ["git", "rev-parse", f"origin/{base_branch}"],
+                cwd=config.project_root,
+                text=True,
+            ).strip()
+        except subprocess.CalledProcessError:
+            local_sha = origin_sha = None
+        if local_sha and origin_sha and local_sha != origin_sha:
+            message += (
+                f" (local {base_branch} is at {local_sha[:12]}, origin is at {origin_sha[:12]}; "
+                f"local branch may be stale; run `git pull` on {base_branch} or omit --no-pull)"
+            )
         return {
             "status": "fail",
             "passed": False,
@@ -1042,6 +1068,9 @@ def run_sprint(
         _sprint_id = _get_or_create_sprint_id(resolved.name, config.project_root)
     except Exception:
         pass
+
+    if not no_pull and _project_root_is_git_checkout(config.project_root):
+        coordinator_workspace.pull_base_branch(config)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     baseline_gate = _run_baseline_gate(config, resolved)
