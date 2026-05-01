@@ -411,6 +411,33 @@ def _run_preflight_phase(
                 state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
                 _log(f"  ↑ {override_reason}")
 
+        # ── Bounded-bug planning skip ─────────────────────────────────
+        # Bounded, diagnosed bugs whose fix is localized to a single area
+        # do not benefit from the plan + plan-review pipeline. The plan
+        # agent's multi-step decomposition buys nothing when the dev would
+        # have made the same single-area fix without one. Downgrade
+        # needs_planning → implementation_ready when ALL hold:
+        #   - work_type is "bug"           (symptom + expected, not new feature)
+        #   - complexity is "small"        (bounded scope per preflight sizing)
+        #   - contract_change is False     (no shared-interface blast radius)
+        # The contract-change override above runs first and is load-bearing:
+        # contract_change=true forces needs_planning + ≥medium complexity, so
+        # this gate cannot accidentally skip planning for cross-cutting work.
+        if (
+            sufficiency == "needs_planning"
+            and work_type == "bug"
+            and complexity == "small"
+            and not contract_change
+        ):
+            sufficiency = "implementation_ready"
+            state.preflight_sufficiency = sufficiency
+            override_reason = (
+                "coordinator override: bounded bug (work_type=bug, complexity=small, "
+                "contract_change=false) → implementation_ready (skip plan pipeline)"
+            )
+            state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
+            _log(f"  ↓ {override_reason}")
+
         _log(f"  Complexity: {complexity} (from preflight)")
         _log(f"  Sufficiency: {sufficiency}")
         _log(f"  Work type: {work_type}")

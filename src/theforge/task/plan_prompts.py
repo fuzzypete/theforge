@@ -182,34 +182,57 @@ def build_preflight_prompt(
         When verdict is PROCEED, also assess whether this spec is
         **implementation-ready** or **needs planning**.
 
-        This is orthogonal to complexity — a large refactor can be
-        implementation-ready if the spec author documented every pitfall,
-        and a small feature can need planning if the spec is vague.
+        The gating signal is **fix-shape decomposition**, NOT spec quality.
+        Ask: "does the work require coordinated multi-step decomposition before
+        a dev agent can begin?" — not "does the spec have a detailed Notes
+        section?" A bounded single-area fix is implementation_ready even if
+        the spec is terse; a cross-cutting refactor needs_planning even if
+        the spec is verbose.
 
-        Classify as `implementation_ready` when ALL of the following hold:
-        - The spec has a detailed **Notes** section with specific file paths,
-          function names, patterns, or implementation pitfalls
-        - Implementation hints are concrete and actionable, not generic
+        `implementation_ready` is the **default** for bounded work. Classify
+        as `implementation_ready` when the fix shape is localized — a dev
+        agent can read the relevant code, make a single coordinated change,
+        and verify the acceptance criteria without first decomposing the
+        work into ordered steps. Typical signals:
+        - The change is contained to one module, one function, or one small
+          cluster of closely related call sites
+        - The work is a diagnosed bug fix where the symptom and expected
+          behavior already point at a single area
+        - No interface, schema, or shared-prompt field is being renamed,
+          removed, or migrated
         - Acceptance criteria describe **observable behaviors** that can be
-          verified by reading code or running tests (not implementation steps)
-        - The spec's detail density is high relative to the assessed complexity
+          verified by reading code or running tests
+        - Spec terseness alone is NOT a reason to escalate to needs_planning
+          — bounded work may legitimately have short specs
 
-        Classify as `needs_planning` when ANY of the following hold:
-        - No Notes section, or Notes is sparse/generic
-        - Implementation approach is unclear or underspecified
-        - Acceptance criteria describe HOW to implement rather than WHAT to observe
-        - Spec lacks enough detail for a dev agent to proceed without a plan
-        - Spec contains ambiguous acceptance criteria (add to spec_issues as well)
-        - The story is a **contract change** — it removes, renames, or migrates a
-          field or function name that is part of a shared interface (coordinator-agent
-          output schema, prompt template field, review YAML field, config field).
-          These always need planning to enumerate the full blast radius: callers,
-          parsers, prompt templates, fix prompts, and exact-string test assertions
-          that reference the old name. The change may look trivial but the dev agent
-          cannot safely discover all references within its iteration budget.
-        - The story modifies a **prompt template string or field name** that is
-          likely referenced in exact-string test assertions (e.g., tests that assert
-          specific text appears in a generated prompt).
+        Classify as `needs_planning` ONLY when the work genuinely requires
+        decomposition into ordered steps before dev can begin. Concrete
+        triggers:
+        - The fix spans multiple modules or coordinator phases that must
+          change together (cross-module surgery, phase-handoff changes)
+        - The story is a **contract change** — it removes, renames, or
+          migrates a field or function name that is part of a shared
+          interface (coordinator-agent output schema, prompt template field,
+          review YAML field, config field). The blast radius (callers,
+          parsers, prompt templates, fix prompts, exact-string test
+          assertions) cannot be safely enumerated by a dev agent within its
+          iteration budget.
+        - The story modifies a **prompt template string or field name** that
+          is likely referenced in exact-string test assertions
+        - Concurrency, cancellation, or lifecycle propagation across module
+          boundaries is in scope
+        - Multiple plausible implementation approaches exist and the choice
+          materially changes the blast radius (the plan agent must pick one)
+        - Acceptance criteria are mutually contradictory or fundamentally
+          ambiguous in a way the dev agent cannot resolve from the codebase
+          (also add to spec_issues with type `ambiguity`)
+
+        Do NOT escalate to needs_planning for any of these reasons alone:
+        - Sparse or missing Notes section (Notes are advisory, not required)
+        - Short spec body or terse acceptance criteria
+        - The dev agent will need to read a few files to find exact line
+          numbers (that is normal investigation, not decomposition)
+        - The spec wording is generic or domain-vocabulary-heavy
 
         ## Output Format
 
