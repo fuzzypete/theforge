@@ -540,6 +540,37 @@ def test_is_branch_merged_external_squash_merge_by_issue_commit(tmp_path: Path) 
     assert result is True
 
 
+def test_is_branch_merged_external_squash_merge_by_merged_pr_lookup(tmp_path: Path) -> None:
+    """A merged PR for the issue branch counts even without audit or commit grep."""
+
+    def _mock_external_pr(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1
+            m.stdout = b""
+        elif cmd[:2] == ["git", "log"] and "--grep=(#1102)" in cmd:
+            m.returncode = 0
+            m.stdout = b""
+        elif cmd[:3] == ["gh", "pr", "list"]:
+            m.returncode = 0
+            m.stdout = (
+                '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
+                '"mergedAt":"2026-05-01T12:34:56Z"}]'
+            )
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_external_pr),
+        patch("theforge.sprint.dag._is_issue_closed", return_value=True),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
+        result = _is_branch_merged("feat/issue-1102", "main", tmp_path, slug="issue-1102")
+    assert result is True
+
+
 def test_is_branch_merged_issue_branch_without_base_commit_or_audit(tmp_path: Path) -> None:
     """Issue branch stays unmerged when base has no matching squash commit."""
 
