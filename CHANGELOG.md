@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.9.1] — 2026-05-01
+
+Hotfix patch on top of v0.9.0. Removes long-standing repo-root scratch files
+that were poisoning fresh dev-agent worktrees and producing silent
+stuck-pattern escalations. Substrate-bar bug — v0.9.0's dogfood loop is not
+actually usable until these files are removed from the released artifact.
+
+### Fixed
+
+- **Repo-root scratch leftovers removed:** four tracked files at the repo
+  root (`campaign-audit.yaml`, `sprint-audit.yaml`, `test.lock`, `test2.lock`)
+  were leftovers from prior PRs, chore commits, and a refactor that survived
+  multiple release reviews. Their presence at the worktree root caused dev
+  agents to stall on confusing scratch they were not authorized to touch,
+  producing 0-byte dev logs and stuck-pattern escalations on otherwise-bounded
+  stories. Systemic prevention (project-declared path policy with reviewer
+  enforcement, runtime workspace hygiene gate) tracked in #1179 and #1180 for
+  v0.10.0; this patch is the cleanup half. (#1180)
+
+
 ## [0.9.0] — 2026-05-01
 
 The headline of v0.9.0 is **adaptive intelligence**: complexity is now scored on
