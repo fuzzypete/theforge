@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.9.0] — 2026-05-01
+
 The headline of v0.9.0 is **adaptive intelligence**: complexity is now scored on
 a 1–10 scale and drives model assignment, iteration limits, budgets, and timeouts
 deterministically instead of via static config. Run history accumulates as model
