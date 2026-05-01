@@ -378,6 +378,7 @@ def run_agent(
     is_pool: bool = False,
     secrets: dict[str, str] | None = None,
     plain_text: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> AgentResult:
     """Run an agent using the transport specified in its profile.
 
@@ -417,6 +418,7 @@ def run_agent(
             fallback_to_file=fallback_to_file,
             quiet=quiet,
             secrets=secrets,
+            stop_event=stop_event,
         )
         result = _maybe_run_api_fallback(
             result=result,
@@ -507,6 +509,7 @@ def run_agent_pool(
     session_ids: list[str | None] | None = None,
     secrets: dict[str, str] | None = None,
     plain_text: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> list[AgentResult]:
     """Run multiple agents concurrently, each with its own prompt or a shared prompt.
 
@@ -533,6 +536,7 @@ def run_agent_pool(
                 fallback_to_file=False,
                 secrets=secrets,
                 plain_text=plain_text,
+                stop_event=stop_event,
             )
         ]
 
@@ -557,6 +561,7 @@ def run_agent_pool(
                 is_pool=True,
                 secrets=secrets,
                 plain_text=plain_text,
+                stop_event=stop_event,
             )
         finally:
             agent_durations[idx] = time.monotonic() - t0

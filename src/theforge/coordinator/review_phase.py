@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace as _dc_replace
@@ -516,6 +517,7 @@ def _run_review_phase(
     logger: StructuredLogger | None,
     run_id: str = "",
     state_update_fn: Callable[[dict], None] | None = None,
+    stop_event: "threading.Event | None" = None,
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     """Run the full REVIEW phase: pool+synthesis, parse retries, verdict handling.
 
@@ -568,6 +570,7 @@ def _run_review_phase(
         pool_attempt=0,
         max_review_parse_retries=max_parse_retries,
         logger=logger,
+        stop_event=stop_event,
     )
     state.last_cycle_reviewer_results = _named_parsed
 

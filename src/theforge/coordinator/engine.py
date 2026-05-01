@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime
 import signal
+import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -49,6 +50,7 @@ from theforge.task import (
     parse_plan_output,
 )
 
+from .cancellation import StoryCancelled
 from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
     _end_run_log_tee,
@@ -221,6 +223,25 @@ from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402,I001
 from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
 
 
+def _cancelled_result(task: TaskStory, state: CoordinatorState) -> CoordinatorResult:
+    """Build a failed CoordinatorResult for a story aborted via stop_event.
+
+    Bypasses _record_run_memory() — the sprint scheduler has already written
+    the authoritative timeout audit record; writing a separate ESCALATE
+    record here would produce two contradictory failure narratives.
+    """
+    _log(f"INFO {task.slug}: cancelled by sprint stop_event")
+    state.phase = Phase.ESCALATE
+    state.error = "Story cancelled by sprint timeout"
+    state.error_type = "StoryCancelled"
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.ESCALATE,
+        state=state,
+        message="Story cancelled by sprint timeout",
+    )
+
+
 def _coordinator_loop(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -235,6 +256,7 @@ def _coordinator_loop(
     logger: StructuredLogger | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
     stop_phase: Phase | None = None,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult:
     """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
@@ -347,6 +369,8 @@ def _coordinator_loop(
     state.budget.max_iterations = state.adaptive_dev_max
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            raise StoryCancelled()
         if not _skip_dev:
             # ── DEV ───────────────────────────────────────────────
             state.phase = Phase.DEV
@@ -375,6 +399,7 @@ def _coordinator_loop(
                 branch_name,
                 notify=notify,
                 logger=logger,
+                stop_event=stop_event,
             )
             if escalation is not None:
                 return escalation
@@ -415,6 +440,9 @@ def _coordinator_loop(
 
             # ── Scrub forge-artifact commits from branch history ──
             _scrub_forge_history(workspace_path, branch_name, config.workspace.base_branch)
+
+            if stop_event is not None and stop_event.is_set():
+                raise StoryCancelled()
 
             # ── VALIDATE ──────────────────────────────────────────
             _val_outcome, _val_result = _run_validate_phase(
@@ -541,6 +569,9 @@ def _coordinator_loop(
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
 
+        if stop_event is not None and stop_event.is_set():
+            raise StoryCancelled()
+
         # ── REVIEW ────────────────────────────────────────────
         _rev_outcome, _rev_result, config = _run_review_phase(
             state,
@@ -556,6 +587,7 @@ def _coordinator_loop(
             logger=logger,
             run_id=logger._run_id if logger else "",
             state_update_fn=state_update_fn,
+            stop_event=stop_event,
         )
         if _rev_outcome in (_ReviewOutcome.DONE, _ReviewOutcome.ESCALATE):
             return _rev_result  # type: ignore[return-value]
@@ -588,6 +620,7 @@ def run_task(
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -759,20 +792,24 @@ def run_task(
             # When starting at REVIEW (or later), skip DEV on the first iteration
             # so the existing worktree is reviewed before the dev agent is invoked.
             _skip_dev_first = start_phase.value >= Phase.REVIEW.value
-            result = _coordinator_loop(
-                state,
-                config,
-                task,
-                story_content,
-                _task_start,
-                interactive=interactive,
-                auto_merge=auto_merge,
-                skip_dev_first_iter=_skip_dev_first,
-                notify=notify,
-                logger=logger,
-                state_update_fn=state_update_fn,
-                stop_phase=stop_phase,
-            )
+            try:
+                result = _coordinator_loop(
+                    state,
+                    config,
+                    task,
+                    story_content,
+                    _task_start,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    skip_dev_first_iter=_skip_dev_first,
+                    notify=notify,
+                    logger=logger,
+                    state_update_fn=state_update_fn,
+                    stop_phase=stop_phase,
+                    stop_event=stop_event,
+                )
+            except StoryCancelled:
+                return _cancelled_result(task, state)
             _total_elapsed = time.monotonic() - _task_start
             _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
             logger._safe_emit(
@@ -847,19 +884,23 @@ def run_task(
             return _pf_result
         if _pf_already_done_loop:
             # ALREADY_DONE override: commits on branch without prior APPROVE → resume REVIEW
-            result = _coordinator_loop(
-                state,
-                config,
-                task,
-                story_content,
-                _task_start,
-                interactive=interactive,
-                auto_merge=auto_merge,
-                skip_dev_first_iter=True,
-                notify=notify,
-                logger=logger,
-                state_update_fn=state_update_fn,
-            )
+            try:
+                result = _coordinator_loop(
+                    state,
+                    config,
+                    task,
+                    story_content,
+                    _task_start,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    skip_dev_first_iter=True,
+                    notify=notify,
+                    logger=logger,
+                    state_update_fn=state_update_fn,
+                    stop_event=stop_event,
+                )
+            except StoryCancelled:
+                return _cancelled_result(task, state)
             logger._safe_emit(
                 "run_end",
                 outcome="done" if result.success else "escalate",
@@ -899,19 +940,23 @@ def run_task(
             )
 
         # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
-        result = _coordinator_loop(
-            state,
-            config,
-            task,
-            story_content,
-            _task_start,
-            interactive=interactive,
-            auto_merge=auto_merge,
-            notify=notify,
-            logger=logger,
-            state_update_fn=state_update_fn,
-            stop_phase=stop_phase,
-        )
+        try:
+            result = _coordinator_loop(
+                state,
+                config,
+                task,
+                story_content,
+                _task_start,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                notify=notify,
+                logger=logger,
+                state_update_fn=state_update_fn,
+                stop_phase=stop_phase,
+                stop_event=stop_event,
+            )
+        except StoryCancelled:
+            return _cancelled_result(task, state)
 
         # ── Landing (single-story path) ───────────────────────────────
         # _finalize_approve defers all git operations and sets landing_status
@@ -1041,6 +1086,7 @@ def _run_resume_coordinator(
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -1130,19 +1176,23 @@ def _run_resume_coordinator(
                 message=state.escalate_reason,
             )
         logger._safe_emit("rebase", phase="RESUME_REBASE", base_branch=base_branch, outcome="ok")
-        result = _coordinator_loop(
-            state,
-            config,
-            task,
-            story_content,
-            _task_start,
-            interactive=interactive,
-            auto_merge=auto_merge,
-            skip_dev_first_iter=skip_dev_first_iter,
-            notify=notify,
-            logger=logger,
-            state_update_fn=state_update_fn,
-        )
+        try:
+            result = _coordinator_loop(
+                state,
+                config,
+                task,
+                story_content,
+                _task_start,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                skip_dev_first_iter=skip_dev_first_iter,
+                notify=notify,
+                logger=logger,
+                state_update_fn=state_update_fn,
+                stop_event=stop_event,
+            )
+        except StoryCancelled:
+            return _cancelled_result(task, state)
 
         # ── Landing (single-story resume path) ───────────────────────
         # Skip when defer_landing=True (sprint worker): scheduler handles it.
@@ -1202,6 +1252,7 @@ def run_from_review(
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1235,6 +1286,7 @@ def run_from_review(
         no_pull=no_pull,
         cached_preflight_state=cached_preflight_state,
         defer_landing=defer_landing,
+        stop_event=stop_event,
     )
 
 
@@ -1252,6 +1304,7 @@ def run_from_dev(
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -1282,6 +1335,7 @@ def run_from_dev(
         no_pull=no_pull,
         cached_preflight_state=cached_preflight_state,
         defer_landing=defer_landing,
+        stop_event=stop_event,
     )
 
 
