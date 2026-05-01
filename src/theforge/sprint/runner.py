@@ -1153,12 +1153,20 @@ def run_sprint(
             _mapped_outcome = _outcome_map.get(_prior_outcome)
             if _mapped_outcome is None:
                 continue
+            # Strip per-run terminal artifacts so an accumulated story cannot
+            # carry forward a stale review summary or final_outcome from an
+            # earlier generation. The current run must write these fresh.
+            _prior_detail_raw = _prior.get("detail")
+            _prior_detail = dict(_prior_detail_raw) if isinstance(_prior_detail_raw, dict) else {}
+            for _stale in ("final_outcome", "review_verdict", "review_p1", "review_p2"):
+                _prior_detail.pop(_stale, None)
             _story_state.register(
                 _prior_slug,
                 _prior.get("path", _prior_slug),
                 outcome=_mapped_outcome,
                 cost_usd=float(_prior.get("cost_usd", 0.0) or 0.0),
                 canonical_ref=_prior.get("canonical_ref"),
+                detail=_prior_detail,
             )
     _state_writer: SprintStateWriter | None = None
     stopped_reason: str | None = None

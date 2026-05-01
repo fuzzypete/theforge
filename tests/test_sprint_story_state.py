@@ -107,3 +107,40 @@ def test_outcome_terminal_classification() -> None:
 def test_transition_unknown_slug_returns_none() -> None:
     state = SprintStoryState()
     assert state.transition("missing", outcome=StoryOutcome.DONE) is None
+
+
+def test_as_dict_overwrites_stale_final_outcome_on_terminal_transition() -> None:
+    """A re-run story that flips DONE → ESCALATE must not surface stale DONE detail."""
+    state = SprintStoryState()
+    state.register(
+        "a",
+        "Issue #1",
+        outcome=StoryOutcome.DONE,
+        detail={
+            "final_outcome": "DONE",
+            "review_verdict": "APPROVE — all ACs met",
+            "review_p1": 0,
+            "review_p2": 0,
+        },
+    )
+    state.transition("a", outcome=StoryOutcome.ESCALATED)
+    serialized = state.as_dict()[0]
+    assert serialized["detail"]["final_outcome"] == "ESCALATED"
+    # Stale review summary must not be carried forward to a non-success outcome.
+    assert "review_verdict" not in serialized["detail"]
+    assert "review_p1" not in serialized["detail"]
+    assert "review_p2" not in serialized["detail"]
+
+
+def test_as_dict_preserves_review_fields_for_success_outcomes() -> None:
+    state = SprintStoryState()
+    state.register(
+        "a",
+        "Issue #1",
+        outcome=StoryOutcome.DONE,
+        detail={"review_verdict": "APPROVE", "review_p1": 0, "review_p2": 1},
+    )
+    serialized = state.as_dict()[0]
+    assert serialized["detail"]["review_verdict"] == "APPROVE"
+    assert serialized["detail"]["review_p1"] == 0
+    assert serialized["detail"]["review_p2"] == 1

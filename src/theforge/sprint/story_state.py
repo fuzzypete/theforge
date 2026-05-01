@@ -144,11 +144,31 @@ class StoryStateEntry:
         # canonical value for surfaces that want it.
         legacy_status = _CANONICAL_TO_LEGACY_STATUS.get(self.outcome, self.outcome.value)
         merged_detail = dict(self.detail)
-        # Surface ALREADY_DONE (and other canonical-only outcomes) as
-        # ``final_outcome`` in the detail so the live status renders the
-        # full canonical outcome the operator needs.
-        if self.outcome.is_terminal and "final_outcome" not in merged_detail:
-            merged_detail["final_outcome"] = self.outcome.name
+        # Project the canonical outcome into ``final_outcome`` for terminal
+        # stories. Preserve a more-specific final_outcome already in the detail
+        # (e.g. ALREADY_DONE while outcome=DONE) only when its success/failure
+        # bucket matches the current outcome — otherwise an in-run transition
+        # (seeded DONE → ESCALATE) would leave a stale success outcome behind.
+        if self.outcome.is_terminal:
+            existing = merged_detail.get("final_outcome")
+            existing_outcome = (
+                _STATUS_TO_OUTCOME.get(existing.strip().lower())
+                if isinstance(existing, str)
+                else None
+            )
+            if not (
+                existing_outcome is not None
+                and existing_outcome.is_succeeded == self.outcome.is_succeeded
+                and existing_outcome.is_failed == self.outcome.is_failed
+                and existing_outcome.is_skipped == self.outcome.is_skipped
+            ):
+                merged_detail["final_outcome"] = self.outcome.name
+            # review_verdict / review_p1 / review_p2 are per-run review artifacts.
+            # When a terminal outcome is not a success, any prior cycle's review
+            # summary must not bleed into the operator-facing detail.
+            if not self.outcome.is_succeeded:
+                for _stale in ("review_verdict", "review_p1", "review_p2"):
+                    merged_detail.pop(_stale, None)
         d: dict = {
             "slug": self.slug,
             "path": self.path,

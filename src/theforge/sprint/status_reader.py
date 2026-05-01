@@ -281,6 +281,13 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
 
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
+        # Defensive backstop: a failed/skipped story must never display a
+        # success outcome. If the detail dict still claims DONE/ALREADY_DONE
+        # (e.g. from a leaked prior-run artifact), reconcile by trusting the
+        # current run's status and use the canonical outcome from the entry.
+        if status_val in {"failed", "skipped"} and final_outcome in {"DONE", "ALREADY_DONE"}:
+            canonical_outcome = _nonempty_str(story.get("outcome"))
+            final_outcome = canonical_outcome.upper() if canonical_outcome else None
         skip_reason = _nonempty_str(story.get("reason")) if status_val == "skipped" else None
         if (
             skip_reason
