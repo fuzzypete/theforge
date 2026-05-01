@@ -23,6 +23,7 @@ from .config import (
     ModelProfile,
 )
 from .config.auth import check_agent_auth
+from .routing import score_to_dev_tier
 
 log = logging.getLogger(__name__)
 
@@ -133,11 +134,7 @@ def _dev_tier_for_score(complexity: str, complexity_score: int | None) -> str:
     score = _normalize_complexity_score(complexity_score)
     if score is None:
         return PHASE_TIER["dev"][complexity]
-    if score <= 3:
-        return "cheap"
-    if score <= 6:
-        return "mid"
-    return "strong"
+    return score_to_dev_tier(score)
 
 
 def _reviewer_target_for_score(
