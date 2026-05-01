@@ -1,4 +1,4 @@
-"""Tests for sprint DAG satisfied-dependency handling.
+"""Tests for sprint DAG satisfied-dependency handling and runner seams.
 
 Covers the case where a depends_on slug references a story already merged to
 main (not present in the current sprint manifest).
@@ -6,18 +6,30 @@ main (not present in the current sprint manifest).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from theforge.config import (
+    DEFAULT_DEV_PROFILE,
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_REVIEW_PROFILE,
+    DEFAULT_VALIDATION,
+    ForgeConfig,
+    RetryPolicy,
+    WorkspaceConfig,
+)
 from theforge.sprint.dag import (
     StoryDAG,
     _is_branch_merged,
     build_dag,
     resolve_satisfied_dependencies,
 )
-from theforge.sprint.runner import _refresh_external_satisfied
+from theforge.sprint.manifest import ResolvedSprint
+from theforge.sprint.runner import _refresh_external_satisfied, _run_baseline_gate, run_sprint
 from theforge.task import TaskStory
 
 
@@ -28,6 +40,29 @@ def _make_story(slug: str, depends_on: list[str] | None = None) -> TaskStory:
         story_path=f"specs/{slug}.md",
         depends_on=depends_on or [],
     )
+
+
+def _make_runner_config(tmp_path: Path) -> ForgeConfig:
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+            base_branch="main",
+        ),
+        validation=replace(DEFAULT_VALIDATION, gate_command="make gate"),
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+    )
+
+
+def _make_empty_resolved() -> ResolvedSprint:
+    return ResolvedSprint(name="Test Sprint", budget_usd=10.0, stories=[], max_parallel=1)
 
 
 # ── build_dag: unknown slug handling ──────────────────────────────────
@@ -208,6 +243,145 @@ def test_scheduler_tick_unblocks_on_issue_close(tmp_path: Path) -> None:
     assert "issue-750" in merged_slugs
     assert {task.slug for task in dag.ready()} == {"issue-749", "issue-751"}
     assert not dag.is_done()
+
+
+def test_run_sprint_pulls_base_branch_before_baseline_by_default(tmp_path: Path) -> None:
+    config = _make_runner_config(tmp_path)
+    resolved = _make_empty_resolved()
+    call_order: list[str] = []
+
+    def _fake_pull(_config: ForgeConfig) -> None:
+        call_order.append("pull")
+
+    def _fake_baseline(_config: ForgeConfig, _resolved: ResolvedSprint) -> dict[str, object]:
+        call_order.append("baseline")
+        return {"passed": True, "message": "ok"}
+
+    with (
+        patch("theforge.sprint.runner._scrub_root_forge_artifacts"),
+        patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+        patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
+        patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch(
+            "theforge.coordinator.workspace.pull_base_branch",
+            side_effect=_fake_pull,
+        ) as mock_pull,
+        patch("theforge.sprint.runner._run_baseline_gate", side_effect=_fake_baseline),
+        patch("theforge.sprint.runner.resolve_satisfied_dependencies", return_value=set()),
+        patch(
+            "theforge.sprint.runner.normalize_dependency_plan",
+            return_value=SimpleNamespace(tasks=[], blocked={}),
+        ),
+        patch(
+            "theforge.sprint.runner.run_batch_preflight",
+            side_effect=RuntimeError("stop after baseline"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="stop after baseline"):
+            run_sprint(config, resolved)
+
+    assert call_order == ["pull", "baseline"]
+    mock_pull.assert_called_once_with(config)
+
+
+def test_run_sprint_no_pull_skips_prebaseline_pull(tmp_path: Path) -> None:
+    config = _make_runner_config(tmp_path)
+    resolved = _make_empty_resolved()
+    call_order: list[str] = []
+
+    def _fake_baseline(_config: ForgeConfig, _resolved: ResolvedSprint) -> dict[str, object]:
+        call_order.append("baseline")
+        return {"passed": True, "message": "ok"}
+
+    with (
+        patch("theforge.sprint.runner._scrub_root_forge_artifacts"),
+        patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+        patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
+        patch("theforge.coordinator.workspace.pull_base_branch") as mock_pull,
+        patch("theforge.sprint.runner._run_baseline_gate", side_effect=_fake_baseline),
+        patch("theforge.sprint.runner.resolve_satisfied_dependencies", return_value=set()),
+        patch(
+            "theforge.sprint.runner.normalize_dependency_plan",
+            return_value=SimpleNamespace(tasks=[], blocked={}),
+        ),
+        patch(
+            "theforge.sprint.runner.run_batch_preflight",
+            side_effect=RuntimeError("stop after baseline"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="stop after baseline"):
+            run_sprint(config, resolved, no_pull=True)
+
+    assert call_order == ["baseline"]
+    mock_pull.assert_not_called()
+
+
+def test_run_sprint_pull_base_branch_failure_aborts_before_baseline(tmp_path: Path) -> None:
+    config = _make_runner_config(tmp_path)
+    resolved = _make_empty_resolved()
+
+    with (
+        patch("theforge.sprint.runner._scrub_root_forge_artifacts"),
+        patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+        patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
+        patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch(
+            "theforge.coordinator.workspace.pull_base_branch",
+            side_effect=RuntimeError("WORKSPACE abort: pull failed"),
+        ),
+        patch("theforge.sprint.runner._run_baseline_gate") as mock_baseline,
+    ):
+        with pytest.raises(RuntimeError, match="WORKSPACE abort: pull failed"):
+            run_sprint(config, resolved)
+
+    mock_baseline.assert_not_called()
+
+
+def test_run_baseline_gate_reports_local_origin_sha_gap(tmp_path: Path) -> None:
+    config = _make_runner_config(tmp_path)
+    resolved = _make_empty_resolved()
+    top_level = str(tmp_path)
+
+    def _completed_process(
+        returncode: int,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> MagicMock:
+        proc = MagicMock()
+        proc.returncode = returncode
+        proc.stdout = stdout
+        proc.stderr = stderr
+        return proc
+
+    run_calls = [
+        _completed_process(0, stdout=".git\n"),
+        _completed_process(0, stdout="abc123def456\n"),
+        _completed_process(0, stdout=f"{top_level}\n"),
+        _completed_process(0),
+        _completed_process(0),
+    ]
+
+    with (
+        patch("theforge.sprint.runner.subprocess.run", side_effect=run_calls),
+        patch(
+            "theforge.sprint.runner.run_gate_full",
+            return_value=("FAIL", "Gate returned FAIL", "tail", "make gate", 1),
+        ),
+        patch(
+            "theforge.sprint.runner.subprocess.check_output",
+            side_effect=[
+                "1111111111111111111111111111111111111111\n",
+                "2222222222222222222222222222222222222222\n",
+            ],
+        ),
+    ):
+        baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is False
+    assert "local main is at 111111111111" in str(baseline["message"])
+    assert "origin is at 222222222222" in str(baseline["message"])
+    assert "omit --no-pull" in str(baseline["message"])
 
 
 # ── _is_branch_merged: fast-forward merge regression ─────────────────
