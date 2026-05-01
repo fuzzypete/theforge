@@ -132,6 +132,20 @@ def test_as_dict_overwrites_stale_final_outcome_on_terminal_transition() -> None
     assert "review_p2" not in serialized["detail"]
 
 
+def test_as_dict_preserves_phase_style_escalate_final_outcome() -> None:
+    """Runner seeds detail.final_outcome='ESCALATE' (phase-style); must not be overwritten."""
+    state = SprintStoryState()
+    state.register(
+        "a",
+        "Issue #1",
+        outcome=StoryOutcome.ESCALATED,
+        detail={"final_outcome": "ESCALATE"},
+    )
+    serialized = state.as_dict()[0]
+    # Phase-style "ESCALATE" is in the same failure bucket as ESCALATED — preserve it.
+    assert serialized["detail"]["final_outcome"] == "ESCALATE"
+
+
 def test_as_dict_preserves_review_fields_for_success_outcomes() -> None:
     state = SprintStoryState()
     state.register(
