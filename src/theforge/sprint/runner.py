@@ -535,6 +535,8 @@ def _run_fresh(
     no_pull: bool,
     plan_gate: "threading.Event | None",
     preflight_states: dict[str, CoordinatorState] | None = None,
+    *,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
@@ -568,6 +570,7 @@ def _run_fresh(
                 no_pull=no_pull,
                 cached_preflight_state=(preflight_states or {}).get(task.slug),
                 defer_landing=True,
+                stop_event=stop_event,
             )
         return run_task(
             config,
@@ -581,6 +584,7 @@ def _run_fresh(
             no_pull=no_pull,
             cached_preflight_state=(preflight_states or {}).get(task.slug),
             defer_landing=True,
+            stop_event=stop_event,
         )
 
     # Phase 1: run through PLAN only
@@ -597,6 +601,7 @@ def _run_fresh(
         stop_phase=Phase.PLAN_REVIEW,
         cached_preflight_state=(preflight_states or {}).get(task.slug),
         defer_landing=True,
+        stop_event=stop_event,
     )
 
     if not plan_result.success:
@@ -633,6 +638,7 @@ def _run_fresh(
         no_pull=no_pull,
         cached_preflight_state=(preflight_states or {}).get(task.slug),
         defer_landing=True,
+        stop_event=stop_event,
     )
 
 
@@ -650,6 +656,7 @@ def _run_single_story(
     no_pull: bool = False,
     plan_gate: "threading.Event | None" = None,
     preflight_states: dict[str, CoordinatorState] | None = None,
+    stop_event: "threading.Event | None" = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -685,6 +692,7 @@ def _run_single_story(
                     no_pull=no_pull,
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
                     defer_landing=True,
+                    stop_event=stop_event,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -700,6 +708,7 @@ def _run_single_story(
                     no_pull=no_pull,
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
                     defer_landing=True,
+                    stop_event=stop_event,
                 )
             else:
                 result = _run_fresh(
@@ -714,6 +723,7 @@ def _run_single_story(
                     no_pull,
                     plan_gate,
                     preflight_states,
+                    stop_event=stop_event,
                 )
         else:
             result = _run_fresh(
@@ -728,6 +738,7 @@ def _run_single_story(
                 no_pull,
                 plan_gate,
                 preflight_states,
+                stop_event=stop_event,
             )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
@@ -1546,6 +1557,10 @@ def run_sprint(
     queued_prs: dict[str, tuple[TaskStory, CoordinatorResult, str]] = {}
     _submission_counter = [0]  # mutable for closure capture; counts submitted stories
 
+    # Per-story cancellation events: set by the timeout handler so worker
+    # threads stop running instead of continuing past their deadline.
+    stop_events: dict[str, threading.Event] = {}
+
     # Overlap detection state (plan gates)
     file_footprints: dict[str, set[str]] = {}  # slug -> files from plan
     plan_gates: dict[str, threading.Event] = {}  # slug -> gate for PLAN→DEV pause
@@ -1768,6 +1783,8 @@ def run_sprint(
                     plan_done=plan_done if use_plan_gates else None,
                     state_writer=_state_writer,
                 )
+                stop_evt = threading.Event()
+                stop_events[task.slug] = stop_evt
                 fut = pool.submit(
                     _run_single_story,
                     worker_config,
@@ -1783,6 +1800,7 @@ def run_sprint(
                     no_pull,
                     gate,
                     preflight_states,
+                    stop_evt,
                 )
                 active[task.slug] = fut
                 story_deadlines[task.slug] = time.monotonic() + float(
@@ -1897,6 +1915,12 @@ def run_sprint(
                         del plan_gates[slug]
                     fut = active.pop(slug)
                     story_deadlines.pop(slug, None)
+                    # Set the cancellation event BEFORE cancel() so any in-flight
+                    # work stops at the next phase boundary or subprocess read.
+                    # Future.cancel() is a no-op for an already-running thread.
+                    _stop_evt = stop_events.pop(slug, None)
+                    if _stop_evt is not None:
+                        _stop_evt.set()
                     fut.cancel()
                     _log(
                         f"TIMEOUT {slug} (worker unresponsive after "
@@ -1939,6 +1963,7 @@ def run_sprint(
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
                     del active[slug]
                     story_deadlines.pop(slug, None)
+                    stop_events.pop(slug, None)
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
                     story_started_at = story_times.get(slug, (failed_at, failed_at))[0]
@@ -1968,6 +1993,7 @@ def run_sprint(
                     continue
                 del active[slug]
                 story_deadlines.pop(slug, None)
+                stop_events.pop(slug, None)
                 story_times[slug] = (t0, t1)
 
                 with cost_lock:

@@ -10,6 +10,7 @@ Orchestrates the multi-reviewer pool for a single review cycle:
 from __future__ import annotations
 
 import dataclasses
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -124,6 +125,7 @@ def _run_review_pool(
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
     logger: Any | None = None,
+    stop_event: "threading.Event | None" = None,
 ) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 
@@ -291,6 +293,7 @@ def _run_review_pool(
         working_dir=workspace_path,
         session_ids=pool_session_ids,
         secrets=config.secrets,
+        stop_event=stop_event,
     )
     _pool_elapsed = time.monotonic() - _pool_start
     for profile, result in zip(pool, pool_results):
@@ -445,6 +448,7 @@ def _run_review_pool(
                 quiet=True,
                 secrets=config.secrets,
                 session_id=_original_result.session_id if _prof.mode == "cli" else None,
+                stop_event=stop_event,
             )
             meta.parse_retries += 1
             if not _retry_result.success:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import replace as _dc_replace
@@ -361,6 +362,7 @@ def _run_dev_phase(
     *,
     notify: bool,
     logger: StructuredLogger | None,
+    stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult | None:
     """Run one DEV iteration. Returns CoordinatorResult on budget escalation, else None.
 
@@ -577,6 +579,7 @@ def _run_dev_phase(
         working_dir=workspace_path,
         session_id=state.dev_session_id,
         secrets=config.secrets,
+        stop_event=stop_event,
     )
     _runner_failure = None
     if not dev_result.success and not dev_result.startup_failure:

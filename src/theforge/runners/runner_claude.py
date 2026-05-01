@@ -314,6 +314,7 @@ def _run_claude(
     fallback_to_file: bool = True,
     quiet: bool = False,
     secrets: dict[str, str] | None = None,
+    stop_event: "threading.Event | None" = None,
 ) -> AgentResult:
     """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
     cmd: list[str] = [
@@ -386,11 +387,20 @@ def _run_claude(
         # proc.wait(timeout=...) only fires after stdout is drained, which never
         # happens if the agent streams indefinitely.
         def _watchdog() -> None:
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            if proc.poll() is None:
-                proc.kill()
+            # Wake periodically so a stop_event signal cancels the in-flight
+            # subprocess immediately rather than waiting for the deadline.
+            while True:
+                if proc.poll() is not None:
+                    return
+                if stop_event is not None and stop_event.is_set():
+                    proc.kill()
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if proc.poll() is None:
+                        proc.kill()
+                    return
+                time.sleep(min(0.5, remaining))
 
         watchdog = threading.Thread(target=_watchdog, daemon=True)
         watchdog.start()
@@ -412,6 +422,10 @@ def _run_claude(
                     f"{stuck_monitor.terminate_pattern}"
                 )
                 proc.kill()
+                break
+            if stop_event is not None and stop_event.is_set():
+                proc.kill()
+                timed_out = True
                 break
             if time.monotonic() > deadline:
                 proc.kill()
