@@ -4,6 +4,7 @@ Covers: StructuredLogger, LogConfig, _get_commit_log, audit fields.
 """
 
 import json as _json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +27,8 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    AgentDef,
+    AssignmentConfig,
     ForgeConfig,
     LogConfig,
     ModelProfile,
@@ -258,7 +261,8 @@ class TestStructuredLoggingIntegration:
 
         assert log_file.exists()
         lines = log_file.read_text().splitlines()
-        events = [_json.loads(line)["event"] for line in lines]
+        entries = [_json.loads(line) for line in lines]
+        events = [entry["event"] for entry in entries]
 
         assert "run_start" in events
         assert "run_end" in events
@@ -272,14 +276,118 @@ class TestStructuredLoggingIntegration:
         run_ids = {_json.loads(line)["run_id"] for line in lines}
         assert len(run_ids) == 1
 
+        preflight_phase_end = next(
+            entry
+            for entry in entries
+            if entry["event"] == "phase_end" and entry.get("phase") == "PREFLIGHT"
+        )
+        assert "complexity" in preflight_phase_end
+        assert "complexity_score" in preflight_phase_end
+        assert "complexity_routing" in preflight_phase_end
+
         # All events have required fields
-        for line in lines:
-            entry = _json.loads(line)
+        for entry in entries:
             assert "ts" in entry
             assert "project" in entry
             assert "run_id" in entry
             assert "task" in entry
             assert "event" in entry
+
+    @patch("theforge.assignment._has_auth", return_value=True)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_preflight_phase_end_includes_complexity_routing_fields(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_has_auth, tmp_path
+    ):
+        log_file = tmp_path / "forge.log"
+        config = replace(
+            self._make_logging_config(tmp_path, log_file),
+            agents=[
+                AgentDef(
+                    name="haiku",
+                    provider=None,
+                    model="haiku",
+                    budget_usd=1.0,
+                    timeout_seconds=300,
+                    tier="cheap",
+                    cli="claude",
+                ),
+                AgentDef(
+                    name="sonnet",
+                    provider=None,
+                    model="sonnet",
+                    budget_usd=5.0,
+                    timeout_seconds=900,
+                    tier="mid",
+                    cli="claude",
+                ),
+                AgentDef(
+                    name="opus",
+                    provider=None,
+                    model="opus",
+                    budget_usd=8.0,
+                    timeout_seconds=1200,
+                    tier="strong",
+                    cli="claude",
+                ),
+            ],
+            assignment=AssignmentConfig(
+                enabled=True,
+                escalation_memory=False,
+                budget_per_story_usd=100.0,
+                min_reviewers=1,
+                max_reviewers=2,
+                prefer_cross_provider=False,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output=(
+                "verdict: PROCEED\n"
+                'reason: "Spec requirements are not yet implemented."\n'
+                "complexity: medium\n"
+                "complexity_score: 6\n"
+                "sufficiency: implementation_ready\n"
+                "work_type: feature\n"
+                "criteria_checked:\n"
+                '  - criterion: "Feature X"\n'
+                "    satisfied: false\n"
+                '    evidence: "Not found in codebase"\n'
+            ),
+            cost_usd=0.10,
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        entries = [_json.loads(line) for line in log_file.read_text().splitlines()]
+        preflight_phase_end = next(
+            entry
+            for entry in entries
+            if entry["event"] == "phase_end" and entry.get("phase") == "PREFLIGHT"
+        )
+        assert preflight_phase_end["complexity"] == "medium"
+        assert preflight_phase_end["complexity_score"] == 6
+        assert preflight_phase_end["complexity_routing"] is not None
+        assert preflight_phase_end["complexity_routing"]["dev"] == (
+            "complexity score 6 (MEDIUM) → tier mid"
+        )
+        assert preflight_phase_end["complexity_routing"]["planner"]
+        assert preflight_phase_end["complexity_routing"]["preflight"]
+        assert preflight_phase_end["complexity_routing"]["plan_review"]
+        assert preflight_phase_end["complexity_routing"]["code_review"]
+        assert preflight_phase_end["complexity_routing"]["budget"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

@@ -160,6 +160,20 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
 
 
+def _preflight_phase_end_fields(state: CoordinatorState) -> dict[str, object]:
+    """Return PREFLIGHT phase_end fields that must remain visible in forge.log."""
+    routing = None
+    if isinstance(state.complexity_routing_audit, dict):
+        rationale = state.complexity_routing_audit.get("rationale")
+        if isinstance(rationale, dict):
+            routing = rationale
+    return {
+        "complexity": state.preflight_complexity,
+        "complexity_score": state.preflight_complexity_score,
+        "complexity_routing": routing,
+    }
+
+
 def _run_preflight_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -511,6 +525,7 @@ def _run_preflight_phase(
             outcome=verdict.lower(),
             cost_usd=preflight_result.cost_usd,
             duration_s=round(_preflight_elapsed, 2),
+            **_preflight_phase_end_fields(state),
         )
     branch_merged = None
     if verdict == "ALREADY_DONE":
@@ -632,6 +647,7 @@ def _handle_preflight_verdict(
                     phase="PREFLIGHT",
                     outcome="already_done_override",
                     reason="commits_ahead_no_approve",
+                    **_preflight_phase_end_fields(state),
                 )
             # Signal caller to enter coordinator loop with skip_dev_first_iter=True
             return config, None, True
