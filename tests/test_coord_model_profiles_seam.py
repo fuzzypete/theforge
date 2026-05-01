@@ -236,6 +236,77 @@ def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeyp
     assert "budget_cap_usd" in audit["budget"]
 
 
+def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pressure(
+    tmp_path, monkeypatch
+):
+    """Seam: audit and runtime planner stay aligned when adaptive routing picks strong."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    config = replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+            AgentDef(
+                name="sonnet",
+                provider="anthropic",
+                model="sonnet",
+                budget_usd=5.0,
+                timeout_seconds=900,
+                tier="mid",
+                cli="claude",
+            ),
+            AgentDef(
+                name="opus",
+                provider="anthropic",
+                model="opus",
+                budget_usd=8.0,
+                timeout_seconds=1200,
+                tier="strong",
+                cli="claude",
+            ),
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=15.0,
+            min_reviewers=1,
+            max_reviewers=1,
+            prefer_cross_provider=False,
+        ),
+        dev_profile_is_default=True,
+        plan_model_is_default=True,
+        review_pool_is_default=True,
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 9
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    assert audit["assignments"]["planner"] == "opus"
+    assert audit["rationale"]["planner"].startswith("complexity score 9 → tier strong")
+    assert audit["role_sources"]["planner"] == "adaptive"
+    assert audit["budget"]["within_budget"] is False
+    assert "planner" in audit["budget"].get("protected_roles", [])
+
+
 def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):
     """Seam: adaptive_enabled toggles between score-aware routing and static bands."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")

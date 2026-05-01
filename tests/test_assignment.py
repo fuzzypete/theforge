@@ -621,6 +621,29 @@ def test_budget_cap_downgrade_dev_medium_stops_at_mid():
     )
 
 
+def test_budget_cap_preserves_strong_planner_when_dev_is_also_strong():
+    """Adaptive strong planner stays strong when the story already needs strong dev."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        budget_per_story_usd=15.0,
+        prefer_cross_provider=False,
+    )
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        decision = assign_models(agents, cfg, "medium", complexity_score=9)
+
+    assert decision.dev.model == "opus"
+    assert decision.planner.model == "opus"
+    assert decision.budget_audit["within_budget"] is False
+    assert "planner" in decision.budget_audit.get("protected_roles", [])
+    assert "protected roles" in decision.rationale["budget"]
+    assert any("Budget cap" in str(w.message) for w in caught)
+
+
 def test_budget_cap_records_downgrade_rationale():
     """Budget downgrades must be visible in the decision rationale/audit."""
     agents = _make_agents_one_per_tier()
@@ -637,6 +660,23 @@ def test_budget_cap_records_downgrade_rationale():
     assert decision.budget_audit["downgraded"] is True
     assert decision.budget_audit["final_total_usd"] <= 10.0
     assert decision.budget_audit["steps"]
+
+
+def test_budget_cap_keeps_planner_rationale_aligned_with_final_model():
+    """Planner rationale must describe the post-budget planner that will actually run."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        budget_per_story_usd=10.0,
+        prefer_cross_provider=False,
+    )
+
+    decision = assign_models(agents, cfg, "medium", complexity_score=4)
+
+    assert decision.planner.model == "haiku"
+    assert "budget adjusted -> final model haiku" in decision.rationale["planner"]
+    assert any(step["role"] == "planner" for step in decision.budget_audit["steps"])
 
 
 # ── test_deterministic ────────────────────────────────────────────────

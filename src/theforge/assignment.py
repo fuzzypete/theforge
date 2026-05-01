@@ -349,6 +349,7 @@ def _enforce_budget(
     agents: list[AgentDef],
     budget_per_story_usd: float,
     dev_floor_tier: str = "cheap",
+    planner_floor_tier: str | None = None,
     locked_roles: set[str] | None = None,
 ) -> AssignmentDecision:
     """Downgrade highest-cost non-preflight model if over budget cap.
@@ -360,12 +361,15 @@ def _enforce_budget(
     downgrades alone.
     The dev model is never downgraded below dev_floor_tier (the complexity-driven
     tier floor) to preserve the assignment guardrail.
+    The planner can also carry a tier floor when adaptive routing chose a strong
+    planner for a story that already assigned a strong dev model.
     """
     from dataclasses import replace as _dc_replace
 
     locked_roles = locked_roles or set()
     initial_total = _decision_total(decision)
     budget_steps: list[dict[str, object]] = []
+    protected_roles: set[str] = set()
 
     if initial_total <= budget_per_story_usd:
         rationale = dict(decision.rationale)
@@ -433,6 +437,9 @@ def _enforce_budget(
         # Sort by budget descending to downgrade most expensive first
         candidates.sort(key=lambda x: x[1].budget_usd, reverse=True)
         dev_floor_idx = _TIER_ORDER.index(dev_floor_tier) if dev_floor_tier in _TIER_ORDER else 0
+        planner_floor_idx = (
+            _TIER_ORDER.index(planner_floor_tier) if planner_floor_tier in _TIER_ORDER else None
+        )
         downgraded = False
         for role, profile in candidates:
             role_class = (
@@ -443,14 +450,21 @@ def _enforce_budget(
                 else role
             )
             if role_class in locked_roles:
+                protected_roles.add(role_class)
                 continue
             cheaper = _next_cheaper_profile(profile)
             if cheaper is not None:
+                cheaper_def = agent_by_name.get(cheaper.name)
                 # Guardrail: never downgrade dev below its complexity tier floor.
                 if role == "dev":
-                    cheaper_def = agent_by_name.get(cheaper.name)
                     if cheaper_def is not None and cheaper_def.tier in _TIER_ORDER:
                         if _TIER_ORDER.index(cheaper_def.tier) < dev_floor_idx:
+                            protected_roles.add("dev")
+                            continue  # skip — would violate floor
+                if role == "planner" and planner_floor_idx is not None:
+                    if cheaper_def is not None and cheaper_def.tier in _TIER_ORDER:
+                        if _TIER_ORDER.index(cheaper_def.tier) < planner_floor_idx:
+                            protected_roles.add("planner")
                             continue  # skip — would violate floor
                 if role == "dev":
                     decision = _dc_replace(decision, dev=cheaper)
@@ -509,6 +523,23 @@ def _enforce_budget(
     final_total = _decision_total(decision)
     within_budget = final_total <= budget_per_story_usd
     rationale = dict(decision.rationale)
+    impacted_roles = {
+        str(step.get("role"))
+        for step in budget_steps
+        if isinstance(step, dict) and step.get("role")
+    }
+    if "planner" in impacted_roles and "planner" in rationale:
+        rationale["planner"] += f"; budget adjusted -> final model {decision.planner.model}"
+    if "dev" in impacted_roles and "dev" in rationale:
+        rationale["dev"] += f"; budget adjusted -> final model {decision.dev.model}"
+    if "plan_review" in impacted_roles and "plan_review" in rationale:
+        rationale["plan_review"] += (
+            f"; budget adjusted -> final reviewers {[p.model for p in decision.plan_reviewers]}"
+        )
+    if "code_review" in impacted_roles and "code_review" in rationale:
+        rationale["code_review"] += (
+            f"; budget adjusted -> final reviewers {[p.model for p in decision.code_reviewers]}"
+        )
     if budget_steps:
         rationale["budget"] = (
             f"budget cap ${budget_per_story_usd:.2f}: downgraded to "
@@ -523,6 +554,8 @@ def _enforce_budget(
             f"budget cap ${budget_per_story_usd:.2f} could not be met; "
             f"estimated total ${final_total:.2f}"
         )
+    if protected_roles:
+        rationale["budget"] += f" (protected roles: {sorted(protected_roles)})"
 
     if not within_budget:
         warnings.warn(
@@ -539,6 +572,8 @@ def _enforce_budget(
         "downgraded": bool(budget_steps),
         "steps": budget_steps,
     }
+    if protected_roles:
+        audit["protected_roles"] = sorted(protected_roles)
     if not within_budget and locked_roles:
         audit["override_forced_overrun"] = True
         audit["locked_roles"] = sorted(locked_roles)
@@ -618,6 +653,7 @@ def assign_models(
     # Check if dev profile is explicitly overridden
     if "dev" in explicit_profiles:
         dev_profile = explicit_profiles["dev"]
+        dev_selected_tier: str | None = None
         rationale["dev"] = f"explicit override: {dev_profile.model}"
     else:
         # Check promotion
@@ -711,6 +747,7 @@ def assign_models(
                 else:
                     dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
                     rationale["dev"] += " (fallback: cheapest, no auth checked)"
+        dev_selected_tier = dev_agent.tier
         dev_profile = _agent_to_profile(dev_agent, role="dev")
 
     # ── Preflight ──────────────────────────────────────────────────────
@@ -733,6 +770,7 @@ def assign_models(
     # ── Planner ────────────────────────────────────────────────────────
     if "planner" in explicit_profiles:
         planner_profile = explicit_profiles["planner"]
+        planner_target_tier: str | None = None
         rationale["planner"] = f"explicit override: {planner_profile.model}"
     else:
         tier = (
@@ -740,6 +778,7 @@ def assign_models(
             if adaptive_enabled
             else PHASE_TIER["plan"][norm_complexity]
         )
+        planner_target_tier = tier
         agent = _pick_agent(agents, tier, secrets)
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
@@ -843,11 +882,19 @@ def assign_models(
 
     # Enforce budget cap — pass dev floor so the enforcer never downgrades dev
     # below the complexity-required tier.
+    planner_floor_tier = None
+    if (
+        planner_target_tier == "strong"
+        and dev_selected_tier == "strong"
+        and "planner" not in explicit_profiles
+    ):
+        planner_floor_tier = "strong"
     decision = _enforce_budget(
         decision,
         agents,
         assignment_config.budget_per_story_usd,
         dev_floor_tier=dev_base_tier,
+        planner_floor_tier=planner_floor_tier,
         locked_roles=locked_roles,
     )
 
