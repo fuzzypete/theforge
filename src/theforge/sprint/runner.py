@@ -841,6 +841,29 @@ def _make_worker_phase_fn(
     return _update
 
 
+def _terminal_story_model(result: CoordinatorResult) -> str | None:
+    """Return the dev model to display for a terminal story row.
+
+    Live status uses ``current_model`` while a story is running. REVIEW
+    intentionally overwrites that with ``panel(N)`` for operator visibility, so
+    terminal transitions must restore the model that actually produced the work.
+    Prefer the explicit ``model_used`` recorded by the runner and fall back to
+    legacy ``model_usage`` data when needed.
+    """
+
+    dev_results = list(getattr(result.state, "dev_results", []) or [])
+    for dev_result in reversed(dev_results):
+        model_used = getattr(dev_result, "model_used", None)
+        if isinstance(model_used, str) and model_used:
+            return model_used
+        model_usage = tuple(getattr(dev_result, "model_usage", ()) or ())
+        if model_usage:
+            usage_model = getattr(model_usage[-1], "model", None)
+            if isinstance(usage_model, str) and usage_model:
+                return usage_model
+    return None
+
+
 def _poll_queued_pr(pr_url: str, project_root: Path, timeout_seconds: int) -> dict[str, str]:
     """Poll GitHub until a queued PR is merged, closed, or times out."""
     deadline = time.monotonic() + timeout_seconds
@@ -2080,12 +2103,14 @@ def run_sprint(
                 _classify_outcome = _classify_and_record(
                     task, result, dag, merged_slugs, story_state=_story_state
                 )
-                _set_outcome(
-                    task.slug,
-                    _classify_outcome,
-                    phase=result.phase.name,
-                    cost_usd=result.state.total_cost,
-                )
+                _terminal_model = _terminal_story_model(result)
+                _outcome_fields: dict[str, object] = {
+                    "phase": result.phase.name,
+                    "cost_usd": result.state.total_cost,
+                }
+                if _terminal_model is not None:
+                    _outcome_fields["current_model"] = _terminal_model
+                _set_outcome(task.slug, _classify_outcome, **_outcome_fields)
 
                 # Dependent stories in parallel mode need scheduler-side local merge
                 # even when on_approve is "none" and auto_merge is False.

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from theforge.agent_types import AgentResult, ModelUsage
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -22,6 +23,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint.dag import (
     StoryDAG,
     _is_branch_merged,
@@ -29,7 +31,12 @@ from theforge.sprint.dag import (
     resolve_satisfied_dependencies,
 )
 from theforge.sprint.manifest import ResolvedSprint
-from theforge.sprint.runner import _refresh_external_satisfied, _run_baseline_gate, run_sprint
+from theforge.sprint.runner import (
+    _refresh_external_satisfied,
+    _run_baseline_gate,
+    _terminal_story_model,
+    run_sprint,
+)
 from theforge.task import TaskStory
 
 
@@ -63,6 +70,17 @@ def _make_runner_config(tmp_path: Path) -> ForgeConfig:
 
 def _make_empty_resolved() -> ResolvedSprint:
     return ResolvedSprint(name="Test Sprint", budget_usd=10.0, stories=[], max_parallel=1)
+
+
+def _make_result_with_dev_runs(*dev_results: AgentResult) -> CoordinatorResult:
+    state = CoordinatorState()
+    state.dev_results.extend(dev_results)
+    return CoordinatorResult(
+        success=True,
+        phase=Phase.DONE,
+        state=state,
+        message="done",
+    )
 
 
 # ── build_dag: unknown slug handling ──────────────────────────────────
@@ -335,6 +353,56 @@ def test_run_sprint_pull_base_branch_failure_aborts_before_baseline(tmp_path: Pa
             run_sprint(config, resolved)
 
     mock_baseline.assert_not_called()
+
+
+def test_terminal_story_model_prefers_last_dev_model_used() -> None:
+    first = AgentResult(
+        success=True,
+        output="",
+        session_id=None,
+        cost_usd=0.1,
+        exit_code=0,
+        raw={},
+        model_used="sonnet",
+    )
+    last = AgentResult(
+        success=True,
+        output="",
+        session_id=None,
+        cost_usd=0.2,
+        exit_code=0,
+        raw={},
+        model_used="opus",
+    )
+
+    result = _make_result_with_dev_runs(first, last)
+
+    assert _terminal_story_model(result) == "opus"
+
+
+def test_terminal_story_model_falls_back_to_model_usage_when_model_used_missing() -> None:
+    legacy = AgentResult(
+        success=True,
+        output="",
+        session_id=None,
+        cost_usd=0.1,
+        exit_code=0,
+        raw={},
+        model_usage=(
+            ModelUsage(
+                model="gpt-5.4",
+                input_tokens=10,
+                output_tokens=5,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.1,
+            ),
+        ),
+    )
+
+    result = _make_result_with_dev_runs(legacy)
+
+    assert _terminal_story_model(result) == "gpt-5.4"
 
 
 def test_run_baseline_gate_reports_local_origin_sha_gap(tmp_path: Path) -> None:
