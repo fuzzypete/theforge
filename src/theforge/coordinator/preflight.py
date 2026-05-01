@@ -12,6 +12,7 @@ import yaml
 
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelInfo, ModelProfile, apply_model_info
 from theforge.review import ReviewFinding
+from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 
 if TYPE_CHECKING:
     from .state import CoordinatorState
@@ -20,10 +21,9 @@ _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
 
 _log = logging.getLogger(__name__)
 
-# Tier × complexity routing table (mirrors role_derivation._COMPLEXITY_TIER).
-# Not imported from there to avoid coordinator ↔ config coupling.
+# Tier × complexity routing table for complexity-band fallbacks.
 _PHASE_COMPLEXITY_TIER: dict[str, dict[str, str]] = {
-    "dev": {"LOW": "cheap", "MEDIUM": "mid", "HIGH": "strong"},
+    "dev": DEV_COMPLEXITY_TIER,
     "plan": {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"},
     "review": {"LOW": "mid", "MEDIUM": "mid", "HIGH": "strong"},
 }
@@ -214,21 +214,6 @@ def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
         matched.append("cross-module coordinator surgery")
 
     return list(dict.fromkeys(matched))
-
-
-def score_to_dev_tier(score: int) -> str:
-    """Map a 1-10 complexity score to a dev-phase model tier.
-
-    Bands: 1-3 → cheap, 4-6 → mid, 7-10 → strong. Finer-grained than the enum
-    mapping (which lumps score 7 in with 'medium' → mid) so a localized bug at
-    score=3 and a cross-module refactor at score=7 route to different tiers
-    even though they'd both be 'medium' under the three-level enum.
-    """
-    if score <= 3:
-        return "cheap"
-    if score <= 6:
-        return "mid"
-    return "strong"
 
 
 def _build_pool_entries(model_keys: list[str]) -> list[tuple[int, str, ModelInfo]]:

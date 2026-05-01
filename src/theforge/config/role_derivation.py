@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 from .defaults import DEFAULT_DEV_PROFILE, DEFAULT_PREFLIGHT_PROFILE, DEFAULT_REVIEW_PROFILE
 from .models import ModelInfo, _resolve_model_info
 from .schema import (
@@ -31,7 +32,7 @@ _DEFAULT_PLAN_TIMEOUT_SECONDS: int = 600
 # preflight is intentionally absent — it uses a static assignment regardless of complexity.
 _COMPLEXITY_TIER: dict[str, dict[str, str]] = {
     "plan": {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"},
-    "dev": {"LOW": "cheap", "MEDIUM": "mid", "HIGH": "strong"},
+    "dev": DEV_COMPLEXITY_TIER,
     "review": {"LOW": "mid", "MEDIUM": "mid", "HIGH": "strong"},
 }
 
@@ -47,15 +48,6 @@ _COMPLEXITY_NORM: dict[str, str] = {
     "large": "HIGH",
     "high": "HIGH",
 }
-
-
-def _score_to_dev_tier(score: int) -> str:
-    """Map a 1-10 complexity score to a dev-phase model tier."""
-    if score <= 3:
-        return "cheap"
-    if score <= 6:
-        return "mid"
-    return "strong"
 
 
 def _pick_by_tier(
@@ -242,7 +234,7 @@ def derive_roles(
 
     if _apply_tier_routing:
         target_dev_tier = (
-            _score_to_dev_tier(complexity_score)
+            score_to_dev_tier(complexity_score)
             if complexity_score is not None
             else _COMPLEXITY_TIER["dev"][norm_complexity]
         )
