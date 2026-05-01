@@ -39,6 +39,10 @@ _HISTORY_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 _BAND_TO_SCORE = {"small": 2, "medium": 5, "large": 9}
 _HEADROOM_FACTOR = 1.5
+# Budget headroom is scaled by complexity band because strong-tier models on
+# large stories have higher cost variance than cheap-tier models on small ones.
+# Using a flat 1.5x average produced budgets ~2x too tight for LARGE stories.
+_BUDGET_HEADROOM_BY_BAND: dict[str, float] = {"small": 1.5, "medium": 2.0, "large": 2.5}
 _MIN_PROFILE_RUNS = 3
 
 
@@ -262,13 +266,17 @@ def derive_limits(
         chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
         timeout_per_iteration = base_timeout_seconds / max(static_dev_max, 1)
         chosen_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
-        chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _HEADROOM_FACTOR)
+        _budget_headroom = _BUDGET_HEADROOM_BY_BAND.get(
+            (complexity_band or "").lower(), _HEADROOM_FACTOR
+        )
+        chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _budget_headroom)
         audit["profile_raw_dev_max"] = round(raw_dev, 4)
+        audit["budget_headroom_factor"] = _budget_headroom
         dev_rationale = (
             f"derived dev limits from {profile_runs} "
             f"{complexity_band or 'unknown'}-band profile runs with "
-            f"{_HEADROOM_FACTOR}x headroom; timeout scaled from static "
-            "per-iteration baseline."
+            f"{_HEADROOM_FACTOR}x iteration headroom and {_budget_headroom}x "
+            "budget headroom; timeout scaled from static per-iteration baseline."
         )
     audit["chosen_dev_max"] = chosen_dev
     audit["chosen_dev_timeout_seconds"] = chosen_timeout
