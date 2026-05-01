@@ -109,6 +109,18 @@ def test_review_panel_visible_in_live_status(tmp_path: Path) -> None:
     assert entries[0].model == "panel(3)"
 
 
+def test_terminal_live_status_restores_dev_model_after_review_panel(tmp_path: Path) -> None:
+    writer = _writer(tmp_path, "run-done-live")
+    writer.init([{"slug": "b", "path": "Issue #2", "status": "running"}])
+    writer.update("b", phase="REVIEW", current_model="panel(3)")
+    writer.update("b", status="done", phase="DONE", current_model="claude-opus-4-7")
+
+    entries = read_live_status("run-done-live", tmp_path)
+    assert entries is not None
+    assert entries[0].status == "done"
+    assert entries[0].model == "claude-opus-4-7"
+
+
 def test_skipped_story_has_none_model(tmp_path: Path) -> None:
     state = SprintStoryState()
     state.register("c", "Issue #3", outcome=StoryOutcome.SKIPPED, depends_on=["a"])
