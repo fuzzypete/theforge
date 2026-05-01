@@ -977,3 +977,49 @@ def test_worker_phase_fn_forwards_coordinator_detail(tmp_path: Path) -> None:
     fn({"phase": "VALIDATE", "iteration": 3, "cost_usd": 1.0})
     data = yaml.safe_load(state_path.read_text())
     assert data["stories"][0]["detail"] == {"gate_status": "running"}
+
+
+def test_stage_and_detail_skipped_with_stale_approve_does_not_leak() -> None:
+    """A SKIPPED story whose detail still claims final_outcome=DONE must not show APPROVE."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_live_story
+
+    story = {
+        "slug": "issue-1080",
+        "path": "Issue #1080",
+        "status": "skipped",
+        "outcome": "skipped",
+        "phase": None,
+        "detail": {
+            "final_outcome": "DONE",
+            "review_verdict": "APPROVE — All ACs met from prior run",
+            "review_p1": 0,
+            "review_p2": 0,
+        },
+        "reason": "depends on issue-1070",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_live_story(story)
+    assert "APPROVE" not in detail
+    # Either the skip reason or the canonical SKIPPED outcome is acceptable; both
+    # are correct, leak of APPROVE is not.
+    assert detail in {"depends on issue-1070", "SKIPPED"}
+
+
+def test_stage_and_detail_failed_with_stale_done_does_not_leak() -> None:
+    """An ESCALATED (failed) story with stale DONE detail must not show APPROVE."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_live_story
+
+    story = {
+        "slug": "issue-1070",
+        "path": "Issue #1070",
+        "status": "failed",
+        "outcome": "escalated",
+        "phase": "ESCALATE",
+        "detail": {
+            "final_outcome": "DONE",
+            "review_verdict": "APPROVE — Adaptive timeout coverage gap closed",
+        },
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_live_story(story)
+    assert "APPROVE" not in detail
+    # The display should reflect the current run's escalation, not a stale APPROVE.
+    assert detail in {"ESCALATED", "ESCALATE"}
