@@ -1619,6 +1619,7 @@ def run_sprint(
     # Parallel scheduling state
     active: dict[str, Future[object]] = {}
     story_deadlines: dict[str, float] = {}
+    story_wait_started: set[str] = set()
     cost_lock = threading.Lock()
     story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
     batch_assignments: dict[str, int] = {}
@@ -1956,16 +1957,26 @@ def run_sprint(
             expired_slugs: list[str] = []
             while not done_futs and not expired_slugs:
                 _now = time.monotonic()
-                _time_to_next_deadline = max(
+                _time_to_next_timeout = max(
                     0.0,
-                    min(story_deadlines[slug] - _now for slug in active),
+                    min(
+                        (
+                            float(story_worker_timeouts[slug])
+                            if slug not in story_wait_started
+                            else story_deadlines[slug] - _now
+                        )
+                        for slug in active
+                    ),
                 )
-                _poll_interval = 2.0 if plan_gates else _time_to_next_deadline
+                _poll_interval = (
+                    min(2.0, _time_to_next_timeout) if plan_gates else _time_to_next_timeout
+                )
                 done_futs, _ = wait(
                     list(active.values()),
                     return_when=FIRST_COMPLETED,
                     timeout=_poll_interval,
                 )
+                story_wait_started.update(active)
                 if not done_futs and use_plan_gates:
                     # Service plan gates while polling
                     _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
@@ -1987,6 +1998,7 @@ def run_sprint(
                         del plan_gates[slug]
                     fut = active.pop(slug)
                     story_deadlines.pop(slug, None)
+                    story_wait_started.discard(slug)
                     # Set the cancellation event BEFORE cancel() so any in-flight
                     # work stops at the next phase boundary or subprocess read.
                     # Future.cancel() is a no-op for an already-running thread.
@@ -2035,6 +2047,7 @@ def run_sprint(
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
                     del active[slug]
                     story_deadlines.pop(slug, None)
+                    story_wait_started.discard(slug)
                     stop_events.pop(slug, None)
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
@@ -2065,6 +2078,7 @@ def run_sprint(
                     continue
                 del active[slug]
                 story_deadlines.pop(slug, None)
+                story_wait_started.discard(slug)
                 stop_events.pop(slug, None)
                 story_times[slug] = (t0, t1)
 

@@ -230,6 +230,7 @@ class TestTestMirrorCheck:
 
 
 def test_allowed_root_files_whitelist_is_stack_neutral() -> None:
+    assert "CONVENTIONS.md" in _ALLOWED_ROOT_FILES
     assert "conftest.py" not in _ALLOWED_ROOT_FILES
     assert "tox.ini" not in _ALLOWED_ROOT_FILES
     assert "pyproject.toml" not in _ALLOWED_ROOT_FILES
