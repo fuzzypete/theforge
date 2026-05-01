@@ -7,15 +7,215 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The headline of v0.9.0 is **adaptive intelligence**: complexity is now scored on
+a 1–10 scale and drives model assignment, iteration limits, budgets, and timeouts
+deterministically instead of via static config. Run history accumulates as model
+profiles, escalation history feeds back into routing, and process overhead scales
+with the work — small bounded bugs skip planning, LARGE stories get strong-tier
+models with proportional budgets. Sprint reliability has been hardened against
+the failure modes that destroyed work in 0.8: silent escalations, stale baseline
+gates, lock-file races, status-display lies, and resume edge cases.
+
+This is the first release shaped by the **dogfood-from-releases** principle:
+pin your install to a tagged version and develop the next release against it.
+Floor-blocker fixes for substrate quality (sufficiency over-classification,
+planner tier divergence, audit-vs-execution match) landed late in the cycle to
+make v0.9.0 safe to build v0.10.0 on, not just safe to run.
+
+### Added
+
+- **Granular complexity scoring (1–10):** preflight emits a numeric complexity
+  score that drives every downstream adaptive decision instead of the legacy
+  LOW/MEDIUM/HIGH band. Score is logged at `phase_end PREFLIGHT` and persisted
+  to audit. (#119, #1102)
+- **Adaptive model assignment:** complexity-driven routing picks dev, planner,
+  reviewer, and preflight tiers per story; rationale is recorded in audit so
+  operators can see why a model was chosen. (#283)
+- **Adaptive resource budgets and iteration limits:** dev/review iteration caps,
+  per-phase timeouts, and budgets derive from complexity and run history rather
+  than static config. Profile history accumulates per model. (#156, #169, #510)
+- **Timeout-triggered model escalation:** dev agents that hit timeout escalate
+  to a stronger tier on retry, with the escalation visible in routing. (#359)
+- **Progress-aware timeouts:** stuck dev agents are detected by lack of file
+  modifications and terminated cooperatively before the wall-clock cap. (#157,
+  #1071, #1130)
+- **Preflight fallback on transient failure:** preflight retries with a fallback
+  model profile when the primary fails. (#707)
+- **`forge todo` capture path:** frictionless command for filing architectural
+  debt and follow-up issues with a `todo:draft` label. (#857)
+- **`forge status` enhancements:** rich per-story detail throughout sprint
+  lifecycle, MODEL column, STAGE/DETAIL split, and `--watch` live-update mode
+  modeled on `top`/`htop`. (#719, #1035, #1036, #1093)
+- **Collision-derived DAG edges:** preflight `likely_files` automatically
+  serialize colliding stories without requiring manual `depends_on`. (#1073)
+- **Gate environment scrub:** `make gate` runs in a scrubbed environment with no
+  agent credentials, CLI auth state, or dotenv autoload available. Tests that
+  forget and call a real provider CLI fail fast under the scrub sentinel. (#900,
+  #911)
+- **Forge-config story-branch allowlist:** the gate now rejects story branches
+  that mutate `forge.yaml` outside an allowlist of story-mutable keys. (#1001)
+- **Release-time doc review template:** post-release doc review issue is
+  auto-created against the next milestone with a verification template that
+  forces checking each claim against code, not against other docs. (#947)
+- **Examples are first-class in feature issues:** feature/enhancement issue
+  format requires a concrete example or target sketch; shape-check enforces
+  it. (#1040)
+- **Language-agnosticism convention with mechanical check:** stack-neutral
+  layers (`task/`, `coordinator/`, `sprint/`, shared schemas) are scanned for
+  language-specific assumptions. (#931)
+
 ### Changed
 
-- **Stack-neutral story schema:** the `TaskStory.pytest_target` field and
-  `{pytest_target}` gate placeholder have been renamed to `test_target` and
-  `{test_target}`. Story frontmatter and sprint manifest overrides now use
-  `test_target`. This is a breaking change — update story files and any
-  `forge.yaml` gate commands that reference `{pytest_target}`. Story
-  scaffolding and ideation output no longer emit the field at all; gate
-  scoping belongs in `forge.yaml`. (#930)
+- **Stack-neutral story schema (breaking):** `TaskStory.pytest_target` and
+  `{pytest_target}` gate placeholder are renamed to `test_target` and
+  `{test_target}`. Story scaffolding and ideation output no longer emit the
+  field; gate scoping belongs in `forge.yaml`. Update story files and any
+  `forge.yaml` gate commands referencing the old name. (#930, #940)
+- **TransportSpec unification:** transport representation is unified across
+  dispatch — provider/model identity and CLI/API transport are a single source
+  of truth. CLI-first with API fallback is now the ergonomic default for
+  mixed-transport reviewer pools. (#891, #892)
+- **Schema repair fails closed:** APPROVE+P1 and REQUEST_CHANGES+no-P1 review
+  outputs are now hard errors instead of being silently rewritten — review
+  schema is the integrity boundary. (#996)
+- **Reviewer prompt forbids closure-note findings:** reviewers are explicitly
+  prevented from filing closure notes as P1 findings. (#998)
+
+### Fixed
+
+#### Adaptive routing
+
+- **Sufficiency over-classifies as needs_planning:** trivial bounded work no
+  longer runs the full plan + plan_review pipeline unnecessarily; bounded bugs
+  skip planning when planning would buy nothing. (#1163)
+- **Planner agent selection drops from strong to mid:** when the strong-tier
+  model is already assigned to dev, the planner no longer silently falls to
+  mid-tier with the audit reporting "tier strong." Audit and execution match.
+  (#1164)
+- **Adaptive dev_budget under-funds LARGE stories:** strong-tier-routed LARGE
+  stories no longer escalate from budget exhaustion partway through legitimate
+  work. (#1148)
+- **Coordinator-override upgrades complexity from context keywords:** preflight
+  no longer over-sizes complexity based on story prose vocabulary instead of
+  fix-shape. (#1150)
+- **Plan reviewers computed but never applied:** adaptive plan review no longer
+  silently skips when the computed reviewer pool isn't propagated into config.
+  (#922)
+- **Preflight under-sizes concurrent multi-phase coordinator work:** complex
+  changes spanning multiple coordinator phases get appropriate complexity
+  scores. (#1136)
+- **Preflight false-positives ALREADY_DONE:** adaptive-routing stories no
+  longer get cited as already done from partial implementation. (#994)
+- **Persistent-finding classifier collapses distinct findings:** P1 persistence
+  matching now requires more than file-path equality, so different bugs in the
+  same file are no longer treated as the same recurrence. (#956, #999)
+- **Findings on changed files misclassified as regressions:** new findings on
+  changed files require description match before being labeled regressions.
+  (#997)
+
+#### Sprint reliability
+
+- **Sprint baseline gate runs against stale local main:** baseline now pulls
+  origin before evaluating, so origin-side critical fixes don't false-negative
+  the baseline. (#1120)
+- **Sprint resume treats zero-delta APPROVE history as merged work:** resume
+  no longer false-skips stories that completed in a prior run. (#1145)
+- **Live sprint status reuses prior terminal story state during resumed run:**
+  resumed sprints no longer carry stale terminal state into the live view.
+  (#1146)
+- **Sprint summary preserves stale escalation records when stories succeed
+  later:** a successful re-run no longer leaves the original escalation in the
+  summary. (#1030)
+- **Sprint summary drops stories completed in earlier resumes:** stories
+  completed before the final manifest entry are no longer omitted from the
+  summary. (#958)
+- **Sprint summary excludes tracked batch preflight cost when stories skip:**
+  preflight cost is now attributed correctly even when stories are skipped.
+  (#995)
+- **Sprint-summary overwrites ALREADY_DONE outcome with ESCALATE on later
+  run:** a later run that escalates no longer clobbers a prior ALREADY_DONE
+  outcome. (#1047)
+- **Lock sweep mistakes recycled PIDs for live forge runs:** unrelated
+  processes that recycle a forge PID (imagent, Google Drive) no longer hold
+  forge locks. (#959)
+- **`forge stop` silent SIGTERM timeout:** `forge stop` no longer surrenders
+  silently and leaves zombie processes holding locks. (#960, #1117)
+- **Workspace abort on `git pull` failure escalates instead of recovering:**
+  recoverable workspace failures no longer escalate the story. (#1048)
+- **Stale-worktree sweep destroys uncommitted work on escalated stories:**
+  worktree cleanup respects in-progress and recently-escalated work. (#939)
+- **Worktree lifecycle hygiene:** worktrees no longer leak debris into
+  `.forge/worktrees/`. (#928)
+- **Adaptive timeout coverage gap:** plan-phase and sprint-worker timeouts
+  now derive from complexity instead of running with hard-coded defaults.
+  (#1070)
+- **Preflight cache survives across sprint runs even after code changes:**
+  the cache validates the worktree HEAD and base-branch HEAD before reuse.
+  (#1015, #1082)
+- **Collision-derived DAG edges are now soft:** when an upstream story
+  escalates without merging, the soft edge is dropped instead of stranding the
+  downstream forever. (#1112)
+
+#### Dev / review correctness
+
+- **Dev agent that produces zero commits is treated as APPROVE/DONE:** empty
+  diffs now escalate instead of being silently approved. (#1127)
+- **Stuck-detection false-terminates dev agents during legitimate codebase
+  exploration on LARGE stories:** stuck thresholds now scale with complexity
+  and plan size. (#1130)
+- **Plan-review has no retry for transient provider errors:** a single 500
+  no longer shrinks the reviewer pool. (#951)
+- **Hard convention violations not propagated to dev retry:** convention
+  failures now reach the dev agent as actionable findings. (#1017)
+- **Runner subprocess failures masked behind generic "no changes":** runner
+  failures now surface with their actual cause. (#1016)
+- **Claude CLI runner hangs after producing output:** SIGKILL no longer
+  discards valid plan/preflight/dev output captured in stdin/stdout. (#1054)
+- **Profile transport mutation produces malformed dispatch state:** profile
+  resolution no longer mutates the transport in-place. (#890)
+- **`update_finding_registry` crashes on mixed str/int `Finding.line`:** mixed
+  types are normalized before registry write. (#908)
+
+#### Status display
+
+- **`forge status` shows stale review/detail data for re-run stories:** DETAIL
+  no longer leaks from prior run; non-success completed rows ignore stale
+  verdicts. (#1128)
+- **`forge status`: ELAPSED column blank, SKIPPED rows show no reason:**
+  ELAPSED populates from timestamps; SKIPPED rows now carry their reason.
+  (#1080)
+- **`forge status --watch` silently falls back to one-shot during sprint
+  startup:** the watch mode now waits through the startup window instead of
+  collapsing to a snapshot. (#1089)
+- **Single source of truth for sprint story state:** status, baseline, and
+  resume now read from a unified state representation. (#1065)
+- **`forge status` integration tests cover sprint lifecycle and re-exec
+  edges:** lifecycle and resume edges are covered by integration tests.
+  (#1049)
+
+#### Conventions and runtime
+
+- **Forge gate must run scrubbed:** removes ambient credentials before
+  invocation; no real-CLI calls in the default gate. (#900, #911)
+- **Claude CLI runner uses OS-level write containment:** matches Gemini
+  containment, prevents agent writes outside the worktree. (#749)
+- **macOS bash-tool sandbox profile makes `pytest`/gate unusably slow:**
+  sandbox profile tuned to remove the slowness. (#929)
+- **Codex resume runner passes unsupported `-C/--cd` flag:** removed from
+  `codex exec resume` invocation. (#1013)
+- **Runner seam-test gap:** runner tests now exercise subprocess lifecycle
+  via fake-CLI fixtures instead of mocking `subprocess.Popen`. (#1056)
+- **Shape-check uses single `needs-triage` label:** removed invented
+  `triage-*` vocabulary in favor of the canonical label. (#1075)
+- **`post_run` hook files findings in wrong bug format:** hook now follows the
+  bug-report convention instead of feature-format. (#882, #883)
+- **`forge.yaml` gate command honors scrubbed-gate contract:** dogfood
+  configuration points at `make gate` instead of bypassing the scrub. (#911)
+- **`_has_base_commit_referencing_issue` over-matches base commits:**
+  base-commit reference checks now require structural match, not substring.
+  (#875)
+- **Convention 6 evidence requirement:** new data flowing between coordinator
+  phases must be visible in the audit trail. (#877)
 
 
 ## [0.8.0] — 2026-04-20
