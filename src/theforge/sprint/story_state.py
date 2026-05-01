@@ -100,6 +100,7 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "already_done": StoryOutcome.ALREADY_DONE,
     "failed": StoryOutcome.FAILED,
     "escalated": StoryOutcome.ESCALATED,
+    "escalate": StoryOutcome.ESCALATED,  # phase-style alias seeded by runner
     "skipped": StoryOutcome.SKIPPED,
     "preserved": StoryOutcome.PRESERVED,
     "dropped": StoryOutcome.DROPPED,
