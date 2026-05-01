@@ -20,7 +20,7 @@ from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
 
-from .commit_guard import _has_commits_ahead_of_base
+from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
@@ -685,20 +685,27 @@ def _run_dev_phase(
         and state.total_dev_cost > (state.adaptive_dev_budget_usd or config.dev_profile.budget_usd)
     ):
         _budget_limit = state.adaptive_dev_budget_usd or config.dev_profile.budget_usd
-        state.phase = Phase.ESCALATE
-        state.error = (
+        _budget_msg = (
             f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} (limit ${_budget_limit:.4f})"
         )
-        _log(f"✗ ESCALATE   {state.error}")
-        if logger:
-            logger._safe_emit("escalate", reason=state.error, phase="DEV")
-        _escalate_notify(task, state, notify, config)
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
-        )
+        # If the dev agent successfully committed work, honour the result rather
+        # than retroactively escalating based on post-hoc accounting. The cost is
+        # already spent; blocking PR creation would silently orphan correct work.
+        if _commits_exist_strict(workspace_path, config.workspace.base_branch):
+            _log(f"⚠ DEV   {_budget_msg} — committed work found, proceeding to validate/review")
+        else:
+            state.phase = Phase.ESCALATE
+            state.error = _budget_msg
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("escalate", reason=state.error, phase="DEV")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
 
     if not dev_result.success:
         _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")

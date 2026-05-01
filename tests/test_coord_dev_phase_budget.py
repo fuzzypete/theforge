@@ -198,6 +198,77 @@ class TestCoordinatorBudgetEnforcement:
         assert "review" in result.message
         assert len(result.state.review_agent_results) == 1
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=True)
+    def test_dev_budget_exceeded_but_commits_present_proceeds(
+        self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Dev exceeds budget but committed work → honour the result, proceed to DONE."""
+        config = self._make_budget_config(tmp_path, dev_budget=0.40, review_budget=1.00)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        expensive_result = AgentResult(
+            success=True,
+            output="Done.",
+            session_id="s1",
+            cost_usd=0.50,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = expensive_result
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True, f"Expected DONE but got ESCALATE: {result.message}"
+        assert result.phase == Phase.DONE
+        mock_commits.assert_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=False)
+    def test_dev_budget_exceeded_no_commits_escalates(
+        self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Dev exceeds budget with no commits → ESCALATE (no work to salvage)."""
+        config = self._make_budget_config(tmp_path, dev_budget=0.40, review_budget=1.00)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+
+        expensive_result = AgentResult(
+            success=True,
+            output="Done.",
+            session_id="s1",
+            cost_usd=0.50,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = expensive_result
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "budget" in result.message.lower()
+
 
 # ── Dev notes and handoff validation tests ──────────────────────────────
 

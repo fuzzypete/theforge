@@ -168,7 +168,7 @@ def test_profiles_inform_adaptive_dev_limits(tmp_path: Path):
     )
     assert result.dev_max == 5
     assert result.dev_timeout_seconds == 1500
-    assert result.dev_budget_usd == 1.8
+    assert result.dev_budget_usd == 2.4  # medium band: 1.2 * 2.0x headroom
     assert result.audit["profile_history_runs"] == 3
 
 
