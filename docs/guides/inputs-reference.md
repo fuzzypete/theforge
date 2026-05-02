@@ -4,13 +4,22 @@ Every file format TheForge accepts as input.
 
 ---
 
-## Story file (`stories/*.md` by default)
+## Story (GitHub issue or `stories/*.md` file)
 
 The primary input. Describes WHAT to build and WHY. The dev agent implements
-exactly what the acceptance criteria say. Story files can live anywhere; `stories/`
-is simply the default directory created by `forge init`.
+exactly what the acceptance criteria say. Stories may live as **GitHub
+issues** (the mode TheForge itself uses) or as **local files** under
+`stories/*.md` (or any path); `stories/` is simply the default directory
+created by `forge init`. Content rules are identical for both backends.
 
-### Template
+For how to write a good story — required sections, per-use-case templates,
+and worked examples for features, bugs, refactors, rollups, and docs/chore
+work — see the **[Authoring Guide](authoring.md)**. This page covers only
+file format and frontmatter.
+
+### Local file format
+
+A local story file is a markdown file with optional YAML frontmatter:
 
 ```markdown
 ---
@@ -20,46 +29,22 @@ slug: my-feature-slug
 
 # Story Title
 
-## Problem
-
-One paragraph: WHY this change is needed. Context for the agent, not requirements.
-
-## Acceptance criteria
-
-- The system does X when Y
-- GET /endpoint returns Z
-- A test in tests/test_foo.py verifies the behavior
-- Existing tests continue to pass
-
-## Notes (optional)
-
-Additional context, constraints, or design guidance. Read by the agent as
-background, not as requirements.
+(body — see the Authoring Guide for the per-use-case body templates)
 ```
 
-### Frontmatter fields
+GitHub issues do not need frontmatter; the slug is derived from the issue
+title (or overridden in the sprint manifest), and the issue title supplies
+`name`.
+
+### Frontmatter fields (local-file mode)
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `name` | Yes | — | Human-readable title. Shows in logs and audit. |
 | `slug` | Yes | — | Branch name (`forge/{slug}`), worktree path. Lowercase-with-dashes. |
 | `test_target` | No | `tests/` | Stack-neutral test target substituted for `{test_target}` in the gate command. |
-| `file_scope` | No | `[]` (unrestricted) | Restrict dev agent to these files/directories. Empty = no restriction. |
 | `gate` | No | project default | Override gate: `"none"` (skip), `"lint"`, or custom command. |
 | `depends_on` | No | `[]` | Slugs that must be merged before this story runs (sprint mode). |
-
-### Writing good acceptance criteria
-
-**Do:**
-- Start each AC with a verb: "Returns", "Creates", "Rejects", "Logs"
-- Be observable and testable: "GET /health returns `{status: ok}` with 200"
-- Include a test AC: "A test in tests/test_health.py verifies the response"
-- Include regression: "Existing tests continue to pass"
-
-**Don't:**
-- Put implementation details in ACs (that's the agent's job)
-- Write vague ACs: "The code is clean" (not testable)
-- Mix context with requirements (context goes in Problem section)
 
 ---
 
@@ -414,6 +399,7 @@ test_coverage:
 
 ## See also
 
+- [Authoring Guide](authoring.md) — how to write a good issue or story by use case (feature, bug, refactor, rollup, docs/chore)
 - [Getting Started](getting-started.md) — full setup walkthrough including config examples
 - [CLI Reference](cli-reference.md) — all commands and flags
 - [Provider Setup Guide](choose-your-provider-setup.md) — forge.yaml profiles for different scenarios
