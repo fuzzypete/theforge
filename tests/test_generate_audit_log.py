@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     ForgeConfig,
+    ModelProfile,
+    PlanAgentReviewConfig,
     RetryPolicy,
     ValidationConfig,
     WorkspaceConfig,
@@ -525,6 +528,116 @@ class TestPhasesBlock:
         assert pr["cost_usd"] == pytest.approx(0.53)
         assert pr["duration_s"] == pytest.approx(73.0)
         assert pr["outcome"] == "approve"
+
+    def test_plan_review_phase_includes_per_reviewer_outcomes(self, tmp_path: Path) -> None:
+        """Agent plan review emits attempt-tagged per_reviewer outcomes in the phase summary."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            plan_agent_review=PlanAgentReviewConfig(
+                enabled=True,
+                pool=[
+                    ModelProfile(
+                        name="reviewer-a",
+                        cli="claude",
+                        model="sonnet",
+                        budget_usd=1.0,
+                        timeout_seconds=300,
+                        allowed_tools=("Read",),
+                    ),
+                    ModelProfile(
+                        name="reviewer-b",
+                        cli="codex",
+                        model="gpt-5",
+                        budget_usd=1.0,
+                        timeout_seconds=300,
+                        allowed_tools=("Read",),
+                    ),
+                ],
+            ),
+        )
+        state = CoordinatorState()
+        state.plan_review_mode = "agent"
+        state.plan_review_decision = "approve"
+        state.plan_review_durations.extend([30.0, 40.0])
+        state.plan_review_results.extend(
+            [
+                AgentResult(
+                    success=True,
+                    output=(
+                        "verdict: REJECT\n"
+                        "findings:\n"
+                        "  - severity: P1\n"
+                        "    description: Missing rollback path\n"
+                    ),
+                    session_id=None,
+                    cost_usd=0.21,
+                    exit_code=0,
+                    raw={},
+                    profile_name="reviewer-a",
+                ),
+                AgentResult(
+                    success=True,
+                    output="not valid yaml: [",
+                    session_id=None,
+                    cost_usd=0.02,
+                    exit_code=0,
+                    raw={},
+                    profile_name="reviewer-b",
+                ),
+                AgentResult(
+                    success=True,
+                    output="verdict: APPROVE\nfindings: []\n",
+                    session_id=None,
+                    cost_usd=0.19,
+                    exit_code=0,
+                    raw={},
+                    profile_name="reviewer-a",
+                ),
+                AgentResult(
+                    success=False,
+                    output="provider crash",
+                    session_id=None,
+                    cost_usd=0.0,
+                    exit_code=1,
+                    raw={},
+                    profile_name="reviewer-b",
+                    failure_code="provider_5xx",
+                ),
+            ]
+        )
+        result = _make_coordinator_result(state)
+
+        log = generate_audit_log(config, _make_task(tmp_path), result)
+
+        pr = log["phases"]["plan_review"]
+        assert pr is not None
+        assert pr["per_reviewer"] == [
+            {
+                "attempt": 0,
+                "profile": "reviewer-a",
+                "verdict": "REQUEST_CHANGES",
+                "cost_usd": pytest.approx(0.21),
+            },
+            {
+                "attempt": 0,
+                "profile": "reviewer-b",
+                "verdict": "PARSE_ERROR",
+                "cost_usd": pytest.approx(0.02),
+            },
+            {
+                "attempt": 1,
+                "profile": "reviewer-a",
+                "verdict": "APPROVE",
+                "cost_usd": pytest.approx(0.19),
+            },
+            {
+                "attempt": 1,
+                "profile": "reviewer-b",
+                "verdict": "CRASHED",
+                "cost_usd": pytest.approx(0.0),
+                "crash_kind": "provider_5xx",
+            },
+        ]
 
     def test_dev_phase_populated(self, tmp_path: Path) -> None:
         """phases.dev is populated from dev_results and dev_durations."""

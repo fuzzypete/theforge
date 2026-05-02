@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from theforge.config import ForgeConfig
+from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
 
 from .audit_render import build_agent_entries, build_reviews
@@ -106,6 +107,73 @@ def has_review_approve(
     return False
 
 
+def _serialize_plan_review_result(result: object, attempt: int) -> dict:
+    profile_name = getattr(result, "profile_name", "") or "unknown"
+    cost_usd = round(getattr(result, "cost_usd", None) or 0.0, 6)
+    if not getattr(result, "success", False):
+        entry = {
+            "attempt": attempt,
+            "profile": profile_name,
+            "verdict": "CRASHED",
+            "cost_usd": cost_usd,
+        }
+        if getattr(result, "failure_code", None):
+            entry["crash_kind"] = result.failure_code
+        return entry
+
+    parsed = parse_plan_review_output(getattr(result, "output", "") or "")
+    if parsed.parse_errors:
+        verdict = "PARSE_ERROR"
+    elif parsed.verdict == "APPROVE":
+        verdict = "APPROVE"
+    else:
+        verdict = "REQUEST_CHANGES"
+
+    return {
+        "attempt": attempt,
+        "profile": profile_name,
+        "verdict": verdict,
+        "cost_usd": cost_usd,
+    }
+
+
+def _build_plan_review_per_reviewer(state: CoordinatorState, config: ForgeConfig) -> list[dict]:
+    if state.plan_review_mode != "agent" or not state.plan_review_results:
+        return []
+
+    pool_size = len(config.plan_agent_review.profiles)
+    if pool_size <= 0:
+        return [
+            _serialize_plan_review_result(result, attempt=0)
+            for result in state.plan_review_results
+        ]
+
+    retry_counts_by_attempt: dict[int, int] = {}
+    for event in state.plan_review_transport_retries:
+        attempt = event.get("attempt")
+        if isinstance(attempt, int):
+            retry_counts_by_attempt[attempt] = retry_counts_by_attempt.get(attempt, 0) + 1
+
+    attempt_count = len(state.plan_review_durations)
+    if attempt_count <= 0:
+        attempt_count = 1
+
+    per_reviewer: list[dict] = []
+    cursor = 0
+    for attempt in range(attempt_count):
+        attempt_result_count = pool_size + retry_counts_by_attempt.get(attempt, 0)
+        if cursor + attempt_result_count > len(state.plan_review_results):
+            break
+        attempt_results = state.plan_review_results[cursor : cursor + attempt_result_count]
+        final_results = attempt_results[-pool_size:]
+        per_reviewer.extend(
+            _serialize_plan_review_result(result, attempt=attempt) for result in final_results
+        )
+        cursor += attempt_result_count
+
+    return per_reviewer
+
+
 def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     """Build the phases + totals block for the audit log.
 
@@ -140,6 +208,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     # ── plan_review ───────────────────────────────────────────────────────────
     plan_review_block: dict | None = None
     if state.plan_review_decision is not None:
+        _per_reviewer = _build_plan_review_per_reviewer(state, config)
         plan_review_block = {
             "cost_usd": round(state.total_plan_review_cost, 6),
             "duration_s": round(sum(state.plan_review_durations), 2)
@@ -147,6 +216,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             else None,
             "iterations": len(state.plan_review_results),
             "outcome": state.plan_review_decision,
+            **({"per_reviewer": _per_reviewer} if _per_reviewer else {}),
         }
 
     # ── dev ───────────────────────────────────────────────────────────────────
@@ -365,6 +435,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
 
     agents = build_agent_entries(state, config)
     reviews = build_reviews(state)
+    plan_review_per_reviewer = _build_plan_review_per_reviewer(state, config)
 
     context_manifests = [
         {
@@ -523,6 +594,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
                 "findings": state.plan_agent_review_findings,
                 "cost_usd": state.total_plan_review_cost,
+                **({"per_reviewer": plan_review_per_reviewer} if plan_review_per_reviewer else {}),
                 "plan_finding_registry": [
                     {
                         "description": r.description,
