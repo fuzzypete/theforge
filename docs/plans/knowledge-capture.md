@@ -67,7 +67,8 @@ was thinking.
 ### Runs are isolated
 
 Each run is a closed system. The context assembler (`task/context_assembler.py`)
-builds context packs from the structural index, CLAUDE.md files, story text,
+builds context packs from the structural index, CLAUDE.md and CONVENTIONS.md
+files, story text,
 plan output, and review findings — but only from the *current* run. It has
 no mechanism to include knowledge from prior runs: solved problems, validated
 approaches, recurring failure patterns, or codebase conventions learned through
@@ -305,7 +306,7 @@ of truth. It can be deleted and rebuilt at any time from the summary files.
 The context assembler (`task/context_assembler.py`) already builds
 phase-specific context packs with budget-aware inclusion/exclusion and
 required/advisory separation. Knowledge items become a new advisory source
-alongside structural index, CLAUDE.md, and plan output:
+alongside structural index, CLAUDE.md, CONVENTIONS.md, and plan output:
 
 ```python
 ContextItem(
