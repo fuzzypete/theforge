@@ -75,6 +75,7 @@ def test_sprint_summary_writes_skipped_issues(tmp_path: Path) -> None:
             reason_codes=("needs-grooming-label",),
             source="label",
             title="Stale",
+            detail="issue carries 'needs-grooming' label",
         ),
     ]
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -97,6 +98,7 @@ def test_sprint_summary_writes_skipped_issues(tmp_path: Path) -> None:
     assert entry["issue_number"] == 7
     assert entry["source"] == "label"
     assert entry["reason_codes"] == ["needs-grooming-label"]
+    assert entry["detail"] == "issue carries 'needs-grooming' label"
 
 
 def test_sprint_audit_skipped_empty_when_not_supplied(tmp_path: Path) -> None:

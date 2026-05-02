@@ -9,6 +9,7 @@ from theforge.sprint.shape_gate import (
     NEEDS_GROOMING_LABEL,
     ShapeGateResult,
     SkippedIssue,
+    _fetch_bot_reason_codes,
     apply_shape_gate,
     format_skipped_warning,
 )
@@ -39,47 +40,62 @@ def _fake_detail(body: str, labels: list[str], title: str = "Some issue"):
     return _fetch
 
 
-def _no_bot_codes(_number, _project_root) -> list[str]:
-    return []
-
-
 # ── Label-skip path ─────────────────────────────────────────────────────────
 
 
-def test_label_skip_uses_bot_reason_codes_when_available(tmp_path: Path) -> None:
-    issues = [{"number": 42, "title": "Flagged issue"}]
+def test_stale_bot_comment_does_not_affect_runnable_issue(tmp_path: Path) -> None:
+    issues = [{"number": 42, "title": "Runnable issue"}]
 
-    result = apply_shape_gate(
-        issues,
-        tmp_path,
-        fetch_detail=_fake_detail(_RUNNABLE_BODY, [NEEDS_GROOMING_LABEL]),
-        fetch_bot_codes=lambda _n, _r: ["too_many_behavioral_clusters", "missing_ac"],
-    )
+    with patch(
+        "theforge.sprint.shape_gate._fetch_bot_reason_codes",
+        side_effect=AssertionError("bot comment must not be consulted for verdicts"),
+    ):
+        result = apply_shape_gate(
+            issues,
+            tmp_path,
+            fetch_detail=_fake_detail(_RUNNABLE_BODY, ["enhancement"]),
+        )
 
-    assert result.runnable == []
-    assert len(result.skipped) == 1
-    entry = result.skipped[0]
-    assert entry.issue_number == 42
-    assert entry.source == "label"
-    assert entry.reason_codes == ("too_many_behavioral_clusters", "missing_ac")
+    assert result.runnable == issues
+    assert result.skipped == []
 
 
-def test_label_skip_falls_back_to_local_check_when_bot_silent(tmp_path: Path) -> None:
+def test_label_skip_uses_live_reason_details_when_issue_is_tracking_only(
+    tmp_path: Path,
+) -> None:
     issues = [{"number": 7, "title": "Stale label"}]
 
     result = apply_shape_gate(
         issues,
         tmp_path,
-        fetch_detail=_fake_detail(_BAD_BODY, [NEEDS_GROOMING_LABEL]),
-        fetch_bot_codes=_no_bot_codes,
+        fetch_detail=_fake_detail(_RUNNABLE_BODY, [NEEDS_GROOMING_LABEL, "epic"]),
     )
 
     assert result.runnable == []
     assert len(result.skipped) == 1
     entry = result.skipped[0]
     assert entry.source == "label"
-    # Must have at least one reason code, re-derived locally.
-    assert entry.reason_codes
+    assert entry.reason_codes == ("epic_or_tracking",)
+    assert "Label 'epic' present" in entry.detail
+
+
+def test_label_skip_falls_back_to_label_detail_when_live_check_is_runnable(
+    tmp_path: Path,
+) -> None:
+    issues = [{"number": 8, "title": "Label only"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_RUNNABLE_BODY, [NEEDS_GROOMING_LABEL, "enhancement"]),
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.source == "label"
+    assert entry.reason_codes == ("needs_grooming_label",)
+    assert entry.detail == "issue carries 'needs-grooming' label"
 
 
 # ── Local-check-skip path ───────────────────────────────────────────────────
@@ -93,7 +109,6 @@ def test_local_check_skip_catches_stale_label_loophole(tmp_path: Path) -> None:
         issues,
         tmp_path,
         fetch_detail=_fake_detail(_BAD_BODY, []),
-        fetch_bot_codes=_no_bot_codes,
     )
 
     assert result.runnable == []
@@ -101,6 +116,7 @@ def test_local_check_skip_catches_stale_label_loophole(tmp_path: Path) -> None:
     entry = result.skipped[0]
     assert entry.source == "local_check"
     assert entry.reason_codes
+    assert "No acceptance criteria section" in entry.detail
 
 
 def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
@@ -110,7 +126,6 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
         issues,
         tmp_path,
         fetch_detail=_fake_detail(_RUNNABLE_BODY, ["enhancement"]),
-        fetch_bot_codes=_no_bot_codes,
     )
 
     assert result.runnable == issues
@@ -141,7 +156,6 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
         issues,
         tmp_path,
         fetch_detail=fetch,
-        fetch_bot_codes=lambda _n, _r: ["needs-grooming-label"],
         force=True,
     )
 
@@ -178,7 +192,6 @@ def test_mixed_sprint_partitions_runnable_vs_skipped(tmp_path: Path) -> None:
         issues,
         tmp_path,
         fetch_detail=fetch,
-        fetch_bot_codes=_no_bot_codes,
     )
 
     assert [i["number"] for i in result.runnable] == [1]
@@ -197,7 +210,6 @@ def test_fetch_failure_leaves_issue_runnable(tmp_path: Path) -> None:
         issues,
         tmp_path,
         fetch_detail=lambda _n, _r: None,
-        fetch_bot_codes=_no_bot_codes,
     )
 
     assert result.runnable == issues
@@ -214,12 +226,14 @@ def test_format_skipped_warning_lists_every_issue() -> None:
             reason_codes=("too_many_behavioral_clusters",),
             source="local_check",
             title="Too big",
+            detail="Body covers multiple independent behaviors.",
         ),
         SkippedIssue(
             issue_number=12,
             reason_codes=("needs-grooming-label",),
             source="label",
             title="Stale",
+            detail="issue carries 'needs-grooming' label",
         ),
     ]
 
@@ -229,6 +243,7 @@ def test_format_skipped_warning_lists_every_issue() -> None:
     assert "local_check" in rendered
     assert "label" in rendered
     assert "too_many_behavioral_clusters" in rendered
+    assert "Body covers multiple independent behaviors." in rendered
 
 
 def test_format_skipped_warning_empty_returns_empty_string() -> None:
@@ -255,8 +270,6 @@ def test_skipped_issue_as_dict_is_machine_readable() -> None:
 
 
 def test_fetch_bot_reason_codes_parses_csv_marker(tmp_path: Path) -> None:
-    from theforge.sprint.shape_gate import _fetch_bot_reason_codes
-
     stdout = (
         '{"comments":[{"body":"some text\\n'
         "<!-- shape-check-reasons: too_many_behavioral_clusters,missing_ac -->"
@@ -269,8 +282,6 @@ def test_fetch_bot_reason_codes_parses_csv_marker(tmp_path: Path) -> None:
 
 
 def test_fetch_bot_reason_codes_parses_json_array(tmp_path: Path) -> None:
-    from theforge.sprint.shape_gate import _fetch_bot_reason_codes
-
     stdout = '{"comments":[{"body":"<!-- shape-check-reasons: [\\"a\\", \\"b\\"] -->"}]}'
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
@@ -279,8 +290,6 @@ def test_fetch_bot_reason_codes_parses_json_array(tmp_path: Path) -> None:
 
 
 def test_fetch_bot_reason_codes_returns_empty_on_gh_failure(tmp_path: Path) -> None:
-    from theforge.sprint.shape_gate import _fetch_bot_reason_codes
-
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="fail")
         assert _fetch_bot_reason_codes(42, tmp_path) == []
