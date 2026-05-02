@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import shutil
 import socket as _socket_module
 import tempfile
 from pathlib import Path
@@ -11,7 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
-from theforge.config import SCRUBBED_ENV_VARS, SCRUBBED_HOME_PATHS, ModelProfile
+from theforge.config import (
+    SCRUBBED_CLI_LAUNCHERS,
+    SCRUBBED_ENV_VARS,
+    SCRUBBED_HOME_PATHS,
+    ModelProfile,
+)
 
 # ---------------------------------------------------------------------------
 # Global network guard — installed at conftest load time
@@ -79,6 +85,9 @@ def _gate_scrub_enabled() -> bool:
     return os.environ.get("THEFORGE_ALLOW_AGENT_CREDS") != "1"
 
 
+_REAL_WHICH = shutil.which
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _scrub_agent_credentials_for_gate():
     """Strip agent credentials/auth state unless explicitly opted out.
@@ -93,6 +102,12 @@ def _scrub_agent_credentials_for_gate():
     stripped = sorted(name for name in SCRUBBED_ENV_VARS if name in os.environ)
     original_env = {name: os.environ.get(name) for name in SCRUBBED_ENV_VARS}
     original_home = os.environ.get("HOME")
+    scrubbed_launchers = frozenset(SCRUBBED_CLI_LAUNCHERS)
+
+    def _scrubbed_which(cmd, mode: int = os.F_OK | os.X_OK, path: str | None = None):
+        if os.path.basename(os.fsdecode(cmd)) in scrubbed_launchers:
+            return None
+        return _REAL_WHICH(cmd, mode=mode, path=path)
 
     for name in SCRUBBED_ENV_VARS:
         os.environ.pop(name, None)
@@ -112,18 +127,19 @@ def _scrub_agent_credentials_for_gate():
             "[theforge-test-guard] scrubbed agent credentials: "
             + (", ".join(stripped) if stripped else "none")
         )
-        try:
-            yield
-        finally:
-            if original_home is None:
-                os.environ.pop("HOME", None)
-            else:
-                os.environ["HOME"] = original_home
-            for name, value in original_env.items():
-                if value is None:
-                    os.environ.pop(name, None)
+        with patch("shutil.which", side_effect=_scrubbed_which):
+            try:
+                yield
+            finally:
+                if original_home is None:
+                    os.environ.pop("HOME", None)
                 else:
-                    os.environ[name] = value
+                    os.environ["HOME"] = original_home
+                for name, value in original_env.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
 
 
 @pytest.fixture(autouse=True)
