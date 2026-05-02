@@ -965,7 +965,7 @@ def run_task(
         # When defer_landing=True (sprint worker path), skip: the scheduler
         # thread will call _attempt_integration under integration_lock.
         if result.success and result.landing_status == "pending_integration" and not defer_landing:
-            from .completion import land_story  # noqa: PLC0415
+            from .completion import land_story, mark_merge_failed  # noqa: PLC0415
 
             _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
             _parsed_review = state.review_results[-1] if state.review_results else None
@@ -987,8 +987,7 @@ def run_task(
             elif _merge_info.get("merge_queued"):
                 result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
             elif _landing_status == "failed":
-                result.success = False
-                result.message += f" Merge failed: {_merge_info.get('error', 'unknown')}"
+                mark_merge_failed(state, result, _merge_info.get("error"), branch_name)
 
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
@@ -1197,7 +1196,7 @@ def _run_resume_coordinator(
         # ── Landing (single-story resume path) ───────────────────────
         # Skip when defer_landing=True (sprint worker): scheduler handles it.
         if result.success and result.landing_status == "pending_integration" and not defer_landing:
-            from .completion import land_story  # noqa: PLC0415
+            from .completion import land_story, mark_merge_failed  # noqa: PLC0415
 
             _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
             _parsed_review = state.review_results[-1] if state.review_results else None
@@ -1220,8 +1219,7 @@ def _run_resume_coordinator(
             elif _merge_info.get("merge_queued"):
                 result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
             elif _landing_status == "failed":
-                result.success = False
-                result.message += f" Merge failed: {_merge_info.get('error', 'unknown')}"
+                mark_merge_failed(state, result, _merge_info.get("error"), branch_name)
 
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)

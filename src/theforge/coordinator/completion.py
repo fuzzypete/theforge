@@ -27,6 +27,29 @@ _pr_log = logging.getLogger(__name__)
 MAX_MERGE_RETRIES = 3
 
 
+def mark_merge_failed(
+    state: CoordinatorState,
+    result: CoordinatorResult,
+    error: str | None,
+    branch_name: str | None,
+) -> None:
+    """Mutate state and result coherently when the merge step fails.
+
+    Sets ``Phase.MERGE_FAILED`` on both ``state.phase`` and ``result.phase`` so
+    audit ``final_phase`` cannot disagree with ``landing_status``. Replaces
+    ``result.message`` with a failure-cause string so downstream surfaces do not
+    inherit a "completed" message that contradicts the failed landing.
+    """
+    state.phase = Phase.MERGE_FAILED
+    result.phase = Phase.MERGE_FAILED
+    result.success = False
+    result.landing_status = "failed"
+    cause = error or "unknown"
+    state.error = cause
+    branch_part = f" Branch '{branch_name}' carries reviewed work." if branch_name else ""
+    result.message = f"Merge failed: {cause}.{branch_part} Story is recoverable but unmerged."
+
+
 def _archive_story_to_done(
     story_path: "str | Path",
     cwd: Path,

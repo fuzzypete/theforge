@@ -648,7 +648,8 @@ class TestClassifyAndRecord:
         assert dag.ready() == []
 
     def test_landing_failed_counts_as_delta_failed(self) -> None:
-        """landing_status=failed is classified as a failed story, not a success."""
+        """landing_status=failed is classified as MERGE_FAILED — a failed terminal state
+        distinct from generic FAILED, so the audit trail can name the cause precisely."""
         from theforge.sprint.story_state import StoryOutcome
 
         a = _make_task("a")
@@ -660,7 +661,8 @@ class TestClassifyAndRecord:
         result = _make_coordinator_result(success=True, cost=1.0, landing_status="failed")
         outcome = _classify_and_record(a, result, dag, merged_slugs)
 
-        assert outcome is StoryOutcome.FAILED
+        assert outcome is StoryOutcome.MERGE_FAILED
+        assert outcome.is_failed
         assert "a" not in merged_slugs
         # B must remain blocked: a failed to land, so it cannot satisfy a's dependency.
         assert dag.ready() == []
@@ -1178,7 +1180,7 @@ class TestParallelMergeOrderingParallelMode:
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert audit["outcome"]["success"] is False
-        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["outcome"]["final_phase"] == "MERGE_FAILED"
         assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge-pr"
         assert audit["merge"]["merged"] is False
@@ -1312,7 +1314,7 @@ class TestParallelMergeOrderingParallelMode:
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert audit["outcome"]["success"] is False
-        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["outcome"]["final_phase"] == "MERGE_FAILED"
         assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge"
         assert audit["merge"]["merged"] is False
@@ -2161,7 +2163,7 @@ class TestImmediateIntegrationLanding:
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert result.success is False
-        assert result.phase is Phase.DONE
+        assert result.phase is Phase.MERGE_FAILED
         assert result.landing_status == "failed"
 
 
