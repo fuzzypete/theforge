@@ -511,6 +511,42 @@ class TestMergePrStepStateResume:
         assert loaded.error is not None
         assert "fetch" in loaded.error.lower() or "network" in loaded.error.lower()
 
+    def test_create_pr_failure_records_strand_state(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review()
+        state = MagicMock()
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        with (
+            patch(
+                "theforge.coordinator.completion._step_fetch_rebase",
+                return_value={"success": True},
+            ),
+            patch(
+                "theforge.coordinator.completion._step_force_push",
+                return_value={"success": True},
+            ),
+            patch(
+                "theforge.coordinator.completion._step_create_pr",
+                return_value={
+                    "success": False,
+                    "error": "embedded null byte",
+                    "pr_url": None,
+                    "error_context": {"exception_class": "ValueError"},
+                },
+            ),
+            patch("theforge.coordinator.completion._deindex_forge_artifacts"),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is False
+        assert result["branch"] == "forge/test-task"
+        assert result["strand_state"]["branch"] == "forge/test-task"
+        assert "gh pr create" in result["strand_state"]["next_action"]
+        assert result["error_context"]["exception_class"] == "ValueError"
+
     def test_step_outcomes_logged_via_pr_log(self, tmp_path: Path) -> None:
         """Each step should log its outcome via _pr_log.info for independent auditability."""
         config = _make_config(tmp_path)

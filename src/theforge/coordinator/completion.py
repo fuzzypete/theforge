@@ -7,6 +7,7 @@ import logging
 import shlex
 import subprocess
 import time
+import traceback
 from pathlib import Path
 
 from theforge.config import ForgeConfig
@@ -109,6 +110,114 @@ def _branch_has_unique_commits(
         return False, f"git rev-list returned non-integer count: {output!r}"
 
 
+def _render_command_for_audit(cmd: list[str]) -> str:
+    """Render a subprocess command line while redacting bulky free-text args."""
+    rendered: list[str] = []
+    skip_next = False
+    for index, arg in enumerate(cmd):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--body" and index + 1 < len(cmd):
+            rendered.append(shlex.quote(arg))
+            rendered.append(shlex.quote(f"<redacted body len={len(cmd[index + 1])}>"))
+            skip_next = True
+            continue
+        rendered.append(shlex.quote(arg))
+    return " ".join(rendered)
+
+
+def _escape_control_preview(text: str) -> str:
+    """Render a preview string with control characters made explicit."""
+    out: list[str] = []
+    for char in text:
+        codepoint = ord(char)
+        if char == "\n":
+            out.append("\\n")
+        elif char == "\r":
+            out.append("\\r")
+        elif char == "\t":
+            out.append("\\t")
+        elif codepoint < 32 or codepoint == 127:
+            out.append(f"\\x{codepoint:02x}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _preview_window(text: str, position: int, *, radius: int = 24) -> str:
+    """Return an escaped preview around a string position."""
+    start = max(0, position - radius)
+    end = min(len(text), position + radius + 1)
+    return _escape_control_preview(text[start:end])
+
+
+def _hex_window(text: str, position: int, *, radius: int = 8) -> str:
+    """Return a compact hex dump window around a string position."""
+    start = max(0, position - radius)
+    end = min(len(text), position + radius + 1)
+    return text[start:end].encode("utf-8", errors="replace").hex(" ")
+
+
+def _identify_embedded_null_source(
+    cmd: list[str],
+    input_sources: list[dict[str, str]] | None,
+) -> dict[str, object] | None:
+    """Locate the first embedded NUL in the command and source fields."""
+    for arg_index, arg in enumerate(cmd):
+        nul_position = arg.find("\x00")
+        if nul_position < 0:
+            continue
+
+        detail: dict[str, object] = {
+            "argument_index": arg_index,
+            "argument_flag": (
+                cmd[arg_index - 1]
+                if arg_index > 0 and cmd[arg_index - 1].startswith("--")
+                else None
+            ),
+            "position": nul_position,
+            "preview": _preview_window(arg, nul_position),
+            "hex_window": _hex_window(arg, nul_position),
+        }
+        for source in input_sources or []:
+            source_text = source.get("text", "")
+            source_nul_position = source_text.find("\x00")
+            if source_nul_position >= 0:
+                detail["source"] = source.get("source")
+                detail["source_position"] = source_nul_position
+                detail["source_preview"] = _preview_window(source_text, source_nul_position)
+                detail["source_hex_window"] = _hex_window(source_text, source_nul_position)
+                break
+        return detail
+    return None
+
+
+def _build_exception_context(
+    exc: Exception,
+    *,
+    cmd: list[str] | None = None,
+    input_sources: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    """Serialize rich exception context for audit/debugging."""
+    context: dict[str, object] = {
+        "exception_class": type(exc).__name__,
+        "exception_args": [repr(arg) for arg in exc.args],
+        "traceback": traceback.format_exc(),
+    }
+    if cmd is not None:
+        context["command"] = _render_command_for_audit(cmd)
+    if (
+        isinstance(exc, ValueError)
+        and "embedded null byte" in str(exc).lower()
+        and cmd is not None
+    ):
+        offending_input = _identify_embedded_null_source(cmd, input_sources)
+        if offending_input is not None:
+            context["offending_input"] = offending_input
+    return context
+
+
 def _create_pr(
     config: ForgeConfig,
     task: TaskStory,
@@ -139,6 +248,14 @@ def _create_pr(
         story_line = f"{task.name} (GitHub Issue #{task.github_issue})"
     else:
         story_line = f"{task.name} (`{task.story_path}`)"
+    pr_body_sources = [{"source": "parsed_review.summary", "text": parsed_review.summary}]
+    for index, finding in enumerate(p2_findings):
+        pr_body_sources.append(
+            {
+                "source": f"finding[{index}].description",
+                "text": finding.description,
+            }
+        )
     pr_body = (
         f"## Summary\n\n"
         f"{parsed_review.summary}\n\n"
@@ -307,7 +424,18 @@ def _create_pr(
             return {"action": "pr", "pr_url": None, "success": False, "error": err}
     except Exception as exc:
         _pr_log.warning("PR creation failed: %s", exc)
-        return {"action": "pr", "pr_url": None, "success": False, "error": str(exc)}
+        return {
+            "action": "pr",
+            "pr_url": None,
+            "success": False,
+            "error": str(exc),
+            "error_context": _build_exception_context(
+                exc,
+                cmd=cmd,
+                input_sources=pr_body_sources,
+            ),
+            "sanitization_audit": parsed_review.sanitization_audit or None,
+        }
 
 
 def _step_fetch_rebase(push_cwd: Path, base_branch: str) -> dict:
@@ -351,7 +479,14 @@ def _step_fetch_rebase(push_cwd: Path, base_branch: str) -> dict:
             }
     except Exception as exc:
         _pr_log.warning("rebase step failed: %s", exc)
-        return {"success": False, "error": f"rebase step failed: {exc}"}
+        return {
+            "success": False,
+            "error": f"rebase step failed: {exc}",
+            "error_context": _build_exception_context(
+                exc,
+                cmd=["git", "rebase", f"origin/{base_branch}"],
+            ),
+        }
 
     return {"success": True}
 
@@ -383,7 +518,14 @@ def _step_force_push(push_cwd: Path, branch_name: str) -> dict:
             return {"success": False, "error": f"force-push after rebase failed: {err}"}
     except Exception as exc:
         _pr_log.warning("force-push failed: %s", exc)
-        return {"success": False, "error": f"force-push after rebase failed: {exc}"}
+        return {
+            "success": False,
+            "error": f"force-push after rebase failed: {exc}",
+            "error_context": _build_exception_context(
+                exc,
+                cmd=["git", "push", "-f", "origin", branch_name],
+            ),
+        }
 
     return {"success": True}
 
@@ -402,11 +544,7 @@ def _step_create_pr(
     """
     pr_result = _create_pr(config, task, branch_name, parsed_review, state)
     if not pr_result.get("success"):
-        return {
-            "success": False,
-            "error": pr_result.get("error") or "PR creation failed",
-            "pr_url": pr_result.get("pr_url"),
-        }
+        return {"success": False, **pr_result}
     return {"success": True, "pr_url": pr_result["pr_url"]}
 
 
@@ -427,7 +565,15 @@ def _step_merge(project_root: Path, pr_url: str, merge_strategy: str) -> dict:
         )
     except Exception as exc:
         _pr_log.warning("gh pr merge --auto failed: %s", exc)
-        return {"success": False, "error": f"gh pr merge failed: {exc}", "retryable": False}
+        return {
+            "success": False,
+            "error": f"gh pr merge failed: {exc}",
+            "retryable": False,
+            "error_context": _build_exception_context(
+                exc,
+                cmd=["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
+            ),
+        }
 
     if merge_proc.returncode != 0:
         err = "\n".join(
@@ -461,7 +607,14 @@ def _step_await_merge_state(project_root: Path, pr_url: str) -> dict:
         )
     except Exception as exc:
         _pr_log.warning("gh pr view failed after auto-merge queue: %s", exc)
-        return {"success": False, "error": f"gh pr view failed after auto-merge queue: {exc}"}
+        return {
+            "success": False,
+            "error": f"gh pr view failed after auto-merge queue: {exc}",
+            "error_context": _build_exception_context(
+                exc,
+                cmd=["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
+            ),
+        }
 
     if state_proc.returncode != 0:
         state_err = state_proc.stderr.strip() or state_proc.stdout.strip()
@@ -575,9 +728,17 @@ def _merge_pr(
     worktree_path = config.project_root / worktree_dir
     push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
 
-    def _fail(error: str, *, merge_state: MergeStepState) -> dict:
+    def _fail(error: str, *, merge_state: MergeStepState, detail: dict | None = None) -> dict:
         merge_state.error = error
         save_merge_state(worktree_path, merge_state)
+        next_action = (
+            "Inspect the existing PR and retry merge automation."
+            if merge_state.pr_url
+            else (
+                "Retry PR creation after sanitizing review text, or run "
+                "`gh pr create` manually from the feature branch."
+            )
+        )
         return {
             "action": "merge-pr",
             "pr_url": merge_state.pr_url,
@@ -586,6 +747,14 @@ def _merge_pr(
             "auto_merge_queued": False,
             "success": False,
             "error": error,
+            "branch": branch_name,
+            "strand_state": {
+                "branch": branch_name,
+                "worktree_path": str(worktree_path),
+                "pr_url": merge_state.pr_url,
+                "next_action": next_action,
+            },
+            **(detail or {}),
         }
 
     def _complete_step(merge_state: MergeStepState, step: str, **log_kwargs: object) -> None:
@@ -669,7 +838,13 @@ def _merge_pr(
                 fetch_rebase_result.get("error"),
             )
             if not fetch_rebase_result["success"]:
-                return _fail(fetch_rebase_result["error"], merge_state=merge_state)
+                return _fail(
+                    fetch_rebase_result["error"],
+                    merge_state=merge_state,
+                    detail={
+                        "error_context": fetch_rebase_result.get("error_context"),
+                    },
+                )
 
             force_push_result = _step_force_push(push_cwd, branch_name)
             _pr_log.info(
@@ -679,13 +854,27 @@ def _merge_pr(
                 force_push_result.get("error"),
             )
             if not force_push_result["success"]:
-                return _fail(force_push_result["error"], merge_state=merge_state)
+                return _fail(
+                    force_push_result["error"],
+                    merge_state=merge_state,
+                    detail={
+                        "error_context": force_push_result.get("error_context"),
+                    },
+                )
 
         # create PR — only once; skip on resume if already completed.
         if "create_pr" not in merge_state.completed_steps:
             create_result = _step_create_pr(config, task, branch_name, parsed_review, state)
             if not create_result["success"]:
-                return _fail(create_result["error"], merge_state=merge_state)
+                return _fail(
+                    create_result["error"],
+                    merge_state=merge_state,
+                    detail={
+                        key: create_result.get(key)
+                        for key in ("error_context", "sanitization_audit")
+                        if create_result.get(key) is not None
+                    },
+                )
             if create_result["pr_url"] is None:
                 # Zero-delta branch: no commits ahead of base, nothing to merge.
                 _log(
@@ -727,14 +916,26 @@ def _merge_pr(
                         MAX_MERGE_RETRIES,
                     )
                     continue
-                return _fail(merge_result["error"], merge_state=merge_state)
+                return _fail(
+                    merge_result["error"],
+                    merge_state=merge_state,
+                    detail={
+                        "error_context": merge_result.get("error_context"),
+                    },
+                )
             _complete_step(merge_state, "merge")
 
         # Determine whether GitHub merged immediately or queued for checks.
         if "await_merge_state" not in merge_state.completed_steps:
             await_result = _step_await_merge_state(config.project_root, merge_state.pr_url)
             if not await_result["success"]:
-                return _fail(await_result["error"], merge_state=merge_state)
+                return _fail(
+                    await_result["error"],
+                    merge_state=merge_state,
+                    detail={
+                        "error_context": await_result.get("error_context"),
+                    },
+                )
             merge_state.merge_queued = await_result["merge_queued"]
             merge_state.auto_merge_queued = await_result["auto_merge_queued"]
             _complete_step(

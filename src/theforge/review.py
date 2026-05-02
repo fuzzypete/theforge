@@ -8,7 +8,7 @@ structures the coordinator can act on mechanically.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import yaml
 
@@ -74,6 +74,7 @@ class ReviewResult:
     parse_errors: list[str]  # non-empty if parsing/validation failed
     raw_yaml: dict  # the parsed YAML data
     ac_verification: tuple[ACVerification, ...] = ()  # per-AC verification table
+    sanitization_audit: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def _sanitize_yaml_text(yaml_text: str) -> str:
@@ -91,6 +92,72 @@ def _sanitize_yaml_text(yaml_text: str) -> str:
     # This prevents `foo: bar` from being parsed as a YAML mapping key.
     text = re.sub(r"`([^`\n]+)`", r"\1", text)
     return text
+
+
+def sanitize_llm_text(text: object, *, field_name: str) -> tuple[str, dict[str, dict[str, int]]]:
+    """Strip unsafe control characters from LLM-produced text fields.
+
+    Removes all ASCII control characters except tab/newline/carriage return.
+    This prevents subprocess argument construction from failing on embedded NUL
+    bytes while keeping normal markdown formatting intact.
+    """
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+
+    removed = 0
+    parts: list[str] = []
+    for char in text:
+        codepoint = ord(char)
+        if (0 <= codepoint < 32 and char not in "\t\n\r") or codepoint == 127:
+            removed += 1
+            continue
+        parts.append(char)
+
+    sanitized = "".join(parts)
+    if removed == 0:
+        return sanitized, {}
+    return sanitized, {field_name: {"sanitized_chars": removed}}
+
+
+def _merge_sanitization_audits(*audits: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    """Merge field-name keyed sanitization audits by summing replacement counts."""
+    merged: dict[str, dict[str, int]] = {}
+    for audit in audits:
+        for field_name, detail in audit.items():
+            entry = merged.setdefault(field_name, {"sanitized_chars": 0})
+            entry["sanitized_chars"] += int(detail.get("sanitized_chars", 0))
+    return merged
+
+
+def _extract_review_payload(
+    data: dict,
+) -> tuple[str, list[ReviewFinding], dict[str, dict[str, int]]]:
+    """Extract sanitized summary/findings payload from parsed review data."""
+    summary, summary_audit = sanitize_llm_text(
+        data.get("summary", "(no summary)"),
+        field_name="summary",
+    )
+
+    findings: list[ReviewFinding] = []
+    sanitization_audit = dict(summary_audit)
+    for index, finding_data in enumerate(data.get("findings", [])):
+        if not isinstance(finding_data, dict):
+            continue
+        description, description_audit = sanitize_llm_text(
+            finding_data.get("description", ""),
+            field_name=f"findings[{index}].description",
+        )
+        findings.append(
+            ReviewFinding(
+                severity=finding_data.get("severity", "P2"),
+                file=finding_data.get("file", "unknown"),
+                line=_coerce_line(finding_data.get("line")),
+                description=description,
+                suggestion=finding_data.get("suggestion"),
+            )
+        )
+        sanitization_audit = _merge_sanitization_audits(sanitization_audit, description_audit)
+    return summary, findings, sanitization_audit
 
 
 def _extract_ac_verification(data: dict) -> tuple[ACVerification, ...]:
@@ -128,18 +195,7 @@ def parse_review_json(data: dict) -> ReviewResult:
     schema_errors = validate_review_yaml(data)
 
     # Extract findings
-    findings: list[ReviewFinding] = []
-    for f in data.get("findings", []):
-        if isinstance(f, dict):
-            findings.append(
-                ReviewFinding(
-                    severity=f.get("severity", "P2"),
-                    file=f.get("file", "unknown"),
-                    line=_coerce_line(f.get("line")),
-                    description=f.get("description", ""),
-                    suggestion=f.get("suggestion"),
-                )
-            )
+    summary, findings, sanitization_audit = _extract_review_payload(data)
 
     # Extract story compliance (accept both story_compliance and spec_compliance for compat)
     spec = data.get("story_compliance") or data.get("spec_compliance") or {}
@@ -153,7 +209,7 @@ def parse_review_json(data: dict) -> ReviewResult:
 
     return ReviewResult(
         verdict=data.get("verdict", "REQUEST_CHANGES"),
-        summary=data.get("summary", "(no summary)"),
+        summary=summary,
         findings=findings,
         story_matches=story_matches,
         story_mismatches=story_mismatches if isinstance(story_mismatches, list) else [],
@@ -162,6 +218,7 @@ def parse_review_json(data: dict) -> ReviewResult:
         parse_errors=schema_errors,
         raw_yaml=data,
         ac_verification=_extract_ac_verification(data),
+        sanitization_audit=sanitization_audit,
     )
 
 
@@ -217,18 +274,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     schema_errors = validate_review_yaml(data)
 
     # Extract findings
-    findings: list[ReviewFinding] = []
-    for f in data.get("findings", []):
-        if isinstance(f, dict):
-            findings.append(
-                ReviewFinding(
-                    severity=f.get("severity", "P2"),
-                    file=f.get("file", "unknown"),
-                    line=_coerce_line(f.get("line")),
-                    description=f.get("description", ""),
-                    suggestion=f.get("suggestion"),
-                )
-            )
+    summary, findings, sanitization_audit = _extract_review_payload(data)
 
     # Extract story compliance (accept both story_compliance and spec_compliance for compat)
     spec = data.get("story_compliance") or data.get("spec_compliance") or {}
@@ -242,7 +288,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
 
     return ReviewResult(
         verdict=data.get("verdict", "REQUEST_CHANGES"),
-        summary=data.get("summary", "(no summary)"),
+        summary=summary,
         findings=findings,
         story_matches=story_matches,
         story_mismatches=story_mismatches if isinstance(story_mismatches, list) else [],
@@ -251,6 +297,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
         parse_errors=schema_errors,
         raw_yaml=data,
         ac_verification=_extract_ac_verification(data),
+        sanitization_audit=sanitization_audit,
     )
 
 
@@ -792,6 +839,9 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
             test_gaps.append(f"[{name}] {g}")
 
     merged_ac = _merge_ac_verification([r.ac_verification for _, r in valid])
+    merged_sanitization_audit = _merge_sanitization_audits(
+        *(r.sanitization_audit for _, r in valid)
+    )
 
     return ReviewResult(
         verdict=verdict,
@@ -804,6 +854,7 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         parse_errors=[],  # valid reviewers had no errors
         raw_yaml={},
         ac_verification=merged_ac,
+        sanitization_audit=merged_sanitization_audit,
     )
 
 
