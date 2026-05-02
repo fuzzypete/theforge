@@ -52,9 +52,56 @@ class TestEpicOrTracking:
         assert r is not None and r.code == "epic_or_tracking"
 
     def test_body_phrase_umbrella(self):
-        body = "This is an umbrella for many things.\n" + WELL_FORMED_AC
+        body = "This is an umbrella issue for many things.\n" + WELL_FORMED_AC
         r = check_epic_or_tracking("Plain title", body, [])
         assert r is not None
+        assert "umbrella" in r.detail
+        assert "This is an umbrella issue for many things." in r.detail
+
+    def test_body_sentence_start_tracking_issue(self):
+        body = "Tracking issue for several follow-up tasks.\n" + WELL_FORMED_AC
+        r = check_epic_or_tracking("Plain title", body, [])
+        assert r is not None
+        assert "tracking issue" in r.detail
+        assert "Tracking issue for several follow-up tasks." in r.detail
+
+    def test_body_heading_tracking_issue(self):
+        body = textwrap.dedent(
+            """\
+            ## Tracking issue
+            Coordinate related work here.
+
+            ## Acceptance Criteria
+            - This should not run as a normal story.
+            """
+        )
+        r = check_epic_or_tracking("Plain title", body, [])
+        assert r is not None
+        assert "Tracking issue" in r.detail
+
+    def test_benign_umbrella_vocabulary_does_not_fire(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            Teach story shapes organized by use-case labels such as umbrella, bug, and docs.
+
+            ## Acceptance Criteria
+            - The guide explains when each label applies.
+            """
+        )
+        assert check_epic_or_tracking("Plain title", body, []) is None
+
+    def test_benign_embedded_tracking_phrase_does_not_fire(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            The authoring guide should explain what the phrase "tracking issue" means in practice.
+
+            ## Acceptance Criteria
+            - The glossary includes the term and a definition.
+            """
+        )
+        assert check_epic_or_tracking("Plain title", body, []) is None
 
     def test_benign(self):
         assert check_epic_or_tracking("Fix bug", WELL_FORMED_AC, ["bug"]) is None

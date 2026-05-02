@@ -51,6 +51,71 @@ _TRACKING_PHRASES = (
     "parent issue",
 )
 
+_TRACKING_SENTENCE_START_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("tracking issue", re.compile(r"^tracking issue\b")),
+    ("tracking only", re.compile(r"^tracking only\b")),
+    ("planning issue", re.compile(r"^planning issue\b")),
+    ("umbrella", re.compile(r"^umbrella(?:\s+issue)?(?:\s+for\b|[:.-]|\s*$)")),
+    ("meta issue", re.compile(r"^meta issue\b")),
+    ("meta-issue", re.compile(r"^meta-issue\b")),
+    ("parent issue", re.compile(r"^parent issue\b")),
+)
+
+_TRACKING_SUBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "tracking issue",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+(?:an?\s+)?tracking issue\b"
+        ),
+    ),
+    (
+        "tracking only",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+tracking only\b"
+        ),
+    ),
+    (
+        "planning issue",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+(?:an?\s+)?planning issue\b"
+        ),
+    ),
+    (
+        "umbrella",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+(?:an?\s+)?umbrella(?:\s+issue)?\b"
+        ),
+    ),
+    (
+        "meta issue",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+(?:an?\s+)?meta issue\b"
+        ),
+    ),
+    (
+        "meta-issue",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+(?:an?\s+)?meta-issue\b"
+        ),
+    ),
+    (
+        "parent issue",
+        re.compile(
+            r"^(?:this|it)(?:\s+issue)?\s+"
+            r"(?:is|serves as|acts as|remains)\s+(?:an?\s+)?parent issue\b"
+        ),
+    ),
+)
+
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(?P<content>.+?)\s*$")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
 _BUG_LABELS: frozenset[str] = frozenset({"bug"})
 _RECOGNIZED_TYPE_LABELS: frozenset[str] = frozenset({"bug", "enhancement", "epic", "task"})
 _EXAMPLE_SECTION_PATTERNS = (
@@ -98,6 +163,52 @@ def _lower_labels(labels: Iterable[str]) -> set[str]:
     return {str(label).strip().lower() for label in labels}
 
 
+def _normalize_tracking_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _tracking_context_line(line: str, max_len: int = 140) -> str:
+    compact = " ".join(line.strip().split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 3].rstrip() + "..."
+
+
+def _match_tracking_phrase(text: str, *, subject_only: bool = False) -> str | None:
+    patterns = _TRACKING_SUBJECT_PATTERNS if subject_only else _TRACKING_SENTENCE_START_PATTERNS
+    for phrase, pattern in patterns:
+        if pattern.match(text):
+            return phrase
+    return None
+
+
+def _find_tracking_body_declaration(body: str) -> tuple[str, str] | None:
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        heading_match = _HEADING_RE.match(raw_line)
+        if heading_match:
+            heading = _normalize_tracking_text(heading_match.group("content"))
+            phrase = _match_tracking_phrase(heading)
+            if phrase is not None:
+                return phrase, _tracking_context_line(raw_line)
+            continue
+
+        for sentence in _SENTENCE_SPLIT_RE.split(line):
+            normalized = _normalize_tracking_text(sentence)
+            if not normalized:
+                continue
+            phrase = _match_tracking_phrase(normalized)
+            if phrase is not None:
+                return phrase, _tracking_context_line(raw_line)
+            phrase = _match_tracking_phrase(normalized, subject_only=True)
+            if phrase is not None:
+                return phrase, _tracking_context_line(raw_line)
+    return None
+
+
 def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
     """Return true for bug reports, which use observed/expected sections instead of AC."""
     if _lower_labels(labels) & _BUG_LABELS:
@@ -138,7 +249,6 @@ def check_missing_type(title: str, body: str, labels: Iterable[str]) -> Reason |
 def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reason | None:
     lset = _lower_labels(labels)
     title_l = title.strip().lower()
-    body_l = body.lower()
     if title_l.startswith("epic:") or title_l.startswith("epic "):
         return Reason(
             code="epic_or_tracking",
@@ -151,13 +261,14 @@ def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reas
             severity=Severity.BLOCKING,
             detail="Label 'epic' present — treat as tracking-only.",
         )
-    for phrase in _TRACKING_PHRASES:
-        if phrase in body_l:
-            return Reason(
-                code="epic_or_tracking",
-                severity=Severity.BLOCKING,
-                detail=f"Body declares tracking intent ('{phrase}').",
-            )
+    match = _find_tracking_body_declaration(body)
+    if match is not None:
+        phrase, context = match
+        return Reason(
+            code="epic_or_tracking",
+            severity=Severity.BLOCKING,
+            detail=f"Body declares tracking intent via '{phrase}' in line: {context!r}.",
+        )
     return None
 
 
