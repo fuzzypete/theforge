@@ -66,6 +66,38 @@ _RUNNER_FAILURE_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 _SHELL_ERROR_PREFIXES = ("bash:", "sh:", "zsh:")
+_DEV_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS = 2
+_TRANSIENT_DEV_ERROR_PATTERNS = (
+    "429",
+    "rate limit",
+    "rate-limited",
+    "resource_exhausted",
+    "resource exhausted",
+    "quota exceeded",
+    "quota_exceeded",
+    "500",
+    "502",
+    "503",
+    "504",
+    "internal error",
+    "server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "stream idle timeout",
+    "partial response received",
+    "mid-stream disconnect",
+    "stream disconnected",
+    "connection reset",
+    "connection-reset",
+    "econnreset",
+    "connection aborted",
+    "connection refused",
+    "peer closed connection",
+    "temporarily unavailable",
+    "try again later",
+    "timeout awaiting headers",
+)
 
 
 def _scale_stuck_for_complexity(
@@ -163,6 +195,43 @@ def _runner_display_name(config: ForgeConfig) -> str:
     return config.dev_profile.cli or config.dev_profile.provider or config.dev_profile.name
 
 
+def _is_transient_dev_failure(
+    result: object, runner_failure: tuple[str, str] | None = None
+) -> bool:
+    """Return True when a failed dev invocation looks transient and retryable."""
+    from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
+
+    if not isinstance(result, _AgentResult):
+        raise TypeError(f"Expected AgentResult, got {type(result)}")
+    if result.success or result.startup_failure or runner_failure is not None:
+        return False
+    failure_code = (result.failure_code or "").lower()
+    if failure_code in {"rate_limit", "provider_internal_error", "connection_reset"}:
+        return True
+    output = (result.output or "").lower()
+    return any(pattern in output for pattern in _TRANSIENT_DEV_ERROR_PATTERNS)
+
+
+def _summarize_dev_transport_failure(result: object) -> str:
+    """Produce a compact summary for audit/logging when dev transport fails."""
+    from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
+
+    if not isinstance(result, _AgentResult):
+        raise TypeError(f"Expected AgentResult, got {type(result)}")
+    parts = [f"exit={result.exit_code}"]
+    if result.failure_code:
+        parts.append(f"failure_code={result.failure_code}")
+    output = " ".join((result.output or "").split())
+    if output:
+        parts.append(output[:200])
+    return ": ".join((parts[0], " | ".join(parts[1:]))) if len(parts) > 1 else parts[0]
+
+
+def _dev_transport_retry_backoff_seconds(retry_count: int) -> int:
+    """Return the backoff delay before the next transient dev retry."""
+    return _DEV_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS * (2 ** max(retry_count - 1, 0))
+
+
 def _extract_failed_tests(gate_output_tail: str) -> list[str]:
     """Best-effort extraction of failing test identifiers from gate output."""
     import re
@@ -219,8 +288,16 @@ def record_dev_iteration_telemetry(
     if not state.dev_results or not state.dev_durations:
         return
     iteration = state.dev_iteration
-    dev_result = state.dev_results[-1]
-    duration_s = state.dev_durations[-1]
+    attempt_count = state.pending_dev_transport_retry_count + 1
+    dev_attempts = state.dev_results[-attempt_count:]
+    duration_attempts = state.dev_durations[-attempt_count:]
+    dev_result = dev_attempts[-1]
+    duration_s = sum(duration_attempts)
+    cost_usd = (
+        sum(result.cost_usd or 0.0 for result in dev_attempts)
+        if any(result.cost_usd is not None for result in dev_attempts)
+        else None
+    )
     baseline = state.last_dev_start_commit or "HEAD"
     files_changed = _git_lines(workspace_path, ["diff", "--name-only", baseline, "HEAD"])
     dirty_files = [
@@ -241,7 +318,7 @@ def record_dev_iteration_telemetry(
         DevIterationTelemetry(
             iteration=iteration,
             max_iterations=max_iterations,
-            cost_usd=dev_result.cost_usd,
+            cost_usd=cost_usd,
             duration_s=duration_s,
             cycle=state.review_cycle,
             gate_result=gate_result,
@@ -256,8 +333,12 @@ def record_dev_iteration_telemetry(
             agent_exit_code=dev_result.exit_code,
             runner_failure_code=dev_result.failure_code,
             runner_failure_summary=runner_failure_summary,
+            transport_retry_count=state.pending_dev_transport_retry_count,
+            transport_retry_events=list(state.pending_dev_transport_retry_events),
         )
     )
+    state.pending_dev_transport_retry_count = 0
+    state.pending_dev_transport_retry_events = []
 
 
 def _still_open_p1s_for_dev_prompt(state: CoordinatorState) -> list:
@@ -370,6 +451,8 @@ def _run_dev_phase(
     Mutates state in-place (appends dev_results, updates dev_session_id, etc.).
     """
     _ensure_runners()
+    state.pending_dev_transport_retry_count = 0
+    state.pending_dev_transport_retry_events = []
     # Probe sandbox availability once per run (lru_cache-backed — cheap on repeat calls).
     state.sandboxed = sandbox_available_for_profile(config.dev_profile)
     if config.dev_profile.mode == "cli" and config.dev_profile.sandbox_mode == "none":
@@ -572,23 +655,73 @@ def _run_dev_phase(
         stuck_detection=_scaled_stuck,
     )
 
-    _dev_start = time.monotonic()
-    dev_result = run_agent(
-        prompt=prompt,
-        profile=_dev_profile,
-        working_dir=workspace_path,
-        session_id=state.dev_session_id,
-        secrets=config.secrets,
-        stop_event=stop_event,
-    )
+    _dev_total_start = time.monotonic()
+    _dev_results_this_iteration = []
+    _dev_durations_this_iteration = []
     _runner_failure = None
-    if not dev_result.success and not dev_result.startup_failure:
-        _runner_failure = classify_runner_subprocess_failure(
-            dev_result.output, dev_result.exit_code
+    _current_session_id = state.dev_session_id
+    _dev_retry_events: list[dict] = []
+    _max_transport_retries = max(0, config.retry.max_dev_transport_retries)
+
+    while True:
+        _attempt_start = time.monotonic()
+        dev_result = run_agent(
+            prompt=prompt,
+            profile=_dev_profile,
+            working_dir=workspace_path,
+            session_id=_current_session_id,
+            secrets=config.secrets,
+            stop_event=stop_event,
         )
-        if _runner_failure is not None:
-            dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
-    _dev_elapsed = time.monotonic() - _dev_start
+        _attempt_elapsed = time.monotonic() - _attempt_start
+        _runner_failure = None
+        if not dev_result.success and not dev_result.startup_failure:
+            _runner_failure = classify_runner_subprocess_failure(
+                dev_result.output, dev_result.exit_code
+            )
+            if _runner_failure is not None:
+                dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
+
+        if len(_dev_retry_events) < _max_transport_retries and _is_transient_dev_failure(
+            dev_result, _runner_failure
+        ):
+            retry_count = len(_dev_retry_events) + 1
+            _failure_summary = _summarize_dev_transport_failure(dev_result)
+            _dev_results_this_iteration.append(dev_result)
+            _dev_durations_this_iteration.append(_attempt_elapsed)
+            _dev_retry_events.append(
+                {
+                    "iteration": state.dev_iteration,
+                    "retry": retry_count,
+                    "error": _failure_summary,
+                }
+            )
+            _log(
+                f"  ↻ DEV   transient transport failure "
+                f"(retry {retry_count}/{_max_transport_retries})"
+            )
+            if state.log_dir is not None:
+                write_trace(
+                    state.log_dir
+                    / (
+                        f"dev-iter-{state.dev_iteration}-{config.dev_profile.name}"
+                        f"-retry{retry_count}.log"
+                    ),
+                    dev_result.output or "",
+                )
+            _current_session_id = dev_result.session_id if _dev_profile.mode == "cli" else None
+            _backoff_s = _dev_transport_retry_backoff_seconds(retry_count)
+            _log_verbose(f"  DEV retry backoff: {_backoff_s}s")
+            time.sleep(_backoff_s)
+            continue
+
+        _dev_results_this_iteration.append(dev_result)
+        _dev_durations_this_iteration.append(_attempt_elapsed)
+        _dev_elapsed = time.monotonic() - _dev_total_start
+        break
+
+    state.pending_dev_transport_retry_count = len(_dev_retry_events)
+    state.pending_dev_transport_retry_events = list(_dev_retry_events)
     write_trace(
         workspace_path / ".forge/traces" / f"{state.dev_trace_count}-dev-output.txt",
         dev_result.output,
@@ -599,14 +732,17 @@ def _run_dev_phase(
             state.log_dir / f"dev-iter-{state.dev_iteration}-{config.dev_profile.name}.log",
             dev_result.output or "",
         )
-    state.dev_results.append(dev_result)
-    state.dev_durations.append(_dev_elapsed)
+    state.dev_results.extend(_dev_results_this_iteration)
+    state.dev_durations.extend(_dev_durations_this_iteration)
     _capture_dev_handoff(state, config, task, workspace_path, dev_result)
     state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
+    _dev_cost_total = sum(result.cost_usd or 0.0 for result in _dev_results_this_iteration)
     _dev_cost_str = (
-        "${:.2f}".format(dev_result.cost_usd) if dev_result.cost_usd is not None else "unknown"
+        "${:.2f}".format(_dev_cost_total)
+        if any(result.cost_usd is not None for result in _dev_results_this_iteration)
+        else "unknown"
     )
     _log(f"  ✓ DEV   {_dev_cost_str}  {_fmt_duration(_dev_elapsed)}")
     if logger:
@@ -614,7 +750,7 @@ def _run_dev_phase(
             "phase_end",
             phase="DEV",
             outcome="success" if dev_result.success else "failure",
-            cost_usd=dev_result.cost_usd,
+            cost_usd=_dev_cost_total if _dev_cost_str != "unknown" else None,
             duration_s=round(_dev_elapsed, 2),
         )
 
@@ -718,6 +854,12 @@ def _run_dev_phase(
             state.error = (
                 f"Dev agent failed (exit={dev_result.exit_code}) and produced no commits "
                 "ahead of base — escalating to avoid an empty-diff APPROVE"
+            )
+            record_dev_iteration_telemetry(
+                state,
+                workspace_path,
+                max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                gate_result="DEV_FAILURE",
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:

@@ -19,6 +19,7 @@ from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.state import (
     CoordinatorResult,
     CoordinatorState,
+    DevIterationTelemetry,
     GateDebugTelemetry,
     Phase,
     ReviewCycleMetadata,
@@ -538,6 +539,53 @@ class TestPhasesBlock:
         assert dev["cost_usd"] == pytest.approx(3.26)
         assert dev["duration_s"] == pytest.approx(969.0)
         assert dev["iterations"] == 1
+
+    def test_dev_phase_includes_transport_retries(self, tmp_path: Path) -> None:
+        """Transient dev retries appear in both phase and iteration audit blocks."""
+        state = CoordinatorState()
+        state.dev_results.extend(
+            [
+                AgentResult(
+                    success=False,
+                    output="API Error: Stream idle timeout - partial response received",
+                    session_id="sess-partial",
+                    cost_usd=0.75,
+                    exit_code=1,
+                    raw={},
+                    profile_name="dev",
+                ),
+                _make_agent_result(cost_usd=1.10, profile_name="dev"),
+            ]
+        )
+        state.dev_durations.extend([120.0, 240.0])
+        state.dev_iteration_telemetry.append(
+            DevIterationTelemetry(
+                iteration=1,
+                max_iterations=3,
+                cost_usd=1.10,
+                duration_s=360.0,
+                gate_result="PASS",
+                transport_retry_count=1,
+                transport_retry_events=[
+                    {
+                        "iteration": 1,
+                        "retry": 1,
+                        "error": (
+                            "exit=1: API Error: Stream idle timeout - partial response received"
+                        ),
+                    }
+                ],
+            )
+        )
+        result = _make_coordinator_result(state)
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        dev = log["phases"]["dev"]
+        assert dev is not None
+        assert len(dev["transport_retries"]) == 1
+        assert dev["transport_retries"][0]["retry"] == 1
+        assert log["iterations"]["dev_loop"][0]["transport_retry_count"] == 1
 
     def test_validate_phase_populated(self, tmp_path: Path) -> None:
         """phases.validate is populated when gate ran."""

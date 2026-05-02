@@ -152,11 +152,17 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     # ── dev ───────────────────────────────────────────────────────────────────
     dev_block: dict | None = None
     if state.dev_results:
+        _dev_transport_retries = [
+            event
+            for item in state.dev_iteration_telemetry
+            for event in item.transport_retry_events
+        ]
         dev_block = {
             "cost_usd": round(state.total_dev_cost, 6),
             "duration_s": round(sum(state.dev_durations), 2) if state.dev_durations else None,
             "iterations": len(state.dev_results),
-            "outcome": "success",
+            "outcome": "success" if state.dev_results[-1].success else "failure",
+            **({"transport_retries": _dev_transport_retries} if _dev_transport_retries else {}),
         }
 
     # ── validate ──────────────────────────────────────────────────────────────
@@ -299,6 +305,8 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "agent_exit_code": item.agent_exit_code,
             "runner_failure_code": item.runner_failure_code,
             "runner_failure_summary": item.runner_failure_summary,
+            "transport_retry_count": item.transport_retry_count,
+            "transport_retry_events": item.transport_retry_events,
         }
         for item in state.dev_iteration_telemetry
     ]
