@@ -21,6 +21,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from theforge.cli.status_run_helpers import live_sprint_run_ids as _live_sprint_run_ids
+
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 STALL_CHAR = "·"
 DONE_CHAR = "✓"
@@ -308,18 +310,6 @@ def _normalize_run_ids(run_ids: str | Sequence[str]) -> list[str]:
     if isinstance(run_ids, str):
         return [run_ids]
     return [run_id for run_id in run_ids if run_id]
-
-
-def _live_sprint_run_ids(project_root: Path) -> list[str]:
-    from theforge import detach
-    from theforge.cli.status import _is_sprint_run
-
-    run_ids: list[str] = []
-    for run in detach.list_active_runs(project_root):
-        run_id = str(run["run_id"])
-        if _is_sprint_run(run_id, project_root):
-            run_ids.append(run_id)
-    return run_ids
 
 
 def _render_multi_run_frame(

@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
+from theforge.cli.status_run_helpers import is_sprint_run as _is_sprint_run
 from theforge.config import load_config
 
 _SENTINEL_EOF = "[forge test sentinel EOF]"
@@ -62,41 +63,6 @@ def _list_active_run_ids(project_root: Path) -> list[str]:
     return [str(run["run_id"]) for run in active]
 
 
-def _is_sprint_run(run_id: str, project_root: Path) -> bool:
-    """Return True if run_id is a sprint (has a .state file or sprint-summary.yaml).
-
-    Also checks .redirect files: a re-exec writes its predecessor's .redirect before
-    calling SprintStateWriter.init(), so during the startup window where .state hasn't
-    been written yet we can still detect the run as a sprint.
-    """
-    import json
-
-    from theforge.sprint.status_reader import find_sprint_summary
-
-    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
-    if state_path.exists():
-        return True
-    if find_sprint_summary(run_id, project_root) is not None:
-        return True
-    # Re-exec startup window: the predecessor's .redirect is written at the same
-    # time as the new .pid, before SprintStateWriter.init() writes .state.
-    # Only treat this as a sprint if the predecessor itself was a sprint run
-    # (has a .state file), so we don't misclassify a re-exec of `forge run`.
-    runs_dir = project_root / ".forge" / "runs"
-    for redirect_file in runs_dir.glob("*.redirect"):
-        try:
-            d = json.loads(redirect_file.read_text(encoding="utf-8"))
-            if d.get("new_run_id") != run_id:
-                continue
-            predecessor_id = redirect_file.stem
-            predecessor_state = runs_dir / f"{predecessor_id}.state"
-            if predecessor_state.exists():
-                return True
-        except (OSError, ValueError, json.JSONDecodeError):
-            pass
-    return False
-
-
 def _await_watchable_sprint_run(
     run_id: str,
     project_root: Path,
@@ -106,12 +72,8 @@ def _await_watchable_sprint_run(
 ) -> bool:
     """Wait briefly for a live run to become recognizable as a sprint.
 
-    `forge sprint` writes its PID file before the initial sprint `.state` file,
-    leaving a short startup window where `forge status --watch` would otherwise
-    misclassify the run as a single-run snapshot and exit immediately.
-
-    Only waits while the target run is still live. Historical runs and ordinary
-    `forge run` invocations continue to fall back immediately.
+    Kept as a local wrapper so existing tests can patch ``status._is_sprint_run``
+    and ``status.time`` directly while the shared watch helpers live elsewhere.
     """
     if _is_sprint_run(run_id, project_root):
         return True
