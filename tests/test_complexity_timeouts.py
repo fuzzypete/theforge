@@ -224,6 +224,10 @@ story_compliance:
 test_coverage:
   adequate: true
   gaps: []
+ac_verification:
+  - criterion: "Implementation satisfies the spec"
+    status: VERIFIED
+    evidence: "diff hunks + tests (fixture default)"
 ```
 """
 

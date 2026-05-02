@@ -117,12 +117,25 @@ def build_synthesis_prompt(
           adequate: true | false
           gaps:
             - "<description of missing test>"
+        ac_verification:
+          - criterion: "<verbatim AC text, or 'Symptom resolution: ...' for bug-type issues>"
+            status: VERIFIED | PARTIAL | NOT_VERIFIED
+            evidence: >-
+              <For VERIFIED: file:line diff hunks implementing the criterion AND
+              tests covering the issue's specific failure mode (signature, error
+              string, retry context). Pointers must be concrete, not generic.
+              For PARTIAL or NOT_VERIFIED: explain what is missing.>
         ```
 
         ## Rules
 
-        - verdict MUST be `APPROVE` if there are zero P1 findings
-        - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists
+        - verdict MUST be `APPROVE` if there are zero P1 findings AND every
+          ac_verification entry is VERIFIED
+        - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists OR any
+          ac_verification entry is PARTIAL or NOT_VERIFIED
+        - Reconcile per-AC verification across reviewers — if any reviewer
+          reported an AC as PARTIAL or NOT_VERIFIED, do NOT mark it VERIFIED
+          unless a counter-reviewer cited concrete evidence that resolves the gap.
         - Be concrete: cite file + line + what is wrong + how to fix
         - Do NOT invent issues. Only report findings with evidence from the reviews.
     """)
@@ -273,6 +286,14 @@ def build_review_prompt(
           adequate: true | false
           gaps:
             - "<description of missing test>"
+        ac_verification:
+          - criterion: "<verbatim AC text, or 'Symptom resolution: ...' for bug issues>"
+            status: VERIFIED | PARTIAL | NOT_VERIFIED
+            evidence: >-
+              <For VERIFIED: file:line diff hunks implementing the criterion AND
+              tests covering the issue's specific failure mode (signature, error
+              string, retry context). Pointers must be concrete, not generic.
+              For PARTIAL or NOT_VERIFIED: explain what is missing.>
         ```
     """)
     if mode == "api":
@@ -402,6 +423,28 @@ def build_review_prompt(
           AC depends on a function's output being consumed by its caller,
           verify the caller actually uses it — unused return values that are
           required to satisfy an AC are P1.
+        - **Per-AC verification table is mandatory**: You MUST emit an
+          `ac_verification:` entry for every acceptance criterion declared in
+          the spec — verbatim from the `## Acceptance criteria` section, in
+          order. For each entry, status is `VERIFIED` only when (a) you can
+          point to specific diff hunks that implement the criterion AND (b)
+          tests exist that exercise the **specific failure mode the issue was
+          filed against** (concrete signatures, error strings, paths from the
+          spec — not a generic "could plausibly cover this category" test).
+          A generic implementation without a test for the production-observed
+          symptom is `PARTIAL`, not `VERIFIED`. If you cannot find evidence,
+          mark it `NOT_VERIFIED` with an explanation. Do NOT mark VERIFIED
+          based on the dev's handoff claims — verify against the actual diff
+          and test files.
+        - **Bug issues** (no `## Acceptance criteria` section, only
+          observed/expected) get a single ac_verification entry with criterion
+          `"Symptom resolution: <one-line restatement of the observed symptom>"`,
+          status VERIFIED only when a test reproduces the original symptom and
+          would have caught it before the fix.
+        - **Cross-validation enforced**: APPROVE with any PARTIAL or
+          NOT_VERIFIED ac_verification entry will be rejected by the schema
+          validator and your review will be discarded — do not produce that
+          combination.
         - **YAML safety**: In `description` and `suggestion` fields, do NOT use
           backslashes or double-quote characters inside double-quoted strings —
           they break YAML parsing. Use single quotes or paraphrase instead.

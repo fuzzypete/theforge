@@ -11,6 +11,7 @@ from typing import Any
 
 VALID_VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 VALID_SEVERITIES = ("P1", "P2")
+VALID_AC_VERIFICATION_STATUSES = ("VERIFIED", "PARTIAL", "NOT_VERIFIED")
 
 
 def repair_review_yaml(data: Any) -> Any:
@@ -43,6 +44,13 @@ def repair_review_yaml(data: Any) -> Any:
     # ── test_coverage: fill if missing ──────────────────────────
     if "test_coverage" not in data:
         data["test_coverage"] = {"adequate": True, "gaps": []}
+
+    # ── ac_verification: ensure list ─────────────────────────────
+    # Missing or non-list → empty list. Cross-validation will reject
+    # APPROVE with empty/non-VERIFIED ac_verification, forcing a retry.
+    ac_v = data.get("ac_verification")
+    if ac_v is None or not isinstance(ac_v, list):
+        data["ac_verification"] = []
 
     return data
 
@@ -137,6 +145,55 @@ def validate_review_yaml(data: Any) -> list[str]:
         errors.append("test_coverage must be a mapping")
     elif "adequate" not in tests:
         errors.append("test_coverage.adequate is required (true/false)")
+
+    # ── ac_verification ───────────────────────────────────────────
+    # Per-AC verification table. Each entry must declare the criterion text
+    # (or "Symptom resolution" for bug-type issues), a status, and evidence.
+    # Cross-validation: APPROVE requires a non-empty table whose entries
+    # are all VERIFIED. PARTIAL or NOT_VERIFIED entries on an APPROVE verdict
+    # are a structural contradiction — same kind of rule as APPROVE+P1.
+    ac_v = data.get("ac_verification")
+    non_verified_count = 0
+    if ac_v is None:
+        ac_v = []
+    if not isinstance(ac_v, list):
+        errors.append("ac_verification must be a list")
+        ac_v = []
+    for i, entry in enumerate(ac_v):
+        if not isinstance(entry, dict):
+            errors.append(f"ac_verification[{i}] must be a mapping")
+            continue
+        criterion = entry.get("criterion")
+        if not isinstance(criterion, str) or not criterion.strip():
+            errors.append(f"ac_verification[{i}].criterion must be a non-empty string")
+        status = entry.get("status")
+        if status not in VALID_AC_VERIFICATION_STATUSES:
+            errors.append(
+                f"ac_verification[{i}].status must be one of "
+                f"{VALID_AC_VERIFICATION_STATUSES}, got: {status!r}"
+            )
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, str) or not evidence.strip():
+            errors.append(
+                f"ac_verification[{i}].evidence must be a non-empty string "
+                f"(diff hunks + test pointers for VERIFIED, reason otherwise)"
+            )
+        if status in ("PARTIAL", "NOT_VERIFIED"):
+            non_verified_count += 1
+
+    if verdict == "APPROVE":
+        if not ac_v:
+            errors.append(
+                "verdict is APPROVE but ac_verification is empty — "
+                "reviewers must enumerate each acceptance criterion (or symptom for bugs) "
+                "and mark it VERIFIED with evidence pointers"
+            )
+        elif non_verified_count > 0:
+            errors.append(
+                f"verdict is APPROVE but {non_verified_count} ac_verification entry(ies) "
+                f"are PARTIAL or NOT_VERIFIED — cannot approve when any acceptance "
+                f"criterion is unverified"
+            )
 
     return errors
 
@@ -280,7 +337,14 @@ def review_json_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["verdict", "summary", "findings", "story_compliance", "test_coverage"],
+        "required": [
+            "verdict",
+            "summary",
+            "findings",
+            "story_compliance",
+            "test_coverage",
+            "ac_verification",
+        ],
         "properties": {
             "verdict": {
                 "type": "string",
@@ -330,6 +394,22 @@ def review_json_schema() -> dict:
                     "gaps": {
                         "type": "array",
                         "items": {"type": "string"},
+                    },
+                },
+            },
+            "ac_verification": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["criterion", "status", "evidence"],
+                    "properties": {
+                        "criterion": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": list(VALID_AC_VERIFICATION_STATUSES),
+                        },
+                        "evidence": {"type": "string"},
                     },
                 },
             },

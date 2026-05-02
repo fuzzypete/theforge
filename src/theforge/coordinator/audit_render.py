@@ -98,6 +98,14 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                 }
                 for f in r.findings
             ]
+            ac_verification_list = [
+                {
+                    "criterion": ac.criterion,
+                    "status": ac.status,
+                    "evidence": ac.evidence,
+                }
+                for ac in r.ac_verification
+            ]
             entry.update(
                 {
                     "verdict": r.verdict,
@@ -105,6 +113,7 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                     "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
                     "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
                     "findings": findings_list,
+                    "ac_verification": ac_verification_list,
                 }
             )
         reviews.append(entry)

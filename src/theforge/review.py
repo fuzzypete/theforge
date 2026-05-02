@@ -31,6 +31,24 @@ def _coerce_line(value: object) -> int | None:
 
 
 @dataclass(frozen=True)
+class ACVerification:
+    """Per-AC verification entry: did the reviewer verify this criterion?
+
+    For story-type issues, ``criterion`` is the AC text from the spec.
+    For bug-type issues, ``criterion`` is the symptom resolution check
+    (e.g. "Symptom resolution: Codex 'usage limit' fallback").
+
+    ``evidence`` must point to the diff hunks implementing the criterion AND
+    test(s) covering the specific failure mode the issue describes — not a
+    generic test that could plausibly cover the category.
+    """
+
+    criterion: str
+    status: str  # VERIFIED | PARTIAL | NOT_VERIFIED
+    evidence: str
+
+
+@dataclass(frozen=True)
 class ReviewFinding:
     """A single review finding with severity and location."""
 
@@ -55,6 +73,7 @@ class ReviewResult:
     test_gaps: list[str]
     parse_errors: list[str]  # non-empty if parsing/validation failed
     raw_yaml: dict  # the parsed YAML data
+    ac_verification: tuple[ACVerification, ...] = ()  # per-AC verification table
 
 
 def _sanitize_yaml_text(yaml_text: str) -> str:
@@ -72,6 +91,30 @@ def _sanitize_yaml_text(yaml_text: str) -> str:
     # This prevents `foo: bar` from being parsed as a YAML mapping key.
     text = re.sub(r"`([^`\n]+)`", r"\1", text)
     return text
+
+
+def _extract_ac_verification(data: dict) -> tuple[ACVerification, ...]:
+    """Extract ac_verification entries from parsed review data."""
+    raw = data.get("ac_verification")
+    if not isinstance(raw, list):
+        return ()
+    out: list[ACVerification] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        criterion = entry.get("criterion")
+        status = entry.get("status")
+        evidence = entry.get("evidence")
+        if not isinstance(criterion, str) or not isinstance(status, str):
+            continue
+        out.append(
+            ACVerification(
+                criterion=criterion,
+                status=status,
+                evidence=evidence if isinstance(evidence, str) else "",
+            )
+        )
+    return tuple(out)
 
 
 def parse_review_json(data: dict) -> ReviewResult:
@@ -118,6 +161,7 @@ def parse_review_json(data: dict) -> ReviewResult:
         test_gaps=test_gaps if isinstance(test_gaps, list) else [],
         parse_errors=schema_errors,
         raw_yaml=data,
+        ac_verification=_extract_ac_verification(data),
     )
 
 
@@ -206,6 +250,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
         test_gaps=test_gaps if isinstance(test_gaps, list) else [],
         parse_errors=schema_errors,
         raw_yaml=data,
+        ac_verification=_extract_ac_verification(data),
     )
 
 
@@ -746,6 +791,8 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         for g in r.test_gaps:
             test_gaps.append(f"[{name}] {g}")
 
+    merged_ac = _merge_ac_verification([r.ac_verification for _, r in valid])
+
     return ReviewResult(
         verdict=verdict,
         summary=summary,
@@ -756,7 +803,48 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         test_gaps=test_gaps,
         parse_errors=[],  # valid reviewers had no errors
         raw_yaml={},
+        ac_verification=merged_ac,
     )
+
+
+def _merge_ac_verification(
+    per_reviewer: list[tuple[ACVerification, ...]],
+) -> tuple[ACVerification, ...]:
+    """Combine per-reviewer ac_verification tables into one canonical table.
+
+    Conservative rule: for the same criterion (case-insensitive normalized),
+    the merged status is the *worst* across reviewers
+    (NOT_VERIFIED > PARTIAL > VERIFIED). Evidence strings are joined by `;`.
+    Order follows first-appearance in the reviewer list.
+    """
+    rank = {"VERIFIED": 0, "PARTIAL": 1, "NOT_VERIFIED": 2}
+    by_key: dict[str, ACVerification] = {}
+    order: list[str] = []
+    for table in per_reviewer:
+        for entry in table:
+            key = entry.criterion.strip().lower()
+            if key not in by_key:
+                by_key[key] = entry
+                order.append(key)
+                continue
+            existing = by_key[key]
+            if rank.get(entry.status, 0) > rank.get(existing.status, 0):
+                merged_evidence = entry.evidence
+            else:
+                merged_evidence = existing.evidence
+            if existing.evidence and entry.evidence and existing.evidence != entry.evidence:
+                merged_evidence = f"{existing.evidence}; {entry.evidence}"
+            worst_status = (
+                entry.status
+                if rank.get(entry.status, 0) > rank.get(existing.status, 0)
+                else existing.status
+            )
+            by_key[key] = ACVerification(
+                criterion=existing.criterion,
+                status=worst_status,
+                evidence=merged_evidence,
+            )
+    return tuple(by_key[k] for k in order)
 
 
 def findings_to_markdown(findings: list[ReviewFinding]) -> str:

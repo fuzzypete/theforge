@@ -116,6 +116,10 @@ story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
+ac_verification:
+  - criterion: "Implementation satisfies the spec"
+    status: VERIFIED
+    evidence: "diff hunks present and tests cover the failure mode (test fixture default)"
 ```
 """
 
@@ -125,6 +129,13 @@ APPROVE_REVIEW_JSON = {
     "findings": [],
     "story_compliance": {"matches_spec": True},
     "test_coverage": {"adequate": True},
+    "ac_verification": [
+        {
+            "criterion": "Implementation satisfies the spec",
+            "status": "VERIFIED",
+            "evidence": "diff hunks present and tests cover the failure mode (fixture default)",
+        },
+    ],
 }
 
 

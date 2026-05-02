@@ -539,6 +539,10 @@ story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
+ac_verification:
+  - criterion: "Implementation satisfies the spec"
+    status: VERIFIED
+    evidence: "diff hunks present and tests cover the failure mode (test fixture default)"
 ```
 """
         call_count = {"pool": 0}
