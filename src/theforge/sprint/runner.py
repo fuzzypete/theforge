@@ -2493,6 +2493,7 @@ def run_sprint(
             },
             current_story_entries_by_ref=current_story_entries_by_ref,
             story_state=_story_state,
+            config=config,
         )
 
     if _state_writer is not None:

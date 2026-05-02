@@ -445,6 +445,28 @@ class HardConventionsConfig:
 
 
 @dataclass(frozen=True)
+class AdvisoryIssueFilingConfig:
+    """Opt-in GitHub issue filing for advisory convention debt."""
+
+    enabled: bool = False
+    threshold_percent: float = 25.0
+    label: str = "refactor-debt"
+    milestone: str | None = None
+
+
+@dataclass(frozen=True)
+class AdvisoryConventionsConfig:
+    """Aggregation and surfacing settings for non-blocking convention debt."""
+
+    artifact_path: str = ".forge/conventions/advisory.yaml"
+    summary_top_n: int = 10
+    noteworthy_threshold_percent: float = 10.0
+    commit_shared_artifact: bool = False
+    shared_artifact_path: str | None = None
+    issue_filing: AdvisoryIssueFilingConfig = field(default_factory=AdvisoryIssueFilingConfig)
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -482,6 +504,9 @@ class ForgeConfig:
     )
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
     conventions_soft: list[str] = field(default_factory=list)  # [] = no soft conventions
+    conventions_advisory: AdvisoryConventionsConfig = field(
+        default_factory=AdvisoryConventionsConfig
+    )
     finding_classifier: FindingClassifierConfig = field(default_factory=FindingClassifierConfig)
     stuck_detection: StuckDetectionConfig = field(default_factory=StuckDetectionConfig)
     models_budget_usd: float | None = None  # set when models: key is used (v0.8 path)

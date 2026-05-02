@@ -129,6 +129,7 @@ class TestConventionParallelCheck:
         assert state.last_review_findings is None
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
+    @patch("theforge.coordinator.validate_phase.update_advisory_violations")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
     @patch("theforge.coordinator.validate_phase._run_gate_full")
     @patch("theforge.coordinator.validate_phase._cu._run_shell")
@@ -139,6 +140,7 @@ class TestConventionParallelCheck:
         mock_shell,
         mock_gate,
         mock_cv,
+        mock_update_advisory,
         mock_telemetry,
         tmp_path,
     ):
@@ -158,6 +160,12 @@ class TestConventionParallelCheck:
         mock_gate.return_value = ("PASS", None, "", "make gate")
         mock_cv.return_value = ([viol], [viol])
         mock_shell.return_value = (True, "")  # clean worktree
+        mock_update_advisory.return_value = {
+            "path": str(tmp_path / ".forge" / "conventions" / "advisory.yaml"),
+            "entry_count": 1,
+            "newly_filed_issues": [],
+            "entries": {},
+        }
 
         outcome, result = _run_validate_phase(
             state,
@@ -179,6 +187,16 @@ class TestConventionParallelCheck:
         assert not state.human_feedback or "convention" not in state.human_feedback.lower()
         # retry_reason is not set to CONVENTION_VIOLATIONS
         assert state.retry_reason != RetryReason.CONVENTION_VIOLATIONS
+        mock_update_advisory.assert_called_once()
+        advisory_payload = mock_update_advisory.call_args.args[1]
+        assert advisory_payload == [
+            {
+                "rule": "max_module_lines",
+                "file": "src/foo.py",
+                "detail": "Module exceeds 500 lines (600 found)",
+                "blocking": False,
+            }
+        ]
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")

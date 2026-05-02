@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
+import datetime as dt
 import subprocess
 import time
 import types
@@ -11,6 +12,7 @@ from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
 
+from theforge.advisory_conventions import update_advisory_violations
 from theforge.config import ForgeConfig
 from theforge.task import TaskStory
 
@@ -120,6 +122,30 @@ def _check_conventions_parallel(
         all_v = [types.SimpleNamespace(**d) for d in result["violations"]]
         net_v = all_v
     return all_v, net_v
+
+
+def _record_advisory_convention_state(
+    config: ForgeConfig,
+    task: TaskStory,
+    state: CoordinatorState,
+    violations: list[dict],
+    logger: StructuredLogger | None,
+) -> None:
+    """Persist rolling advisory convention state for the current scan."""
+    advisory_result = update_advisory_violations(
+        config,
+        violations,
+        observed_at=dt.datetime.now(dt.timezone.utc),
+        run_id=state.run_id,
+        story_slug=task.slug,
+    )
+    if logger:
+        logger._safe_emit(
+            "convention_advisory_state",
+            artifact_path=advisory_result["path"],
+            entry_count=advisory_result["entry_count"],
+            newly_filed_issues=advisory_result["newly_filed_issues"],
+        )
 
 
 def _build_timeout_rca_packet(
@@ -274,6 +300,17 @@ def _run_validate_phase(
         {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
         for v in _cv_violations
     ]
+    if _cv_result_raw is not None:
+        _record_advisory_convention_state(
+            config,
+            task,
+            state,
+            [
+                {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
+                for v in _cv_all
+            ],
+            logger,
+        )
 
     if gate_err:
         is_timeout = "timed out" in (gate_err or "").lower()
