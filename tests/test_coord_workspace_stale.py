@@ -277,6 +277,26 @@ class TestStaleWorktree:
         captured = capsys.readouterr()
         assert "Warning" in captured.err
 
+    @patch("theforge.coordinator.util._run_shell")
+    def test_remove_worktree_deletes_leftover_forge_shell(self, mock_shell, tmp_path):
+        """Successful removal deletes a leftover worktree shell with only Forge metadata."""
+        workspace = tmp_path / "my-spec"
+        (workspace / ".forge" / "traces").mkdir(parents=True)
+        (workspace / ".forge" / "traces" / "1-dev.txt").write_text("trace\n", encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "git worktree remove" in cmd:
+                return (True, "")
+            if "git branch -D" in cmd:
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        _remove_worktree(workspace, "feat/my-spec", tmp_path)
+
+        assert not workspace.exists()
+
     # -- Integration: _create_workspace stale detection --
 
     @patch("theforge.coordinator.util._run_shell")

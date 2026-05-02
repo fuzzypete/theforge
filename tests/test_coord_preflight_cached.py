@@ -8,6 +8,7 @@ PLAN/DEV — exactly as it does for freshly-run preflight in single-story mode.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,9 @@ def _shell_with_matching_cache(cmd, cwd, **kwargs):
     rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
     if rendered.startswith("git rev-parse "):
         return (True, "OK")
+    if rendered.startswith("mkdir -p "):
+        Path(cwd, rendered.removeprefix("mkdir -p ").strip()).mkdir(parents=True, exist_ok=True)
+        return (True, "")
     return (True, "")
 
 
@@ -224,6 +228,11 @@ criteria_checked: []
             rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
             if rendered.startswith("git rev-parse "):
                 return (True, "new-head" if str(cwd) == str(workspace) else "base-head")
+            if rendered.startswith("mkdir -p "):
+                Path(cwd, rendered.removeprefix("mkdir -p ").strip()).mkdir(
+                    parents=True, exist_ok=True
+                )
+                return (True, "")
             return (True, "")
 
         with (
