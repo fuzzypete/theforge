@@ -609,6 +609,28 @@ class TestClassifyAndRecord:
         assert "a" in merged_slugs
         assert {t.slug for t in dag.ready()} == {"b"}
 
+    def test_failed_result_does_not_get_promoted_to_already_done(self) -> None:
+        """An ALREADY_DONE preflight verdict must not mask a later failed result."""
+        from theforge.sprint.story_state import StoryOutcome
+
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(
+            success=False,
+            cost=0.0,
+            preflight_verdict="ALREADY_DONE",
+            phase=Phase.ESCALATE,
+        )
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert outcome is StoryOutcome.FAILED
+        assert outcome.is_succeeded is False
+        assert "a" not in merged_slugs
+        assert dag.ready() == []
+
     def test_failure_skips_for_dag(self) -> None:
         """Failure → FAILED, dag.mark_skipped."""
         from theforge.sprint.story_state import StoryOutcome
