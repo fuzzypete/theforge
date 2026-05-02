@@ -153,12 +153,20 @@ def _run_cmd_status(
     run_id: str | None = None,
     recent: bool = False,
     last: bool = False,
+    watch: int | None = None,
+    no_color: bool = False,
 ) -> tuple[int, str]:
     from theforge.cli import cmd_status
 
     forge_yaml = _write_forge_yaml(tmp_path)
     config = _make_forge_config(tmp_path)
-    args = argparse.Namespace(run_id=run_id, recent=recent, last=last, watch=None, no_color=False)
+    args = argparse.Namespace(
+        run_id=run_id,
+        recent=recent,
+        last=last,
+        watch=watch,
+        no_color=no_color,
+    )
 
     with (
         patch("theforge.cli.status._find_config", return_value=forge_yaml),
@@ -168,6 +176,19 @@ def _run_cmd_status(
 
     captured = capsys.readouterr()
     return rc, captured.out
+
+
+def _live_story(issue: int, *, status: str, phase: str, cost_usd: float) -> dict:
+    return {
+        "slug": f"issue-{issue}",
+        "path": f"Issue #{issue}",
+        "status": status,
+        "phase": phase,
+        "cost_usd": cost_usd,
+        "bundle_candidate": False,
+        "blocked_by": [],
+        "detail": {},
+    }
 
 
 def test_status_shows_live_mid_run_sprint_with_story_rows(tmp_path: Path, capsys: object) -> None:
@@ -374,3 +395,108 @@ def test_status_shows_stopped_after_forge_stop(tmp_path: Path, capsys: object) -
     assert rc == 0
     assert "STOPPED" in out
     assert "RUNNING" not in out
+
+
+def test_status_shows_all_live_sprints_when_multiple_are_active(
+    tmp_path: Path, capsys: object
+) -> None:
+    _write_pid_file(tmp_path, "run-a", "issues-1186,1192")
+    _write_pid_file(tmp_path, "run-b", "issues-1186")
+    _write_state_file(
+        tmp_path,
+        "run-a",
+        "issues-1186,1192",
+        [
+            _live_story(1186, status="done", phase="DONE", cost_usd=0.11),
+            _live_story(1192, status="running", phase="DEV", cost_usd=0.42),
+        ],
+    )
+    _write_state_file(
+        tmp_path,
+        "run-b",
+        "issues-1186",
+        [_live_story(1186, status="running", phase="PLAN", cost_usd=0.19)],
+    )
+
+    rc, out = _run_cmd_status(tmp_path, capsys)
+
+    assert rc == 0
+    assert "Sprint: issues-1186,1192  run: run-a  [live]" in out
+    assert "Sprint: issues-1186  run: run-b  [live]" in out
+    assert "Issue #1192" in out
+    assert "Issue #1186" in out
+
+
+def test_watch_loop_renders_all_live_sprints_in_one_frame(tmp_path: Path, capsys: object) -> None:
+    from theforge.cli import status_watch
+
+    _write_pid_file(tmp_path, "run-a", "issues-1186,1192")
+    _write_pid_file(tmp_path, "run-b", "issues-1186")
+    _write_state_file(
+        tmp_path,
+        "run-a",
+        "issues-1186,1192",
+        [_live_story(1192, status="running", phase="DEV", cost_usd=0.42)],
+    )
+    _write_state_file(
+        tmp_path,
+        "run-b",
+        "issues-1186",
+        [_live_story(1186, status="running", phase="PLAN", cost_usd=0.19)],
+    )
+
+    with patch.object(status_watch, "is_tty", return_value=False):
+        rc = status_watch.run_watch_loop(
+            ["run-a", "run-b"],
+            tmp_path,
+            interval=0.01,
+            color=False,
+            follow_active_runs=True,
+            sleep_fn=lambda _s: None,
+            max_frames=1,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "run=run-a" in out
+    assert "run=run-b" in out
+    assert "Issue #1192" in out
+    assert "Issue #1186" in out
+
+
+def test_watch_loop_drops_finished_sprint_on_next_frame(tmp_path: Path, capsys: object) -> None:
+    from theforge.cli import status_watch
+
+    _write_pid_file(tmp_path, "run-a", "issues-1186,1192")
+    _write_pid_file(tmp_path, "run-b", "issues-1186")
+    _write_state_file(
+        tmp_path,
+        "run-a",
+        "issues-1186,1192",
+        [_live_story(1192, status="running", phase="DEV", cost_usd=0.42)],
+    )
+    _write_state_file(
+        tmp_path,
+        "run-b",
+        "issues-1186",
+        [_live_story(1186, status="running", phase="PLAN", cost_usd=0.19)],
+    )
+
+    def remove_run_a(_seconds: float) -> None:
+        (tmp_path / ".forge" / "runs" / "run-a.pid").unlink()
+
+    with patch.object(status_watch, "is_tty", return_value=False):
+        rc = status_watch.run_watch_loop(
+            ["run-a", "run-b"],
+            tmp_path,
+            interval=0.01,
+            color=False,
+            follow_active_runs=True,
+            sleep_fn=remove_run_a,
+            max_frames=2,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "run=run-a" in out
+    assert out.count("run=run-b") == 2
