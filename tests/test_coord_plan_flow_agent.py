@@ -317,6 +317,21 @@ class TestPlanAgentReview:
         assert result.state.plan_output == "# Plan\n\nFixed plan."
         assert len(result.state.plan_results) == 2
         assert len(result.state.plan_review_results) == 2
+        audit = generate_audit_log(config, task, result)
+        assert audit["plan_review"]["per_reviewer"] == [
+            {
+                "attempt": 0,
+                "profile": "plan-review",
+                "verdict": "REQUEST_CHANGES",
+                "cost_usd": pytest.approx(0.08),
+            },
+            {
+                "attempt": 1,
+                "profile": "plan-review",
+                "verdict": "APPROVE",
+                "cost_usd": pytest.approx(0.08),
+            },
+        ]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
@@ -1710,6 +1725,21 @@ class TestPlanReviewerFailureAudit:
         assert failure["retryable"] is True
         assert failure["retry_count"] == 2
         assert "Transport failure:" in failure["errors"][0]
+        audit = generate_audit_log(pool_config, task, result)
+        assert audit["plan_review"]["per_reviewer"] == [
+            {
+                "attempt": 0,
+                "profile": "reviewer-a",
+                "verdict": "CRASHED",
+                "cost_usd": pytest.approx(0.03),
+            },
+            {
+                "attempt": 0,
+                "profile": "reviewer-b",
+                "verdict": "APPROVE",
+                "cost_usd": pytest.approx(0.04),
+            },
+        ]
 
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -1848,6 +1878,20 @@ class TestPlanReviewerFailureAudit:
 
         assert result.success is True
         assert "reviewer_failures" in audit["plan_review"]
+        assert audit["plan_review"]["per_reviewer"] == [
+            {
+                "attempt": 0,
+                "profile": "reviewer-a",
+                "verdict": "PARSE_ERROR",
+                "cost_usd": pytest.approx(0.08),
+            },
+            {
+                "attempt": 0,
+                "profile": "reviewer-b",
+                "verdict": "APPROVE",
+                "cost_usd": pytest.approx(0.04),
+            },
+        ]
         failures = audit["plan_review"]["reviewer_failures"]
         assert len(failures) == 1
         assert failures[0]["reviewer"] == "reviewer-a"
