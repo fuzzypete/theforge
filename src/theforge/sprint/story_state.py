@@ -42,6 +42,9 @@ class StoryOutcome(str, Enum):
     SKIPPED = "skipped"
     PRESERVED = "preserved"
     DROPPED = "dropped"
+    DROPPED_SHAPE = "dropped_shape"
+    REMEDIATED = "remediated"
+    DROPPED_AFTER_FIX = "dropped_after_fix"
 
     @property
     def is_terminal(self) -> bool:
@@ -57,8 +60,16 @@ class StoryOutcome(str, Enum):
         # failure in sprint-audit and forge sprint-status. Keeping it in the
         # failed bucket here preserves cross-surface agreement: canonical
         # counts, summary, notifications, banner, and completed status all
-        # report DROPPED as failed.
-        return self in {StoryOutcome.FAILED, StoryOutcome.ESCALATED, StoryOutcome.DROPPED}
+        # report DROPPED as failed. DROPPED_SHAPE and DROPPED_AFTER_FIX
+        # surface from the intake remediation gate; they share the same
+        # operator semantics as DROPPED — the story did not run.
+        return self in {
+            StoryOutcome.FAILED,
+            StoryOutcome.ESCALATED,
+            StoryOutcome.DROPPED,
+            StoryOutcome.DROPPED_SHAPE,
+            StoryOutcome.DROPPED_AFTER_FIX,
+        }
 
     @property
     def is_skipped(self) -> bool:
@@ -73,6 +84,8 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.SKIPPED,
     StoryOutcome.PRESERVED,
     StoryOutcome.DROPPED,
+    StoryOutcome.DROPPED_SHAPE,
+    StoryOutcome.DROPPED_AFTER_FIX,
 }
 
 
@@ -87,6 +100,9 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.SKIPPED: "skipped",
     StoryOutcome.PRESERVED: "preserved",
     StoryOutcome.DROPPED: "failed",
+    StoryOutcome.DROPPED_SHAPE: "failed",
+    StoryOutcome.DROPPED_AFTER_FIX: "failed",
+    StoryOutcome.REMEDIATED: "waiting",
 }
 
 
@@ -104,6 +120,9 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "skipped": StoryOutcome.SKIPPED,
     "preserved": StoryOutcome.PRESERVED,
     "dropped": StoryOutcome.DROPPED,
+    "dropped_shape": StoryOutcome.DROPPED_SHAPE,
+    "remediated": StoryOutcome.REMEDIATED,
+    "dropped_after_fix": StoryOutcome.DROPPED_AFTER_FIX,
 }
 
 

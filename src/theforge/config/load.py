@@ -42,6 +42,7 @@ from .types import (
     GithubConfig,
     HardConventionsConfig,
     HooksConfig,
+    IntakeConfig,
     LogConfig,
     ModelProfile,
     PlanAgentReviewConfig,
@@ -668,6 +669,27 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
     shape_check_cfg = ShapeCheckConfig(classifier=shape_check_classifier.strip())
 
+    intake_data = raw.get("intake", {}) or {}
+    if not isinstance(intake_data, dict):
+        raise ValueError(f"forge.yaml 'intake' must be a mapping, got {intake_data!r}")
+    intake_grooming = intake_data.get("grooming", False)
+    intake_auto_fix = intake_data.get("auto_fix", False)
+    intake_auto_fix_mode = intake_data.get("auto_fix_mode", "comment")
+    if not isinstance(intake_grooming, bool):
+        raise ValueError(f"forge.yaml 'intake.grooming' must be a bool, got {intake_grooming!r}")
+    if not isinstance(intake_auto_fix, bool):
+        raise ValueError(f"forge.yaml 'intake.auto_fix' must be a bool, got {intake_auto_fix!r}")
+    if intake_auto_fix_mode not in {"comment", "edit"}:
+        raise ValueError(
+            "forge.yaml 'intake.auto_fix_mode' must be 'comment' or 'edit',"
+            f" got {intake_auto_fix_mode!r}"
+        )
+    intake_cfg = IntakeConfig(
+        grooming=intake_grooming,
+        auto_fix=intake_auto_fix,
+        auto_fix_mode=intake_auto_fix_mode,
+    )
+
     context_data = raw.get("context", {})
     context_cfg = ContextConfig(
         preflight_budget=int(context_data.get("preflight_budget", ContextConfig.preflight_budget)),
@@ -772,6 +794,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         hooks=hooks_cfg,
         sprint=sprint_cfg,
         shape_check=shape_check_cfg,
+        intake=intake_cfg,
         context=context_cfg,
         secrets=secrets,
         agents=agents_list,
