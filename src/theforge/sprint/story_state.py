@@ -29,7 +29,12 @@ class StoryOutcome(str, Enum):
     """Sprint story lifecycle outcome.
 
     Non-terminal: WAITING, RUNNING, BLOCKED.
-    Terminal: DONE, ALREADY_DONE, FAILED, ESCALATED, SKIPPED, PRESERVED, DROPPED.
+    Terminal: DONE, ALREADY_DONE, FAILED, MERGE_FAILED, ESCALATED, SKIPPED,
+    PRESERVED, DROPPED.
+
+    MERGE_FAILED is the post-approval merge-step failure (dev + review succeeded
+    but the integration step crashed/refused). It is distinct from FAILED (a
+    generic non-success terminal state) and from DROPPED (story did not run).
     """
 
     WAITING = "waiting"
@@ -38,6 +43,7 @@ class StoryOutcome(str, Enum):
     DONE = "done"
     ALREADY_DONE = "already_done"
     FAILED = "failed"
+    MERGE_FAILED = "merge_failed"
     ESCALATED = "escalated"
     SKIPPED = "skipped"
     PRESERVED = "preserved"
@@ -65,6 +71,7 @@ class StoryOutcome(str, Enum):
         # operator semantics as DROPPED — the story did not run.
         return self in {
             StoryOutcome.FAILED,
+            StoryOutcome.MERGE_FAILED,
             StoryOutcome.ESCALATED,
             StoryOutcome.DROPPED,
             StoryOutcome.DROPPED_SHAPE,
@@ -80,6 +87,7 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.DONE,
     StoryOutcome.ALREADY_DONE,
     StoryOutcome.FAILED,
+    StoryOutcome.MERGE_FAILED,
     StoryOutcome.ESCALATED,
     StoryOutcome.SKIPPED,
     StoryOutcome.PRESERVED,
@@ -96,6 +104,7 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.DONE: "done",
     StoryOutcome.ALREADY_DONE: "done",
     StoryOutcome.FAILED: "failed",
+    StoryOutcome.MERGE_FAILED: "failed",
     StoryOutcome.ESCALATED: "failed",
     StoryOutcome.SKIPPED: "skipped",
     StoryOutcome.PRESERVED: "preserved",
@@ -115,6 +124,7 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "done": StoryOutcome.DONE,
     "already_done": StoryOutcome.ALREADY_DONE,
     "failed": StoryOutcome.FAILED,
+    "merge_failed": StoryOutcome.MERGE_FAILED,
     "escalated": StoryOutcome.ESCALATED,
     "escalate": StoryOutcome.ESCALATED,  # phase-style alias seeded by runner
     "skipped": StoryOutcome.SKIPPED,

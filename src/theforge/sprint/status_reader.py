@@ -139,7 +139,7 @@ def _outcome_to_status(outcome: str) -> str:
         return "done"
     if outcome == "SKIPPED":
         return "skipped"
-    if outcome == "ESCALATE":
+    if outcome in ("ESCALATE", "MERGE_FAILED"):
         return "failed"
     return "failed"
 
@@ -382,11 +382,42 @@ def _stage_and_detail_from_completed_story(
     stage = _format_terminal_stage(story.get("iteration_usage"))
 
     detail = ""
+    is_failure_outcome = outcome in {
+        "FAILED",
+        "MERGE_FAILED",
+        "ESCALATE",
+        "ESCALATED",
+        "DROPPED",
+        "DROPPED_SHAPE",
+        "DROPPED_AFTER_FIX",
+    }
     if isinstance(audit_data, dict):
         if outcome == "ALREADY_DONE":
             reason = _nonempty_str(preflight.get("reason"))
             if reason:
                 detail = f"Preflight verdict: {reason}"
+        # For failure outcomes, the row's detail must describe the failure —
+        # not surface a stale review APPROVE that conflates "review approved"
+        # with "story is in good standing." Read outcome.message / error first;
+        # then optionally append the review verdict label so it is still
+        # available but clearly secondary.
+        if not detail and is_failure_outcome:
+            outcome_block = audit_data.get("outcome")
+            if isinstance(outcome_block, dict):
+                message = _nonempty_str(outcome_block.get("message"))
+                if message:
+                    detail = message
+            if not detail:
+                error = _nonempty_str(audit_data.get("error"))
+                if error:
+                    detail = error
+            reviews = audit_data.get("reviews")
+            if detail and isinstance(reviews, list) and reviews:
+                last_review = reviews[-1]
+                if isinstance(last_review, dict):
+                    verdict = _nonempty_str(last_review.get("verdict"))
+                    if verdict:
+                        detail = f"{detail} (review verdict: {verdict})"
         reviews = audit_data.get("reviews")
         if not detail and isinstance(reviews, list) and reviews:
             last_review = reviews[-1]

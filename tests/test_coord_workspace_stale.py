@@ -638,7 +638,7 @@ class TestConflictResolution:
         result = run_task(config, task, auto_merge=True)
 
         assert result.success is False  # landing failure → success=False
-        assert result.phase == Phase.DONE
+        assert result.phase == Phase.MERGE_FAILED
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
@@ -669,7 +669,7 @@ class TestConflictResolution:
 
         # Landing failed — success=False
         assert result.success is False
-        assert result.phase == Phase.DONE
+        assert result.phase == Phase.MERGE_FAILED
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
@@ -755,7 +755,7 @@ class TestConflictResolution:
         result = run_task(config, task, auto_merge=True)
 
         assert result.success is False  # landing failure → success=False
-        assert result.phase == Phase.DONE
+        assert result.phase == Phase.MERGE_FAILED
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None

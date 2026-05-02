@@ -1008,7 +1008,7 @@ def _classify_and_record(
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
     elif landing_status == "failed":
-        outcome = StoryOutcome.FAILED
+        outcome = StoryOutcome.MERGE_FAILED
         dag.mark_skipped(task.slug)
     elif landing_status == "pending_integration":
         # Approved but merge deferred or queued — counts as succeeded, not yet in DAG
@@ -1265,6 +1265,7 @@ def run_sprint(
                 "DROPPED": StoryOutcome.DROPPED,
                 "ESCALATE": StoryOutcome.ESCALATED,
                 "FAILED": StoryOutcome.FAILED,
+                "MERGE_FAILED": StoryOutcome.MERGE_FAILED,
             }
             _mapped_outcome = _outcome_map.get(_prior_outcome)
             if _mapped_outcome is None:
@@ -1850,7 +1851,9 @@ def run_sprint(
         result.merge = merge_info
         result.landing_status = landing_status
         if landing_status == "failed":
-            result.success = False
+            from ..coordinator.completion import mark_merge_failed  # noqa: PLC0415
+
+            mark_merge_failed(result.state, result, merge_info.get("error"), branch)
 
         if merge_info.get("merged"):
             merged_slugs.add(slug)
@@ -1912,17 +1915,23 @@ def run_sprint(
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                         else:
-                            dep_result.landing_status = "failed"
-                            dep_result.success = False
+                            from ..coordinator.completion import (  # noqa: PLC0415
+                                mark_merge_failed as _mark_mf,
+                            )
+
                             if poll_result["status"] == "timeout":
-                                dep_result.state.error = (
+                                _err = (
                                     f"Queued PR timed out after "
                                     f"{config.workspace.merge_wait_timeout_seconds}s: {dep_pr_url}"
                                 )
                             else:
-                                dep_result.state.error = (
-                                    f"Queued PR {poll_result['status']}: {dep_pr_url}"
-                                )
+                                _err = f"Queued PR {poll_result['status']}: {dep_pr_url}"
+                            _mark_mf(
+                                dep_result.state,
+                                dep_result,
+                                _err,
+                                dep_result.state.branch_name,
+                            )
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                             _log(
@@ -2080,18 +2089,21 @@ def run_sprint(
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
                     else:
-                        _set_outcome(_qp_slug, StoryOutcome.FAILED)
-                        _qp_result.landing_status = "failed"
-                        _qp_result.success = False
+                        from ..coordinator.completion import (  # noqa: PLC0415
+                            mark_merge_failed as _mark_mf,
+                        )
+
                         if _qp_poll["status"] == "timeout":
-                            _qp_result.state.error = (
+                            _err = (
                                 f"Queued PR timed out after "
                                 f"{config.workspace.merge_wait_timeout_seconds}s: {_qp_pr_url}"
                             )
                         else:
-                            _qp_result.state.error = (
-                                f"Queued PR {_qp_poll['status']}: {_qp_pr_url}"
-                            )
+                            _err = f"Queued PR {_qp_poll['status']}: {_qp_pr_url}"
+                        _mark_mf(_qp_result.state, _qp_result, _err, _qp_result.state.branch_name)
+                        _set_outcome(
+                            _qp_slug, StoryOutcome.MERGE_FAILED, phase=_qp_result.phase.name
+                        )
                         del queued_prs[_qp_slug]
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
@@ -2298,7 +2310,7 @@ def run_sprint(
                         # Optimistic classify recorded this as DONE; landing
                         # failed — correct the canonical outcome (terminal-to-
                         # terminal correction is permitted).
-                        _set_outcome(slug, StoryOutcome.FAILED)
+                        _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
                     changed = True
                     while changed:
                         changed = False
@@ -2308,7 +2320,11 @@ def run_sprint(
                             if _attempt_integration(pending_slug, pending_task, pending_result):
                                 del pending_integration[pending_slug]
                                 if pending_result.landing_status == "failed":
-                                    _set_outcome(pending_slug, StoryOutcome.FAILED)
+                                    _set_outcome(
+                                        pending_slug,
+                                        StoryOutcome.MERGE_FAILED,
+                                        phase=pending_result.phase.name,
+                                    )
                                 changed = True
                 else:
                     _write_story_audit(config, task, result, sprint_id=_sprint_id)
@@ -2347,16 +2363,19 @@ def run_sprint(
                 result.landing_status = "landed"
                 _set_outcome(slug, StoryOutcome.DONE)
             else:
-                _set_outcome(slug, StoryOutcome.FAILED)
-                result.landing_status = "failed"
-                result.success = False
+                from ..coordinator.completion import (  # noqa: PLC0415
+                    mark_merge_failed as _mark_mf,
+                )
+
                 if poll_result["status"] == "timeout":
-                    result.state.error = (
+                    _err = (
                         f"Queued PR timed out after "
                         f"{config.workspace.merge_wait_timeout_seconds}s: {pr_url}"
                     )
                 else:
-                    result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
+                    _err = f"Queued PR {poll_result['status']}: {pr_url}"
+                _mark_mf(result.state, result, _err, result.state.branch_name)
+                _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _write_story_audit(config, task, result, sprint_id=_sprint_id)
             del queued_prs[slug]

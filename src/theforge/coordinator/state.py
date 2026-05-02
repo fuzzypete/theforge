@@ -35,6 +35,7 @@ class Phase(Enum):
     REVIEW = auto()
     HUMAN_REVIEW = auto()
     DONE = auto()
+    MERGE_FAILED = auto()
     ESCALATE = auto()
 
 
