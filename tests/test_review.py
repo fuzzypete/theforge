@@ -12,6 +12,7 @@ from theforge.review import (
     findings_to_markdown,
     merge_review_results,
     parse_plan_review_output,
+    parse_review_json,
     parse_review_output,
 )
 
@@ -116,6 +117,31 @@ class TestParseReviewOutput:
         )
         result = parse_review_output(text)
         assert result.verdict == "APPROVE"
+
+    def test_parse_review_json_sanitizes_summary_and_findings(self):
+        result = parse_review_json(
+            {
+                "verdict": "APPROVE",
+                "summary": "Safe\x00 summary\x07",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "file": "src/batch.py",
+                        "line": 5,
+                        "description": "Bad\x00 finding\x1f text",
+                    }
+                ],
+                "story_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+
+        assert result.summary == "Safe summary"
+        assert result.findings[0].description == "Bad finding text"
+        assert result.sanitization_audit == {
+            "summary": {"sanitized_chars": 2},
+            "findings[0].description": {"sanitized_chars": 2},
+        }
 
 
 class TestFindingsToMarkdown:

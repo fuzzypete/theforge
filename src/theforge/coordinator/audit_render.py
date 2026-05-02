@@ -110,6 +110,7 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                 {
                     "verdict": r.verdict,
                     "summary": r.summary,
+                    "sanitization_audit": r.sanitization_audit or None,
                     "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
                     "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
                     "findings": findings_list,

@@ -21,8 +21,8 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.completion import MAX_MERGE_RETRIES, _merge_pr
-from theforge.review import ReviewResult
+from theforge.coordinator.completion import MAX_MERGE_RETRIES, _create_pr, _merge_pr
+from theforge.review import ReviewResult, parse_review_json
 
 # ── Helpers ───────────────────────────────────────────────────────
 
@@ -1235,8 +1235,6 @@ class TestPrBodyContent:
     """Verify _create_pr includes story name, dev cost, and review summary."""
 
     def test_pr_body_includes_required_fields(self, tmp_path: Path) -> None:
-        from theforge.coordinator.completion import _create_pr
-
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = ReviewResult(
@@ -1276,6 +1274,53 @@ class TestPrBodyContent:
         assert "Test Task" in body  # story name
         assert "2.75" in body  # dev cost
         assert "Feature implemented correctly" in body  # review summary
+
+    def test_pr_body_uses_sanitized_review_text(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = parse_review_json(
+            {
+                "verdict": "APPROVE",
+                "summary": "Feature\x00 implemented",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "file": "src/test.py",
+                        "line": 9,
+                        "description": "Fix\x00 this edge case",
+                    }
+                ],
+                "story_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+        state = MagicMock()
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        pr_bodies: list[str] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+                return _make_subprocess_result(0, stdout="1\n")
+            result = _make_subprocess_result(0, stdout="https://github.com/x/y/pull/11")
+            if isinstance(cmd, list):
+                for i, arg in enumerate(cmd):
+                    if arg == "--body" and i + 1 < len(cmd):
+                        pr_bodies.append(cmd[i + 1])
+            return result
+
+        with patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run):
+            result = _create_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is True
+        assert "\x00" not in pr_bodies[0]
+        assert "Feature implemented" in pr_bodies[0]
+        assert "Fix this edge case" in pr_bodies[0]
+        assert review.sanitization_audit == {
+            "summary": {"sanitized_chars": 1},
+            "findings[0].description": {"sanitized_chars": 1},
+        }
 
 
 # ── Escalate on merge-pr failure ─────────────────────────────────

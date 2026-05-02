@@ -260,6 +260,48 @@ class TestGhSubprocessTimeout:
             result = _create_pr(config, task, "feat/test-branch", parsed_review, state)
 
         assert result["success"] is False
+        assert result["error_context"]["exception_class"] == "TimeoutExpired"
+        assert "gh pr create" in result["error_context"]["command"]
+        assert "Traceback" in result["error_context"]["traceback"]
+
+    def test_gh_non_nul_exception_captures_traceback_and_context(self, tmp_path):
+        """Non-NUL PR creation exceptions include traceback and command context."""
+        from coord_test_helpers import _make_config, _make_task
+
+        from theforge.coordinator.completion import _create_pr
+        from theforge.coordinator.state import CoordinatorState
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        parsed_review = _make_parsed_review()
+
+        worktree = tmp_path / task.slug
+        worktree.mkdir(parents=True)
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if cmd[0] == "git" and "rev-list" in cmd:
+                result.stdout = "1\n"
+                return result
+            if cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+                return result
+            if cmd[0] == "gh" and "create" in cmd:
+                raise RuntimeError("boom")
+            result.stdout = ""
+            return result
+
+        with patch("theforge.coordinator.completion.subprocess.run", side_effect=fake_run):
+            result = _create_pr(config, task, "feat/test-branch", parsed_review, state)
+
+        assert result["success"] is False
+        assert result["error_context"]["exception_class"] == "RuntimeError"
+        assert result["error_context"]["exception_args"] == ["'boom'"]
+        assert "gh pr create" in result["error_context"]["command"]
+        assert "RuntimeError: boom" in result["error_context"]["traceback"]
 
 
 class TestNotifyBackendsTimeout:
