@@ -44,6 +44,7 @@ RESET = "\x1b[0m"
 
 # Terminals that don't support ANSI color sequences.
 COLORLESS_TERMS = frozenset({"dumb", "unknown", ""})
+STALL_THRESHOLD_ENV = "FORGE_STATUS_WATCH_STALE_SECONDS"
 
 
 def is_tty(stream: Any = None) -> bool:
@@ -94,6 +95,25 @@ def _format_delta(delta: float) -> str:
         return "—"
     sign = "+" if delta > 0 else "-"
     return f"{sign}${abs(delta):.2f}"
+
+
+def _stall_threshold_seconds(interval: float, override: float | None = None) -> float:
+    if override is None:
+        raw = os.environ.get(STALL_THRESHOLD_ENV, "").strip()
+        if raw:
+            try:
+                override = float(raw)
+            except ValueError:
+                override = None
+    if override is not None:
+        return max(0.0, override)
+    return max(5.0, interval * 2)
+
+
+def _resolve_followed_run_id(run_id: str, project_root: Path) -> str:
+    from theforge.sprint.status_reader import _follow_redirect_chain
+
+    return _follow_redirect_chain(run_id, project_root)
 
 
 def _resolve_sprint_log_dir(run_id: str, project_root: Path) -> Path | None:
@@ -199,14 +219,18 @@ def render_frame(
     now = (now_fn or time.time)()
     spinner = SPINNER_FRAMES[frame_idx % len(SPINNER_FRAMES)]
     interval = float(state.get("interval", 2.0))
-    stall_threshold = max(5.0, interval * 2)
+    stall_threshold = _stall_threshold_seconds(
+        interval,
+        state.get("stale_after_seconds"),
+    )
 
     prev_costs = dict(state.get("costs", {}))
     new_costs: dict[str, float] = {}
+    stalled_paths: list[str] = []
 
     overlay_lines: list[str] = []
     overlay_lines.append("")
-    title = f"── Live  refresh={interval:g}s  Ctrl-C to exit ──"
+    title = f"── Live  run={run_id}  refresh={interval:g}s  Ctrl-C to exit ──"
     overlay_lines.append(_c(title, DIM, color))
     _ACT_COL = 10
     hdr = f"{'STORY':<30}  {'ACTIVITY':<{_ACT_COL}}  {'ΔCOST':>8}  {'EVENT AGE':>9}"
@@ -214,6 +238,7 @@ def render_frame(
 
     for e in entries:
         slug = getattr(e, "slug", "") or ""
+        path = getattr(e, "path", slug) or slug
         cost = float(getattr(e, "cost_usd", 0.0) or 0.0)
         prev = prev_costs.get(slug, cost)
         delta = cost - prev
@@ -233,6 +258,7 @@ def render_frame(
             if stalled:
                 label = f"{STALL_CHAR} stalled"
                 act = _c(label, DIM, color)
+                stalled_paths.append(path)
             else:
                 label = f"{spinner} live"
                 act = _c(label, GREEN, color)
@@ -256,10 +282,22 @@ def render_frame(
         if color and delta != 0 and abs(delta) >= 0.005:
             delta_str = _c(delta_str, DIM, True)
 
-        path = getattr(e, "path", slug) or slug
         path_disp = path if len(path) <= 30 else path[:29] + "…"
         act_padded = act + " " * max(0, _ACT_COL - len(label))
         overlay_lines.append(f"{path_disp:<30}  {act_padded}  {delta_str:>8}  {age_str:>9}")
+
+    if stalled_paths:
+        stalled_preview = ", ".join(stalled_paths[:2])
+        if len(stalled_paths) > 2:
+            stalled_preview += f" +{len(stalled_paths) - 2} more"
+        overlay_lines.append("")
+        overlay_lines.append(
+            _c(
+                f"Hint: {stalled_preview} stalled; see `forge logs {run_id}`",
+                DIM,
+                color,
+            )
+        )
 
     state["costs"] = new_costs
     return base + "\n".join(overlay_lines) + "\n", snapshot_ok, err_buf.getvalue()
@@ -271,6 +309,7 @@ def run_watch_loop(
     interval: float,
     *,
     color: bool,
+    stale_after_seconds: float | None = None,
     sleep_fn: Any = None,
     max_frames: int | None = None,
 ) -> int:
@@ -287,19 +326,28 @@ def run_watch_loop(
     """
     sleep = sleep_fn or time.sleep
 
-    state: dict = {"costs": {}, "interval": float(interval)}
+    state: dict = {
+        "costs": {},
+        "interval": float(interval),
+        "stale_after_seconds": stale_after_seconds,
+    }
     frame = 0
     prev_lines = 0
     cursor_hidden = False
+    current_run_id = run_id
     try:
         if color or is_tty():
             sys.stdout.write(HIDE_CURSOR)
             sys.stdout.flush()
             cursor_hidden = True
         while True:
+            followed_run_id = _resolve_followed_run_id(current_run_id, project_root)
+            if followed_run_id != current_run_id:
+                current_run_id = followed_run_id
+                state["costs"] = {}
             try:
                 body, snapshot_ok, captured_err = render_frame(
-                    run_id, project_root, state, frame, color=color
+                    current_run_id, project_root, state, frame, color=color
                 )
             except Exception as exc:  # noqa: BLE001
                 if frame == 0:
