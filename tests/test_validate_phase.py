@@ -275,6 +275,143 @@ def test_run_validate_phase_timeout_without_gate_debug_command_is_unchanged(
     assert state.gate_debug_telemetry == []
 
 
+def test_run_validate_phase_timeout_with_commits_routes_to_dev_retry(tmp_path: Path) -> None:
+    """Gate timeout with dev commits ahead of base → RETRY_DEV with RCA packet."""
+    from theforge.coordinator.state import RetryReason
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(2.0)
+    state.last_dev_start_commit = "HEAD"
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(
+                None,
+                "Gate timed out after 45s",
+                "TIMEOUT after 45s: pytest tests/test_hang.py",
+                "make gate",
+            ),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._commits_exist_strict",
+            return_value=True,
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: implemented all three ACs",
+        ),
+        patch("theforge.coordinator.validate_phase.subprocess.run") as subproc,
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        # Stub out git rev-parse / git log calls used inside the RCA packet.
+        def _fake_run(args, **kwargs):
+            class _R:
+                returncode = 0
+                stdout = b"abc1234\n"
+
+            if "log" in args:
+                _R.stdout = b"abc1234 fix: thing\n"
+            return _R
+
+        subproc.side_effect = _fake_run
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.RETRY_DEV
+    assert result is None
+    assert state.retry_reason is RetryReason.GATE_FAIL
+    assert state.human_feedback is not None
+    assert "timed out after" in state.human_feedback
+    assert "make gate" in state.human_feedback
+    assert "RCA" in state.human_feedback
+    assert "TIMEOUT after 45s" in state.human_feedback
+    # Telemetry recorded the timeout iteration.
+    assert len(state.dev_iteration_telemetry) == 1
+    assert state.dev_iteration_telemetry[0].is_timeout is True
+
+
+def test_run_validate_phase_timeout_without_commits_still_escalates(tmp_path: Path) -> None:
+    """Gate timeout with NO commits ahead of base remains terminal (state 1)."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(None, "Gate timed out after 45s", "", "make gate"),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._commits_exist_strict",
+            return_value=False,
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert state.human_feedback is None
+
+
+def test_run_validate_phase_timeout_with_commits_but_budget_exhausted_escalates(
+    tmp_path: Path,
+) -> None:
+    """Even with commits, an exhausted retry budget terminates rather than retrying."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(None, "Gate timed out after 45s", "", "make gate"),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._commits_exist_strict",
+            return_value=True,
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, _result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+
+
 def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", *args],
