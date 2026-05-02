@@ -5,8 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from theforge.config import SCRUBBED_ENV_VARS, SCRUBBED_HOME_PATHS
-from theforge.config.gate_scrub import SCRUBBED_ENV_VARS as MODULE_ENV_VARS
+from theforge.config import (
+    SCRUBBED_CLI_LAUNCHERS,
+    SCRUBBED_ENV_VARS,
+    SCRUBBED_HOME_PATHS,
+    ModelProfile,
+)
+from theforge.config.auth import check_agent_auth
+from theforge.config.gate_scrub import (
+    SCRUBBED_CLI_LAUNCHERS as MODULE_CLI_LAUNCHERS,
+)
+from theforge.config.gate_scrub import (
+    SCRUBBED_ENV_VARS as MODULE_ENV_VARS,
+)
 
 
 def test_scrubbed_env_vars_cover_expected_credentials():
@@ -34,11 +45,44 @@ def test_scrubbed_home_paths_cover_cli_auth_locations():
     assert Path(".gemini") in scrubbed
 
 
+def test_scrubbed_cli_launchers_cover_supported_auth_probes():
+    expected = {"claude", "codex", "gemini", "npx"}
+    assert expected == set(SCRUBBED_CLI_LAUNCHERS)
+    assert SCRUBBED_CLI_LAUNCHERS == MODULE_CLI_LAUNCHERS
+
+
 def test_gate_scrub_fixture_sets_dotenv_disable_and_rehomes_home():
     assert os.environ["PYTHON_DOTENV_DISABLED"] == "1"
     scrubbed_home = Path(os.environ["HOME"])
     for rel_path in SCRUBBED_HOME_PATHS:
         assert (scrubbed_home / rel_path).exists()
+
+
+def test_gate_scrub_fixture_hides_cli_auth_launchers():
+    claude_profile = ModelProfile(
+        name="dev",
+        cli="claude",
+        model="sonnet",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+    codex_profile = ModelProfile(
+        name="dev",
+        cli="codex",
+        model="gpt-5.4",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+
+    ok, reason = check_agent_auth(claude_profile, {})
+    assert ok is False
+    assert reason == "'claude' not found in PATH"
+
+    ok, reason = check_agent_auth(codex_profile, {})
+    assert ok is False
+    assert reason == "npx not found in PATH"
 
 
 def test_real_runner_sentinel_message_is_gate_specific():

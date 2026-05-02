@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .auth import PROVIDER_API_KEY_MAP
+from .defaults import SUPPORTED_CLIS
 from .models import AGENT_REGISTRY
 
 _PROVIDER_ENV_ALIASES: dict[str, tuple[str, ...]] = {
@@ -39,4 +40,6 @@ SCRUBBED_HOME_PATHS: tuple[Path, ...] = (
     Path(".gemini"),
 )
 
-__all__ = ["SCRUBBED_ENV_VARS", "SCRUBBED_HOME_PATHS"]
+SCRUBBED_CLI_LAUNCHERS: tuple[str, ...] = tuple(sorted({*SUPPORTED_CLIS, "npx"}))
+
+__all__ = ["SCRUBBED_CLI_LAUNCHERS", "SCRUBBED_ENV_VARS", "SCRUBBED_HOME_PATHS"]

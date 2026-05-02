@@ -232,7 +232,8 @@ class TestModelsKeyConfig:
             },
             tmp_path,
         )
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.assignment.enabled is True
         assert len(config.agents) == 3
         tiers = {a.tier for a in config.agents}
