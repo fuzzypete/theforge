@@ -15,7 +15,7 @@ from theforge.config import ForgeConfig
 from theforge.task import TaskStory
 
 from . import util as _cu
-from .commit_guard import _has_commits_ahead_of_base
+from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
 from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
 from .logging import StructuredLogger
@@ -120,6 +120,78 @@ def _check_conventions_parallel(
         all_v = [types.SimpleNamespace(**d) for d in result["violations"]]
         net_v = all_v
     return all_v, net_v
+
+
+def _build_timeout_rca_packet(
+    *,
+    state: CoordinatorState,
+    config: ForgeConfig,
+    gate_cmd: str,
+    gate_output_tail: str,
+    workspace_path: Path,
+) -> str:
+    """Assemble the dev retry input for a gate-timeout-with-commits failure."""
+    gate_timeout_s = config.validation.gate_timeout or 600
+    tail_chars = config.validation.gate_output_tail_chars
+
+    head_sha = "(unknown)"
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode == 0:
+            head_sha = proc.stdout.decode().strip() or "(unknown)"
+    except Exception:  # noqa: BLE001
+        pass
+
+    commits_log = ""
+    try:
+        log_proc = subprocess.run(
+            [
+                "git",
+                "log",
+                "--oneline",
+                f"{config.workspace.base_branch}..HEAD",
+            ],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        if log_proc.returncode == 0:
+            commits_log = log_proc.stdout.decode(errors="replace").strip()
+    except Exception:  # noqa: BLE001
+        pass
+
+    handoff_text = _get_handoff_content(forge_handoff_path=_latest_forge_handoff_path(state))
+
+    parts = [
+        f"The validation gate (`{gate_cmd}`) timed out after {gate_timeout_s}s while running"
+        " over your diff. Treat this as a normal dev failure: your diff almost certainly"
+        " caused the hang. RCA which test or product-code path is hanging, fix the underlying"
+        " bug, and re-run the gate. Do not increase the timeout or delete coverage as the"
+        " first move — the wall-clock guard is intentional.",
+        f"Configured gate_timeout: {gate_timeout_s}s",
+        f"HEAD commit under test: {head_sha}",
+    ]
+    if commits_log:
+        parts.append(f"Commits ahead of base:\n{commits_log}")
+    parts.append(
+        f"Gate output tail (last {tail_chars} chars; may be truncated at the kill"
+        f" boundary):\n{gate_output_tail or '(empty)'}"
+    )
+    if state.gate_debug_telemetry:
+        dbg = state.gate_debug_telemetry[-1]
+        parts.append(
+            f"Gate debug command (`{dbg.command}`) exit={dbg.exit_code}"
+            f" timeout={dbg.timeout_s}s output tail:\n{dbg.output_tail}"
+        )
+    parts.append(f"Current handoff:\n{handoff_text}")
+    return "\n\n".join(parts)
 
 
 def _run_validate_phase(
@@ -227,6 +299,34 @@ def _run_validate_phase(
             gate_output_tail=gate_output_tail or gate_err,
             is_timeout=is_timeout,
         )
+        # Timeout with dev commits is a retryable validation failure: hand back
+        # to dev with a timeout-RCA evidence packet rather than escalating
+        # terminally. Routes only when (a) the gate actually timed out, (b) the
+        # dev iteration produced commits ahead of base, (c) budget remains, and
+        # (d) the failure is not a consecutive-identical timeout (circuit
+        # breaker still owns that case). Infrastructure errors (state 4) and
+        # empty-worktree timeouts (state 1) continue to escalate.
+        if (
+            is_timeout
+            and not _is_identical_failure(state.dev_iteration_telemetry)
+            and not state.budget.is_exhausted()
+            and _commits_exist_strict(workspace_path, config.workspace.base_branch)
+        ):
+            state.human_feedback = _build_timeout_rca_packet(
+                state=state,
+                config=config,
+                gate_cmd=resolved_gate_cmd,
+                gate_output_tail=gate_output_tail,
+                workspace_path=workspace_path,
+            )
+            state.retry_reason = RetryReason.GATE_FAIL
+            _log(
+                f"  ✗ VALIDATE   TIMEOUT  (iter={state.dev_iteration}"
+                " → retrying dev with RCA packet)"
+            )
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
+            return _ValidateOutcome.RETRY_DEV, None
         # Check consecutive identical failures (including timeouts) before escalating.
         if _is_identical_failure(state.dev_iteration_telemetry):
             state.phase = Phase.ESCALATE
