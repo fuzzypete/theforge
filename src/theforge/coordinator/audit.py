@@ -375,6 +375,11 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "agent_exit_code": item.agent_exit_code,
             "runner_failure_code": item.runner_failure_code,
             "runner_failure_summary": item.runner_failure_summary,
+            "cli_quota_error_observed": item.cli_quota_error_observed,
+            "transport_fallback_fired": item.transport_fallback_fired,
+            "transport_fallback_reason": item.transport_fallback_reason,
+            "transport_used": item.transport_used,
+            "model_used": item.model_used,
             "transport_retry_count": item.transport_retry_count,
             "transport_retry_events": item.transport_retry_events,
         }

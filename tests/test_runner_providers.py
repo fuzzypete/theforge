@@ -269,7 +269,14 @@ class TestRunCodex:
         assert fallback_profile.provider == "openai"
         assert fallback_profile.model == "o4-mini"
         assert fallback_profile.allowed_tools == ("Read", "Bash")
-        assert result == dataclasses.replace(api_result, model_used="o4-mini")
+        assert result == dataclasses.replace(
+            api_result,
+            model_used="o4-mini",
+            cli_quota_error_observed=True,
+            transport_fallback_fired=True,
+            transport_fallback_reason="matched '429'",
+            transport_used="api",
+        )
 
     def test_codex_non_retryable_failure_does_not_fall_back(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -299,7 +306,11 @@ class TestRunCodex:
 
         mock_api.assert_not_called()
         # model_used is set to profile.model even when no fallback fires
-        assert result == dataclasses.replace(cli_result, model_used="gpt-5.4")
+        assert result == dataclasses.replace(
+            cli_result,
+            model_used="gpt-5.4",
+            transport_used="cli",
+        )
 
     def test_codex_startup_failure_falls_back_to_openai_api(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -338,9 +349,18 @@ class TestRunCodex:
             result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         mock_api.assert_called_once()
-        assert result == dataclasses.replace(api_result, model_used="o4-mini")
+        assert result == dataclasses.replace(
+            api_result,
+            model_used="o4-mini",
+            cli_quota_error_observed=False,
+            transport_fallback_fired=True,
+            transport_fallback_reason="CLI unavailable",
+            transport_used="api",
+        )
 
-    def test_codex_resumed_session_does_not_fall_back_to_api(self, tmp_path: Path) -> None:
+    def test_codex_resumed_session_falls_back_to_api_and_drops_cli_session(
+        self, tmp_path: Path
+    ) -> None:
         profile = ModelProfile(
             name="codex-reviewer",
             cli="codex",
@@ -359,10 +379,19 @@ class TestRunCodex:
             raw={},
             profile_name="codex-reviewer",
         )
+        api_result = AgentResult(
+            success=True,
+            output="api fallback result",
+            session_id=None,
+            cost_usd=0.12,
+            exit_code=0,
+            raw={},
+            profile_name="codex-reviewer",
+        )
 
         with (
             patch("theforge.runners.runner_codex._run_codex", return_value=cli_result),
-            patch("theforge.runners.api.run_api_agent") as mock_api,
+            patch("theforge.runners.api.run_api_agent", return_value=api_result) as mock_api,
         ):
             result = run_agent(
                 prompt="retry review",
@@ -371,9 +400,15 @@ class TestRunCodex:
                 session_id="cli-session",
             )
 
-        mock_api.assert_not_called()
-        # model_used is set to profile.model even when session prevents fallback
-        assert result == dataclasses.replace(cli_result, model_used="gpt-5.4")
+        mock_api.assert_called_once()
+        assert result == dataclasses.replace(
+            api_result,
+            model_used="o4-mini",
+            cli_quota_error_observed=True,
+            transport_fallback_fired=True,
+            transport_fallback_reason="matched '429'",
+            transport_used="api",
+        )
 
     def test_codex_api_fallback_inherits_optional_profile_fields(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -417,7 +452,14 @@ class TestRunCodex:
         assert fallback_profile.reasoning_effort == "high"
         assert fallback_profile.base_url == "https://example.invalid/v1"
         assert fallback_profile.max_iterations == 7
-        assert result == dataclasses.replace(api_result, model_used="o4-mini")
+        assert result == dataclasses.replace(
+            api_result,
+            model_used="o4-mini",
+            cli_quota_error_observed=True,
+            transport_fallback_fired=True,
+            transport_fallback_reason="matched '429'",
+            transport_used="api",
+        )
 
 
 class TestRunGemini:

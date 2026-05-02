@@ -41,3 +41,7 @@ class AgentResult:
     )
     dev_handoff: dict | None = None  # parsed <forge_handoff> block from agent output
     failure_code: str | None = None  # stable machine-readable failure identifier
+    cli_quota_error_observed: bool = False  # CLI reported quota/rate-limit exhaustion
+    transport_fallback_fired: bool = False  # invocation switched transport mid-attempt
+    transport_fallback_reason: str | None = None  # classifier reason that triggered fallback
+    transport_used: str | None = None  # transport that actually ran last: "cli" or "api"

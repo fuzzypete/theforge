@@ -1191,6 +1191,67 @@ class TestStartupFailureEscalation:
         audit = generate_audit_log(config, task, result)
         assert audit["phases"]["dev"]["transport_retries"] == telemetry.transport_retry_events
 
+    @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=True)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_cli_quota_fallback_records_iteration_metadata_and_clears_session(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_pool,
+        _mock_has_commits,
+        tmp_path,
+    ):
+        """CLI->API fallback stays in one dev iteration and clears stale CLI resume state."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = AgentResult(
+            success=True,
+            output="Implemented via API fallback.",
+            session_id=None,
+            cost_usd=0.75,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+            model_used="gpt-5.4",
+            cli_quota_error_observed=True,
+            transport_fallback_fired=True,
+            transport_fallback_reason="matched 'usage limit'",
+            transport_used="api",
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_dev_agent.call_count == 1
+        assert len(result.state.dev_iteration_telemetry) == 1
+        assert result.state.dev_session_id is None
+
+        telemetry = result.state.dev_iteration_telemetry[0]
+        assert telemetry.cli_quota_error_observed is True
+        assert telemetry.transport_fallback_fired is True
+        assert telemetry.transport_fallback_reason == "matched 'usage limit'"
+        assert telemetry.transport_used == "api"
+        assert telemetry.model_used == "gpt-5.4"
+
+        audit = generate_audit_log(config, task, result)
+        dev_loop = audit["iterations"]["dev_loop"][0]
+        assert dev_loop["cli_quota_error_observed"] is True
+        assert dev_loop["transport_fallback_fired"] is True
+        assert dev_loop["transport_used"] == "api"
+        assert dev_loop["model_used"] == "gpt-5.4"
+
     @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
     @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
     @patch("theforge.coordinator.preflight_flow.run_agent")

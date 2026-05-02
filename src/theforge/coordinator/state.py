@@ -179,6 +179,11 @@ class DevIterationTelemetry:
     agent_exit_code: int | None = None
     runner_failure_code: str | None = None
     runner_failure_summary: str | None = None
+    cli_quota_error_observed: bool = False
+    transport_fallback_fired: bool = False
+    transport_fallback_reason: str | None = None
+    transport_used: str | None = None
+    model_used: str | None = None
     transport_retry_count: int = 0
     transport_retry_events: list[dict[str, Any]] = field(default_factory=list)
 

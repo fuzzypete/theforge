@@ -119,17 +119,24 @@ def _handle_exception(
 
 
 _CLI_RETRY_EXIT_CODES = frozenset({69, 75})
-_CLI_FALLBACK_PATTERNS = (
+_CLI_QUOTA_FALLBACK_PATTERNS = (
     "429",
-    "quota",
+    "usage limit",
+    "current quota",
+    "quota limit",
+    "free tier limits have been reached",
     "rate limit",
+    "quota",
     "resource exhausted",
     "resource_exhausted",
+    "spend limit",
     "service unavailable",
     "temporarily unavailable",
     "unavailable",
     "overloaded",
     "try again later",
+)
+_CLI_MODEL_FALLBACK_PATTERNS = (
     "model not found",
     "model_not_found",
     "no such model",
@@ -144,19 +151,43 @@ _CLI_FALLBACK_PATTERNS = (
 _KNOWN_CLI_NAMES = frozenset({"claude", "codex", "gemini"})
 
 
-def _classify_cli_fallback(result: AgentResult) -> str | None:
-    """Return a fallback reason when a CLI failure should retry via API."""
+@dataclass(frozen=True)
+class _CliFallbackDecision:
+    reason: str
+    cli_quota_error_observed: bool
+
+
+def _classify_cli_fallback_decision(result: AgentResult) -> _CliFallbackDecision | None:
+    """Return structured fallback metadata when a CLI failure should retry via API."""
     if result.success:
         return None
     if result.startup_failure:
-        return "CLI unavailable"
+        return _CliFallbackDecision(reason="CLI unavailable", cli_quota_error_observed=False)
     if result.exit_code in _CLI_RETRY_EXIT_CODES:
-        return f"CLI exited {result.exit_code}"
+        return _CliFallbackDecision(
+            reason=f"CLI exited {result.exit_code}",
+            cli_quota_error_observed=True,
+        )
     output = result.output.lower()
-    for pattern in _CLI_FALLBACK_PATTERNS:
+    for pattern in _CLI_QUOTA_FALLBACK_PATTERNS:
         if pattern in output:
-            return f"matched {pattern!r}"
+            return _CliFallbackDecision(
+                reason=f"matched {pattern!r}",
+                cli_quota_error_observed=True,
+            )
+    for pattern in _CLI_MODEL_FALLBACK_PATTERNS:
+        if pattern in output:
+            return _CliFallbackDecision(
+                reason=f"matched {pattern!r}",
+                cli_quota_error_observed=False,
+            )
     return None
+
+
+def _classify_cli_fallback(result: AgentResult) -> str | None:
+    """Return a fallback reason when a CLI failure should retry via API."""
+    decision = _classify_cli_fallback_decision(result)
+    return decision.reason if decision is not None else None
 
 
 def _build_api_fallback_profile(profile: ModelProfile) -> ModelProfile | None:
@@ -237,8 +268,11 @@ def _maybe_run_api_fallback(
     1. The legacy api_fallback profile (ApiFallbackConfig), if configured.
     2. Each entry in profile.fallback_models that resolves to an API model.
 
-    Only quota-exhaustion and model-not-found errors trigger fallback.
-    Session resumption skips API fallback entirely (can't resume across transports).
+    Only quota-exhaustion/capacity and model-not-found errors trigger fallback.
+    When a resumed CLI session hits one of those failures, the retry crosses
+    transports and starts a fresh API request with the same prompt context.
+    That preserves forward progress within the same dev iteration, but session
+    continuity is intentionally lost because CLI sessions cannot resume via API.
 
     model_config is attached to the returned result whenever profile.fallback_models
     is non-empty, regardless of which path fires. model_used is set to the model that
@@ -250,21 +284,45 @@ def _maybe_run_api_fallback(
     model_config = profile.models if profile.fallback_models else ()
     cli_label = profile.name or profile.model
 
-    reason = _classify_cli_fallback(result)
-    if reason is None:
+    decision = _classify_cli_fallback_decision(result)
+    if decision is None:
         # CLI succeeded or non-retryable failure — no fallback needed.
-        if model_config:
-            return replace(result, model_config=model_config, model_used=profile.model)
-        return result
+        return replace(
+            result,
+            model_config=model_config,
+            model_used=result.model_used or profile.model,
+            transport_used=result.transport_used or "cli",
+        )
+
+    reason = decision.reason
+
+    def _annotate_cli_result(cli_result: AgentResult) -> AgentResult:
+        return replace(
+            cli_result,
+            model_config=model_config,
+            model_used=cli_result.model_used or profile.model,
+            cli_quota_error_observed=decision.cli_quota_error_observed,
+            transport_fallback_fired=False,
+            transport_fallback_reason=reason,
+            transport_used="cli",
+        )
+
+    def _annotate_api_result(api_result: AgentResult, model_used: str) -> AgentResult:
+        return replace(
+            api_result,
+            model_config=model_config,
+            model_used=api_result.model_used or model_used,
+            cli_quota_error_observed=decision.cli_quota_error_observed,
+            transport_fallback_fired=True,
+            transport_fallback_reason=reason,
+            transport_used="api",
+        )
 
     if session_id is not None:
         _log(
-            f"  ⚠ {cli_label} CLI failed ({reason}), "
-            "but API fallback was skipped for a resumed session"
+            f"  ⚠ {cli_label} CLI failed ({reason}) while resuming {session_id}; "
+            "retrying via a fresh API request and dropping CLI session continuity"
         )
-        if model_config:
-            return replace(result, model_config=model_config, model_used=profile.model)
-        return result
 
     from theforge.runners import api as runner_api  # noqa: PLC0415
     from theforge.runners.api import _classify_api_model_fallback  # noqa: PLC0415
@@ -289,14 +347,11 @@ def _maybe_run_api_fallback(
             plain_text=plain_text,
         )
         if fallback_result.success:
-            # Preserve model_used from the API result if set; otherwise use api_fallback model.
-            if fallback_result.model_used is None:
-                return replace(fallback_result, model_used=api_fallback_profile.model)
-            return fallback_result
+            return _annotate_api_result(fallback_result, api_fallback_profile.model)
         # api_fallback failed — record it as the best result so far, then fall through
         # to fallback_models. If there are no fallback_models, last_fb_result ensures we
         # return the API failure rather than the original CLI failure.
-        last_fb_result = fallback_result
+        last_fb_result = _annotate_api_result(fallback_result, api_fallback_profile.model)
         last_fb_model = api_fallback_profile.model
 
     # --- New fallback_models list ---
@@ -323,13 +378,13 @@ def _maybe_run_api_fallback(
         )
         if fb_result.success:
             _log(f"  ✓ {cli_label} fallback to {fallback_model!r} succeeded")
-            return replace(fb_result, model_config=model_config, model_used=fallback_model)
+            return _annotate_api_result(fb_result, fallback_model)
 
         if not _classify_api_model_fallback(fb_result):
             # Non-fallback error; stop iterating and surface this result
-            return replace(fb_result, model_config=model_config, model_used=fallback_model)
+            return _annotate_api_result(fb_result, fallback_model)
 
-        last_fb_result = fb_result
+        last_fb_result = _annotate_api_result(fb_result, fallback_model)
         last_fb_model = fallback_model
         _log(f"  ⚠ {cli_label} API fallback {fallback_model!r} also failed")
 
@@ -340,9 +395,7 @@ def _maybe_run_api_fallback(
 
     # No API fallback was available or attempted (no api_fallback_profile, no fallback_models).
     # Return the original CLI result — there is nothing else to surface.
-    if model_config:
-        return replace(result, model_config=model_config, model_used=profile.model)
-    return result
+    return _annotate_cli_result(result)
 
 
 # ── Runner dispatch ───────────────────────────────────────────────────
@@ -395,7 +448,7 @@ def run_agent(
     if _profile_transport_kind(profile) == "api":
         from theforge.runners import api as runner_api  # noqa: PLC0415
 
-        return runner_api.run_api_agent(
+        api_result = runner_api.run_api_agent(
             prompt=prompt,
             profile=profile,
             working_dir=working_dir,
@@ -403,6 +456,7 @@ def run_agent(
             secrets=secrets or {},
             plain_text=plain_text,
         )
+        return replace(api_result, transport_used=api_result.transport_used or "api")
 
     cli = _profile_cli_runner(profile)
     api_fallback_profile = _build_api_fallback_profile(profile)
