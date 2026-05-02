@@ -280,6 +280,7 @@ def _write_sprint_audit(
     sprint_id: str | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
+    current_story_entries_by_ref: "dict[str, dict] | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
@@ -288,6 +289,7 @@ def _write_sprint_audit(
     tasks_by_slug = tasks_by_slug or {}
     dropped_slugs = dropped_slugs or {}
     skipped_issues = skipped_issues or []
+    current_story_entries_by_ref = current_story_entries_by_ref or {}
 
     # Build per-spec entries
     spec_entries = []
@@ -402,6 +404,8 @@ def _write_sprint_audit(
                 entry["started_at"] = None
                 entry["finished_at"] = None
             entry["batch"] = batch_assignments.get(slug, 0)
+        elif canonical_ref in current_story_entries_by_ref:
+            entry = dict(current_story_entries_by_ref[canonical_ref])
         else:
             # Dropped by launch guard (active-worktree collision, lock held,
             # or preserved-escalated) takes precedence over the generic

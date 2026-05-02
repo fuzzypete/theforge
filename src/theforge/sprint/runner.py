@@ -92,15 +92,20 @@ def derive_worker_timeout(
     return resolve_timeout(base, None, None, complexity, complexity_score)
 
 
-def _read_prior_sprint_cost(project_root: Path) -> float:
-    """Read total_cost_usd from the prior sprint-audit.yaml, if it exists."""
+def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
+    """Read carry-forward cost for a same-sprint re-exec from sprint-audit.yaml."""
+    if not sprint_id or not os.environ.get("FORGE_PREV_RUN_ID"):
+        return 0.0
     audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
     if not audit_path.exists():
         return 0.0
     try:
         with open(audit_path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
+        sprint_block = data.get("sprint", {})
+        if sprint_block.get("sprint_id") != sprint_id:
+            return 0.0
+        return float(sprint_block.get("total_cost_usd", 0.0))
     except (OSError, ValueError, TypeError):
         return 0.0
 
@@ -1229,7 +1234,7 @@ def run_sprint(
     # Resume mode: triage all stories and carry forward prior costs
     triages: dict[str, StoryTriage] = {}
     if resume:
-        prior_cost = _read_prior_sprint_cost(config.project_root)
+        prior_cost = _read_prior_sprint_cost(config.project_root, _sprint_id)
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
         _log("Triaging specs...")
@@ -1345,6 +1350,15 @@ def run_sprint(
             "merge": False,
             "batch": 0,
             "depends_on": list(getattr(task, "depends_on", None) or []),
+            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
+            "inferred_dependencies": {
+                "manifest": [
+                    dep
+                    for dep in (getattr(task, "depends_on", None) or [])
+                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
+                ],
+                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
+            },
         }
 
     # Dependencies already satisfied outside this sprint still count as landed
@@ -1792,30 +1806,27 @@ def run_sprint(
                 if cumulative >= resolved.budget_usd:
                     dag.mark_skipped(task.slug)
                     _budget_reason = (
-                        f"budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
+                        "budget exhausted "
+                        f"(sprint ${accumulated_cost:.2f} + carried ${prior_cost:.2f} = "
+                        f"${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
                     )
                     _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=_budget_reason)
                     if stopped_reason is None:
-                        stopped_reason = (
-                            f"Budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
+                        _budget_math = (
+                            f"sprint ${accumulated_cost:.2f} + carried ${prior_cost:.2f} = "
+                            f"${cumulative:.2f} >= ${resolved.budget_usd:.2f}"
                         )
+                        stopped_reason = f"Budget exhausted ({_budget_math})"
                         if notify and config.notifications.backend not in ("ntfy", "none"):
                             from ..notify_backends import send_notifications
 
                             send_notifications(
                                 config,
                                 f'TheForge: budget exceeded \u2014 "{resolved.name}"',
-                                f"${cumulative:.2f} >= ${resolved.budget_usd:.2f}"
-                                " \u2014 remaining stories skipped",
+                                f"{_budget_math} \u2014 remaining stories skipped",
                             )
-                    _log(f"SKIPPED {task.slug} (budget exhausted)")
-                    _record_current_story_entry(
-                        task.slug,
-                        "SKIPPED",
-                        error=(
-                            f"budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
-                        ),
-                    )
+                    _log(f"SKIPPED {task.slug} ({_budget_reason})")
+                    _record_current_story_entry(task.slug, "SKIPPED", error=_budget_reason)
                     if _state_writer is not None:
                         _state_writer.update(task.slug, status="skipped")
                     continue
@@ -2316,6 +2327,7 @@ def run_sprint(
         sprint_id=_sprint_id,
         dropped_slugs=_dropped_slugs,
         skipped_issues=skipped_issues,
+        current_story_entries_by_ref=current_story_entries_by_ref,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/

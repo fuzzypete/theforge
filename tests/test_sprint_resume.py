@@ -25,7 +25,7 @@ from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage, _triage_spec
 from theforge.sprint.lock import acquire_story_locks, release_story_locks
 from theforge.sprint.manifest import ResolvedSprint, _build_task_from_story
-from theforge.sprint.runner import _run_fresh
+from theforge.sprint.runner import _read_prior_sprint_cost, _run_fresh
 from theforge.sprint.sources import GitHubIssueSource
 from theforge.task import TaskStory
 
@@ -80,6 +80,24 @@ def _make_manifest(tmp_path: Path, specs: list[str], budget: float = 10.0) -> Pa
         encoding="utf-8",
     )
     return manifest_path
+
+
+def _set_sprint_id(
+    tmp_path: Path,
+    sprint_name: str = "Test Sprint",
+    sprint_id: str = "sprint-123",
+) -> str:
+    sprint_dir = tmp_path / ".forge" / "logs" / sprint_name
+    sprint_dir.mkdir(parents=True, exist_ok=True)
+    (sprint_dir / ".sprint_id").write_text(sprint_id, encoding="utf-8")
+    return sprint_id
+
+
+def _write_prior_sprint_audit(tmp_path: Path, sprint_id: str, total_cost_usd: float) -> None:
+    audits_dir = tmp_path / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    with open(audits_dir / "sprint-audit.yaml", "w", encoding="utf-8") as f:
+        yaml.dump({"sprint": {"sprint_id": sprint_id, "total_cost_usd": total_cost_usd}}, f)
 
 
 def _make_coordinator_result(
@@ -285,6 +303,38 @@ class TestTriageSpec:
 
         assert triage.action == "full"
         assert triage.reason == "no worktree found"
+
+
+class TestReadPriorSprintCost:
+    def test_returns_zero_without_reexec_signal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sprint_id = _set_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 3.5)
+
+        monkeypatch.delenv("FORGE_PREV_RUN_ID", raising=False)
+
+        assert _read_prior_sprint_cost(tmp_path, sprint_id) == 0.0
+
+    def test_returns_zero_for_different_sprint_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sprint_id = _set_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, "other-sprint", 3.5)
+
+        monkeypatch.setenv("FORGE_PREV_RUN_ID", "run-prev-123")
+
+        assert _read_prior_sprint_cost(tmp_path, sprint_id) == 0.0
+
+    def test_returns_prior_cost_for_same_sprint_reexec(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sprint_id = _set_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 3.5)
+
+        monkeypatch.setenv("FORGE_PREV_RUN_ID", "run-prev-123")
+
+        assert _read_prior_sprint_cost(tmp_path, sprint_id) == pytest.approx(3.5)
 
     def test_triage_same_tip_missing_worktree_with_prior_approve_skips_when_squash_merged(
         self, tmp_path: Path
@@ -646,13 +696,10 @@ class TestResumeSprintIntegration:
         _make_spec_file(tmp_path, "Feature B", "feature-b")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=1.0)
         config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
 
         # Prior run spent $2 — budget exhausted
-        audits_dir = tmp_path / ".forge" / "audits"
-        audits_dir.mkdir(parents=True)
-        prior_audit = {"sprint": {"total_cost_usd": 2.0}}
-        with open(audits_dir / "sprint-audit.yaml", "w") as f:
-            yaml.dump(prior_audit, f)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 2.0)
 
         merged_triage = StoryTriage(
             story_path="feature-a.md",
@@ -674,7 +721,8 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
             with patch("theforge.sprint.runner.run_task") as mock_run:
-                result = run_sprint(config, manifest_path, resume=True)
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint(config, manifest_path, resume=True)
 
         # Merged spec should remain already-done/skipped, not budget-skipped.
         assert result.specs_succeeded == 0
@@ -710,17 +758,13 @@ class TestResumeSprintIntegration:
         assert result.specs_succeeded == 1
 
     def test_resume_cost_continuity(self, tmp_path: Path) -> None:
-        """Prior sprint cost is carried forward into total_cost_usd."""
+        """Same-sprint re-exec carries prior cost forward into total_cost_usd."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
         config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
 
-        # Write a prior sprint-audit.yaml with a known cost
-        audits_dir = tmp_path / ".forge" / "audits"
-        audits_dir.mkdir(parents=True)
-        prior_audit = {"sprint": {"total_cost_usd": 3.50}}
-        with open(audits_dir / "sprint-audit.yaml", "w") as f:
-            yaml.dump(prior_audit, f)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 3.50)
 
         full_triage = StoryTriage(
             story_path="feature-a.md",
@@ -732,23 +776,47 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
             with patch("theforge.sprint.runner.run_task", return_value=coord_result):
-                result = run_sprint(config, manifest_path, resume=True)
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint(config, manifest_path, resume=True)
 
         # total should be prior (3.50) + new (1.00)
         assert result.total_cost_usd == pytest.approx(4.50)
+
+    def test_resume_different_sprint_does_not_carry_prior_cost(self, tmp_path: Path) -> None:
+        """A new sprint starts at $0 even if a different sprint left audit cost behind."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
+        config = _make_config(tmp_path)
+        _set_sprint_id(tmp_path, sprint_id="current-sprint")
+        _write_prior_sprint_audit(tmp_path, "older-sprint", 6.0)
+
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_run:
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint(config, manifest_path, resume=True)
+
+        mock_run.assert_called_once()
+        assert result.specs_succeeded == 1
+        assert result.total_cost_usd == pytest.approx(1.0)
+        assert result.stopped_reason is None
 
     def test_resume_prior_cost_exceeds_budget(self, tmp_path: Path) -> None:
         """When prior cost already meets/exceeds budget, first spec is skipped."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
         config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
 
         # Prior run already spent $6 (over the $5 budget)
-        audits_dir = tmp_path / ".forge" / "audits"
-        audits_dir.mkdir(parents=True)
-        prior_audit = {"sprint": {"total_cost_usd": 6.0}}
-        with open(audits_dir / "sprint-audit.yaml", "w") as f:
-            yaml.dump(prior_audit, f)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
 
         full_triage = StoryTriage(
             story_path="feature-a.md",
@@ -759,13 +827,21 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
             with patch("theforge.sprint.runner.run_task") as mock_run:
-                result = run_sprint(config, manifest_path, resume=True)
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint(config, manifest_path, resume=True)
 
         # Spec should be skipped — prior cost alone exceeds budget
         mock_run.assert_not_called()
         assert result.specs_skipped == 1
-        assert result.stopped_reason is not None
-        assert "budget" in result.stopped_reason.lower()
+        assert (
+            result.stopped_reason
+            == "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+        audit_data = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        assert audit_data["specs"][0]["error"] == (
+            "budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
 
     def test_no_resume_flag_unchanged(self, tmp_path: Path) -> None:
         """Without --resume, behavior is unchanged (run_task called normally)."""
