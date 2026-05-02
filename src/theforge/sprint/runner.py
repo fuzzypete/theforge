@@ -88,6 +88,25 @@ def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
     _deindex_forge_artifacts(config.project_root)
 
 
+def _intake_agent_caller_stub(_body: str, findings: list) -> str | None:
+    """Minimal default agent caller for the intake remediation gate.
+
+    A real LLM-backed rewrite is a deferred follow-up; until that lands,
+    this stub records the deferral explicitly in the sprint log and returns
+    None so the orchestrator routes the story to DROPPED_AFTER_FIX (with
+    findings preserved) instead of silently masquerading as DROPPED_SHAPE.
+    The intent: an operator who sets ``intake.auto_fix: true`` and sees a
+    drop should be able to tell from the audit trail that the agent path
+    fired but produced no rewrite, not that auto-fix was never attempted.
+    """
+    codes = ", ".join(getattr(f, "code", "?") for f in findings)
+    _log(
+        "Intake auto-fix agent caller is a stub (no LLM wired). "
+        f"Returning no rewrite for {len(findings)} semantic finding(s): {codes}"
+    )
+    return None
+
+
 def _run_intake_remediation_pass(
     *,
     config: ForgeConfig,
@@ -116,6 +135,7 @@ def _run_intake_remediation_pass(
         grooming_enabled=grooming_enabled,
         auto_fix_enabled=auto_fix_enabled,
         auto_fix_mode=auto_fix_mode,
+        agent_caller=_intake_agent_caller_stub if auto_fix_enabled else None,
     )
 
 
@@ -1345,6 +1365,16 @@ def run_sprint(
         dropped_slugs_intake = {
             slug for slug, outcome in intake_outcomes.items() if outcome.kind in terminal_kinds
         }
+        # Convention 6: instrument the gate so PASSED stories also leave a
+        # trace in the sprint log, not only drops/remediations. A passed-only
+        # gate would otherwise produce no audit signal at all.
+        _kind_counts: dict[str, int] = {}
+        for outcome in intake_outcomes.values():
+            _kind_counts[outcome.kind.value] = _kind_counts.get(outcome.kind.value, 0) + 1
+        _log(
+            "Intake remediation gate outcomes: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(_kind_counts.items()))
+        )
         for slug, outcome in intake_outcomes.items():
             if outcome.kind is IntakeOutcomeKind.PASSED:
                 continue

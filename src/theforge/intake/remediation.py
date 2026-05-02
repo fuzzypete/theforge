@@ -308,10 +308,10 @@ def run_intake_remediation(
     a linked GitHub issue are returned as ``PASSED`` with empty findings —
     the grooming check is GH-only because it needs the live issue body.
 
-    When both ``grooming_enabled`` and ``auto_fix_enabled`` are False, this is
-    a near no-op: shape findings are still collected for parity but no
-    remediation runs and no story is dropped here. (The shape gate already
-    filtered upstream in ``cli/sprint.py``.)
+    When both ``grooming_enabled`` and ``auto_fix_enabled`` are False, this
+    is a pure no-op: every task is returned as ``PASSED`` with empty
+    findings, no shape check is run here, and no GH calls are made. (The
+    shape gate already filtered upstream in ``cli/sprint.py``.)
     """
     outcomes: dict[str, IntakeOutcome] = {}
 

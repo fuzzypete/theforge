@@ -9,8 +9,9 @@ must have a seam-level test that doesn't rely on the full sprint pipeline.
 
 from __future__ import annotations
 
+from theforge.intake import IntakeFinding, IntakeSeverity
 from theforge.sprint.query import NormalizedDependencyPlan
-from theforge.sprint.runner import _filter_normalized_for_intake
+from theforge.sprint.runner import _filter_normalized_for_intake, _intake_agent_caller_stub
 from theforge.task import TaskStory
 
 
@@ -40,3 +41,15 @@ def test_filter_preserves_existing_blocked_entries():
     new = _filter_normalized_for_intake(plan, {"a"})
     assert "preexisting" in new.blocked["b"]
     assert "a" in new.blocked["b"]
+
+
+def test_intake_agent_caller_stub_returns_none():
+    findings = [
+        IntakeFinding(
+            code="missing_acceptance_criteria",
+            severity=IntakeSeverity.BLOCK,
+            location="acceptance_criteria",
+            problem="no AC",
+        )
+    ]
+    assert _intake_agent_caller_stub("body", findings) is None
