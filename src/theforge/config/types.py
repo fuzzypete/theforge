@@ -462,7 +462,7 @@ class AdvisoryConventionsConfig:
     summary_top_n: int = 10
     noteworthy_threshold_percent: float = 10.0
     commit_shared_artifact: bool = False
-    shared_artifact_path: str = "docs/advisory-conventions.yaml"
+    shared_artifact_path: str | None = None
     issue_filing: AdvisoryIssueFilingConfig = field(default_factory=AdvisoryIssueFilingConfig)
 
 

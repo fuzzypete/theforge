@@ -810,10 +810,18 @@ def load_config(config_path: Path) -> ForgeConfig:
             "forge.yaml 'conventions.advisory.commit_shared_artifact' must be a bool,"
             f" got {_commit_shared!r}"
         )
-    if not isinstance(_shared_artifact_path, str) or not _shared_artifact_path.strip():
+    if _shared_artifact_path is not None and (
+        not isinstance(_shared_artifact_path, str) or not _shared_artifact_path.strip()
+    ):
         raise ValueError(
-            "forge.yaml 'conventions.advisory.shared_artifact_path' must be a non-empty string,"
+            "forge.yaml 'conventions.advisory.shared_artifact_path' must be "
+            "a non-empty string or null,"
             f" got {_shared_artifact_path!r}"
+        )
+    if _commit_shared and _shared_artifact_path is None:
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.shared_artifact_path' must be set when "
+            "'commit_shared_artifact' is true"
         )
     if not isinstance(_issue_filing_raw, dict):
         raise ValueError(
@@ -856,7 +864,9 @@ def load_config(config_path: Path) -> ForgeConfig:
         summary_top_n=_summary_top_n,
         noteworthy_threshold_percent=float(_noteworthy_threshold),
         commit_shared_artifact=_commit_shared,
-        shared_artifact_path=_shared_artifact_path,
+        shared_artifact_path=(
+            _shared_artifact_path.strip() if isinstance(_shared_artifact_path, str) else None
+        ),
         issue_filing=AdvisoryIssueFilingConfig(
             enabled=_issue_filing_enabled,
             threshold_percent=float(_issue_filing_threshold),

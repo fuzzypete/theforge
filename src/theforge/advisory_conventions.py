@@ -117,7 +117,7 @@ def update_advisory_violations(
         "entries": observed_entries,
     }
     _write_yaml_atomic(advisory_artifact_path(config), artifact_data)
-    if advisory_cfg.commit_shared_artifact:
+    if advisory_cfg.commit_shared_artifact and advisory_cfg.shared_artifact_path:
         _write_yaml_atomic(config.project_root / advisory_cfg.shared_artifact_path, artifact_data)
 
     return {

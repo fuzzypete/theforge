@@ -709,7 +709,7 @@ class TestConventionsConfig:
         assert config.conventions_advisory.summary_top_n == 10
         assert config.conventions_advisory.noteworthy_threshold_percent == 10.0
         assert config.conventions_advisory.commit_shared_artifact is False
-        assert config.conventions_advisory.shared_artifact_path == "docs/advisory-conventions.yaml"
+        assert config.conventions_advisory.shared_artifact_path is None
         assert config.conventions_advisory.issue_filing.enabled is False
         assert config.conventions_advisory.issue_filing.threshold_percent == 25.0
         assert config.conventions_advisory.issue_filing.label == "refactor-debt"
@@ -754,6 +754,15 @@ class TestConventionsConfig:
             tmp_path,
         )
         with pytest.raises(ValueError, match="summary_top_n"):
+            load_config(config_path)
+
+    def test_conventions_advisory_commit_shared_requires_explicit_path(self, tmp_path):
+        """Shared advisory mirroring stays opt-in and must not assume a repo layout."""
+        config_path = _write_config(
+            {"conventions": {"advisory": {"commit_shared_artifact": True}}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="shared_artifact_path"):
             load_config(config_path)
 
 
