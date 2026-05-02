@@ -9,6 +9,7 @@ from theforge.shape_check.classifier import LlmCaller, classify
 from theforge.shape_check.heuristics import (
     DEFAULT_CLUSTER_THRESHOLD,
     SEED_VOCABULARY,
+    check_bug_missing_diagnosis,
     check_epic_or_tracking,
     check_implementation_design_dump,
     check_missing_acceptance_criteria,
@@ -54,6 +55,7 @@ def check(
         check_superseded,
         check_untriaged_finding,
         check_missing_type,
+        check_bug_missing_diagnosis,
         check_missing_acceptance_criteria,
         check_missing_example,
         check_no_observable_done_state,

@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import yaml
 
+from ..shape_check.heuristics import (
+    FIX_READY_STATUS_LABELS,
+    RECOGNIZED_STATUS_LABELS,
+    derive_fix_ready,
+)
 from ..task import ALLOW_MUTATE_FORGE_YAML_KEY, RECOGNIZED_STORY_TYPES, StoryTypeError, TaskStory
 from .manifest import _build_task_from_story
 
@@ -321,6 +326,28 @@ class GitHubIssueSource:
             if isinstance(lbl, dict) and lbl.get("name")
         ]
         story_type, type_warnings = _derive_type_from_labels(label_names, number)
+        fix_ready, readiness_warnings = derive_fix_ready(story_type, body)
+        status_labels = sorted(set(label_names) & RECOGNIZED_STATUS_LABELS)
+        # Surface label/body disagreement for operator awareness — body is authoritative.
+        if (
+            story_type == "bug"
+            and fix_ready is False
+            and any(lbl in FIX_READY_STATUS_LABELS for lbl in label_names)
+        ):
+            readiness_warnings = [
+                *readiness_warnings,
+                "label claims fix-ready but body lacks a complete Diagnosis section",
+            ]
+        if (
+            story_type == "bug"
+            and fix_ready is True
+            and status_labels
+            and not (set(status_labels) & FIX_READY_STATUS_LABELS)
+        ):
+            readiness_warnings = [
+                *readiness_warnings,
+                f"body has complete Diagnosis but label is {status_labels[0]!r}",
+            ]
 
         slug = f"issue-{number}"
         return TaskStory(
@@ -335,6 +362,8 @@ class GitHubIssueSource:
             allow_mutate_forge_yaml=metadata.get(ALLOW_MUTATE_FORGE_YAML_KEY) is True,
             type=story_type,
             type_warnings=type_warnings,
+            fix_ready=fix_ready,
+            readiness_warnings=readiness_warnings,
         )
 
     def on_complete(

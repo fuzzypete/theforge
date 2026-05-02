@@ -209,6 +209,75 @@ def _find_tracking_body_declaration(body: str) -> tuple[str, str] | None:
     return None
 
 
+DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
+REQUIRED_DIAGNOSIS_TOKENS: tuple[str, ...] = (
+    "observed symptom",
+    "evidence",
+    "ruled out",
+    "confirmed cause",
+    "affected code path",
+    "fix-success criterion",
+)
+
+# Status labels operators can apply to a bug to communicate fix-readiness intent.
+# These are advisory — the body's Diagnosis section is the authoritative signal.
+RECOGNIZED_STATUS_LABELS: frozenset[str] = frozenset(
+    {"status:triage", "status:investigating", "status:diagnosed"}
+)
+FIX_READY_STATUS_LABELS: frozenset[str] = frozenset({"status:diagnosed"})
+
+
+def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
+    """Return (is_complete, missing_tokens) for a bug's Diagnosis section.
+
+    Returns ``(False, ["missing Diagnosis section"])`` when the section is
+    absent. Returns ``(False, [...])`` when the section is present but lacks
+    one or more required tokens. Returns ``(True, [])`` only when every
+    required token appears within the section text (case-insensitive).
+    """
+    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    if section is None:
+        return False, ["missing Diagnosis section"]
+    section_lower = section.lower()
+    missing = [tok for tok in REQUIRED_DIAGNOSIS_TOKENS if tok not in section_lower]
+    if missing:
+        return False, missing
+    return True, []
+
+
+def derive_fix_ready(
+    story_type: str | None, body: str, labels: Iterable[str] | None = None
+) -> tuple[bool | None, list[str]]:
+    """Compute the binary fix-readiness signal from structured type and body.
+
+    Rules:
+    - ``type=None`` → ``(None, [warning])`` (cannot determine).
+    - ``type='bug'`` → ``True`` iff the body contains a complete Diagnosis section
+      with every required component; otherwise ``False`` with explanatory warnings.
+    - Any other recognized type (enhancement, task, epic) → always fix-ready
+      since features/tasks are described by acceptance criteria, not diagnosis.
+
+    Status labels (e.g. ``status:diagnosed``) are operator intent and do not
+    override body content per AC: absence of the Diagnosis section flips a
+    bug to not-fix-ready regardless of label.
+    """
+    if story_type is None:
+        return None, ["fix-readiness undetermined: story type unknown"]
+    if story_type == "bug":
+        ok, missing = diagnosis_completeness(body)
+        if ok:
+            return True, []
+        if missing == ["missing Diagnosis section"]:
+            return False, [
+                "bug missing Diagnosis section — not fix-ready (run "
+                "`forge diagnose` or add diagnosis manually)"
+            ]
+        return False, [
+            f"bug Diagnosis section missing required component: {tok}" for tok in missing
+        ]
+    return True, []
+
+
 def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
     """Return true for bug reports, which use observed/expected sections instead of AC."""
     if _lower_labels(labels) & _BUG_LABELS:
@@ -244,6 +313,42 @@ def check_missing_type(title: str, body: str, labels: Iterable[str]) -> Reason |
             ),
         )
     return None
+
+
+def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    """Block bug-typed issues that lack a complete Diagnosis section.
+
+    A symptom-only bug entering the sprint flow is the failure mode this
+    check exists to prevent: implementers hypothesize a cause, the PR
+    fixes the hypothesis, reviewers verify the implementation matches the
+    plan, the bug closes — and the original symptom persists because the
+    cause was elsewhere. Without a diagnosis, there is no contract for
+    reviewers to verify against.
+    """
+    if not is_bug_format_issue(body, labels):
+        return None
+    ok, missing = diagnosis_completeness(body)
+    if ok:
+        return None
+    if missing == ["missing Diagnosis section"]:
+        return Reason(
+            code="bug_missing_diagnosis",
+            severity=Severity.BLOCKING,
+            detail=(
+                "Bug has no Diagnosis section — not fix-ready. Add a '## Diagnosis' "
+                "section containing observed symptom, evidence, ruled-out hypotheses, "
+                "confirmed cause, affected code path, and fix-success criterion before "
+                "sprinting (or run `forge diagnose` when available)."
+            ),
+        )
+    return Reason(
+        code="bug_missing_diagnosis",
+        severity=Severity.BLOCKING,
+        detail=(
+            "Bug Diagnosis section is incomplete — missing required component(s): "
+            f"{', '.join(missing)}."
+        ),
+    )
 
 
 def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reason | None:

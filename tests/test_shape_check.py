@@ -38,6 +38,21 @@ WELL_FORMED_AC = textwrap.dedent(
     """
 )
 
+# A bug body that satisfies the fix-readiness contract (issue #1153): every
+# required Diagnosis component must be present for the issue to pass shape check.
+DIAGNOSED_BUG_BODY = textwrap.dedent(
+    """\
+    ## Diagnosis
+
+    - **Observed symptom.** Command exits 1 instead of 0 on success.
+    - **Evidence.** Reproduction in run id `abc123`.
+    - **Ruled out.** Config drift; verified config is loaded correctly.
+    - **Confirmed cause.** Off-by-one in exit-code computation at runner.py:42.
+    - **Affected code path.** runner.exit_code, cli.main return.
+    - **Fix-success criterion.** Command returns 0 on success path; existing tests pass.
+    """
+)
+
 
 # ----- per-reason unit tests -----------------------------------------------
 
@@ -336,7 +351,8 @@ class TestTooManyBehavioralClusters:
 
 class TestCheckAggregation:
     def test_runnable(self):
-        result = check("Fix thing", WELL_FORMED_AC, ["bug"])
+        # Bugs require a complete Diagnosis section to pass shape check (#1153).
+        result = check("Fix thing", DIAGNOSED_BUG_BODY, ["bug"])
         assert result.shape is Shape.RUNNABLE
         assert result.suggested_action is SuggestedAction.PROCEED
         assert result.reasons == ()
@@ -386,13 +402,15 @@ class TestCheckAggregation:
             r.code == "missing_example" and r.severity is Severity.ADVISORY for r in result.reasons
         )
 
-    def test_bug_label_without_ac_is_runnable(self):
+    def test_bug_label_without_diagnosis_is_blocked(self):
+        # Replaces the prior "bug without AC is runnable" assertion; #1153 flips
+        # bugs to not-fix-ready when the Diagnosis section is missing.
         result = check("Bug: command exits incorrectly", "## What\nprose only", ["bug"])
-        assert result.shape is Shape.RUNNABLE
-        assert result.suggested_action is SuggestedAction.PROCEED
-        assert result.reasons == ()
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.suggested_action is SuggestedAction.CLARIFY
+        assert any(r.code == "bug_missing_diagnosis" for r in result.reasons)
 
-    def test_bug_report_headings_without_ac_are_runnable(self):
+    def test_bug_report_headings_without_diagnosis_are_blocked(self):
         body = textwrap.dedent(
             """\
             ## What happened
@@ -403,6 +421,11 @@ class TestCheckAggregation:
             """
         )
         result = check("Shape gate blocks bugs", body, ["bug"])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert any(r.code == "bug_missing_diagnosis" for r in result.reasons)
+
+    def test_bug_with_complete_diagnosis_is_runnable(self):
+        result = check("Bug: command exits incorrectly", DIAGNOSED_BUG_BODY, ["bug"])
         assert result.shape is Shape.RUNNABLE
         assert result.suggested_action is SuggestedAction.PROCEED
         assert result.reasons == ()

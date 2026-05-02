@@ -34,6 +34,8 @@ class TaskStory:
     allow_mutate_forge_yaml: bool = False  # explicit opt-in for forge.yaml guard override
     type: str | None = None  # structured story type from frontmatter or GH label
     type_warnings: list[str] = field(default_factory=list)  # missing-type migration warnings
+    fix_ready: bool | None = None  # True iff bug has full Diagnosis section or non-bug type
+    readiness_warnings: list[str] = field(default_factory=list)  # why fix_ready is False/None
 
 
 # Backward-compat alias
