@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from theforge.artifacts import AUDIT_PATH, ESCALATED_MARKER_PATH
+from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
@@ -296,6 +296,7 @@ def _merge_branch(
         _cu._log(f"Warning: worktree cleanup failed: {rm_out}")
     else:
         _cu._log(f"Worktree removed: {worktree_rel}")
+        _remove_leftover_worktree_dir(workspace_path)
 
     return info
 
@@ -313,6 +314,38 @@ def _fmt_age(seconds: int) -> str:
         return f"{h} hour{'s' if h != 1 else ''}"
     d = seconds // 86400
     return f"{d} day{'s' if d != 1 else ''}"
+
+
+def _is_forge_owned_worktree_leftover(path: Path) -> bool:
+    """Return True when a leftover worktree path is empty or contains only .forge/ content."""
+    try:
+        for child in path.rglob("*"):
+            rel = child.relative_to(path)
+            if not rel.parts or rel.parts[0] != ".forge":
+                return False
+    except FileNotFoundError:
+        return True
+    return True
+
+
+def _remove_leftover_worktree_dir(path: Path) -> None:
+    """Remove a leftover worktree shell when only Forge-owned artifacts remain."""
+    if not path.exists():
+        return
+    if not path.is_dir():
+        _cu._log(f"  Warning: leftover worktree path is not a directory: {path}")
+        return
+    if not _is_forge_owned_worktree_leftover(path):
+        _cu._log(f"  Warning: leftover worktree has unexpected contents, preserving: {path}")
+        return
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _cu._log(f"  Warning: failed to delete leftover worktree directory {path}: {exc}")
+    else:
+        _cu._log(f"  Removed leftover worktree directory: {path}")
 
 
 def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tuple[bool, str]:
@@ -361,6 +394,7 @@ def _remove_worktree(path: Path, branch: str, project_root: Path, info_line: str
         _cu._log(f"  Warning: git worktree remove failed: {out}")
     else:
         _cu._log(f"  Removed stale worktree: {path}")
+        _remove_leftover_worktree_dir(path)
 
     ok2, out2 = _cu._run_shell(f"git branch -D {branch}", project_root)
     if not ok2:
@@ -419,10 +453,7 @@ def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
         resolved_candidate = candidate.resolve()
         branch_name = registered.get(resolved_candidate)
         if branch_name is None and resolved_candidate not in registered:
-            files = [
-                p.relative_to(candidate).as_posix() for p in candidate.rglob("*") if p.is_file()
-            ]
-            if not files or set(files) <= {AUDIT_PATH.as_posix()}:
+            if _is_forge_owned_worktree_leftover(candidate):
                 shutil.rmtree(candidate, ignore_errors=True)
             continue
 

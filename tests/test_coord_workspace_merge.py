@@ -365,6 +365,9 @@ class TestCoordinatorAutoMerge:
                 return (True, "main")
             if "git log" in cmd and ".." in cmd:
                 return (True, "")  # no commits ahead
+            if cmd == f"mkdir -p {task.slug}":
+                workspace.mkdir(parents=True, exist_ok=True)
+                return (True, "OK")
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect

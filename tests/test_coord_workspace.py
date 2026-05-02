@@ -590,6 +590,44 @@ def test_merge_branch_deindexes_workspace_before_merge(mock_shell, mock_deindex,
     mock_deindex.assert_called_once_with(workspace, purge=True)
 
 
+@patch("theforge.coordinator.workspace._cu._run_shell")
+def test_merge_branch_removes_leftover_forge_shell_after_git_worktree_remove(mock_shell, tmp_path):
+    """_merge_branch deletes a leftover worktree shell when only .forge/ content remains."""
+    from theforge.coordinator.workspace import _merge_branch
+
+    workspace = tmp_path / "wt"
+    (workspace / ".forge" / "traces").mkdir(parents=True)
+    (workspace / ".forge" / "traces" / "1-dev.txt").write_text("trace\n", encoding="utf-8")
+
+    def shell_side_effect(cmd, cwd, **kwargs):
+        if "git branch --list" in cmd:
+            return (True, "* main")
+        if "git status --porcelain" in cmd:
+            return (True, "")
+        if "git log main..forge/issue-1 --oneline" in cmd:
+            return (True, "abc123 feat: change")
+        if "git checkout main" in cmd:
+            return (True, "")
+        if "git merge --ff-only forge/issue-1" in cmd:
+            return (True, "")
+        if "git worktree remove --force .forge/worktrees/issue-1" in cmd:
+            return (True, "")
+        return (True, "")
+
+    mock_shell.side_effect = shell_side_effect
+
+    info = _merge_branch(
+        project_root=tmp_path,
+        base_branch="main",
+        branch_name="forge/issue-1",
+        slug="issue-1",
+        workspace_path=workspace,
+    )
+
+    assert info["merged"] is True
+    assert not workspace.exists()
+
+
 class TestDeindexRunsOnAllReturnPaths:
     """_create_workspace calls _deindex_forge_artifacts on every successful return path."""
 

@@ -63,7 +63,7 @@ def test_escalate_writes_marker_and_detection_uses_it(tmp_path: Path) -> None:
     assert _is_escalated_worktree(clean_workspace) is False
 
 
-def test_sweep_orphan_worktrees_removes_orphan_and_merged_but_preserves_escalated(
+def test_sweep_orphan_worktrees_removes_forge_only_orphans_and_merged_but_preserves_escalated(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -92,8 +92,13 @@ def test_sweep_orphan_worktrees_removes_orphan_and_merged_but_preserves_escalate
     worktrees_root.mkdir(parents=True, exist_ok=True)
 
     orphan = worktrees_root / "orphan"
-    (orphan / ".forge").mkdir(parents=True)
+    (orphan / ".forge" / "traces").mkdir(parents=True)
     (orphan / ".forge" / "audit.yaml").write_text("outcome: {}\n", encoding="utf-8")
+    (orphan / ".forge" / "traces" / "1-dev.txt").write_text("trace\n", encoding="utf-8")
+
+    unexpected = worktrees_root / "unexpected"
+    unexpected.mkdir()
+    (unexpected / "README.txt").write_text("keep me\n", encoding="utf-8")
 
     merged = worktrees_root / "merged"
     _git(repo, "worktree", "add", "-b", "forge/merged", str(merged), "main")
@@ -115,6 +120,7 @@ def test_sweep_orphan_worktrees_removes_orphan_and_merged_but_preserves_escalate
     sweep_orphan_worktrees(repo, config)
 
     assert not orphan.exists()
+    assert unexpected.exists()
     assert not merged.exists()
     assert not any(
         "forge/merged" in line
