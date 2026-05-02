@@ -141,7 +141,7 @@ Review every public-facing and decision-preserving doc after v$VERSION ships. Ve
 
 ## Why
 
-Docs drift past release reviews when reviewers check whether docs agree with each other or simply \"read neatly,\" instead of checking whether the claims match the system. Recent concrete example: \`docs/guides/inputs-reference.md\` documented a deprecated \`pytest_target\` frontmatter field through multiple releases — it survived every review because reviewers triangulated across CLAUDE.md, AGENTS.md, and other guides instead of comparing against the current schema. This template forces verification against code and makes drift findings the required output.
+Docs drift past release reviews when reviewers check whether docs agree with each other or simply \"read neatly,\" instead of checking whether the claims match the system. Recent concrete example: \`docs/guides/inputs-reference.md\` documented a deprecated \`pytest_target\` frontmatter field through multiple releases — it survived every review because reviewers triangulated across CONVENTIONS.md, CLAUDE.md, AGENTS.md, and other guides instead of comparing against the current schema. This template forces verification against code and makes drift findings the required output.
 
 ## How to verify (read before ticking anything)
 
@@ -153,14 +153,14 @@ For every doc in the checklist below, verify claims **against the system**, not 
 - For every example config, story, issue, or YAML snippet → run it through the relevant loader or shape-check path exercised by the tests, and confirm it passes
 - For every architectural or behavioral claim → locate the code that implements it and confirm the doc's description still matches
 
-\"It agrees with CLAUDE.md / AGENTS.md / another guide\" is **not** verification — those are docs too and may themselves be stale. The only passing signal is \"I ran it / read the code and it matches.\"
+\"It agrees with CONVENTIONS.md / CLAUDE.md / AGENTS.md / another guide\" is **not** verification — those are docs too and may themselves be stale. The only passing signal is \"I ran it / read the code and it matches.\"
 
 ## Scope — docs to review
 
 - [ ] **README.md** — capabilities, install instructions, quick start
 - [ ] **CHANGELOG.md** — v$VERSION section accurately covers what shipped
-- [ ] **CLAUDE.md** (root and all directory-level) — conventions, phase descriptions, invariants
-- [ ] **AGENTS.md** — agent instructions match current prompt construction and tool usage
+- [ ] **CONVENTIONS.md** (root and all directory-level) — conventions, architecture notes, phase descriptions, invariants
+- [ ] **CLAUDE.md / AGENTS.md** — agent-specific pointer docs and harness notes match current prompt construction and tool usage
 - [ ] **RELEASING.md** — process gaps from this release
 - [ ] **forge.yaml** — inline comments match current schema and behavior
 - [ ] **CLI help text** — \`forge --help\` and every subcommand reflect current flags

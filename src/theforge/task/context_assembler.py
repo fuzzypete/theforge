@@ -283,6 +283,7 @@ class ContextAssembler:
         current = rel_dir
         while str(current) != ".":
             candidates.append(self.project_root / current / "CLAUDE.md")
+            candidates.append(self.project_root / current / "CONVENTIONS.md")
             current = current.parent
         return candidates
 

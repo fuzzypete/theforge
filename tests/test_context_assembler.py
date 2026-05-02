@@ -17,7 +17,7 @@ def test_context_assembler_includes_invariants_even_over_budget(tmp_path: Path) 
         "- src/theforge/task: prompt builders and task parsing\n",
     )
     _write_file(
-        tmp_path / "src" / "theforge" / "task" / "CLAUDE.md",
+        tmp_path / "src" / "theforge" / "task" / "CONVENTIONS.md",
         (
             "# Task\n\n## Invariants\n\n- invariant one\n- invariant two\n\n"
             "## Context\n\nHelpful advisory line.\n"
@@ -65,6 +65,35 @@ def test_context_assembler_ranks_and_truncates_advisory_context(tmp_path: Path) 
     assert "src/theforge/coordinator/CLAUDE.md" in dropped_sources
 
 
+def test_context_assembler_loads_claude_and_conventions_from_same_directory(
+    tmp_path: Path,
+) -> None:
+    _write_file(
+        tmp_path / ".forge" / "STRUCTURAL_INDEX.md",
+        "- src/theforge/task: prompt builders and task parsing\n",
+    )
+    _write_file(
+        tmp_path / "src" / "theforge" / "task" / "CLAUDE.md",
+        "# Task\n\n## Context\n\nClaude-specific advisory.\n",
+    )
+    _write_file(
+        tmp_path / "src" / "theforge" / "task" / "CONVENTIONS.md",
+        "# Task\n\n## Invariants\n\n- shared invariant\n\n## Context\n\nShared advisory.\n",
+    )
+
+    assembler = ContextAssembler(tmp_path)
+    pack = assembler.assemble(
+        phase="dev",
+        story_text="Update task prompt builders",
+        file_list=["src/theforge/task/dev_prompts.py"],
+        budget=50,
+    )
+
+    included_sources = {entry.source for entry in pack.included}
+    assert "src/theforge/task/CLAUDE.md" in included_sources
+    assert "src/theforge/task/CONVENTIONS.md" in included_sources
+
+
 def test_context_assembler_uses_story_keywords_for_preflight_scope(tmp_path: Path) -> None:
     _write_file(
         tmp_path / ".forge" / "STRUCTURAL_INDEX.md",
@@ -74,7 +103,7 @@ def test_context_assembler_uses_story_keywords_for_preflight_scope(tmp_path: Pat
         ),
     )
     _write_file(
-        tmp_path / "src" / "theforge" / "task" / "CLAUDE.md",
+        tmp_path / "src" / "theforge" / "task" / "CONVENTIONS.md",
         "# Task\n\n## Context\n\nPrompt builders live here.\n",
     )
 
@@ -85,7 +114,7 @@ def test_context_assembler_uses_story_keywords_for_preflight_scope(tmp_path: Pat
         budget=50,
     )
 
-    assert any(entry.source == "src/theforge/task/CLAUDE.md" for entry in pack.included)
+    assert any(entry.source == "src/theforge/task/CONVENTIONS.md" for entry in pack.included)
 
 
 def test_load_config_parses_context_budgets(tmp_path: Path) -> None:
@@ -117,7 +146,7 @@ def test_context_assembler_extracts_generic_paths_from_structural_index(tmp_path
         "- app/services/payments/: payment orchestration and retries\n",
     )
     _write_file(
-        tmp_path / "app" / "services" / "payments" / "CLAUDE.md",
+        tmp_path / "app" / "services" / "payments" / "CONVENTIONS.md",
         "# Payments\n\n## Context\n\nPayment orchestration lives here.\n",
     )
 
@@ -128,7 +157,7 @@ def test_context_assembler_extracts_generic_paths_from_structural_index(tmp_path
         budget=50,
     )
 
-    assert any(entry.source == "app/services/payments/CLAUDE.md" for entry in pack.included)
+    assert any(entry.source == "app/services/payments/CONVENTIONS.md" for entry in pack.included)
 
 
 def test_context_manifest_records_types_drop_reason_and_git_sha(tmp_path: Path) -> None:
@@ -136,7 +165,7 @@ def test_context_manifest_records_types_drop_reason_and_git_sha(tmp_path: Path) 
         tmp_path / ".forge" / "STRUCTURAL_INDEX.md", "- src/theforge/task: task prompt builders\n"
     )
     _write_file(
-        tmp_path / "src" / "theforge" / "CLAUDE.md",
+        tmp_path / "src" / "theforge" / "CONVENTIONS.md",
         "# TheForge\n\n## Invariants\n\n- must keep\n\n## Context\n\nHelpful advisory line.\n",
     )
 

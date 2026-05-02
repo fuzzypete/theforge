@@ -144,7 +144,8 @@ starts. The release tag is what users see — docs should match what shipped.
 
 - [ ] **README.md** — capabilities, install instructions, CLI usage match current state
 - [ ] **CHANGELOG.md** — release section accurately covers what shipped
-- [ ] **CLAUDE.md / AGENTS.md** — conventions, architecture notes, phase descriptions match shipped code
+- [ ] **CONVENTIONS.md** (root and all directory-level) — conventions, architecture notes, phase descriptions, invariants match shipped code
+- [ ] **CLAUDE.md / AGENTS.md** — agent-specific pointer docs and harness notes match shipped code
 - [ ] **RELEASING.md** — did this release surface any process gaps? Update if so
 - [ ] **forge.yaml comments** — inline config docs match current behavior
 - [ ] **CLI help text** — `forge --help` and subcommand help reflect current flags and options
