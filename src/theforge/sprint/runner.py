@@ -31,6 +31,11 @@ from ..coordinator.util import (
     resolve_timeout,
 )
 from ..coordinator.workspace import sweep_orphan_worktrees
+from ..intake import (
+    IntakeOutcome,
+    IntakeOutcomeKind,
+    run_intake_remediation,
+)
 from ..log_util import _log_line
 from ..task import TaskStory
 from .audit import (
@@ -62,7 +67,7 @@ from .manifest import (
     _build_task_from_story,
     resolve_from_manifest,
 )
-from .query import normalize_dependency_plan
+from .query import NormalizedDependencyPlan, normalize_dependency_plan
 from .sources import StorySource
 from .state_writer import SprintStateWriter
 from .story_state import SprintStoryState, StoryOutcome, coerce_outcome
@@ -81,6 +86,64 @@ def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
     from ..coordinator.workspace import _deindex_forge_artifacts  # noqa: PLC0415
 
     _deindex_forge_artifacts(config.project_root)
+
+
+def _run_intake_remediation_pass(
+    *,
+    config: ForgeConfig,
+    tasks: list[TaskStory],
+    log: Callable[[str], None],
+) -> dict[str, IntakeOutcome]:
+    """Run the intake remediation pass on the normalized task list.
+
+    Returns an empty dict when intake is fully disabled (grooming + auto_fix
+    both False) — the runner skips the dropped/remediated bookkeeping in
+    that case, preserving today's behavior exactly.
+    """
+    intake_cfg = getattr(config, "intake", None)
+    grooming_enabled = bool(getattr(intake_cfg, "grooming", False))
+    auto_fix_enabled = bool(getattr(intake_cfg, "auto_fix", False))
+    auto_fix_mode = getattr(intake_cfg, "auto_fix_mode", "comment") or "comment"
+    if not grooming_enabled and not auto_fix_enabled:
+        return {}
+    log(
+        "Intake remediation gate: grooming="
+        f"{grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode}"
+    )
+    return run_intake_remediation(
+        tasks,
+        config.project_root,
+        grooming_enabled=grooming_enabled,
+        auto_fix_enabled=auto_fix_enabled,
+        auto_fix_mode=auto_fix_mode,
+    )
+
+
+def _filter_normalized_for_intake(
+    plan: NormalizedDependencyPlan,
+    dropped: set[str],
+) -> NormalizedDependencyPlan:
+    """Drop intake-rejected slugs from a normalized plan.
+
+    Tasks whose slug is in ``dropped`` are removed entirely. Their dependents
+    surface here as additions to ``plan.blocked`` so downstream stages can
+    report consistent blocked-by reasons.
+    """
+    if not dropped:
+        return plan
+    surviving = [t for t in plan.tasks if t.slug not in dropped]
+    blocked = dict(plan.blocked)
+    for task in plan.tasks:
+        if task.slug in dropped:
+            continue
+        upstream_dropped = [d for d in (task.depends_on or ()) if d in dropped]
+        if upstream_dropped:
+            existing = list(blocked.get(task.slug, []))
+            for slug in upstream_dropped:
+                if slug not in existing:
+                    existing.append(slug)
+            blocked[task.slug] = existing
+    return NormalizedDependencyPlan(tasks=surviving, blocked=blocked)
 
 
 def derive_worker_timeout(
@@ -1264,6 +1327,47 @@ def run_sprint(
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
+
+    # Intake remediation gate: between dependency normalization and the
+    # batch preflight spend, run the shared shape + grooming check on the
+    # full normalized task list. When ``intake.auto_fix`` is enabled, semantic
+    # findings get a single agent rewrite pass; mechanical findings are
+    # patched without an LLM. Stories that still fail are dropped here and
+    # never enter the preflight batch. When grooming and auto_fix are both
+    # disabled, this is a near no-op (parity with pre-remediation behavior).
+    intake_outcomes = _run_intake_remediation_pass(
+        config=config,
+        tasks=normalized.tasks,
+        log=_log,
+    )
+    if intake_outcomes:
+        terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
+        dropped_slugs_intake = {
+            slug for slug, outcome in intake_outcomes.items() if outcome.kind in terminal_kinds
+        }
+        for slug, outcome in intake_outcomes.items():
+            if outcome.kind is IntakeOutcomeKind.PASSED:
+                continue
+            outcome_value = (
+                StoryOutcome.REMEDIATED
+                if outcome.kind is IntakeOutcomeKind.REMEDIATED
+                else StoryOutcome.DROPPED_SHAPE
+                if outcome.kind is IntakeOutcomeKind.DROPPED_SHAPE
+                else StoryOutcome.DROPPED_AFTER_FIX
+            )
+            _set_outcome(
+                slug,
+                outcome_value,
+                detail={
+                    "intake_kind": outcome.kind.value,
+                    "intake_findings": [f.as_dict() for f in outcome.findings],
+                    "intake_detail": outcome.detail,
+                },
+                reason=outcome.detail or outcome.kind.value,
+            )
+        if dropped_slugs_intake:
+            normalized = _filter_normalized_for_intake(normalized, dropped_slugs_intake)
+
     preflight_states = run_batch_preflight(
         normalized.tasks,
         config,

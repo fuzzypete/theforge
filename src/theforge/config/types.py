@@ -416,6 +416,23 @@ class ShapeCheckConfig:
 
 
 @dataclass(frozen=True)
+class IntakeConfig:
+    """Sprint-intake remediation settings.
+
+    Controls the auto-fix gate that runs between dependency normalization
+    and batch preflight. ``grooming`` enables the text-only semantic
+    grooming check. ``auto_fix`` enables the one-pass agent remediation on
+    failure. ``auto_fix_mode`` selects the output mode: ``comment`` posts
+    the proposed replacement and drops the story; ``edit`` updates the
+    issue body in place and reruns the gate once.
+    """
+
+    grooming: bool = False
+    auto_fix: bool = False
+    auto_fix_mode: str = "comment"  # "comment" | "edit"
+
+
+@dataclass(frozen=True)
 class HardConventionsConfig:
     """Mechanically enforced code structure rules."""
 
@@ -451,6 +468,7 @@ class ForgeConfig:
     hooks: HooksConfig | None = None
     sprint: SprintConfig = field(default_factory=SprintConfig)
     shape_check: ShapeCheckConfig = field(default_factory=ShapeCheckConfig)
+    intake: IntakeConfig = field(default_factory=IntakeConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
