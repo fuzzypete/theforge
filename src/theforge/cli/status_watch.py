@@ -17,8 +17,11 @@ import io
 import os
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+from theforge.cli.status_run_helpers import live_sprint_run_ids as _live_sprint_run_ids
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 STALL_CHAR = "·"
@@ -303,12 +306,73 @@ def render_frame(
     return base + "\n".join(overlay_lines) + "\n", snapshot_ok, err_buf.getvalue()
 
 
+def _normalize_run_ids(run_ids: str | Sequence[str]) -> list[str]:
+    if isinstance(run_ids, str):
+        return [run_ids]
+    return [run_id for run_id in run_ids if run_id]
+
+
+def _render_multi_run_frame(
+    run_ids: list[str],
+    project_root: Path,
+    states: dict[str, dict[str, Any]],
+    frame: int,
+    *,
+    color: bool,
+    interval: float,
+    stale_after_seconds: float | None,
+) -> tuple[str | None, bool, str]:
+    blocks: list[str] = []
+    diagnostics: list[str] = []
+    any_ok = False
+    separator = _c("─" * 80, DIM, color)
+
+    for run_id in run_ids:
+        state = states.setdefault(
+            run_id,
+            {
+                "costs": {},
+                "interval": float(interval),
+                "stale_after_seconds": stale_after_seconds,
+            },
+        )
+        try:
+            body, snapshot_ok, captured_err = render_frame(
+                run_id,
+                project_root,
+                state,
+                frame,
+                color=color,
+            )
+        except Exception as exc:  # noqa: BLE001
+            snapshot_ok = False
+            body = None
+            captured_err = (
+                f"forge status --watch: failed to read sprint state for {run_id}: {exc}\n"
+            )
+
+        if snapshot_ok:
+            any_ok = True
+        if captured_err:
+            diagnostics.append(captured_err)
+        if body is not None:
+            blocks.append(body)
+
+    if blocks:
+        return f"\n{separator}\n".join(blocks), any_ok, "".join(diagnostics)
+    if not run_ids:
+        body = _c("No live sprint runs.\n", DIM, color)
+        return body, True, ""
+    return None, any_ok, "".join(diagnostics)
+
+
 def run_watch_loop(
-    run_id: str,
+    run_id: str | Sequence[str],
     project_root: Path,
     interval: float,
     *,
     color: bool,
+    follow_active_runs: bool = False,
     stale_after_seconds: float | None = None,
     sleep_fn: Any = None,
     max_frames: int | None = None,
@@ -326,40 +390,43 @@ def run_watch_loop(
     """
     sleep = sleep_fn or time.sleep
 
-    state: dict = {
-        "costs": {},
-        "interval": float(interval),
-        "stale_after_seconds": stale_after_seconds,
-    }
+    initial_run_ids = _normalize_run_ids(run_id)
+    states: dict[str, dict[str, Any]] = {}
     frame = 0
     prev_lines = 0
     cursor_hidden = False
-    current_run_id = run_id
     try:
         if color or is_tty():
             sys.stdout.write(HIDE_CURSOR)
             sys.stdout.flush()
             cursor_hidden = True
         while True:
-            followed_run_id = _resolve_followed_run_id(current_run_id, project_root)
-            if followed_run_id != current_run_id:
-                current_run_id = followed_run_id
-                state["costs"] = {}
-            try:
-                body, snapshot_ok, captured_err = render_frame(
-                    current_run_id, project_root, state, frame, color=color
-                )
-            except Exception as exc:  # noqa: BLE001
-                if frame == 0:
-                    print(
-                        f"forge status --watch: failed to read sprint state: {exc}",
-                        file=sys.stderr,
-                    )
-                    return 1
-                # Transient failure mid-loop — keep the previous frame on screen.
-                body = None
-                snapshot_ok = True
-                captured_err = ""
+            candidate_run_ids = (
+                _live_sprint_run_ids(project_root) if follow_active_runs else initial_run_ids
+            )
+            followed_run_ids: list[str] = []
+            seen_run_ids: set[str] = set()
+            for candidate_run_id in candidate_run_ids:
+                followed_run_id = _resolve_followed_run_id(candidate_run_id, project_root)
+                if followed_run_id in seen_run_ids:
+                    continue
+                seen_run_ids.add(followed_run_id)
+                followed_run_ids.append(followed_run_id)
+
+            active_state_ids = set(followed_run_ids)
+            for state_run_id in list(states):
+                if state_run_id not in active_state_ids:
+                    states.pop(state_run_id, None)
+
+            body, snapshot_ok, captured_err = _render_multi_run_frame(
+                followed_run_ids,
+                project_root,
+                states,
+                frame,
+                color=color,
+                interval=interval,
+                stale_after_seconds=stale_after_seconds,
+            )
 
             if frame == 0 and not snapshot_ok:
                 # First frame failed: forward the snapshot's diagnostic that

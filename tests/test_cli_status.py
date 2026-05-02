@@ -67,7 +67,7 @@ class TestCmdStatusRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value=None),
+            patch("theforge.cli.status._list_active_run_ids", return_value=[]),
             patch("theforge.cli.status._find_most_recent_run", return_value=None),
             patch("theforge.pending.cleanup_stale"),
             patch("theforge.pending.list_pending", return_value=[]),
@@ -92,7 +92,7 @@ class TestCmdStatusRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value="abc123ef"),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["abc123ef"]),
             patch("theforge.cli.status._is_sprint_run", return_value=False),
             patch("theforge.detach.read_run_status", return_value=mock_status),
             patch("theforge.pending.cleanup_stale"),
@@ -117,7 +117,7 @@ class TestCmdStatusRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value="sprint-run-1"),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["sprint-run-1"]),
             patch("theforge.cli.status._is_sprint_run", return_value=True),
             patch("theforge.cli.sprint_status.display_sprint_status", return_value=0) as mock_dss,
             patch("theforge.pending.cleanup_stale"),
@@ -142,7 +142,7 @@ class TestCmdStatusRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value=None),
+            patch("theforge.cli.status._list_active_run_ids", return_value=[]),
             patch("theforge.cli.status._find_most_recent_run", return_value=("hist-run-7", True)),
             patch("theforge.cli.status._is_sprint_run", return_value=True),
             patch("theforge.cli.sprint_status.display_sprint_status", return_value=0) as mock_dss,
@@ -153,6 +153,31 @@ class TestCmdStatusRouting:
 
         assert result == 0
         mock_dss.assert_called_once_with("hist-run-7", config.project_root)
+
+    def test_shows_all_active_runs_in_default_status(self, tmp_path: Path, capsys: object) -> None:
+        """Default status enumerates every live run instead of picking one."""
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=None, recent=False, last=False)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-a", "run-b"]),
+            patch("theforge.cli.status._is_sprint_run", side_effect=[True, False]),
+            patch("theforge.cli.sprint_status.display_sprint_status", return_value=0) as mock_dss,
+            patch("theforge.cli.status._show_single_run_status") as mock_single,
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            result = cmd_status(args)
+
+        assert result == 0
+        mock_dss.assert_called_once_with("run-a", config.project_root)
+        mock_single.assert_called_once_with("run-b", config.project_root)
 
     def test_explicit_run_id_resolves_and_shows_status(
         self, tmp_path: Path, capsys: object

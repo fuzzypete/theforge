@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
+from theforge.cli.status_run_helpers import is_sprint_run as _is_sprint_run
 from theforge.config import load_config
 
 _SENTINEL_EOF = "[forge test sentinel EOF]"
@@ -54,47 +55,12 @@ def _follow_log_with_redirect(
             print(text)
 
 
-def _find_active_run_id(project_root: Path) -> str | None:
-    """Return the run_id of the first alive run, or None if none are active."""
+def _list_active_run_ids(project_root: Path) -> list[str]:
+    """Return the run_ids of all alive runs."""
     from theforge import detach as _detach
 
     active = _detach.list_active_runs(project_root)
-    return active[0]["run_id"] if active else None
-
-
-def _is_sprint_run(run_id: str, project_root: Path) -> bool:
-    """Return True if run_id is a sprint (has a .state file or sprint-summary.yaml).
-
-    Also checks .redirect files: a re-exec writes its predecessor's .redirect before
-    calling SprintStateWriter.init(), so during the startup window where .state hasn't
-    been written yet we can still detect the run as a sprint.
-    """
-    import json
-
-    from theforge.sprint.status_reader import find_sprint_summary
-
-    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
-    if state_path.exists():
-        return True
-    if find_sprint_summary(run_id, project_root) is not None:
-        return True
-    # Re-exec startup window: the predecessor's .redirect is written at the same
-    # time as the new .pid, before SprintStateWriter.init() writes .state.
-    # Only treat this as a sprint if the predecessor itself was a sprint run
-    # (has a .state file), so we don't misclassify a re-exec of `forge run`.
-    runs_dir = project_root / ".forge" / "runs"
-    for redirect_file in runs_dir.glob("*.redirect"):
-        try:
-            d = json.loads(redirect_file.read_text(encoding="utf-8"))
-            if d.get("new_run_id") != run_id:
-                continue
-            predecessor_id = redirect_file.stem
-            predecessor_state = runs_dir / f"{predecessor_id}.state"
-            if predecessor_state.exists():
-                return True
-        except (OSError, ValueError, json.JSONDecodeError):
-            pass
-    return False
+    return [str(run["run_id"]) for run in active]
 
 
 def _await_watchable_sprint_run(
@@ -106,12 +72,8 @@ def _await_watchable_sprint_run(
 ) -> bool:
     """Wait briefly for a live run to become recognizable as a sprint.
 
-    `forge sprint` writes its PID file before the initial sprint `.state` file,
-    leaving a short startup window where `forge status --watch` would otherwise
-    misclassify the run as a single-run snapshot and exit immediately.
-
-    Only waits while the target run is still live. Historical runs and ordinary
-    `forge run` invocations continue to fall back immediately.
+    Kept as a local wrapper so existing tests can patch ``status._is_sprint_run``
+    and ``status.time`` directly while the shared watch helpers live elsewhere.
     """
     if _is_sprint_run(run_id, project_root):
         return True
@@ -327,6 +289,36 @@ def _show_single_run_status(run_id: str, project_root: Path) -> None:
     print(f"{run_id:<12}  {story_label:<30}  {phase:<12}  {cost_str:>7}  {elapsed_str:>8}")
 
 
+def _render_status_blocks(run_ids: list[str], project_root: Path) -> int:
+    """Render one status block per run_id and aggregate return codes."""
+    from theforge.cli.sprint_status import display_sprint_status
+
+    rcs: list[int] = []
+    for index, run_id in enumerate(run_ids):
+        if index:
+            print()
+        if _is_sprint_run(run_id, project_root):
+            rc = display_sprint_status(run_id, project_root)
+        else:
+            _show_single_run_status(run_id, project_root)
+            rc = 0
+        rcs.append(rc)
+    if not rcs:
+        return 0
+    return 0 if any(rc == 0 for rc in rcs) else rcs[0]
+
+
+def _resolve_watch_run_ids(active_run_ids: list[str], project_root: Path) -> list[str]:
+    """Return live sprint run_ids suitable for watch mode startup."""
+    watch_ids: list[str] = []
+    for run_id in active_run_ids:
+        if _is_sprint_run(run_id, project_root):
+            watch_ids.append(run_id)
+        elif _await_watchable_sprint_run(run_id, project_root):
+            watch_ids.append(run_id)
+    return watch_ids
+
+
 def cmd_status(args: object) -> int:
     """Show active forge runs and pending decisions."""
     from theforge import pending as _pending
@@ -355,30 +347,31 @@ def cmd_status(args: object) -> int:
     if recent:
         return _show_recent_runs(project_root)
 
-    # ── Resolve target run ────────────────────────────────────────────────
-    target_run_id: str | None = None
+    # ── Resolve target runs ───────────────────────────────────────────────
+    target_run_ids: list[str] = []
+    active_run_ids: list[str] = []
 
     if explicit_run_id:
         if not _resolve_run_id(explicit_run_id, project_root):
             print(f"No run found with ID '{explicit_run_id}'.", file=sys.stderr)
             return 1
-        target_run_id = explicit_run_id
+        target_run_ids = [explicit_run_id]
     elif last:
         result = _find_most_recent_run(project_root)
         if result is None:
             print("No recent completed runs found.")
             return 0
-        target_run_id, _ = result
+        target_run_ids = [result[0]]
     else:
-        active_id = _find_active_run_id(project_root)
-        if active_id is not None:
-            target_run_id = active_id
+        active_run_ids = _list_active_run_ids(project_root)
+        if active_run_ids:
+            target_run_ids = active_run_ids
         else:
             result = _find_most_recent_run(project_root)
             if result is not None:
-                target_run_id, _ = result
+                target_run_ids = [result[0]]
 
-    if target_run_id is None:
+    if not target_run_ids:
         print("No active or recent runs found.")
         _pending.cleanup_stale(project_root)
         _show_pending_decisions(_pending, project_root)
@@ -388,25 +381,25 @@ def cmd_status(args: object) -> int:
     if watch_interval is not None:
         from theforge.cli import status_watch
 
-        if status_watch.is_tty() and _await_watchable_sprint_run(target_run_id, project_root):
+        watch_run_ids = (
+            [explicit_run_id]
+            if explicit_run_id is not None
+            else _resolve_watch_run_ids(active_run_ids, project_root)
+        )
+        if status_watch.is_tty() and watch_run_ids:
             color = status_watch.color_enabled(no_color)
             return status_watch.run_watch_loop(
-                target_run_id,
+                watch_run_ids if explicit_run_id is None else explicit_run_id,
                 project_root,
                 float(watch_interval),
                 color=color,
+                follow_active_runs=explicit_run_id is None,
             )
         # Non-TTY or non-sprint run: silently fall back to single snapshot so
         # piped/redirected output and CI captures stay clean.
 
     # ── Display run status ────────────────────────────────────────────────
-    if _is_sprint_run(target_run_id, project_root):
-        from theforge.cli.sprint_status import display_sprint_status
-
-        rc = display_sprint_status(target_run_id, project_root)
-    else:
-        _show_single_run_status(target_run_id, project_root)
-        rc = 0
+    rc = _render_status_blocks(target_run_ids, project_root)
 
     # ── Pending decisions (always shown) ──────────────────────────────────
     _pending.cleanup_stale(project_root)

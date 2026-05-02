@@ -510,6 +510,86 @@ class TestRunWatchLoop:
         assert status_watch.HIDE_CURSOR in out
         assert status_watch.SHOW_CURSOR in out
 
+    def test_follow_active_runs_renders_multiple_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        seen_run_ids: list[str] = []
+
+        def fake_render_frame(
+            run_id: str,
+            _project_root: Path,
+            state: dict,
+            frame_idx: int,
+            *,
+            color: bool,
+            now_fn=None,
+        ) -> tuple[str, bool, str]:
+            del state, frame_idx, color, now_fn
+            seen_run_ids.append(run_id)
+            return f"{run_id}\n", True, ""
+
+        with (
+            patch.object(status_watch, "render_frame", side_effect=fake_render_frame),
+            patch.object(status_watch, "is_tty", return_value=False),
+            patch.object(status_watch, "_live_sprint_run_ids", return_value=["run-a", "run-b"]),
+        ):
+            rc = status_watch.run_watch_loop(
+                ["run-a", "run-b"],
+                tmp_path,
+                interval=0.01,
+                color=False,
+                follow_active_runs=True,
+                sleep_fn=lambda _s: None,
+                max_frames=1,
+            )
+
+        assert rc == 0
+        assert seen_run_ids == ["run-a", "run-b"]
+        out = capsys.readouterr().out
+        assert "run-a" in out
+        assert "run-b" in out
+        assert "─" * 10 in out
+
+    def test_follow_active_runs_drops_finished_blocks_on_next_frame(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def fake_render_frame(
+            run_id: str,
+            _project_root: Path,
+            state: dict,
+            frame_idx: int,
+            *,
+            color: bool,
+            now_fn=None,
+        ) -> tuple[str, bool, str]:
+            del state, frame_idx, color, now_fn
+            return f"{run_id}\n", True, ""
+
+        with (
+            patch.object(status_watch, "render_frame", side_effect=fake_render_frame),
+            patch.object(status_watch, "is_tty", return_value=False),
+            patch.object(
+                status_watch,
+                "_live_sprint_run_ids",
+                side_effect=[["run-a", "run-b"], ["run-b"]],
+            ),
+        ):
+            rc = status_watch.run_watch_loop(
+                ["run-a", "run-b"],
+                tmp_path,
+                interval=0.01,
+                color=False,
+                follow_active_runs=True,
+                sleep_fn=lambda _s: None,
+                max_frames=2,
+            )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "run-a" in out
+        assert "run-b" in out
+        assert status_watch.CURSOR_UP(4) in out
+
     def test_follows_reexec_redirect_without_restarting_watch(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -613,7 +693,7 @@ class TestCmdStatusWatchRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value="run-1"),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
             patch("theforge.cli.status._is_sprint_run", return_value=True),
             patch("theforge.cli.status_watch.is_tty", return_value=False),
             patch("theforge.cli.sprint_status.display_sprint_status", return_value=0) as snap,
@@ -636,8 +716,8 @@ class TestCmdStatusWatchRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value="run-1"),
-            patch("theforge.cli.status._is_sprint_run", return_value=True),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
+            patch("theforge.cli.status._resolve_watch_run_ids", return_value=["run-1"]),
             patch("theforge.cli.status_watch.is_tty", return_value=True),
             patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
         ):
@@ -648,6 +728,7 @@ class TestCmdStatusWatchRouting:
         # interval propagated, color disabled by --no-color flag.
         kwargs = loop.call_args.kwargs
         assert kwargs["color"] is False
+        assert kwargs["follow_active_runs"] is True
         assert loop.call_args.args[2] == 3.0
 
     def test_tty_watch_waits_through_sprint_startup_window(self, tmp_path: Path) -> None:
@@ -665,10 +746,8 @@ class TestCmdStatusWatchRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value="run-1"),
-            patch("theforge.cli.status._is_sprint_run", side_effect=[False, False, True]),
-            patch("theforge.cli.status.time.sleep"),
-            patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.01, 0.02]),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
+            patch("theforge.cli.status._resolve_watch_run_ids", return_value=["run-1"]),
             patch("theforge.cli.status_watch.is_tty", return_value=True),
             patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
             patch("theforge.pending.cleanup_stale"),
@@ -693,10 +772,35 @@ class TestCmdStatusWatchRouting:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status._find_active_run_id", return_value="run-1"),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
             patch("theforge.cli.status._is_sprint_run", return_value=False),
             patch("theforge.cli.status_watch.is_tty", return_value=True),
             patch("theforge.detach.read_run_status", return_value=mock_status),
+            patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            rc = cmd_status(args)
+
+        assert rc == 0
+        loop.assert_not_called()
+
+    def test_tty_watch_falls_back_when_no_watchable_sprints(self, tmp_path: Path) -> None:
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = self._config(tmp_path)
+        args = argparse.Namespace(run_id=None, recent=False, last=False, watch=2, no_color=False)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
+            patch("theforge.cli.status._resolve_watch_run_ids", return_value=[]),
+            patch("theforge.cli.status._is_sprint_run", return_value=False),
+            patch("theforge.cli.status_watch.is_tty", return_value=True),
+            patch("theforge.detach.read_run_status", return_value={"phase": "DEV"}),
             patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
             patch("theforge.pending.cleanup_stale"),
             patch("theforge.pending.list_pending", return_value=[]),
