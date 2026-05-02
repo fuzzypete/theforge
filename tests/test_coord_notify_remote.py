@@ -419,6 +419,10 @@ story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
+ac_verification:
+  - criterion: "Implementation satisfies the spec"
+    status: VERIFIED
+    evidence: "diff hunks + tests (fixture default)"
 ```
 """
         with (

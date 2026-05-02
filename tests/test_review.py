@@ -26,6 +26,10 @@ story_compliance:
 test_coverage:
   adequate: true
   gaps: []
+ac_verification:
+  - criterion: "It batches inputs"
+    status: VERIFIED
+    evidence: "src/batch.py:10-30 + tests/test_batch.py::test_batches"
 ```
 """
 
@@ -301,6 +305,10 @@ story_compliance:
 test_coverage:
   adequate: true
   gaps: []
+ac_verification:
+  - criterion: "It works"
+    status: VERIFIED
+    evidence: "src/foo.py:1 + tests/test_foo.py::test_works"
 ```
 """
 
@@ -321,12 +329,18 @@ class TestTryParseReview:
         assert result is None
 
     def test_schema_error_repaired_successfully(self):
-        # Valid YAML but missing required fields — repair layer fills them
+        # Valid YAML but missing optional fields — repair layer fills them.
+        # ac_verification must be supplied because APPROVE+missing/empty is a
+        # cross-validation failure (silent-contract-swap guard).
         bad = """\
 ```yaml
 verdict: APPROVE
 summary: "ok"
 findings: []
+ac_verification:
+  - criterion: "It works"
+    status: VERIFIED
+    evidence: "src/foo.py:1 + tests/test_foo.py::test_works"
 ```
 """
         result = _try_parse_review(bad)
@@ -335,6 +349,22 @@ findings: []
         assert result.story_matches is True  # inferred from verdict
         assert result.test_adequate is True  # default
 
+    def test_approve_without_ac_verification_returns_none(self):
+        """APPROVE missing ac_verification triggers cross-validation failure."""
+        bad = """\
+```yaml
+verdict: APPROVE
+summary: "ok"
+findings: []
+story_compliance:
+  matches_spec: true
+test_coverage:
+  adequate: true
+```
+"""
+        result = _try_parse_review(bad)
+        assert result is None  # parse_errors present → None
+
     def test_structured_data_path(self):
         data = {
             "verdict": "APPROVE",
@@ -342,14 +372,33 @@ findings: []
             "findings": [],
             "story_compliance": {"matches_spec": True, "mismatches": []},
             "test_coverage": {"adequate": True, "gaps": []},
+            "ac_verification": [
+                {
+                    "criterion": "It works",
+                    "status": "VERIFIED",
+                    "evidence": "src/foo.py:1 + tests/test_foo.py::test_works",
+                },
+            ],
         }
         result = _try_parse_review("", structured_data=data)
         assert result is not None
         assert result.verdict == "APPROVE"
 
     def test_structured_data_with_missing_fields_repaired(self):
-        # Missing required fields — repair layer fills them
-        data = {"verdict": "APPROVE", "summary": "ok", "findings": []}
+        # Missing optional fields — repair layer fills them. ac_verification
+        # must be supplied because APPROVE+missing fails cross-validation.
+        data = {
+            "verdict": "APPROVE",
+            "summary": "ok",
+            "findings": [],
+            "ac_verification": [
+                {
+                    "criterion": "It works",
+                    "status": "VERIFIED",
+                    "evidence": "src/foo.py:1 + tests/test_foo.py::test_works",
+                },
+            ],
+        }
         result = _try_parse_review("", structured_data=data)
         assert result is not None
         assert result.verdict == "APPROVE"

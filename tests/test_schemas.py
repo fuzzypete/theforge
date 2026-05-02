@@ -11,6 +11,13 @@ def _valid_review() -> dict:
         "findings": [],
         "story_compliance": {"matches_spec": True, "mismatches": []},
         "test_coverage": {"adequate": True, "gaps": []},
+        "ac_verification": [
+            {
+                "criterion": "It does the thing",
+                "status": "VERIFIED",
+                "evidence": "src/foo.py:10-20 + tests/test_foo.py::test_thing",
+            },
+        ],
     }
 
 
@@ -139,6 +146,84 @@ class TestValidateReviewYaml:
         ]
         errors = validate_review_yaml(data)
         assert errors == []
+
+    def test_approve_without_ac_verification_is_error(self):
+        """APPROVE with empty ac_verification table fails cross-validation."""
+        data = _valid_review()
+        data["ac_verification"] = []
+        errors = validate_review_yaml(data)
+        assert any("APPROVE" in e and "ac_verification" in e for e in errors)
+
+    def test_approve_with_partial_ac_is_error(self):
+        """APPROVE with any PARTIAL entry fails — silent contract swap guard."""
+        data = _valid_review()
+        data["ac_verification"] = [
+            {
+                "criterion": "Detection patterns cover Codex 'usage limit' signature",
+                "status": "PARTIAL",
+                "evidence": "Generic CLI fallback exists but no test for 'usage limit' string",
+            },
+        ]
+        errors = validate_review_yaml(data)
+        assert any("APPROVE" in e and "PARTIAL" in e for e in errors)
+
+    def test_approve_with_not_verified_ac_is_error(self):
+        """APPROVE with any NOT_VERIFIED entry fails."""
+        data = _valid_review()
+        data["ac_verification"] = [
+            {
+                "criterion": "Per-AC verification table exists in audit",
+                "status": "NOT_VERIFIED",
+                "evidence": "Could not locate audit-render code path",
+            },
+        ]
+        errors = validate_review_yaml(data)
+        assert any("APPROVE" in e and "NOT_VERIFIED" in e for e in errors)
+
+    def test_request_changes_with_partial_ac_is_valid(self):
+        """REQUEST_CHANGES with PARTIAL entries is fine — that's the whole point."""
+        data = _valid_review()
+        data["verdict"] = "REQUEST_CHANGES"
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "src/foo.py",
+                "line": 5,
+                "description": "Missing coverage for the production-observed symptom",
+                "suggestion": "Add a test for the specific failure signature",
+            }
+        ]
+        data["ac_verification"] = [
+            {
+                "criterion": "Detection covers actual production symptom",
+                "status": "PARTIAL",
+                "evidence": "Implementation exists but production-observed signature untested",
+            },
+        ]
+        errors = validate_review_yaml(data)
+        assert errors == []
+
+    def test_ac_verification_invalid_status_is_error(self):
+        data = _valid_review()
+        data["ac_verification"] = [
+            {"criterion": "Foo", "status": "MAYBE", "evidence": "..."},
+        ]
+        errors = validate_review_yaml(data)
+        assert any("ac_verification" in e and "status" in e for e in errors)
+
+    def test_ac_verification_missing_evidence_is_error(self):
+        data = _valid_review()
+        data["ac_verification"] = [
+            {"criterion": "Foo", "status": "VERIFIED", "evidence": ""},
+        ]
+        errors = validate_review_yaml(data)
+        assert any("ac_verification" in e and "evidence" in e for e in errors)
+
+    def test_ac_verification_must_be_list(self):
+        data = _valid_review()
+        data["ac_verification"] = "all good"
+        errors = validate_review_yaml(data)
+        assert any("ac_verification" in e and "list" in e for e in errors)
 
     def test_p2_with_file_and_null_line_is_valid(self):
         """P2 findings are not subject to the line-enforcement rule."""
