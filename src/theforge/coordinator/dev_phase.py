@@ -475,6 +475,48 @@ def _run_dev_phase(
     if logger:
         logger._safe_emit("phase_start", phase="DEV", iteration=state.dev_iteration)
 
+    # ── Workspace hygiene gate (first DEV entry only) ─────────────────
+    # Reject or sanitise the worktree before the dev agent sees it for the
+    # first time. Stray untracked files at repo root (left behind by tracked-
+    # leftover files in main, or by a non-DEV phase that wrote where it
+    # shouldn't) silently sabotage dev runs — see issue #1179. Quarantine
+    # non-destructively into .forge/quarantine/<run-id>/iter-<n>/ so
+    # operators can recover originals.
+    #
+    # Iterations 2+ are not re-gated: validate-phase's auto-commit owns
+    # cleanup after the first iteration, and intermediate dirty state on a
+    # retry is a legitimate handoff between iterations rather than a stray
+    # phase mutation.
+    from .workspace_hygiene import enforce_pre_dev_hygiene, ensure_scratch_dir  # noqa: PLC0415
+
+    _hygiene_run_id = state.run_id or "unknown"
+    ensure_scratch_dir(workspace_path, _hygiene_run_id)
+    if state.dev_iteration <= 1:
+        _hygiene_ok, _hygiene_diag, _hygiene_audit = enforce_pre_dev_hygiene(
+            workspace_path,
+            _hygiene_run_id,
+            iteration=state.dev_iteration,
+        )
+        state.workspace_hygiene_audit.append({"phase": "PRE_DEV", **_hygiene_audit})
+        if _hygiene_audit.get("quarantined"):
+            _q_paths = ", ".join(_hygiene_audit["quarantined"])
+            _q_dir = _hygiene_audit.get("quarantine_dir")
+            _log(f"  ⚠ DEV   quarantined stray paths to {_q_dir}: {_q_paths}")
+        if not _hygiene_ok:
+            state.phase = Phase.ESCALATE
+            state.error = _hygiene_diag or "Workspace hygiene gate refused DEV entry"
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("phase_end", phase="DEV", outcome="escalate")
+                logger._safe_emit("escalate", reason=state.error, phase="DEV")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
+
     # Capture HEAD before the dev agent runs — used by finding_classifier for git diff.
     # Best-effort: any failure is silently ignored (non-critical for correctness).
     try:

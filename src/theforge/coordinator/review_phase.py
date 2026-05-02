@@ -559,6 +559,13 @@ def _run_review_phase(
     state.review_cycle_metadata.append(meta)
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
+    from .workspace_hygiene import (  # noqa: PLC0415
+        check_phase_no_mutation,
+        snapshot_porcelain,
+    )
+
+    _review_hygiene_before = snapshot_porcelain(workspace_path)
+
     successful, failed_results, _candidate, _individual_results, _named_parsed = _run_review_pool(
         state,
         config,
@@ -574,6 +581,26 @@ def _run_review_phase(
         stop_event=stop_event,
     )
     state.last_cycle_reviewer_results = _named_parsed
+
+    _review_ok, _review_diag, _review_offending = check_phase_no_mutation(
+        workspace_path, _review_hygiene_before, "REVIEW"
+    )
+    state.workspace_hygiene_audit.append(
+        {"phase": "REVIEW", "ok": _review_ok, "offending_paths": _review_offending}
+    )
+    if not _review_ok:
+        state.phase = Phase.ESCALATE
+        state.error = _review_diag or "REVIEW phase mutated the worktree"
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
+            config,
+        )
 
     if _candidate is None:
         # All reviewers failed or budget exceeded —

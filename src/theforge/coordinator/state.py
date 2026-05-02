@@ -421,6 +421,10 @@ class CoordinatorState:
     adaptive_dev_budget_usd: float = 0.0
     adaptive_limits_audit: dict = field(default_factory=dict)
     review_early_terminated: bool = False  # True when early-termination triggered
+    workspace_hygiene_audit: list[dict] = field(default_factory=list)
+    # Per-phase hygiene gate audit entries. Each dict carries a "phase" key
+    # ("PRE_DEV" / "PLAN" / "PLAN_REVIEW" / "REVIEW") plus phase-specific fields
+    # (snapshot, modified, quarantined, quarantine_dir, offending_paths).
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.
