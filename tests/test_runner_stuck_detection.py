@@ -333,78 +333,23 @@ class TestStuckDetectionDisabled:
         assert result.success
 
 
-class TestNoProgressDetection:
-    """no_progress_iterations triggers when modify-capable agents stop modifying files."""
+class TestNoProgressIsTelemetryOnly:
+    """no_progress_iterations is recorded as telemetry but never nudges or terminates."""
 
-    def test_no_modifications_triggers_nudge(self, tmp_path):
+    def test_no_modifications_does_not_terminate_or_nudge(self, tmp_path):
+        # Aggressive thresholds: even with no_progress_iterations=2, the run must
+        # complete normally because exploration is no longer a kill signal.
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=99,
-            no_progress_iterations=3,
-            error_threshold=99,
-            post_nudge_iterations=99,
-        )
-        profile = _dev_profile(stuck=cfg)
-        messages_seen: list[list[dict]] = []
-        call_count = [0]
-        # Vary the args so repeat_threshold doesn't fire instead.
-        patterns = ["*.py", "*.md", "*.txt", "src/*", "tests/*"]
-
-        def adapter(messages, tools):
-            messages_seen.append(list(messages))
-            call_count[0] += 1
-            if call_count[0] <= len(patterns):
-                return _glob_turn(call_count[0], pattern=patterns[call_count[0] - 1])
-            return LoopTurn(
-                tool_calls=[
-                    ToolCallRequest(
-                        id="submit",
-                        name=SUBMIT_REVIEW,
-                        arguments={"verdict": "APPROVE", "summary": "ok"},
-                    )
-                ],
-                text_output=None,
-                structured_data=None,
-                usage=_usage(),
-            )
-
-        manager = _make_manager(profile, tmp_path, adapter)
-        manager.run(
-            initial_messages=[{"role": "user", "content": "go"}],
-            tool_schemas=[],
-        )
-        all_msgs = [m for msgs in messages_seen for m in msgs]
-        nudges = [
-            m
-            for m in all_msgs
-            if m.get("role") == "user" and "no file modifications" in m.get("content", "")
-        ]
-        assert len(nudges) >= 1
-
-
-class TestPostNudgeSamePatternRequired:
-    """Post-nudge termination requires the SAME pattern kind to persist."""
-
-    def test_pattern_change_after_nudge_resets_and_rearm(self, tmp_path):
-        # repeat fires first; switch to varied calls (pattern breaks); the
-        # tracker must re-arm rather than terminate. Configure thresholds so
-        # the second pattern (no-progress) would otherwise hit terminate
-        # immediately if the kind check were absent.
-        cfg = StuckDetectionConfig(
-            enabled=True,
-            repeat_threshold=2,
             no_progress_iterations=2,
             error_threshold=99,
-            # Loose post-nudge window so the test isolates the re-arm behavior.
-            post_nudge_iterations=99,
+            post_nudge_iterations=2,
         )
         profile = _dev_profile(stuck=cfg)
         messages_seen: list[list[dict]] = []
         call_count = [0]
-        # First two iterations identical → repeat nudge at iter 2.
-        # Then varied iterations break repeat; tracker must re-arm and emit a
-        # fresh no-progress nudge rather than terminating without one.
-        patterns = ["x", "x", "a", "b", "c", "d", "e", "f"]
+        patterns = ["*.py", "*.md", "*.txt", "src/*", "tests/*", "docs/*", "README*"]
 
         def adapter(messages, tools):
             messages_seen.append(list(messages))
@@ -429,23 +374,99 @@ class TestPostNudgeSamePatternRequired:
             initial_messages=[{"role": "user", "content": "go"}],
             tool_schemas=[],
         )
-        # The run should not terminate on stuck pattern: repeat broke before
-        # post-nudge persistence threshold was reached.
         assert result.success, result.output
-        # Two distinct nudges expected: one for repeat, one for no-progress.
-        last_msgs = messages_seen[-1]
-        nudges = [
+        all_msgs = [m for msgs in messages_seen for m in msgs]
+        progress_nudges = [
             m
-            for m in last_msgs
+            for m in all_msgs
             if m.get("role") == "user" and "Progress check" in m.get("content", "")
         ]
-        # At least the repeat nudge must have been issued; the no-progress
-        # arm needs >=2 iterations without modifications, satisfied by the
-        # varied glob iterations. Both kinds should produce a nudge.
-        kinds = {("repeated" in n["content"], "no file" in n["content"]) for n in nudges}
-        assert any(repeat for repeat, _ in kinds)
-        assert any(noprog for _, noprog in kinds), (
-            "expected a fresh no-progress nudge after the repeat pattern broke"
+        assert progress_nudges == [], (
+            "no-modification streak must not produce a stuck-detection nudge"
+        )
+
+    def test_tracker_records_no_progress_streak_as_telemetry(self):
+        from theforge.runners.stuck_detection import (
+            IterationObservation,
+            StuckTracker,
+        )
+
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=99,
+            no_progress_iterations=3,
+            error_threshold=99,
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        tracker = StuckTracker(profile)
+        for i in range(5):
+            obs = IterationObservation(
+                signatures=frozenset({f"glob|{i}"}),
+                successful_modify=False,
+                error_content=None,
+            )
+            assert tracker.observe(obs) == (None, None, None)
+        assert tracker.iters_without_modification == 5
+        ev = tracker.evidence()
+        assert ev["iters_without_modification"] == 5
+        assert ev["iterations_observed"] == 5
+        assert ev["active_kind"] is None  # no defensible pattern firing
+
+
+class TestPostNudgeSamePatternRequired:
+    """Post-nudge termination requires the SAME pattern kind to persist."""
+
+    def test_pattern_change_after_nudge_resets_and_rearm(self, tmp_path):
+        # repeat fires first; switch to varied calls (pattern breaks); the
+        # tracker must re-arm rather than terminate. The second pattern is
+        # error_loop (the other defensible signal still in scope), proving
+        # that re-arm allows a fresh nudge for a different kind.
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=99,
+            error_threshold=2,
+            # Loose post-nudge window so the test isolates the re-arm behavior.
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        # iters 1,2: identical glob → repeat nudge fires at iter 2.
+        # iters 3,4: distinct glob args, but each result errors with the same
+        # message → error_loop must trigger a fresh nudge after the kind
+        # change resets the post-nudge counter.
+        scripts: list[tuple[str, str | None]] = [
+            ("x", None),
+            ("x", None),
+            ("a", "Error: same boom"),
+            ("b", "Error: same boom"),
+            ("c", None),
+            ("d", None),
+        ]
+
+        from theforge.runners.stuck_detection import (
+            IterationObservation,
+            StuckTracker,
+        )
+
+        tracker = StuckTracker(profile)
+        nudge_kinds: list[str] = []
+        for i, (pattern, err) in enumerate(scripts, start=1):
+            obs = IterationObservation(
+                signatures=frozenset({f"glob|{pattern}"}),
+                successful_modify=False,
+                error_content=err,
+            )
+            nudge, terminate, _ = tracker.observe(obs)
+            assert terminate is None, f"terminate fired unexpectedly at iter {i}"
+            if nudge is not None:
+                if "repeated" in nudge:
+                    nudge_kinds.append("repeat")
+                elif "error loop" in nudge:
+                    nudge_kinds.append("error_loop")
+        assert "repeat" in nudge_kinds
+        assert "error_loop" in nudge_kinds, (
+            f"expected a fresh error_loop nudge after the repeat pattern broke; got {nudge_kinds}"
         )
 
     def test_no_terminate_when_post_nudge_pattern_breaks(self, tmp_path):
@@ -488,12 +509,147 @@ class TestPostNudgeSamePatternRequired:
         assert result.success, result.output
 
 
-class TestFailedModifyDoesNotResetNoProgress:
-    """A write/edit that returns an error must not count as progress."""
+class TestAuditObservability:
+    """When the detector fires, the audit must include per-iteration evidence."""
 
-    def test_failed_edit_calls_count_as_no_progress(self, tmp_path):
-        # write_file with missing required arg → tool returns Error, so the
-        # call should NOT reset the no-progress counter.
+    def test_termination_reason_includes_per_iteration_calls_and_loop_start(self, tmp_path):
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=2,
+        )
+        profile = _dev_profile(stuck=cfg)
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            return _glob_turn(call_count[0], pattern="*.py")  # identical args every iter
+
+        manager = _make_manager(profile, tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert not result.success
+        out = result.output
+        # New evidence block must appear in the audit reason.
+        assert "signal: repeat" in out, out
+        assert "loop began at iteration" in out, out
+        assert "recent iteration tool calls:" in out, out
+        # Per-iteration fingerprint shows the redacted/recorded call.
+        assert "iter 1:" in out, out
+
+    def test_evidence_redacts_sensitive_arguments(self):
+        from theforge.runners.stuck_detection import (
+            StuckTracker,
+            build_observation,
+        )
+
+        class _Call:
+            def __init__(self, name, arguments):
+                self.name = name
+                self.arguments = arguments
+
+        # Build one observation with a Write call that has a large `content` arg.
+        obs = build_observation(
+            calls=[_Call("Write", {"path": "x.py", "content": "secret-body" * 50})],
+            results=[{"id": "c1", "name": "Write", "content": "ok"}],
+        )
+        # The audit fingerprint must mask the `content` value.
+        assert any("redacted" in fp for fp in obs.call_fingerprints), obs.call_fingerprints
+        assert all("secret-body" not in fp for fp in obs.call_fingerprints)
+
+        # The internal signature (used for repeat detection) is still
+        # discriminative — redaction is audit-only.
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=2,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        tracker = StuckTracker(profile)
+        tracker.observe(obs)
+        ev = tracker.evidence()
+        assert ev["history"][0]["calls"]
+        assert "redacted" in ev["history"][0]["calls"][0]
+
+
+class TestExplorationTelemetry:
+    """Distinct file reads / searches across iterations are recorded as exploration."""
+
+    def test_distinct_reads_advance_exploration_counter(self):
+        from theforge.runners.stuck_detection import (
+            IterationObservation,
+            StuckTracker,
+        )
+
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=99,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        tracker = StuckTracker(profile)
+        files = ["a.py", "b.py", "c.py", "d.py"]
+        for i, f in enumerate(files):
+            sig = f"Read|{f}"
+            obs = IterationObservation(
+                signatures=frozenset({sig}),
+                successful_modify=False,
+                error_content=None,
+                exploration_sigs=frozenset({sig}),
+            )
+            tracker.observe(obs)
+        assert tracker.distinct_exploration_count == len(files)
+        assert tracker.exploration_progress_iters == len(files)
+
+    def test_repeat_reads_do_not_advance_exploration_counter(self):
+        from theforge.runners.stuck_detection import (
+            IterationObservation,
+            StuckTracker,
+        )
+
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=99,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        tracker = StuckTracker(profile)
+        for _ in range(4):
+            sig = "Read|same.py"
+            obs = IterationObservation(
+                signatures=frozenset({sig}),
+                successful_modify=False,
+                error_content=None,
+                exploration_sigs=frozenset({sig}),
+            )
+            tracker.observe(obs)
+        assert tracker.distinct_exploration_count == 1
+        assert tracker.exploration_progress_iters == 1
+
+
+class TestFailedModifyTelemetry:
+    """A write/edit that returns an error must not count as modification progress.
+
+    The no-progress arm is telemetry-only now, so this asserts the counter is
+    incremented (not that termination/nudge fires).
+    """
+
+    def test_failed_edit_calls_increment_no_progress_counter(self, tmp_path):
+        from theforge.runners.stuck_detection import (
+            IterationObservation,
+            StuckTracker,
+        )
+
         cfg = StuckDetectionConfig(
             enabled=True,
             repeat_threshold=99,
@@ -502,56 +658,17 @@ class TestFailedModifyDoesNotResetNoProgress:
             post_nudge_iterations=99,
         )
         profile = _dev_profile(stuck=cfg)
-        messages_seen: list[list[dict]] = []
-        call_count = [0]
-        # Each iteration calls write_file with a different (still-invalid)
-        # path argument so signatures vary (no repeat) and the tool errors
-        # (no successful modify). After 3 such iterations, no-progress
-        # nudge must fire.
-        paths = ["a.py", "b.py", "c.py", "d.py", "e.py"]
-
-        def adapter(messages, tools):
-            messages_seen.append(list(messages))
-            call_count[0] += 1
-            if call_count[0] <= len(paths):
-                # Missing required `content` → tool reports an Error result.
-                return LoopTurn(
-                    tool_calls=[
-                        ToolCallRequest(
-                            id=f"c{call_count[0]}",
-                            name="write_file",
-                            arguments={"path": paths[call_count[0] - 1]},
-                        )
-                    ],
-                    text_output=None,
-                    structured_data=None,
-                    usage=_usage(),
-                )
-            return LoopTurn(
-                tool_calls=[
-                    ToolCallRequest(
-                        id="submit",
-                        name=SUBMIT_REVIEW,
-                        arguments={"verdict": "APPROVE", "summary": "done"},
-                    )
-                ],
-                text_output=None,
-                structured_data=None,
-                usage=_usage(),
+        tracker = StuckTracker(profile)
+        for i in range(5):
+            obs = IterationObservation(
+                signatures=frozenset({f"write_file|p{i}"}),
+                successful_modify=False,  # write returned Error
+                error_content=None,
             )
-
-        manager = _make_manager(profile, tmp_path, adapter)
-        manager.run(
-            initial_messages=[{"role": "user", "content": "go"}],
-            tool_schemas=[],
-        )
-        all_msgs = [m for msgs in messages_seen for m in msgs]
-        nudges = [
-            m
-            for m in all_msgs
-            if m.get("role") == "user" and "no file modifications" in m.get("content", "")
-        ]
-        assert len(nudges) >= 1, "failed write_file calls should count as no-progress"
+            nudge, terminate, _ = tracker.observe(obs)
+            assert nudge is None
+            assert terminate is None
+        assert tracker.iters_without_modification == 5
 
 
 class TestClaudeCliStuckDetection:
