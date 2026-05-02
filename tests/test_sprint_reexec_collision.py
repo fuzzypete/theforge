@@ -26,6 +26,7 @@ def _mock_config(tmp_path: Path) -> MagicMock:
     config.project_root = tmp_path
     config.workspace.path_pattern = ".forge/worktrees/{slug}"
     config.workspace.base_branch = "main"
+    config.workspace.branch_pattern = "forge/{slug}"
     return config
 
 
@@ -40,13 +41,70 @@ def _make_worktree_with_audit(tmp_path: Path, slug: str, final_phase: str | None
 
 
 class TestEscalatedWorktreeNotTreatedAsCollision:
+    def test_empty_escalated_worktree_is_cleaned_up_and_rescheduled(self, tmp_path: Path) -> None:
+        """An escalated-but-empty worktree is removed instead of being preserved."""
+        worktree = _make_worktree_with_audit(tmp_path, "issue-829", final_phase="ESCALATE")
+        config = _mock_config(tmp_path)
+
+        git_results = [
+            MagicMock(returncode=0, stdout="0\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout="Deleted branch forge/issue-829\n"),
+        ]
+        with (
+            patch("theforge.sprint.lock.subprocess.run", side_effect=git_results) as mock_git,
+            patch("theforge.sprint.lock._current_process_fingerprint", return_value="test-fp"),
+        ):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["issue-829"],
+                config=config,
+                resume=False,
+                allow_drop=False,
+            )
+
+        try:
+            assert launch_error is None
+            assert dropped == {}
+            assert len(locked_fds) == 1
+            assert mock_git.call_args_list[0].args[0] == [
+                "git",
+                "-C",
+                str(worktree),
+                "rev-list",
+                "--count",
+                "main..HEAD",
+            ]
+            assert mock_git.call_args_list[1].args[0] == [
+                "git",
+                "-C",
+                str(worktree),
+                "status",
+                "--porcelain",
+            ]
+            assert mock_git.call_args_list[2].args[0][:4] == [
+                "git",
+                "worktree",
+                "remove",
+                "--force",
+            ]
+            assert mock_git.call_args_list[3].args[0] == ["git", "branch", "-D", "forge/issue-829"]
+            assert not worktree.exists()
+        finally:
+            from theforge.sprint.lock import release_story_locks
+
+            release_story_locks(locked_fds)
+
     def test_escalated_worktree_is_preserved_not_scheduled(self, tmp_path: Path) -> None:
         """An escalated worktree is excluded from scheduling — no lock, no rerun."""
         _make_worktree_with_audit(tmp_path, "issue-829", final_phase="ESCALATE")
         config = _mock_config(tmp_path)
 
-        completed = MagicMock(returncode=0, stdout="7\n")
-        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+        git_results = [
+            MagicMock(returncode=0, stdout="7\n"),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        with patch("theforge.sprint.lock.subprocess.run", side_effect=git_results):
             locked_fds, launch_error, dropped = acquire_launch_story_locks(
                 slugs=["issue-829"],
                 config=config,
@@ -70,8 +128,13 @@ class TestEscalatedWorktreeNotTreatedAsCollision:
         config = _mock_config(tmp_path)
 
         # issue-267 and issue-268 have no worktree; issue-829 is escalated.
-        completed = MagicMock(returncode=0, stdout="0\n")
-        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+        git_results = [
+            MagicMock(returncode=0, stdout="0\n"),
+            MagicMock(returncode=0, stdout=" M keep-me.py\n"),
+            MagicMock(returncode=0, stdout="0\n"),
+            MagicMock(returncode=0, stdout="0\n"),
+        ]
+        with patch("theforge.sprint.lock.subprocess.run", side_effect=git_results):
             locked_fds, launch_error, dropped = acquire_launch_story_locks(
                 slugs=["issue-829", "issue-267", "issue-268"],
                 config=config,

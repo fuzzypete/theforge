@@ -67,6 +67,8 @@ def acquire_launch_story_locks(
         escalated_slugs = check_escalated_worktrees(
             slugs,
             config.workspace.path_pattern,
+            config.workspace.branch_pattern,
+            config.workspace.base_branch,
             config.project_root,
         )
     dropped: dict[str, str] = {s: REASON_PRESERVED_ESCALATED for s in escalated_slugs}

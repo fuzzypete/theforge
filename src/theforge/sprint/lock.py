@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 import subprocess
 import time
 from contextlib import contextmanager
@@ -20,6 +21,80 @@ _UNAVAILABLE_FINGERPRINT = "unavailable"
 def _is_escalated_worktree(worktree_path: Path) -> bool:
     """Return True when the worktree is marked as an escalated, preserved run."""
     return (worktree_path / ESCALATED_MARKER_PATH).exists()
+
+
+def _remove_leftover_worktree_dir(path: Path) -> None:
+    """Best-effort cleanup for leftover forge-only directories after removal."""
+    if not path.exists():
+        return
+    forge_dir = path / ".forge"
+    if not forge_dir.exists():
+        return
+    for child in path.iterdir():
+        if child.name != ".forge":
+            return
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _worktree_has_preserved_evidence(worktree_path: Path, base_branch: str) -> bool | None:
+    """Return whether an escalated worktree contains commits or dirty files.
+
+    Returns ``None`` when git state cannot be determined, so the caller can
+    fail closed and keep the worktree preserved.
+    """
+    ahead_result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree_path),
+            "rev-list",
+            "--count",
+            f"{base_branch}..HEAD",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if ahead_result.returncode != 0:
+        return None
+    try:
+        ahead_count = int(ahead_result.stdout.strip())
+    except ValueError:
+        return None
+
+    status_result = subprocess.run(
+        ["git", "-C", str(worktree_path), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if status_result.returncode != 0:
+        return None
+
+    return ahead_count > 0 or bool(status_result.stdout.strip())
+
+
+def _cleanup_empty_worktree(
+    worktree_path: Path,
+    branch_name: str,
+    project_root: Path,
+) -> bool:
+    """Remove an empty worktree/branch pair. Returns True on full success."""
+    remove_result = subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if remove_result.returncode != 0:
+        return False
+    _remove_leftover_worktree_dir(worktree_path)
+
+    branch_result = subprocess.run(
+        ["git", "branch", "-D", branch_name],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    return branch_result.returncode == 0
 
 
 class SprintConflictError(Exception):
@@ -61,6 +136,8 @@ def _write_lock_metadata(fd) -> None:
 def check_escalated_worktrees(
     slugs: list[str],
     path_pattern: str,
+    branch_pattern: str,
+    base_branch: str,
     project_root: Path,
 ) -> list[str]:
     """Return slugs whose on-disk worktree is marked escalated (preserved).
@@ -75,7 +152,17 @@ def check_escalated_worktrees(
         worktree_path = project_root / path_pattern.format(slug=slug)
         if not worktree_path.exists():
             continue
-        if _is_escalated_worktree(worktree_path):
+        if not _is_escalated_worktree(worktree_path):
+            continue
+        has_evidence = _worktree_has_preserved_evidence(worktree_path, base_branch)
+        if has_evidence is True:
+            escalated.append(slug)
+            continue
+        if has_evidence is None:
+            escalated.append(slug)
+            continue
+        branch_name = branch_pattern.format(slug=slug)
+        if not _cleanup_empty_worktree(worktree_path, branch_name, project_root):
             escalated.append(slug)
     return escalated
 
