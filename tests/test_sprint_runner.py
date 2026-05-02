@@ -32,6 +32,7 @@ from theforge.sprint.dag import (
 )
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
+    _make_worker_phase_fn,
     _refresh_external_satisfied,
     _run_baseline_gate,
     _terminal_story_model,
@@ -403,6 +404,44 @@ def test_terminal_story_model_falls_back_to_model_usage_when_model_used_missing(
     result = _make_result_with_dev_runs(legacy)
 
     assert _terminal_story_model(result) == "gpt-5.4"
+
+
+def test_worker_phase_fn_flushes_cost_updates_without_phase_transition() -> None:
+    worker_phases: dict[str, str] = {}
+    state_writer = MagicMock()
+    outer_fn = MagicMock()
+
+    class _Lock:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    update = _make_worker_phase_fn(
+        "story-a",
+        worker_phases,
+        _Lock(),  # type: ignore[arg-type]
+        outer_fn,
+        state_writer=state_writer,
+    )
+
+    update(
+        {
+            "cost_usd": 0.42,
+            "current_model": "opus",
+            "detail": {"heartbeat": "tick"},
+        }
+    )
+
+    assert worker_phases == {}
+    state_writer.update.assert_called_once_with(
+        "story-a",
+        cost_usd=0.42,
+        current_model="opus",
+        detail={"heartbeat": "tick"},
+    )
+    outer_fn.assert_called_once()
 
 
 def test_run_baseline_gate_reports_local_origin_sha_gap(tmp_path: Path) -> None:
