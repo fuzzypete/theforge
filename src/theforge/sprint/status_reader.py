@@ -383,8 +383,12 @@ def _stage_and_detail_from_completed_story(
 
     detail = ""
     if isinstance(audit_data, dict):
+        if outcome == "ALREADY_DONE":
+            reason = _nonempty_str(preflight.get("reason"))
+            if reason:
+                detail = f"Preflight verdict: {reason}"
         reviews = audit_data.get("reviews")
-        if isinstance(reviews, list) and reviews:
+        if not detail and isinstance(reviews, list) and reviews:
             last_review = reviews[-1]
             if isinstance(last_review, dict):
                 finding_counts = last_review.get("findings_by_severity")

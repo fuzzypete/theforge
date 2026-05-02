@@ -386,6 +386,47 @@ def test_read_completed_status_uses_audit_for_terminal_stage_and_detail(tmp_path
     assert entries[0].complexity == "medium"
 
 
+def test_read_completed_status_already_done_prefers_preflight_reason(tmp_path: Path) -> None:
+    from theforge.sprint.status_reader import read_completed_status
+
+    stories = [
+        {
+            "slug": "issue-1186",
+            "path": "Issue #1186",
+            "outcome": "ALREADY_DONE",
+            "cost_usd": 0.65,
+        }
+    ]
+    summary_path = _make_summary_file(tmp_path, "already-done-sprint", "run-audit", stories)
+
+    audit_dir = tmp_path / ".forge" / "logs" / "already-done-sprint" / "issue-1186"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_data = {
+        "preflight": {
+            "verdict": "cached",
+            "original_verdict": "ALREADY_DONE",
+            "reason": "Main already satisfies all acceptance criteria.",
+        },
+        "outcome": {
+            "message": (
+                "Gate exited PASS but branch has no commits ahead of base — "
+                "treating empty worktree as missing-work failure"
+            )
+        },
+    }
+    with open(audit_dir / "audit.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(audit_data, f)
+
+    entries = read_completed_status(summary_path)
+
+    assert len(entries) == 1
+    assert entries[0].status == "done"
+    assert entries[0].phase == "ALREADY_DONE"
+    assert (
+        entries[0].detail == "Preflight verdict: Main already satisfies all acceptance criteria."
+    )
+
+
 # ── cmd_sprint_status (output) ───────────────────────────────────────────────
 
 
@@ -1082,3 +1123,30 @@ def test_completed_done_story_verdict_is_preserved() -> None:
     }
     _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
     assert detail == "APPROVE"
+
+
+def test_completed_already_done_story_prefers_preflight_reason_over_outcome_message() -> None:
+    """ALREADY_DONE rows should render the preflight reason, not a later gate message."""
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-1186",
+        "path": "Issue #1186",
+        "outcome": "ALREADY_DONE",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(
+        story,
+        {
+            "preflight": {
+                "reason": "Main already satisfies all acceptance criteria.",
+            },
+            "outcome": {
+                "message": (
+                    "Gate exited PASS but branch has no commits ahead of base — "
+                    "treating empty worktree as missing-work failure"
+                )
+            },
+        },
+    )
+
+    assert detail == "Preflight verdict: Main already satisfies all acceptance criteria."

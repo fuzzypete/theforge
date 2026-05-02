@@ -907,7 +907,7 @@ def _classify_and_record(
     preflight_verdict = result.state.preflight_verdict
     landing_status = getattr(result, "landing_status", None)
 
-    if preflight_verdict == "ALREADY_DONE":
+    if preflight_verdict == "ALREADY_DONE" and result.success:
         outcome = StoryOutcome.ALREADY_DONE
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
