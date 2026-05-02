@@ -156,6 +156,30 @@ def _blocking_codes(result: ShapeResult) -> list[str]:
     return [r.code for r in result.reasons if r.severity is Severity.BLOCKING]
 
 
+def _skip_detail(
+    result: ShapeResult,
+    fallback: str,
+    *,
+    include_advisory_when_no_blocking: bool = False,
+) -> str:
+    blocking_details = [
+        reason.detail.strip()
+        for reason in result.reasons
+        if reason.severity is Severity.BLOCKING and reason.detail.strip()
+    ]
+    if blocking_details:
+        return "; ".join(blocking_details)
+
+    if include_advisory_when_no_blocking:
+        reason_details = [
+            reason.detail.strip() for reason in result.reasons if reason.detail.strip()
+        ]
+        if reason_details:
+            return "; ".join(reason_details)
+
+    return fallback
+
+
 _VALID_CLASSIFIER_MODES = frozenset({"heuristic", "off", "llm"})
 
 
@@ -185,7 +209,6 @@ def apply_shape_gate(
     classifier_mode: str = "heuristic",
     force: bool = False,
     fetch_detail=_fetch_issue_detail,
-    fetch_bot_codes=_fetch_bot_reason_codes,
     llm_caller=None,
 ) -> ShapeGateResult:
     """Partition issues into runnable vs skipped before preflight runs.
@@ -193,12 +216,12 @@ def apply_shape_gate(
     Algorithm:
 
     1. For each ``{number, title}`` in *issues*, fetch labels + body.
-    2. If ``needs-grooming`` is present, skip with ``source='label'`` and
-       pull reason codes from the #806b bot comment; if that is absent,
-       re-derive the codes by running the local shape check.
-    3. Otherwise re-run the local shape check against the current body
-       (the defense-in-depth step that closes the stale-label loophole).
-       If the check returns a non-``RUNNABLE`` shape, skip with
+    2. Re-run the local shape check against the current body and labels for
+       every issue (the defense-in-depth step that closes the stale-comment
+       loophole).
+    3. If ``needs-grooming`` is present, skip with ``source='label'`` while
+       surfacing the live blocking findings that explain the current state.
+    4. Otherwise, if the check returns a non-``RUNNABLE`` shape, skip with
        ``source='local_check'``.
 
     ``force=True`` returns every input issue as runnable but still populates
@@ -220,29 +243,6 @@ def apply_shape_gate(
         labels = detail["labels"]
         title = detail["title"] or title_short
         body = detail["body"]
-
-        if NEEDS_GROOMING_LABEL in labels:
-            codes = fetch_bot_codes(number, project_root)
-            if not codes:
-                local = check(
-                    title,
-                    body,
-                    labels,
-                    classifier_mode=effective_mode,
-                    llm_caller=llm_caller,
-                )
-                codes = _blocking_codes(local) or ["needs_grooming_label"]
-            skipped.append(
-                SkippedIssue(
-                    issue_number=number,
-                    reason_codes=tuple(codes),
-                    source="label",
-                    title=title_short,
-                    detail=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
-                )
-            )
-            continue
-
         local = check(
             title,
             body,
@@ -250,6 +250,23 @@ def apply_shape_gate(
             classifier_mode=effective_mode,
             llm_caller=llm_caller,
         )
+
+        if NEEDS_GROOMING_LABEL in labels:
+            codes = _blocking_codes(local) or ["needs_grooming_label"]
+            skipped.append(
+                SkippedIssue(
+                    issue_number=number,
+                    reason_codes=tuple(codes),
+                    source="label",
+                    title=title_short,
+                    detail=_skip_detail(
+                        local,
+                        fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
+                    ),
+                )
+            )
+            continue
+
         if local.shape is not Shape.RUNNABLE:
             codes = _blocking_codes(local) or [r.code for r in local.reasons]
             skipped.append(
@@ -258,7 +275,11 @@ def apply_shape_gate(
                     reason_codes=tuple(codes),
                     source="local_check",
                     title=title_short,
-                    detail=f"local shape check: {local.suggested_action.value}",
+                    detail=_skip_detail(
+                        local,
+                        fallback=f"local shape check: {local.suggested_action.value}",
+                        include_advisory_when_no_blocking=True,
+                    ),
                 )
             )
             continue
@@ -280,8 +301,7 @@ def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
     lines = [f"[forge] {len(skipped)} issue(s) flagged by shape gate:"]
     for entry in skipped:
         codes = ", ".join(entry.reason_codes) or "<no codes>"
-        lines.append(
-            f"  - #{entry.issue_number} ({entry.source}): {codes}"
-            + (f" — {entry.title}" if entry.title else "")
-        )
+        title = f" — {entry.title}" if entry.title else ""
+        detail = f" [{entry.detail}]" if entry.detail else ""
+        lines.append(f"  - #{entry.issue_number} ({entry.source}): {codes}{title}{detail}")
     return "\n".join(lines)
