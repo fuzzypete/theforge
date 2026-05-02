@@ -182,6 +182,30 @@ class TestGitHubIssueSource:
 
         assert warnings == []
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "```\nissue-1071 depends_on issue-1070\n```",
+            "Use `depends_on issue-1070` as an example in docs.",
+            "> issue-1071 depends_on issue-1070",
+        ],
+    )
+    def test_prose_dependency_phrases_ignore_illustrative_markdown(self, body: str) -> None:
+        warnings = GitHubIssueSource()._dependency_authoring_warnings(body, [])
+
+        assert warnings == []
+
+    def test_prose_dependency_phrases_still_detect_plain_text_outside_examples(self) -> None:
+        body = (
+            "```\nissue-1071 depends_on issue-1070\n```\n\n"
+            "This work depends_on issue-265.\n"
+            "> blocked by #12"
+        )
+
+        warnings = GitHubIssueSource()._dependency_authoring_warnings(body, [])
+
+        assert warnings == ["depends_on issue-265"]
+
     def test_fetch_raises_on_failure(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")

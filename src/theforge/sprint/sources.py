@@ -35,6 +35,16 @@ _ISSUE_REF_RE = re.compile(r"(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/|iss
 _ISSUE_FRONTMATTER_RE = re.compile(
     r"\A---[ \t]*\r?\n(?P<yaml>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL
 )
+_FENCED_CODE_BLOCK_RE = re.compile(r"(?ms)^[ \t]*```.*?$.*?^[ \t]*```[ \t]*(?:\r?\n|$)")
+_BLOCKQUOTE_LINE_RE = re.compile(r"(?m)^[ \t]*>.*(?:\r?\n|$)")
+_INLINE_CODE_SPAN_RE = re.compile(r"(?<!`)`([^`\n]|``)*`(?!`)")
+
+
+def _strip_illustrative_markdown(text: str) -> str:
+    """Remove markdown regions that should not count as declarations."""
+    stripped = _FENCED_CODE_BLOCK_RE.sub("\n", text)
+    stripped = _BLOCKQUOTE_LINE_RE.sub("\n", stripped)
+    return _INLINE_CODE_SPAN_RE.sub("", stripped)
 
 
 def _derive_type_from_labels(labels: list[str], issue_number: int) -> tuple[str | None, list[str]]:
@@ -229,9 +239,13 @@ class GitHubIssueSource:
         """Return issue body with the structured metadata block removed."""
         return _ISSUE_FRONTMATTER_RE.sub("", body, count=1)
 
+    def _body_without_illustrative_markdown(self, body: str) -> str:
+        """Return issue body without non-declarative markdown examples."""
+        return _strip_illustrative_markdown(self._body_without_issue_metadata(body))
+
     def _find_prose_dependency_phrases(self, body: str) -> list[tuple[str, list[int]]]:
         """Return non-authoritative dependency-shaped prose phrases and refs."""
-        scan_body = self._body_without_issue_metadata(body)
+        scan_body = self._body_without_illustrative_markdown(body)
         matches: list[tuple[str, list[int]]] = []
         for match in _BLOCKED_BY_BODY_RE.finditer(scan_body):
             matches.append((match.group(0), [int(match.group("number"))]))

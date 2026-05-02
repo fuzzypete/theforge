@@ -1055,7 +1055,8 @@ def run_sprint(
             _log(
                 "WARN: dependency-shaped prose ignored for "
                 f"{task.slug} ({task.name}): {phrase!r}; "
-                "declare dependencies in YAML frontmatter"
+                "declare dependencies with GitHub blocked-by relationships "
+                "or leading issue metadata"
             )
 
     # Sprint-level structured logger

@@ -559,6 +559,10 @@ class TestRunSprint:
         assert "dependency-shaped prose ignored" in captured.err
         assert "issue-2 (Issue B)" in captured.err
         assert "Depends on #265" in captured.err
+        assert (
+            "declare dependencies with GitHub blocked-by relationships or leading issue metadata"
+            in captured.err
+        )
 
 
 # ── Notification tests ────────────────────────────────────────────────
