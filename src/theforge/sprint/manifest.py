@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from ..coordinator.state import CoordinatorResult
+from ..shape_check.heuristics import derive_fix_ready
 from ..task import TaskStory, frontmatter_allows_forge_yaml_mutation, parse_story_frontmatter
 
 if TYPE_CHECKING:
@@ -199,6 +200,24 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         import logging as _logging  # noqa: PLC0415
 
         _logging.getLogger(__name__).warning(warning)
+
+    body = story_path.read_text(encoding="utf-8")
+    fix_ready, readiness_warnings = derive_fix_ready(story_type, body)
+    fm_override = fm.get("fix_ready")
+    if isinstance(fm_override, bool):
+        if fm_override is True and fix_ready is False:
+            readiness_warnings = [
+                *readiness_warnings,
+                "frontmatter declares fix_ready: true but body lacks a complete "
+                "Diagnosis section — honoring frontmatter override",
+            ]
+        elif fm_override is False and fix_ready is True:
+            readiness_warnings = [
+                *readiness_warnings,
+                "frontmatter explicitly marks fix_ready: false despite a complete body",
+            ]
+        fix_ready = fm_override
+
     return TaskStory(
         name=name,
         story_path=story_path,
@@ -210,6 +229,8 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         allow_mutate_forge_yaml=frontmatter_allows_forge_yaml_mutation(fm),
         type=story_type,
         type_warnings=type_warnings,
+        fix_ready=fix_ready,
+        readiness_warnings=readiness_warnings,
     )
 
 
