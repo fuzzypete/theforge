@@ -885,7 +885,7 @@ def _make_worker_phase_fn(
     plan_done: "dict[str, str] | None" = None,
     state_writer: "SprintStateWriter | None" = None,
 ) -> "Callable[[dict], None]":
-    """Return a thread-safe state_update_fn wrapper that tracks per-worker phase.
+    """Return a thread-safe state_update_fn wrapper for worker live state.
 
     Updates worker_phases[slug] from updates["phase"] and (under lock) forwards
     updates to the outer daemon state_update_fn if provided.
@@ -893,8 +893,9 @@ def _make_worker_phase_fn(
     When *plan_done* is provided and a PLAN_DONE phase update arrives, stores
     the workspace_path in plan_done[slug] for the scheduler to read.
 
-    When *state_writer* is provided, phase transitions are also written to the
-    live sprint state file so ``forge sprint-status`` reflects the current phase.
+    When *state_writer* is provided, live-facing fields are also written to the
+    sprint state file so ``forge sprint-status`` reflects both the current phase
+    and the latest per-story cost.
     """
 
     def _update(updates: dict) -> None:
@@ -902,22 +903,25 @@ def _make_worker_phase_fn(
         with phase_lock:
             if phase:
                 worker_phases[slug] = phase
-                if state_writer is not None:
-                    incoming_detail = updates.get("detail")
-                    _detail_updates: dict[str, object] = (
-                        dict(incoming_detail) if isinstance(incoming_detail, dict) else {}
-                    )
-                    if phase == "VALIDATE" and not _detail_updates:
-                        _detail_updates = {"gate_status": "running"}
-                    update_kwargs: dict[str, object] = {"phase": phase}
-                    if "complexity" in updates:
-                        update_kwargs["complexity"] = updates["complexity"]
-                    if "cost_usd" in updates:
-                        update_kwargs["cost_usd"] = updates["cost_usd"]
-                    if "current_model" in updates:
-                        update_kwargs["current_model"] = updates["current_model"]
-                    if _detail_updates:
-                        update_kwargs["detail"] = _detail_updates
+            if state_writer is not None:
+                incoming_detail = updates.get("detail")
+                detail_updates: dict[str, object] = (
+                    dict(incoming_detail) if isinstance(incoming_detail, dict) else {}
+                )
+                if phase == "VALIDATE" and not detail_updates:
+                    detail_updates = {"gate_status": "running"}
+                update_kwargs: dict[str, object] = {}
+                if phase:
+                    update_kwargs["phase"] = phase
+                if "complexity" in updates:
+                    update_kwargs["complexity"] = updates["complexity"]
+                if "cost_usd" in updates:
+                    update_kwargs["cost_usd"] = updates["cost_usd"]
+                if "current_model" in updates:
+                    update_kwargs["current_model"] = updates["current_model"]
+                if detail_updates:
+                    update_kwargs["detail"] = detail_updates
+                if update_kwargs:
                     state_writer.update(slug, **update_kwargs)
             if phase == "PLAN_DONE" and plan_done is not None:
                 ws = updates.get("workspace_path", "")

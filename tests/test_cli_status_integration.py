@@ -464,6 +464,42 @@ def test_watch_loop_renders_all_live_sprints_in_one_frame(tmp_path: Path, capsys
     assert "Issue #1186" in out
 
 
+def test_watch_loop_surfaces_cost_delta_after_live_state_cost_update(
+    tmp_path: Path, capsys: object
+) -> None:
+    from theforge.cli import status_watch
+
+    _write_pid_file(tmp_path, "run-a", "issues-1240")
+    _write_state_file(
+        tmp_path,
+        "run-a",
+        "issues-1240",
+        [_live_story(1240, status="running", phase="PLAN", cost_usd=0.38)],
+    )
+
+    def bump_cost(_seconds: float) -> None:
+        _write_state_file(
+            tmp_path,
+            "run-a",
+            "issues-1240",
+            [_live_story(1240, status="running", phase="PLAN", cost_usd=0.42)],
+        )
+
+    with patch.object(status_watch, "is_tty", return_value=False):
+        rc = status_watch.run_watch_loop(
+            "run-a",
+            tmp_path,
+            interval=0.01,
+            color=False,
+            sleep_fn=bump_cost,
+            max_frames=2,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "+$0.04" in out
+
+
 def test_watch_loop_drops_finished_sprint_on_next_frame(tmp_path: Path, capsys: object) -> None:
     from theforge.cli import status_watch
 
