@@ -75,6 +75,15 @@ conventions:
 assignment:
   enabled: true
 
+# Neutralize the stuck-detector's no-file-modifications arm pending the redesign
+# in #1215. Repeat-call and identical-error-loop arms remain at their defaults
+# (repeat_threshold: 4, error_threshold: 4) — those are defensible signals.
+# The no-file-modifications arm conflates legitimate codebase exploration with
+# stuckness and has false-terminated multiple stories during dogfood.
+stuck_detection:
+  no_progress_iterations: 100
+  post_nudge_iterations: 100
+
 retry:
   max_dev_iterations: 3
   max_review_cycles: 3
