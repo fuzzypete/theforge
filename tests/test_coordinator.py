@@ -24,6 +24,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.dev_phase import classify_runner_subprocess_failure
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase, parse_phase_name
@@ -1130,3 +1131,170 @@ class TestStartupFailureEscalation:
         assert result.success is True
         assert result.state.dev_iteration_telemetry[0].agent_exit_code == 0
         assert result.state.dev_iteration_telemetry[0].runner_failure_code is None
+
+    @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_transient_transport_failure_retries_and_succeeds(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, _mock_sleep, tmp_path
+    ):
+        """A transient dev transport failure is retried once and surfaced in audit."""
+        config = replace(
+            _make_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_dev_transport_retries=1,
+                max_review_cycles=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.side_effect = [
+            AgentResult(
+                success=False,
+                output="API Error: Stream idle timeout - partial response received",
+                session_id="sess-partial",
+                cost_usd=0.75,
+                exit_code=1,
+                raw={},
+            ),
+            AgentResult(
+                success=True,
+                output="Implemented.",
+                session_id="sess-final",
+                cost_usd=1.10,
+                exit_code=0,
+                raw={},
+            ),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_dev_agent.call_count == 2
+        assert len(result.state.dev_results) == 2
+        assert result.state.total_dev_cost == pytest.approx(1.85)
+        telemetry = result.state.dev_iteration_telemetry[0]
+        assert telemetry.transport_retry_count == 1
+        assert telemetry.transport_retry_events[0]["retry"] == 1
+        assert "stream idle timeout" in telemetry.transport_retry_events[0]["error"].lower()
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["phases"]["dev"]["transport_retries"] == telemetry.transport_retry_events
+
+    @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
+    @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_transient_transport_failure_exhausts_retries_then_escalates(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        _mock_sleep,
+        _mock_has_commits,
+        tmp_path,
+    ):
+        """Transient dev failures stop retrying after the configured transport budget."""
+        config = replace(
+            _make_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_dev_transport_retries=1,
+                max_review_cycles=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.side_effect = [
+            AgentResult(
+                success=False,
+                output="API Error: Stream idle timeout - partial response received",
+                session_id="sess-partial",
+                cost_usd=0.75,
+                exit_code=1,
+                raw={},
+            ),
+            AgentResult(
+                success=False,
+                output="provider 503 service unavailable",
+                session_id="sess-final",
+                cost_usd=0.50,
+                exit_code=1,
+                raw={},
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert mock_dev_agent.call_count == 2
+        telemetry = result.state.dev_iteration_telemetry[0]
+        assert telemetry.gate_result == "DEV_FAILURE"
+        assert telemetry.transport_retry_count == 1
+        assert len(result.state.dev_results) == 2
+        assert result.state.total_dev_cost == pytest.approx(1.25)
+        assert "produced no commits ahead of base" in (result.message or "")
+
+    @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
+    @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_non_transient_failure_does_not_retry(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        _mock_sleep,
+        _mock_has_commits,
+        tmp_path,
+    ):
+        """Authentication/content errors escalate immediately without transport retry."""
+        config = replace(
+            _make_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_dev_transport_retries=1,
+                max_review_cycles=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = AgentResult(
+            success=False,
+            output="authentication failed: invalid api key",
+            session_id=None,
+            cost_usd=0.20,
+            exit_code=1,
+            raw={},
+            failure_code="auth_error",
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert mock_dev_agent.call_count == 1
+        telemetry = result.state.dev_iteration_telemetry[0]
+        assert telemetry.transport_retry_count == 0
+        assert telemetry.transport_retry_events == []

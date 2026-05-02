@@ -179,6 +179,8 @@ class DevIterationTelemetry:
     agent_exit_code: int | None = None
     runner_failure_code: str | None = None
     runner_failure_summary: str | None = None
+    transport_retry_count: int = 0
+    transport_retry_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -244,6 +246,8 @@ class CoordinatorState:
     workspace_path: Path | None = None
     branch_name: str | None = None
     dev_session_id: str | None = None
+    pending_dev_transport_retry_count: int = 0
+    pending_dev_transport_retry_events: list[dict[str, Any]] = field(default_factory=list)
     plan_session_id: str | None = None
     plan_review_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name

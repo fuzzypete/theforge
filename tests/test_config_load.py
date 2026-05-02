@@ -95,11 +95,18 @@ class TestLoadConfig:
 
     def test_custom_retry(self, tmp_path):
         config_path = _write_config(
-            {"retry": {"max_dev_iterations": 5, "max_review_cycles": 4}},
+            {
+                "retry": {
+                    "max_dev_iterations": 5,
+                    "max_dev_transport_retries": 2,
+                    "max_review_cycles": 4,
+                }
+            },
             tmp_path,
         )
         config = load_config(config_path)
         assert config.retry.max_dev_iterations == 5
+        assert config.retry.max_dev_transport_retries == 2
         assert config.retry.max_review_cycles == 4
 
     def test_auto_model_escalation_defaults_false(self, tmp_path):
