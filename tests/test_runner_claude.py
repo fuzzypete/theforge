@@ -73,7 +73,7 @@ class TestHybridRunner:
             secrets={},
             plain_text=False,
         )
-        assert result == mock_result
+        assert result == AgentResult(**{**mock_result.__dict__, "transport_used": "api"})
 
     def test_run_agent_api_dev_dispatch(self, tmp_path: Path) -> None:
         """run_agent dispatches to run_api_agent for a dev profile with provider set."""
@@ -107,11 +107,23 @@ class TestHybridRunner:
             secrets={},
             plain_text=False,
         )
-        assert result == mock_result
+        assert result == AgentResult(**{**mock_result.__dict__, "transport_used": "api"})
 
     def test_run_agent_cli_dispatch(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """run_agent dispatches to CLI runner for CLI profiles."""
-        with patch("theforge.runners.runner_claude._run_claude") as mock_cli_run:
+        cli_result = AgentResult(
+            success=True,
+            output="cli result",
+            session_id="sess-1",
+            cost_usd=0.1,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+        )
+        with patch(
+            "theforge.runners.runner_claude._run_claude",
+            return_value=cli_result,
+        ) as mock_cli_run:
             run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
         mock_cli_run.assert_called_once()
 

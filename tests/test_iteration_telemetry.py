@@ -33,6 +33,11 @@ def test_story_audit_includes_iteration_loop_metrics(tmp_path):
             files_changed_count=1,
             tests_fixed_count=0,
             meaningful_progress=True,
+            cli_quota_error_observed=True,
+            transport_fallback_fired=True,
+            transport_fallback_reason="matched 'usage limit'",
+            transport_used="api",
+            model_used="gpt-5.4",
         ),
         DevIterationTelemetry(
             iteration=2,
@@ -67,6 +72,10 @@ def test_story_audit_includes_iteration_loop_metrics(tmp_path):
     )
 
     assert audit["iterations"]["dev_loop"][0]["gate_result"] == "FAIL"
+    assert audit["iterations"]["dev_loop"][0]["cli_quota_error_observed"] is True
+    assert audit["iterations"]["dev_loop"][0]["transport_fallback_fired"] is True
+    assert audit["iterations"]["dev_loop"][0]["transport_used"] == "api"
+    assert audit["iterations"]["dev_loop"][0]["model_used"] == "gpt-5.4"
     assert audit["iterations"]["dev_loop"][1]["tests_fixed_count"] == 1
     assert audit["iterations"]["review_loop"][0]["finding_counts"] == {"P1": 0, "P2": 1}
     assert audit["iterations"]["review_loop"][0]["novel_findings"] == 1
@@ -95,6 +104,10 @@ def test_story_audit_includes_runner_failure_fields(tmp_path):
             agent_exit_code=2,
             runner_failure_code="runner_argument_error",
             runner_failure_summary="error: unexpected argument '-C' found",
+            cli_quota_error_observed=False,
+            transport_fallback_fired=False,
+            transport_used="cli",
+            model_used="gpt-5.4",
         )
     ]
 
@@ -114,6 +127,8 @@ def test_story_audit_includes_runner_failure_fields(tmp_path):
     assert audit["iterations"]["dev_loop"][0]["runner_failure_summary"] == (
         "error: unexpected argument '-C' found"
     )
+    assert audit["iterations"]["dev_loop"][0]["transport_used"] == "cli"
+    assert audit["iterations"]["dev_loop"][0]["model_used"] == "gpt-5.4"
 
 
 def test_sprint_summary_includes_iteration_usage_distribution(tmp_path):

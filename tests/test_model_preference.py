@@ -462,6 +462,42 @@ class TestCliClassifyFallback:
         )
         assert _classify_cli_fallback(r) is not None
 
+    def test_usage_limit_pattern(self):
+        r = AgentResult(
+            success=False,
+            output="ERROR: You've hit your usage limit. Upgrade to Pro",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="cli-test",
+        )
+        assert _classify_cli_fallback(r) == "matched 'usage limit'"
+
+    def test_gemini_current_quota_pattern(self):
+        r = AgentResult(
+            success=False,
+            output="You exceeded your current quota, please check your plan and billing details.",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="cli-test",
+        )
+        assert _classify_cli_fallback(r) == "matched 'current quota'"
+
+    def test_gemini_daily_quota_limit_pattern(self):
+        r = AgentResult(
+            success=False,
+            output="You have reached your daily gemini-2.5-pro quota limit.",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="cli-test",
+        )
+        assert _classify_cli_fallback(r) == "matched 'quota limit'"
+
     def test_model_not_found_pattern(self):
         r = AgentResult(
             success=False,
@@ -597,6 +633,43 @@ class TestCliRunnerFallbackModels:
         # model_config and model_used recorded
         assert result.model_config == ("codex", "gpt-4o")
         assert result.model_used == "gpt-4o"
+        assert result.cli_quota_error_observed is True
+        assert result.transport_fallback_fired is True
+        assert result.transport_used == "api"
+
+    def test_cli_usage_limit_fires_api_fallback(self, tmp_path):
+        """Codex usage-limit signature triggers API fallback."""
+        profile = _make_cli_profile(cli="codex", model="codex", fallback_models=("gpt-5.4",))
+        cli_quota = AgentResult(
+            success=False,
+            output="ERROR: You've hit your usage limit. Upgrade to Pro",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="test-cli",
+        )
+        api_success = _success_result("gpt-5.4")
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_quota),
+            patch("theforge.runners.api.run_api_agent", return_value=api_success) as mock_api,
+        ):
+            from theforge.runners.cli import run_agent
+
+            result = run_agent(
+                prompt="test",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+            )
+
+        mock_api.assert_called_once()
+        assert result.success
+        assert result.model_used == "gpt-5.4"
+        assert result.cli_quota_error_observed is True
+        assert result.transport_fallback_fired is True
+        assert result.transport_used == "api"
 
     def test_cli_all_fallbacks_exhausted_returns_last_api_result(self, tmp_path):
         """When CLI fails and all API fallback models also fail, return last API result."""

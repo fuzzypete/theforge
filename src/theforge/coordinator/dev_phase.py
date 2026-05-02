@@ -333,6 +333,11 @@ def record_dev_iteration_telemetry(
             agent_exit_code=dev_result.exit_code,
             runner_failure_code=dev_result.failure_code,
             runner_failure_summary=runner_failure_summary,
+            cli_quota_error_observed=dev_result.cli_quota_error_observed,
+            transport_fallback_fired=dev_result.transport_fallback_fired,
+            transport_fallback_reason=dev_result.transport_fallback_reason,
+            transport_used=dev_result.transport_used,
+            model_used=dev_result.model_used,
             transport_retry_count=state.pending_dev_transport_retry_count,
             transport_retry_events=list(state.pending_dev_transport_retry_events),
         )
@@ -735,7 +740,10 @@ def _run_dev_phase(
     state.dev_results.extend(_dev_results_this_iteration)
     state.dev_durations.extend(_dev_durations_this_iteration)
     _capture_dev_handoff(state, config, task, workspace_path, dev_result)
-    state.dev_session_id = dev_result.session_id or state.dev_session_id
+    if _dev_profile.mode == "cli" and dev_result.transport_used == "api":
+        state.dev_session_id = None
+    else:
+        state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
     _dev_cost_total = sum(result.cost_usd or 0.0 for result in _dev_results_this_iteration)
