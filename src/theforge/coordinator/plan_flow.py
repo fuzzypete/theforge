@@ -399,6 +399,12 @@ def _run_plan_phase(
         work_type=state.preflight_work_type,
     )
 
+    from .workspace_hygiene import (  # noqa: PLC0415
+        check_phase_no_mutation,
+        snapshot_porcelain,
+    )
+
+    _plan_hygiene_before = snapshot_porcelain(workspace_path)
     _plan_start = time.monotonic()
     plan_result = run_agent(
         prompt=plan_prompt,
@@ -407,11 +413,27 @@ def _run_plan_phase(
         secrets=config.secrets,
     )
     _plan_elapsed = time.monotonic() - _plan_start
+    _plan_ok, _plan_diag, _plan_offending = check_phase_no_mutation(
+        workspace_path, _plan_hygiene_before, "PLAN"
+    )
+    state.workspace_hygiene_audit.append(
+        {"phase": "PLAN", "ok": _plan_ok, "offending_paths": _plan_offending}
+    )
     state.plan_durations.append(_plan_elapsed)
     state.plan_results.append(plan_result)
     state.plan_session_id = plan_result.session_id or state.plan_session_id
     write_trace(workspace_path / ".forge/traces" / "plan-attempt-0.txt", plan_result.output)
     _write_log_artifact(state.log_dir, "plan-attempt-0.txt", plan_result.output or "")
+    if not _plan_ok:
+        state.phase = Phase.ESCALATE
+        state.error = _plan_diag or "PLAN phase mutated the worktree"
+        _log(f"✗ ESCALATE   {state.error}")
+        logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
+        logger._safe_emit("escalate", reason=state.error, phase="PLAN")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False, phase=state.phase, state=state, message=state.error
+        )
 
     if plan_result.success:
         plan_text = plan_result.output
