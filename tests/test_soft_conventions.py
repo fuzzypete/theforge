@@ -22,7 +22,9 @@ from theforge.config import (
     WorkspaceConfig,
     load_config,
 )
+from theforge.config.types import HardConventionsConfig
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import (
     CoordinatorResult,
     CoordinatorState,
@@ -35,6 +37,7 @@ from theforge.task import (
     build_plan_prompt,
     build_review_prompt,
     render_conventions_block,
+    render_hard_conventions_block,
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -266,6 +269,165 @@ class TestBuildReviewPromptConventions:
         )
         # The P2 severity definition should mention convention violations
         assert "convention" in prompt.lower()
+
+
+# ── Hard conventions rendering ────────────────────────────────────────────
+
+
+class TestRenderHardConventionsBlock:
+    def test_no_args_returns_empty_string(self):
+        assert render_hard_conventions_block() == ""
+
+    def test_no_scratch_files_false_returns_empty_string(self):
+        # Only render when no_scratch_files is enforced.
+        assert render_hard_conventions_block(no_scratch_files=False) == ""
+        assert (
+            render_hard_conventions_block(no_scratch_files=False, allowed_root_files=("foo.txt",))
+            == ""
+        )
+
+    def test_no_scratch_files_true_renders_block(self):
+        result = render_hard_conventions_block(no_scratch_files=True)
+        assert "Hard" in result
+        assert "P1" in result
+        assert "no_scratch_files" in result
+        assert "repo-root" in result.lower() or "repo root" in result.lower()
+
+    def test_allowed_root_files_listed(self):
+        result = render_hard_conventions_block(
+            no_scratch_files=True,
+            allowed_root_files=("pyproject.toml", "poetry.lock"),
+        )
+        assert "pyproject.toml" in result
+        assert "poetry.lock" in result
+
+    def test_no_allowed_files_still_renders_when_no_scratch_files(self):
+        result = render_hard_conventions_block(no_scratch_files=True, allowed_root_files=())
+        assert "Hard" in result
+        assert "not declared any additional permitted repo-root files" in result
+
+
+class TestBuildReviewPromptHardConventions:
+    def test_hard_conventions_block_included(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_review_prompt(
+            task,
+            story_content="# Spec",
+            commit_log="abc123 feat: thing",
+            commit_diffs="diff --git a/foo.py b/foo.py",
+            workspace_path=str(tmp_path / "ws"),
+            branch="feat/test",
+            handoff_content="gate_result: PASS",
+            no_scratch_files=True,
+            allowed_root_files=("pyproject.toml",),
+        )
+        assert "Hard — Mechanically Enforced" in prompt
+        assert "pyproject.toml" in prompt
+        assert "no_scratch_files" in prompt
+
+    def test_no_hard_conventions_no_block(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_review_prompt(
+            task,
+            story_content="# Spec",
+            commit_log="abc123 feat: thing",
+            commit_diffs="diff --git a/foo.py b/foo.py",
+            workspace_path=str(tmp_path / "ws"),
+            branch="feat/test",
+            handoff_content="gate_result: PASS",
+        )
+        assert "Hard — Mechanically Enforced" not in prompt
+
+    def test_hard_and_soft_both_rendered(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_review_prompt(
+            task,
+            story_content="# Spec",
+            commit_log="abc123 feat: thing",
+            commit_diffs="diff --git a/foo.py b/foo.py",
+            workspace_path=str(tmp_path / "ws"),
+            branch="feat/test",
+            handoff_content="gate_result: PASS",
+            conventions=["Single concern per module"],
+            no_scratch_files=True,
+            allowed_root_files=("pyproject.toml",),
+        )
+        assert "Hard — Mechanically Enforced" in prompt
+        assert "## Project Conventions" in prompt
+        assert "Single concern per module" in prompt
+
+
+# ── Config → review prompt seam ───────────────────────────────────────────
+
+
+class TestHardConventionConfigPropagation:
+    """Seam tests that ForgeConfig.conventions_hard reaches build_review_prompt."""
+
+    def test_helper_extracts_hard_convention_kwargs(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        # Override conventions_hard via dataclasses.replace pattern.
+        import dataclasses
+
+        cfg = dataclasses.replace(
+            cfg,
+            conventions_hard=HardConventionsConfig(
+                no_scratch_files=True,
+                allowed_root_files=("pyproject.toml", "poetry.lock"),
+            ),
+        )
+        kwargs = hard_convention_review_kwargs(cfg)
+        assert kwargs == {
+            "allowed_root_files": ("pyproject.toml", "poetry.lock"),
+            "no_scratch_files": True,
+        }
+
+    def test_helper_returns_none_when_conventions_hard_absent(self, tmp_path):
+        cfg = _make_config(tmp_path)  # conventions_hard defaults to None
+        assert cfg.conventions_hard is None
+        kwargs = hard_convention_review_kwargs(cfg)
+        assert kwargs == {"allowed_root_files": None, "no_scratch_files": None}
+
+    def test_helper_kwargs_round_trip_into_review_prompt(self, tmp_path):
+        """The kwargs returned by the helper are accepted by build_review_prompt
+        and produce the hard-conventions block end-to-end."""
+        import dataclasses
+
+        cfg = _make_config(tmp_path)
+        cfg = dataclasses.replace(
+            cfg,
+            conventions_hard=HardConventionsConfig(
+                no_scratch_files=True,
+                allowed_root_files=("pyproject.toml",),
+            ),
+        )
+        task = _make_task(tmp_path)
+        prompt = build_review_prompt(
+            task,
+            story_content="# Spec",
+            commit_log="abc123 feat",
+            commit_diffs="diff",
+            workspace_path=str(tmp_path / "ws"),
+            branch="feat/test",
+            handoff_content="gate_result: PASS",
+            **hard_convention_review_kwargs(cfg),
+        )
+        assert "Hard — Mechanically Enforced" in prompt
+        assert "pyproject.toml" in prompt
+
+    def test_helper_kwargs_no_block_when_conventions_hard_none(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        prompt = build_review_prompt(
+            task,
+            story_content="# Spec",
+            commit_log="abc123 feat",
+            commit_diffs="diff",
+            workspace_path=str(tmp_path / "ws"),
+            branch="feat/test",
+            handoff_content="gate_result: PASS",
+            **hard_convention_review_kwargs(cfg),
+        )
+        assert "Hard — Mechanically Enforced" not in prompt
 
 
 # ── Audit inclusion ───────────────────────────────────────────────────────

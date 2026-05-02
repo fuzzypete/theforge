@@ -43,6 +43,7 @@ from .review_context import (
     _get_handoff_content,
     _latest_forge_handoff_path,
     _parse_dev_handoff,
+    hard_convention_review_kwargs,
 )
 from .state import CoordinatorState, Phase, ReviewCycleMetadata
 
@@ -254,6 +255,7 @@ def _run_review_pool(
                     dev_notes=dev_notes,
                     cycle_history=state.cycle_history if state.cycle_history else None,
                     conventions=config.conventions_soft,
+                    **hard_convention_review_kwargs(config),
                     assembled_context=review_context,
                     sandboxed=state.sandboxed,
                     fix_claim_flags=fix_claim_flags,
@@ -276,6 +278,7 @@ def _run_review_pool(
                 dev_notes=dev_notes,
                 cycle_history=state.cycle_history if state.cycle_history else None,
                 conventions=config.conventions_soft,
+                **hard_convention_review_kwargs(config),
                 assembled_context=review_context,
                 sandboxed=state.sandboxed,
                 fix_claim_flags=fix_claim_flags,
