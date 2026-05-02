@@ -35,6 +35,8 @@ from .role_derivation import derive_roles
 from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
+    AdvisoryConventionsConfig,
+    AdvisoryIssueFilingConfig,
     ApiFallbackConfig,
     ContextConfig,
     FindingClassifierConfig,
@@ -698,8 +700,10 @@ def load_config(config_path: Path) -> ForgeConfig:
         review_budget=int(context_data.get("review_budget", ContextConfig.review_budget)),
     )
 
+    conventions_raw = raw.get("conventions", {})
+
     # Conventions config — soft
-    conventions_soft_raw = raw.get("conventions", {}).get("soft", [])
+    conventions_soft_raw = conventions_raw.get("soft", [])
     if not isinstance(conventions_soft_raw, list):
         raise ValueError(
             "forge.yaml 'conventions.soft' must be a list of strings,"
@@ -711,7 +715,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     conventions_soft_list: list[str] = conventions_soft_raw
 
     # Conventions config — hard
-    conventions_hard_raw = raw.get("conventions", {}).get("hard", None)
+    conventions_hard_raw = conventions_raw.get("hard", None)
     if conventions_hard_raw is None:
         conventions_hard_cfg: HardConventionsConfig | None = None
     else:
@@ -762,6 +766,105 @@ def load_config(config_path: Path) -> ForgeConfig:
             allowed_root_files=tuple(_allowed_root_files),
         )
 
+    conventions_advisory_raw = conventions_raw.get("advisory", {})
+    if not isinstance(conventions_advisory_raw, dict):
+        raise ValueError(
+            "forge.yaml 'conventions.advisory' must be a mapping,"
+            f" got {conventions_advisory_raw!r}"
+        )
+
+    _artifact_path = conventions_advisory_raw.get(
+        "artifact_path", AdvisoryConventionsConfig.artifact_path
+    )
+    _summary_top_n = conventions_advisory_raw.get(
+        "summary_top_n", AdvisoryConventionsConfig.summary_top_n
+    )
+    _noteworthy_threshold = conventions_advisory_raw.get(
+        "noteworthy_threshold_percent", AdvisoryConventionsConfig.noteworthy_threshold_percent
+    )
+    _commit_shared = conventions_advisory_raw.get(
+        "commit_shared_artifact", AdvisoryConventionsConfig.commit_shared_artifact
+    )
+    _shared_artifact_path = conventions_advisory_raw.get(
+        "shared_artifact_path", AdvisoryConventionsConfig.shared_artifact_path
+    )
+    _issue_filing_raw = conventions_advisory_raw.get("issue_filing", {})
+
+    if not isinstance(_artifact_path, str) or not _artifact_path.strip():
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.artifact_path' must be a non-empty string,"
+            f" got {_artifact_path!r}"
+        )
+    if not isinstance(_summary_top_n, int) or _summary_top_n < 1:
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.summary_top_n' must be an int >= 1,"
+            f" got {_summary_top_n!r}"
+        )
+    if not isinstance(_noteworthy_threshold, (int, float)) or _noteworthy_threshold < 0:
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.noteworthy_threshold_percent' must be a number >= 0,"
+            f" got {_noteworthy_threshold!r}"
+        )
+    if not isinstance(_commit_shared, bool):
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.commit_shared_artifact' must be a bool,"
+            f" got {_commit_shared!r}"
+        )
+    if not isinstance(_shared_artifact_path, str) or not _shared_artifact_path.strip():
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.shared_artifact_path' must be a non-empty string,"
+            f" got {_shared_artifact_path!r}"
+        )
+    if not isinstance(_issue_filing_raw, dict):
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.issue_filing' must be a mapping,"
+            f" got {_issue_filing_raw!r}"
+        )
+
+    _issue_filing_enabled = _issue_filing_raw.get("enabled", AdvisoryIssueFilingConfig.enabled)
+    _issue_filing_threshold = _issue_filing_raw.get(
+        "threshold_percent", AdvisoryIssueFilingConfig.threshold_percent
+    )
+    _issue_filing_label = _issue_filing_raw.get("label", AdvisoryIssueFilingConfig.label)
+    _issue_filing_milestone = _issue_filing_raw.get(
+        "milestone", AdvisoryIssueFilingConfig.milestone
+    )
+
+    if not isinstance(_issue_filing_enabled, bool):
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.issue_filing.enabled' must be a bool,"
+            f" got {_issue_filing_enabled!r}"
+        )
+    if not isinstance(_issue_filing_threshold, (int, float)) or _issue_filing_threshold < 0:
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.issue_filing.threshold_percent'"
+            f" must be a number >= 0, got {_issue_filing_threshold!r}"
+        )
+    if not isinstance(_issue_filing_label, str) or not _issue_filing_label.strip():
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.issue_filing.label' must be a non-empty string,"
+            f" got {_issue_filing_label!r}"
+        )
+    if _issue_filing_milestone is not None and not isinstance(_issue_filing_milestone, str):
+        raise ValueError(
+            "forge.yaml 'conventions.advisory.issue_filing.milestone' must be a string or null,"
+            f" got {_issue_filing_milestone!r}"
+        )
+
+    conventions_advisory_cfg = AdvisoryConventionsConfig(
+        artifact_path=_artifact_path,
+        summary_top_n=_summary_top_n,
+        noteworthy_threshold_percent=float(_noteworthy_threshold),
+        commit_shared_artifact=_commit_shared,
+        shared_artifact_path=_shared_artifact_path,
+        issue_filing=AdvisoryIssueFilingConfig(
+            enabled=_issue_filing_enabled,
+            threshold_percent=float(_issue_filing_threshold),
+            label=_issue_filing_label,
+            milestone=_issue_filing_milestone,
+        ),
+    )
+
     _fc_raw = raw.get("finding_classifier", {})
     _allow_bypass = _fc_raw.get("allow_net_new_bypass", False)
     if not isinstance(_allow_bypass, bool):
@@ -806,6 +909,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         dev_profile_is_default=_dev_profile_is_default,
         conventions_hard=conventions_hard_cfg,
         conventions_soft=conventions_soft_list,
+        conventions_advisory=conventions_advisory_cfg,
         finding_classifier=finding_classifier_cfg,
         stuck_detection=stuck_detection_cfg,
         models_budget_usd=budget_usd_val,

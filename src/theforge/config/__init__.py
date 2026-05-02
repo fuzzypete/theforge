@@ -33,6 +33,8 @@ from .models import (
 )
 from .types import (
     SUPPORTED_PROVIDERS,
+    AdvisoryConventionsConfig,
+    AdvisoryIssueFilingConfig,
     ApiFallbackConfig,
     AssignmentConfig,
     BackendConfig,
@@ -59,6 +61,8 @@ from .types import (
 __all__ = [
     # types
     "AgentDef",
+    "AdvisoryConventionsConfig",
+    "AdvisoryIssueFilingConfig",
     "ApiFallbackConfig",
     "AssignmentConfig",
     "BackendConfig",

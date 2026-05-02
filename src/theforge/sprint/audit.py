@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from ..advisory_conventions import noteworthy_advisory_entries
 from ..log_util import _log_line
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
@@ -32,6 +33,37 @@ if TYPE_CHECKING:
 
 def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
+
+
+def _build_advisory_summary(config: ForgeConfig | None) -> dict | None:
+    """Return a sprint-summary section for current advisory convention debt."""
+    if config is None:
+        return None
+    entries = noteworthy_advisory_entries(config)
+    if not entries:
+        return {
+            "noteworthy_threshold_percent": (
+                config.conventions_advisory.noteworthy_threshold_percent
+            ),
+            "top_n": config.conventions_advisory.summary_top_n,
+            "entries": [],
+        }
+    return {
+        "noteworthy_threshold_percent": config.conventions_advisory.noteworthy_threshold_percent,
+        "top_n": config.conventions_advisory.summary_top_n,
+        "entries": [
+            {
+                "rule": entry["rule"],
+                "file": entry["file"],
+                "line_count": entry["line_count"],
+                "limit": entry["limit"],
+                "gap": entry["gap"],
+                "last_seen": entry["last_seen"],
+                "first_seen": entry.get("first_seen"),
+            }
+            for entry in entries
+        ],
+    }
 
 
 # ── Sprint-level stable identity ──────────────────────────────────────────────
@@ -540,6 +572,7 @@ def _write_sprint_summary(
     triage_actions_by_ref: "dict[str, str] | None" = None,
     current_story_entries_by_ref: "dict[str, dict] | None" = None,
     story_state: "object | None" = None,
+    config: "ForgeConfig | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -848,6 +881,7 @@ def _write_sprint_summary(
             "stopped_reason": result.stopped_reason,
             "ci_break_slug": ci_break_slug,
         },
+        "advisory_convention_violations": _build_advisory_summary(config),
         "stories": spec_entries,
         "skipped": [s.as_dict() if hasattr(s, "as_dict") else dict(s) for s in skipped_issues],
         "iteration_usage_distribution": usage_distribution,

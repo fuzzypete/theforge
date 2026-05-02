@@ -701,6 +701,61 @@ class TestConventionsConfig:
         with pytest.raises(ValueError, match="max_module_lines"):
             load_config(config_path)
 
+    def test_conventions_advisory_defaults(self, tmp_path):
+        """Advisory convention surfacing is enabled with default local-state settings."""
+        config_path = _write_config({"conventions": {"hard": {}}}, tmp_path)
+        config = load_config(config_path)
+        assert config.conventions_advisory.artifact_path == ".forge/conventions/advisory.yaml"
+        assert config.conventions_advisory.summary_top_n == 10
+        assert config.conventions_advisory.noteworthy_threshold_percent == 10.0
+        assert config.conventions_advisory.commit_shared_artifact is False
+        assert config.conventions_advisory.shared_artifact_path == "docs/advisory-conventions.yaml"
+        assert config.conventions_advisory.issue_filing.enabled is False
+        assert config.conventions_advisory.issue_filing.threshold_percent == 25.0
+        assert config.conventions_advisory.issue_filing.label == "refactor-debt"
+
+    def test_conventions_advisory_custom_values(self, tmp_path):
+        """Advisory convention config parses nested summary and issue-filing settings."""
+        config_path = _write_config(
+            {
+                "conventions": {
+                    "advisory": {
+                        "artifact_path": ".forge/custom/advisory.yaml",
+                        "summary_top_n": 3,
+                        "noteworthy_threshold_percent": 12.5,
+                        "commit_shared_artifact": True,
+                        "shared_artifact_path": "docs/custom-advisory.yaml",
+                        "issue_filing": {
+                            "enabled": True,
+                            "threshold_percent": 30,
+                            "label": "debt",
+                            "milestone": "v0.12.0",
+                        },
+                    }
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.conventions_advisory.artifact_path == ".forge/custom/advisory.yaml"
+        assert config.conventions_advisory.summary_top_n == 3
+        assert config.conventions_advisory.noteworthy_threshold_percent == 12.5
+        assert config.conventions_advisory.commit_shared_artifact is True
+        assert config.conventions_advisory.shared_artifact_path == "docs/custom-advisory.yaml"
+        assert config.conventions_advisory.issue_filing.enabled is True
+        assert config.conventions_advisory.issue_filing.threshold_percent == 30.0
+        assert config.conventions_advisory.issue_filing.label == "debt"
+        assert config.conventions_advisory.issue_filing.milestone == "v0.12.0"
+
+    def test_conventions_advisory_invalid_summary_top_n_raises(self, tmp_path):
+        """Invalid advisory summary limits fail closed at config load."""
+        config_path = _write_config(
+            {"conventions": {"advisory": {"summary_top_n": 0}}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="summary_top_n"):
+            load_config(config_path)
+
 
 class TestValidationTestCommand:
     """Tests for validation.test_command config field."""
