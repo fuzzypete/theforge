@@ -172,6 +172,14 @@ class TestFormatHelpers:
     def test_delta_negative(self) -> None:
         assert status_watch._format_delta(-1.5) == "-$1.50"
 
+    def test_stall_threshold_defaults_from_interval(self) -> None:
+        assert status_watch._stall_threshold_seconds(2.0) == 5.0
+        assert status_watch._stall_threshold_seconds(10.0) == 20.0
+
+    def test_stall_threshold_can_be_overridden(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(status_watch.STALL_THRESHOLD_ENV, "17")
+        assert status_watch._stall_threshold_seconds(2.0) == 17.0
+
 
 # ── render_frame: deltas and spinner ──────────────────────────────────────────
 
@@ -374,6 +382,16 @@ class TestRenderFrame:
         )
         assert "stalled" in text
 
+    def test_stalled_story_surfaces_logs_hint(self, tmp_path: Path) -> None:
+        entries = [_entry("story-a", status="running")]
+        text = self._render(
+            tmp_path,
+            entries,
+            now_fn=lambda: 1000.0,
+            last_mtime=900.0,
+        )
+        assert "forge logs run-x" in text
+
     def test_done_label(self, tmp_path: Path) -> None:
         text = self._render(tmp_path, [_entry("story-a", status="done")])
         assert "done" in text
@@ -491,6 +509,86 @@ class TestRunWatchLoop:
         out = capsys.readouterr().out
         assert status_watch.HIDE_CURSOR in out
         assert status_watch.SHOW_CURSOR in out
+
+    def test_follows_reexec_redirect_without_restarting_watch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        seen_run_ids: list[str] = []
+
+        def fake_render_frame(
+            run_id: str,
+            _project_root: Path,
+            state: dict,
+            frame_idx: int,
+            *,
+            color: bool,
+            now_fn=None,
+        ) -> tuple[str, bool, str]:
+            del state, frame_idx, color, now_fn
+            seen_run_ids.append(run_id)
+            return f"{run_id}\n", True, ""
+
+        with (
+            patch.object(status_watch, "render_frame", side_effect=fake_render_frame),
+            patch.object(status_watch, "is_tty", return_value=False),
+            patch.object(
+                status_watch,
+                "_resolve_followed_run_id",
+                side_effect=["run-old", "run-new", "run-new"],
+            ),
+        ):
+            rc = status_watch.run_watch_loop(
+                "run-old",
+                tmp_path,
+                interval=0.01,
+                color=False,
+                sleep_fn=lambda _s: None,
+                max_frames=3,
+            )
+
+        assert rc == 0
+        assert seen_run_ids == ["run-old", "run-new", "run-new"]
+        out = capsys.readouterr().out
+        assert "run-old" in out
+        assert "run-new" in out
+
+    def test_reexec_redirect_resets_cost_deltas_for_new_run(self, tmp_path: Path) -> None:
+        seen_costs: list[dict[str, float]] = []
+
+        def fake_render_frame(
+            run_id: str,
+            _project_root: Path,
+            state: dict,
+            frame_idx: int,
+            *,
+            color: bool,
+            now_fn=None,
+        ) -> tuple[str, bool, str]:
+            del run_id, frame_idx, color, now_fn
+            seen_costs.append(dict(state["costs"]))
+            state["costs"]["story-a"] = 1.25
+            return "frame\n", True, ""
+
+        with (
+            patch.object(status_watch, "render_frame", side_effect=fake_render_frame),
+            patch.object(status_watch, "is_tty", return_value=False),
+            patch.object(
+                status_watch,
+                "_resolve_followed_run_id",
+                side_effect=["run-old", "run-new"],
+            ),
+        ):
+            rc = status_watch.run_watch_loop(
+                "run-old",
+                tmp_path,
+                interval=0.01,
+                color=False,
+                sleep_fn=lambda _s: None,
+                max_frames=2,
+            )
+
+        assert rc == 0
+        assert seen_costs == [{}, {}]
 
 
 # ── cmd_status routing ───────────────────────────────────────────────────────
