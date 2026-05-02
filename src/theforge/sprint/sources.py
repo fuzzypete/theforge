@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import yaml
 
-from ..task import ALLOW_MUTATE_FORGE_YAML_KEY, TaskStory
+from ..task import ALLOW_MUTATE_FORGE_YAML_KEY, RECOGNIZED_STORY_TYPES, StoryTypeError, TaskStory
 from .manifest import _build_task_from_story
 
 if TYPE_CHECKING:
@@ -35,6 +35,30 @@ _ISSUE_REF_RE = re.compile(r"(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/|iss
 _ISSUE_FRONTMATTER_RE = re.compile(
     r"\A---[ \t]*\r?\n(?P<yaml>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL
 )
+
+
+def _derive_type_from_labels(labels: list[str], issue_number: int) -> tuple[str | None, list[str]]:
+    """Pick the structured story type from a list of GH label names.
+
+    Returns ``(type, warnings)``. Multiple recognized type labels yield a
+    StoryTypeError so the issue is rejected rather than silently picking one;
+    zero matches return ``(None, warning)`` so downstream gates can flag it as
+    a migration concern.
+    """
+    matches = [lbl for lbl in labels if lbl in RECOGNIZED_STORY_TYPES]
+    if len(matches) > 1:
+        raise StoryTypeError(
+            f"issue #{issue_number} has multiple type labels {sorted(set(matches))!r} — "
+            f"exactly one of {sorted(RECOGNIZED_STORY_TYPES)} is required"
+        )
+    if matches:
+        return matches[0], []
+    warning = (
+        f"GH issue #{issue_number} has no recognized type label — expected one of: "
+        f"{', '.join(sorted(RECOGNIZED_STORY_TYPES))}"
+    )
+    _log.warning(warning)
+    return None, [warning]
 
 
 class IssueClosedError(RuntimeError):
@@ -246,7 +270,7 @@ class GitHubIssueSource:
         number = int(ref)
         try:
             proc = subprocess.run(
-                ["gh", "issue", "view", str(number), "--json", "title,body,state"],
+                ["gh", "issue", "view", str(number), "--json", "title,body,state,labels"],
                 capture_output=True,
                 text=True,
                 cwd=str(project_root),
@@ -277,6 +301,13 @@ class GitHubIssueSource:
         blocker_slugs = [f"issue-{blocker}" for blocker in blockers]
         dependency_warnings = self._dependency_authoring_warnings(body, blockers)
 
+        label_names = [
+            lbl.get("name", "").strip().lower()
+            for lbl in (data.get("labels") or [])
+            if isinstance(lbl, dict) and lbl.get("name")
+        ]
+        story_type, type_warnings = _derive_type_from_labels(label_names, number)
+
         slug = f"issue-{number}"
         return TaskStory(
             name=title,
@@ -288,6 +319,8 @@ class GitHubIssueSource:
             dependency_warnings=dependency_warnings,
             github_issue=number,
             allow_mutate_forge_yaml=metadata.get(ALLOW_MUTATE_FORGE_YAML_KEY) is True,
+            type=story_type,
+            type_warnings=type_warnings,
         )
 
     def on_complete(

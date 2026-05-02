@@ -346,6 +346,19 @@ def _run_preflight_phase(
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
         state.preflight_sufficiency = sufficiency
         work_type = _parse_preflight_work_type(preflight_result.output)
+        # Structured story type wins over AI inference. A bug-typed story is
+        # always work_type="bug" so AC-synthesis paths are skipped; an
+        # enhancement/task is normalized to "feature" so the AC-verification
+        # flow runs. Epics are tracking-only and should never reach preflight,
+        # but if one does we treat it as feature so the pipeline is at least
+        # well-defined. AI-inferred refactor/mechanical signals are preserved
+        # only when there is no structured type — those are sub-classifications
+        # of feature work that the agent may legitimately refine.
+        if task.type == "bug":
+            work_type = "bug"
+        elif task.type in {"enhancement", "task", "epic"}:
+            if work_type not in {"refactor", "mechanical"}:
+                work_type = "feature"
         state.preflight_work_type = work_type
         contract_change = _parse_preflight_contract_change(preflight_result.output)
         state.preflight_contract_change = contract_change
@@ -535,7 +548,10 @@ def _run_preflight_phase(
         state.preflight_complexity = "large"
         state.preflight_complexity_score = 9
         state.preflight_sufficiency = "needs_planning"
-        state.preflight_work_type = "feature"
+        if task.type == "bug":
+            state.preflight_work_type = "bug"
+        else:
+            state.preflight_work_type = "feature"
         state.preflight_bundle_candidate = False
 
     if state_update_fn is not None:

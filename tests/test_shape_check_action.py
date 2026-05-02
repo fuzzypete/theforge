@@ -175,7 +175,7 @@ class TestRunActionOpened:
             number=7,
             title="Add a flag",
             body=WELL_FORMED_BODY,
-            labels=[],
+            labels=["enhancement"],
         )
 
         result = run_action(event, api)
@@ -202,7 +202,7 @@ class TestRunActionEdited:
             number=99,
             title="Add a flag",
             body=WELL_FORMED_BODY,
-            labels=["needs-grooming"],
+            labels=["needs-grooming", "enhancement"],
         )
 
         result = run_action(event, api)

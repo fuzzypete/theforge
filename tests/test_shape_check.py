@@ -355,7 +355,7 @@ class TestCheckAggregation:
             Bug reports should proceed with observed and expected behavior.
             """
         )
-        result = check("Shape gate blocks bugs", body, [])
+        result = check("Shape gate blocks bugs", body, ["bug"])
         assert result.shape is Shape.RUNNABLE
         assert result.suggested_action is SuggestedAction.PROCEED
         assert result.reasons == ()

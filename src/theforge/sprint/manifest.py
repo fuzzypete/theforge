@@ -188,6 +188,17 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         github_issue = int(raw_issue) if raw_issue is not None else None
     except (ValueError, TypeError):
         github_issue = None
+    story_type = fm.get("type")
+    type_warnings: list[str] = []
+    if story_type is None:
+        warning = (
+            f"file-sourced story {story_path.name!r} has no 'type:' frontmatter field — "
+            "treat as migration concern (downstream phases cannot read structured type)"
+        )
+        type_warnings.append(warning)
+        import logging as _logging  # noqa: PLC0415
+
+        _logging.getLogger(__name__).warning(warning)
     return TaskStory(
         name=name,
         story_path=story_path,
@@ -197,6 +208,8 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         depends_on=depends_on,
         github_issue=github_issue,
         allow_mutate_forge_yaml=frontmatter_allows_forge_yaml_mutation(fm),
+        type=story_type,
+        type_warnings=type_warnings,
     )
 
 

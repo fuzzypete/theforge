@@ -109,7 +109,7 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
     result = apply_shape_gate(
         issues,
         tmp_path,
-        fetch_detail=_fake_detail(_RUNNABLE_BODY, []),
+        fetch_detail=_fake_detail(_RUNNABLE_BODY, ["enhancement"]),
         fetch_bot_codes=_no_bot_codes,
     )
 
@@ -130,7 +130,7 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
 
     def fetch(number, _project_root):
         if number == 1:
-            return {"title": "Good", "body": _RUNNABLE_BODY, "labels": []}
+            return {"title": "Good", "body": _RUNNABLE_BODY, "labels": ["enhancement"]}
         return {
             "title": "Flagged",
             "body": _RUNNABLE_BODY,
@@ -165,7 +165,7 @@ def test_mixed_sprint_partitions_runnable_vs_skipped(tmp_path: Path) -> None:
 
     def fetch(number, _project_root):
         if number == 1:
-            return {"title": "runnable", "body": _RUNNABLE_BODY, "labels": []}
+            return {"title": "runnable", "body": _RUNNABLE_BODY, "labels": ["enhancement"]}
         if number == 2:
             return {
                 "title": "stale label",
