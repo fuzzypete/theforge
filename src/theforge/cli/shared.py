@@ -18,6 +18,7 @@ from theforge.config import (
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.redact import redact
+from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
 from theforge.task import (
     TaskStory,
@@ -193,6 +194,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
         branch=branch_name,
         handoff_content="(dry run — no handoff available)",
         conventions=config.conventions_soft,
+        **hard_convention_review_kwargs(config),
     )
 
     sep = "=" * 60

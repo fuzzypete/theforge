@@ -3,7 +3,7 @@ from textwrap import dedent
 from theforge.coordinator.state import CycleHistory
 
 from .context_assembler import ContextPack
-from .conventions import render_conventions_block
+from .conventions import render_conventions_block, render_hard_conventions_block
 from .story import TaskStory
 
 _REVIEW_ROLE_SECTIONS: dict[str, str] = {
@@ -145,6 +145,8 @@ def build_review_prompt(
     dev_notes: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
     conventions: list[str] | None = None,
+    allowed_root_files: tuple[str, ...] | list[str] | None = None,
+    no_scratch_files: bool | None = None,
     assembled_context: ContextPack | None = None,
     sandboxed: bool = True,
     fix_claim_flags: list[str] | None = None,
@@ -283,6 +285,10 @@ def build_review_prompt(
         """)
 
     sandbox_label = "enabled" if sandboxed else "DISABLED (unsandboxed — effects ran unconfined)"
+    _hard_block = render_hard_conventions_block(
+        allowed_root_files=allowed_root_files,
+        no_scratch_files=no_scratch_files,
+    )
 
     return dedent(f"""\
         You are reviewing an implementation of **{task.name}**.
@@ -294,7 +300,7 @@ def build_review_prompt(
         ## Spec
 
         {story_content}
-        {dev_notes_section}{context_section}{render_conventions_block(conventions)}
+        {dev_notes_section}{context_section}{_hard_block}{render_conventions_block(conventions)}
         ## Verified Git Metadata
 
         This section is coordinator-verified ground truth captured from git before review.

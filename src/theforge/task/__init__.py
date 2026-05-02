@@ -4,7 +4,7 @@ from .context_assembler import (
     ContextManifestEntry,
     ContextPack,
 )
-from .conventions import render_conventions_block
+from .conventions import render_conventions_block, render_hard_conventions_block
 from .dev_prompts import build_dev_prompt
 from .fix_prompts import build_fix_prompt
 from .plan_parser import PlanData, PlanStep, parse_plan_output
@@ -29,6 +29,7 @@ __all__ = [
     "ContextManifestEntry",
     "ContextPack",
     "render_conventions_block",
+    "render_hard_conventions_block",
     "build_dev_prompt",
     "build_fix_prompt",
     "PlanData",

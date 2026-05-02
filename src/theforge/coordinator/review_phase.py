@@ -54,6 +54,7 @@ from .review_context import (
     _get_handoff_commit_warning,
     _get_handoff_content,
     _latest_forge_handoff_path,
+    hard_convention_review_kwargs,
 )
 from .review_pool import _run_review_pool
 from .run_setup import save_trajectory_state
@@ -1179,6 +1180,7 @@ def _run_review_only_phase(
         dev_notes=dev_notes,
         cycle_history=None,
         conventions=config.conventions_soft,
+        **hard_convention_review_kwargs(config),
         assembled_context=review_context,
         sandboxed=state.sandboxed,
     )
