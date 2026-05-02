@@ -12,6 +12,8 @@ from .plan_prompts import build_plan_prompt, build_plan_review_prompt, build_pre
 from .review_prompts import build_review_prompt, build_synthesis_prompt
 from .story import (
     ALLOW_MUTATE_FORGE_YAML_KEY,
+    RECOGNIZED_STORY_TYPES,
+    StoryTypeError,
     TaskSpec,
     TaskStory,
     frontmatter_allows_forge_yaml_mutation,
@@ -38,6 +40,8 @@ __all__ = [
     "build_review_prompt",
     "build_synthesis_prompt",
     "ALLOW_MUTATE_FORGE_YAML_KEY",
+    "RECOGNIZED_STORY_TYPES",
+    "StoryTypeError",
     "TaskSpec",
     "TaskStory",
     "frontmatter_allows_forge_yaml_mutation",

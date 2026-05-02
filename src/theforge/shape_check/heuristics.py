@@ -52,6 +52,7 @@ _TRACKING_PHRASES = (
 )
 
 _BUG_LABELS: frozenset[str] = frozenset({"bug"})
+_RECOGNIZED_TYPE_LABELS: frozenset[str] = frozenset({"bug", "enhancement", "epic", "task"})
 _EXAMPLE_SECTION_PATTERNS = (
     r"example(?:s)?",
     r"what it should look like",
@@ -102,6 +103,36 @@ def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
     if _lower_labels(labels) & _BUG_LABELS:
         return True
     return has_heading(body, r"what happened") and has_heading(body, r"what was expected")
+
+
+def check_missing_type(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    """Flag issues that lack a structured type label.
+
+    Type is the deterministic input that drives downstream phase behavior
+    (preflight, plan, dev, review). Without it, consumers fall back to
+    inferring type from prose density, which is the misclassification risk
+    this check exists to prevent.
+    """
+    matches = _lower_labels(labels) & _RECOGNIZED_TYPE_LABELS
+    if not matches:
+        return Reason(
+            code="missing_type",
+            severity=Severity.BLOCKING,
+            detail=(
+                "Issue has no recognized type label — expected one of: "
+                f"{', '.join(sorted(_RECOGNIZED_TYPE_LABELS))}."
+            ),
+        )
+    if len(matches) > 1:
+        return Reason(
+            code="missing_type",
+            severity=Severity.BLOCKING,
+            detail=(
+                f"Issue has multiple type labels {sorted(matches)!r} — "
+                "exactly one type label is required."
+            ),
+        )
+    return None
 
 
 def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reason | None:

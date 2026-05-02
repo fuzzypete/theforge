@@ -7,6 +7,12 @@ import yaml
 
 ALLOW_MUTATE_FORGE_YAML_KEY = "allow_mutate_forge_yaml"
 
+RECOGNIZED_STORY_TYPES: frozenset[str] = frozenset({"bug", "enhancement", "epic", "task"})
+
+
+class StoryTypeError(ValueError):
+    """Raised when a story declares an unknown ``type`` value."""
+
 
 @dataclass(frozen=True)
 class TaskStory:
@@ -26,6 +32,8 @@ class TaskStory:
     dependency_warnings: list[str] = field(default_factory=list)  # non-authoritative prose matches
     github_issue: int | None = None  # GH issue number; PR will include "Closes #N"
     allow_mutate_forge_yaml: bool = False  # explicit opt-in for forge.yaml guard override
+    type: str | None = None  # structured story type from frontmatter or GH label
+    type_warnings: list[str] = field(default_factory=list)  # missing-type migration warnings
 
 
 # Backward-compat alias
@@ -81,6 +89,20 @@ def parse_story_frontmatter(story_path: Path) -> dict:
         result[ALLOW_MUTATE_FORGE_YAML_KEY], bool
     ):
         result = {k: v for k, v in result.items() if k != ALLOW_MUTATE_FORGE_YAML_KEY}
+
+    if "type" in result:
+        raw_type = result["type"]
+        if not isinstance(raw_type, str):
+            raise StoryTypeError(
+                f"story 'type' must be a string, got {type(raw_type).__name__}: {raw_type!r}"
+            )
+        normalized = raw_type.strip().lower()
+        if normalized not in RECOGNIZED_STORY_TYPES:
+            raise StoryTypeError(
+                f"unknown story type {raw_type!r} — must be one of: "
+                f"{', '.join(sorted(RECOGNIZED_STORY_TYPES))}"
+            )
+        result["type"] = normalized
 
     return result
 

@@ -33,7 +33,7 @@ def test_meta_issue_806_passes_its_own_shape_check():
     """Per spec: this story itself must pass shape check when the feature ships."""
     text = (FIXTURES / "issue_806_self.md").read_text()
     title, body = _split_title_body(text)
-    result = check(title, body, labels=[])
+    result = check(title, body, labels=["enhancement"])
     assert result.shape is Shape.RUNNABLE, (
         f"meta-check failed: shape={result.shape}, "
         f"reasons={[(r.code, r.detail) for r in result.reasons]}"
