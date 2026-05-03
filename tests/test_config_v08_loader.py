@@ -72,7 +72,7 @@ models:
   - google/gemini-3.1-pro-preview
 assignment:
   enabled: true
-  budget_per_story_usd: 100.0
+  max_cost_per_story_usd: 100.0
 plan:
   enabled: true
 plan_agent_review:

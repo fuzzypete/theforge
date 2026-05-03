@@ -835,7 +835,7 @@ def run_task(
             state.preflight_cache_validation = cache_validation
             if cache_valid:
                 apply_cached_preflight_state(state, cached_preflight_state)
-                config = _apply_preflight_config(config, state)
+                config = _apply_preflight_config(config, state, task_slug=task.slug)
                 from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
 
                 config, _pf_result, _pf_already_done_loop = _handle_preflight_verdict(
@@ -1139,7 +1139,7 @@ def _run_resume_coordinator(
         state.preflight_cache_validation = cache_validation
         if cache_valid:
             apply_cached_preflight_state(state, cached_preflight_state)
-            config = _apply_preflight_config(config, state)
+            config = _apply_preflight_config(config, state, task_slug=task.slug)
         else:
             # Cache invalidated mid-sprint (e.g., base branch advanced after a
             # prior batch merged): re-run preflight against the current base so

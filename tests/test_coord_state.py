@@ -336,7 +336,7 @@ class TestStructuredLoggingIntegration:
             assignment=AssignmentConfig(
                 enabled=True,
                 escalation_memory=False,
-                budget_per_story_usd=100.0,
+                max_cost_per_story_usd=100.0,
                 min_reviewers=1,
                 max_reviewers=2,
                 prefer_cross_provider=False,
@@ -387,7 +387,7 @@ class TestStructuredLoggingIntegration:
         assert preflight_phase_end["complexity_routing"]["preflight"]
         assert preflight_phase_end["complexity_routing"]["plan_review"]
         assert preflight_phase_end["complexity_routing"]["code_review"]
-        assert preflight_phase_end["complexity_routing"]["budget"]
+        assert preflight_phase_end["complexity_routing"]["per_story_routing_cost_cap"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

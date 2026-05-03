@@ -78,7 +78,7 @@ def test_model_profiles_written_even_when_escalation_memory_disabled(
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,  # deliberately off — profiles must still write
-            budget_per_story_usd=30.0,
+            max_cost_per_story_usd=30.0,
         ),
     )
     task = _make_task(tmp_path)
@@ -138,7 +138,7 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,
-            budget_per_story_usd=30.0,
+            max_cost_per_story_usd=30.0,
             min_reviewers=1,
             max_reviewers=1,
         ),
@@ -213,7 +213,7 @@ def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeyp
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,
-            budget_per_story_usd=30.0,
+            max_cost_per_story_usd=30.0,
             min_reviewers=1,
             max_reviewers=1,
         ),
@@ -234,7 +234,7 @@ def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeyp
     assert audit["assignments"]["dev"]["model"] == state._adaptive_decision.dev.model
     assert audit["assignments"]["dev"]["source"] == state._adaptive_decision.dev.registry_source
     assert "dev" in audit["rationale"]
-    assert "budget_cap_usd" in audit["budget"]
+    assert "cap_usd" in audit["per_story_routing_cost_cap"]
 
 
 def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pressure(
@@ -279,7 +279,7 @@ def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pres
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,
-            budget_per_story_usd=15.0,
+            max_cost_per_story_usd=15.0,
             min_reviewers=1,
             max_reviewers=1,
             prefer_cross_provider=False,
@@ -304,8 +304,8 @@ def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pres
     assert audit["assignments"]["planner"]["model"] == "opus"
     assert audit["rationale"]["planner"].startswith("complexity score 9 → tier strong")
     assert audit["role_sources"]["planner"] == "adaptive"
-    assert audit["budget"]["within_budget"] is False
-    assert "planner" in audit["budget"].get("protected_roles", [])
+    assert audit["per_story_routing_cost_cap"]["within_cap"] is False
+    assert "planner" in audit["per_story_routing_cost_cap"].get("protected_roles", [])
 
 
 def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):
@@ -351,7 +351,7 @@ def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, mon
             assignment=AssignmentConfig(
                 enabled=True,
                 escalation_memory=False,
-                budget_per_story_usd=100.0,
+                max_cost_per_story_usd=100.0,
                 min_reviewers=1,
                 max_reviewers=3,
                 prefer_cross_provider=False,
@@ -445,7 +445,7 @@ def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, mon
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,
-            budget_per_story_usd=20.0,
+            max_cost_per_story_usd=20.0,
             min_reviewers=1,
             max_reviewers=2,
             prefer_cross_provider=False,
@@ -478,7 +478,7 @@ def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, mon
         + decision.dev.budget_usd
         + sum(p.budget_usd for p in decision.code_reviewers)
     )
-    assert audit["budget"]["final_total_usd"] == round(runtime_total, 2)
+    assert audit["per_story_routing_cost_cap"]["final_total_usd"] == round(runtime_total, 2)
 
 
 def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_path, monkeypatch):
@@ -518,7 +518,7 @@ def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,
-            budget_per_story_usd=5.0,
+            max_cost_per_story_usd=5.0,
             min_reviewers=1,
             max_reviewers=2,
             prefer_cross_provider=False,
@@ -534,9 +534,9 @@ def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_
     audit = state.complexity_routing_audit
     assert audit is not None
     assert audit["role_sources"]["code_review"] == "explicit_override"
-    assert audit["budget"]["within_budget"] is False
-    assert audit["budget"]["override_forced_overrun"] is True
-    assert "code_review" in audit["budget"]["locked_roles"]
+    assert audit["per_story_routing_cost_cap"]["within_cap"] is False
+    assert audit["per_story_routing_cost_cap"]["override_forced_overrun"] is True
+    assert "code_review" in audit["per_story_routing_cost_cap"]["locked_roles"]
 
 
 def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monkeypatch):
@@ -604,7 +604,7 @@ def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monk
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=False,
-            budget_per_story_usd=50.0,
+            max_cost_per_story_usd=50.0,
             min_reviewers=1,
             max_reviewers=2,
             prefer_cross_provider=False,
@@ -673,7 +673,7 @@ def test_record_run_memory_writes_profiles_and_history(tmp_path):
         assignment=AssignmentConfig(
             enabled=True,
             escalation_memory=True,
-            budget_per_story_usd=30.0,
+            max_cost_per_story_usd=30.0,
         ),
     )
     task = _make_task(tmp_path)
@@ -706,3 +706,94 @@ def test_record_run_memory_skips_when_preflight_complexity_missing(tmp_path, cap
 
     profiles_path = tmp_path / ".forge" / "model_profiles.yaml"
     assert not profiles_path.exists()
+
+
+def test_apply_preflight_emits_terminal_warning_on_cap_downgrade(tmp_path, monkeypatch):
+    """AC: explicit cap that downgrades selection prints a visible terminal warning.
+
+    Verifies the seam between assign_models's downgrade detection and the
+    preflight log printer. The warning must name the story, the cap, and
+    both adaptive's selection and the post-cap result.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    config = replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap", cli="claude"),
+            AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid", cli="claude"),
+            AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong", cli="claude"),
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            max_cost_per_story_usd=10.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+        dev_profile_is_default=True,
+        plan_model_is_default=True,
+        review_pool_is_default=True,
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 9
+
+    captured: list[str] = []
+    _pf._apply_preflight_config(config, state, log=captured.append, task_slug="story-test")
+
+    blob = "\n".join(captured)
+    assert "per-story routing cost cap" in blob
+    assert "story-test" in blob
+    assert "adaptive selected:" in blob
+    assert "after cap:" in blob
+    # Wording rule: cap warning lines must never use the word "budget"
+    for line in captured:
+        if "per-story routing cost cap" in line or "after cap:" in line:
+            assert "budget" not in line.lower(), f"Cap warning must not say 'budget': {line!r}"
+
+
+def test_apply_preflight_skips_warning_when_cap_unset(tmp_path, monkeypatch):
+    """AC: with cap unset, a high-complexity story emits no cap downgrade warning."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    config = replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap", cli="claude"),
+            AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid", cli="claude"),
+            AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong", cli="claude"),
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            max_cost_per_story_usd=None,  # unset — adaptive runs free
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+        dev_profile_is_default=True,
+        plan_model_is_default=True,
+        review_pool_is_default=True,
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 9
+
+    captured: list[str] = []
+    _pf._apply_preflight_config(config, state, log=captured.append, task_slug="story-unset")
+
+    blob = "\n".join(captured)
+    assert "forces downgrade" not in blob
+    assert "after cap:" not in blob
+    # Adaptive's selection survives — strong dev tier preserved
+    assert state._adaptive_decision.dev.model == "opus"
+    assert state._adaptive_decision.budget_audit["cap_usd"] is None
+    assert state._adaptive_decision.budget_audit["downgraded"] is False

@@ -631,7 +631,9 @@ def _run_preflight_phase(
             }
         )
 
-    config = _apply_preflight_config(config, state, log=_log, log_verbose=_log_verbose)
+    config = _apply_preflight_config(
+        config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
+    )
 
     _log(f"  ✓ PREFLIGHT   {verdict}")
     _log_verbose(f"  Reason: {reason}")

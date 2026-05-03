@@ -52,7 +52,7 @@ def _cfg() -> AssignmentConfig:
         min_reviewers=1,
         max_reviewers=1,
         prefer_cross_provider=False,
-        budget_per_story_usd=100.0,
+        max_cost_per_story_usd=100.0,
         escalation_memory=False,
     )
 

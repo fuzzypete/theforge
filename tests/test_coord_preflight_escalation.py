@@ -374,7 +374,7 @@ class TestDevModelEscalationIntegration:
             assignment=AssignmentConfig(
                 enabled=True,
                 escalation_memory=True,
-                budget_per_story_usd=30.0,
+                max_cost_per_story_usd=30.0,
             ),
         )
         task = _make_task(tmp_path)

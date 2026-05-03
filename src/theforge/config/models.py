@@ -586,7 +586,11 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
         min_reviewers=int(assignment_raw.get("min_reviewers", 1)),
         max_reviewers=int(assignment_raw.get("max_reviewers", 3)),
         prefer_cross_provider=bool(assignment_raw.get("prefer_cross_provider", True)),
-        budget_per_story_usd=float(assignment_raw.get("budget_per_story_usd", 15.0)),
+        max_cost_per_story_usd=(
+            float(assignment_raw["max_cost_per_story_usd"])
+            if assignment_raw.get("max_cost_per_story_usd") is not None
+            else None
+        ),
         escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
         adaptive_enabled=bool(assignment_raw.get("adaptive_enabled", True)),
     )

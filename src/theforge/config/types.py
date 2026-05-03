@@ -20,7 +20,7 @@ class AssignmentConfig:
     min_reviewers: int = 1
     max_reviewers: int = 3
     prefer_cross_provider: bool = True
-    budget_per_story_usd: float = 15.0
+    max_cost_per_story_usd: float | None = None
     escalation_memory: bool = True
     adaptive_enabled: bool = True
 
