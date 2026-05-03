@@ -41,6 +41,7 @@ from .types import (
     AdvisoryIssueFilingConfig,
     ApiFallbackConfig,
     ContextConfig,
+    DiagnoseConfig,
     FindingClassifierConfig,
     ForgeConfig,
     GithubConfig,
@@ -170,6 +171,49 @@ def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> 
     _ready, _reason = check_agent_auth(_stub, secrets)
     if not _ready:
         raise ValueError(f"plan section uses provider '{plan_cfg.provider}': {_reason}")
+
+
+def _parse_diagnose_config(raw: Any) -> "DiagnoseConfig":
+    """Build a DiagnoseConfig from the optional ``diagnose:`` block."""
+    from theforge.diagnose_types import DIAGNOSE_OUTPUT_DESTINATIONS
+
+    defaults = DiagnoseConfig()
+    if raw is None or raw == {}:
+        return defaults
+    if not isinstance(raw, dict):
+        raise ValueError(f"forge.yaml 'diagnose' must be a mapping, got {type(raw).__name__}")
+
+    dest = raw.get("output_destination", defaults.output_destination)
+    if not isinstance(dest, str) or dest not in DIAGNOSE_OUTPUT_DESTINATIONS:
+        raise ValueError(
+            f"forge.yaml 'diagnose.output_destination' must be one of "
+            f"{sorted(DIAGNOSE_OUTPUT_DESTINATIONS)}, got {dest!r}"
+        )
+
+    budget = raw.get("budget_usd", defaults.budget_usd)
+    if isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0:
+        raise ValueError(
+            f"forge.yaml 'diagnose.budget_usd' must be a positive number, got {budget!r}"
+        )
+
+    timeout = raw.get("timeout_seconds", defaults.timeout_seconds)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+        raise ValueError(
+            f"forge.yaml 'diagnose.timeout_seconds' must be a positive integer, got {timeout!r}"
+        )
+
+    autonomous = raw.get("autonomous_default", defaults.autonomous_default)
+    if not isinstance(autonomous, bool):
+        raise ValueError(
+            f"forge.yaml 'diagnose.autonomous_default' must be a bool, got {autonomous!r}"
+        )
+
+    return DiagnoseConfig(
+        output_destination=dest,
+        budget_usd=float(budget),
+        timeout_seconds=int(timeout),
+        autonomous_default=autonomous,
+    )
 
 
 def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
@@ -899,6 +943,8 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     stuck_detection_cfg = _parse_stuck_detection(raw.get("stuck_detection", {}))
 
+    diagnose_cfg = _parse_diagnose_config(raw.get("diagnose", {}))
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -937,4 +983,5 @@ def load_config(config_path: Path) -> ForgeConfig:
         stuck_detection=stuck_detection_cfg,
         models_budget_usd=budget_usd_val,
         models_overrides=_raw_overrides,
+        diagnose=diagnose_cfg,
     )

@@ -468,6 +468,28 @@ class AdvisoryConventionsConfig:
 
 
 @dataclass(frozen=True)
+class DiagnoseConfig:
+    """Configuration for the ``forge diagnose`` flow.
+
+    The diagnose flow is intentionally separate from the sprint pipeline:
+    different state machine, different prompts, different success criterion.
+    Its budget and timeout are independent so a long-running cause hunt
+    cannot consume sprint budget — and a sprint cannot starve diagnosis.
+
+    ``output_destination`` controls where the diagnosis artifact lands:
+      - ``comment``      — post the artifact as a new GitHub issue comment
+      - ``body_section`` — upsert a ``## Diagnosis`` section in the issue body
+      - ``pr_to_body``   — write the artifact to ``.forge/diagnoses/issue-N.md``
+                           so the operator can open a body-edit PR manually
+    """
+
+    output_destination: str = "comment"
+    budget_usd: float = 1.50
+    timeout_seconds: int = 600
+    autonomous_default: bool = True  # default mode when --interactive is not passed
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -512,6 +534,7 @@ class ForgeConfig:
     stuck_detection: StuckDetectionConfig = field(default_factory=StuckDetectionConfig)
     models_budget_usd: float | None = None  # set when models: key is used (v0.8 path)
     models_overrides: dict[str, Any] | None = None  # raw overrides: dict from v0.8 YAML
+    diagnose: DiagnoseConfig = field(default_factory=DiagnoseConfig)
 
     @property
     def review_profile(self) -> ModelProfile:
