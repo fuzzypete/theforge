@@ -282,7 +282,10 @@ class TestRenderHardConventionsBlock:
         # Only render when no_scratch_files is enforced.
         assert render_hard_conventions_block(no_scratch_files=False) == ""
         assert (
-            render_hard_conventions_block(no_scratch_files=False, allowed_root_files=("foo.txt",))
+            render_hard_conventions_block(
+                no_scratch_files=False,
+                allowed_root_files=("foo.txt",),
+            )
             == ""
         )
 
@@ -300,11 +303,23 @@ class TestRenderHardConventionsBlock:
         )
         assert "pyproject.toml" in result
         assert "poetry.lock" in result
+        assert "Project additions" in result
 
     def test_no_allowed_files_still_renders_when_no_scratch_files(self):
         result = render_hard_conventions_block(no_scratch_files=True, allowed_root_files=())
         assert "Hard" in result
-        assert "not declared any additional permitted repo-root files" in result
+        assert "Project additions: `none`" in result
+
+    def test_stack_presets_render_separately_from_defaults_and_additions(self):
+        result = render_hard_conventions_block(
+            no_scratch_files=True,
+            stack=("python", "javascript"),
+            allowed_root_files=("my-project-config.yaml",),
+        )
+        assert "Defaults (community standards)" in result
+        assert "`python`" in result
+        assert "`javascript`" in result
+        assert "my-project-config.yaml" in result
 
 
 class TestBuildReviewPromptHardConventions:
@@ -319,10 +334,12 @@ class TestBuildReviewPromptHardConventions:
             branch="feat/test",
             handoff_content="gate_result: PASS",
             no_scratch_files=True,
+            stack=("python",),
             allowed_root_files=("pyproject.toml",),
         )
         assert "Hard — Mechanically Enforced" in prompt
         assert "pyproject.toml" in prompt
+        assert "`python`" in prompt
         assert "no_scratch_files" in prompt
 
     def test_no_hard_conventions_no_block(self, tmp_path):
@@ -350,6 +367,7 @@ class TestBuildReviewPromptHardConventions:
             handoff_content="gate_result: PASS",
             conventions=["Single concern per module"],
             no_scratch_files=True,
+            stack=("python",),
             allowed_root_files=("pyproject.toml",),
         )
         assert "Hard — Mechanically Enforced" in prompt
@@ -372,11 +390,13 @@ class TestHardConventionConfigPropagation:
             cfg,
             conventions_hard=HardConventionsConfig(
                 no_scratch_files=True,
+                stack=("python",),
                 allowed_root_files=("pyproject.toml", "poetry.lock"),
             ),
         )
         kwargs = hard_convention_review_kwargs(cfg)
         assert kwargs == {
+            "stack": ("python",),
             "allowed_root_files": ("pyproject.toml", "poetry.lock"),
             "no_scratch_files": True,
         }
@@ -385,7 +405,7 @@ class TestHardConventionConfigPropagation:
         cfg = _make_config(tmp_path)  # conventions_hard defaults to None
         assert cfg.conventions_hard is None
         kwargs = hard_convention_review_kwargs(cfg)
-        assert kwargs == {"allowed_root_files": None, "no_scratch_files": None}
+        assert kwargs == {"stack": None, "allowed_root_files": None, "no_scratch_files": None}
 
     def test_helper_kwargs_round_trip_into_review_prompt(self, tmp_path):
         """The kwargs returned by the helper are accepted by build_review_prompt
@@ -397,6 +417,7 @@ class TestHardConventionConfigPropagation:
             cfg,
             conventions_hard=HardConventionsConfig(
                 no_scratch_files=True,
+                stack=("python",),
                 allowed_root_files=("pyproject.toml",),
             ),
         )
@@ -413,6 +434,7 @@ class TestHardConventionConfigPropagation:
         )
         assert "Hard — Mechanically Enforced" in prompt
         assert "pyproject.toml" in prompt
+        assert "`python`" in prompt
 
     def test_helper_kwargs_no_block_when_conventions_hard_none(self, tmp_path):
         cfg = _make_config(tmp_path)

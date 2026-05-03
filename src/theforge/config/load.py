@@ -12,6 +12,8 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
+from theforge.root_file_conventions import normalize_root_file_stacks
+
 from ._loaders import _parse_plan_agent_review, _parse_workspace, _validate_v0_8_schema
 from .auth import check_agent_auth
 from .bridge import role_assignment_to_profiles
@@ -724,6 +726,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         _no_circular = conventions_hard_raw.get("no_circular_imports", True)
         _test_mirrors = conventions_hard_raw.get("test_mirrors_source", True)
         _no_scratch = conventions_hard_raw.get("no_scratch_files", True)
+        _stack = conventions_hard_raw.get("stack", [])
         _allowed_root_files = conventions_hard_raw.get("allowed_root_files", [])
         if not isinstance(_max_module, int):
             raise ValueError(
@@ -750,6 +753,15 @@ def load_config(config_path: Path) -> ForgeConfig:
                 "forge.yaml 'conventions.hard.no_scratch_files' must be a bool,"
                 f" got {_no_scratch!r}"
             )
+        if isinstance(_stack, str):
+            _stack_items = [_stack]
+        elif isinstance(_stack, list) and all(isinstance(item, str) for item in _stack):
+            _stack_items = _stack
+        else:
+            raise ValueError(
+                "forge.yaml 'conventions.hard.stack' must be a string or list of strings,"
+                f" got {_stack!r}"
+            )
         if not isinstance(_allowed_root_files, list) or not all(
             isinstance(item, str) for item in _allowed_root_files
         ):
@@ -763,6 +775,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             no_circular_imports=_no_circular,
             test_mirrors_source=_test_mirrors,
             no_scratch_files=_no_scratch,
+            stack=normalize_root_file_stacks(_stack_items),
             allowed_root_files=tuple(_allowed_root_files),
         )
 

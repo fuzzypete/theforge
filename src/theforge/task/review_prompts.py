@@ -158,6 +158,7 @@ def build_review_prompt(
     dev_notes: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
     conventions: list[str] | None = None,
+    stack: tuple[str, ...] | list[str] | None = None,
     allowed_root_files: tuple[str, ...] | list[str] | None = None,
     no_scratch_files: bool | None = None,
     assembled_context: ContextPack | None = None,
@@ -307,6 +308,7 @@ def build_review_prompt(
 
     sandbox_label = "enabled" if sandboxed else "DISABLED (unsandboxed — effects ran unconfined)"
     _hard_block = render_hard_conventions_block(
+        stack=stack,
         allowed_root_files=allowed_root_files,
         no_scratch_files=no_scratch_files,
     )

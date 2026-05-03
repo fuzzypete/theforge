@@ -1,3 +1,6 @@
+from theforge.root_file_conventions import resolve_root_file_allowances
+
+
 def render_conventions_block(conventions: list[str] | None) -> str:
     """Render the soft conventions prompt block.
 
@@ -16,6 +19,7 @@ def render_conventions_block(conventions: list[str] | None) -> str:
 
 def render_hard_conventions_block(
     *,
+    stack: tuple[str, ...] | list[str] | None = None,
     allowed_root_files: tuple[str, ...] | list[str] | None = None,
     no_scratch_files: bool | None = None,
 ) -> str:
@@ -29,23 +33,34 @@ def render_hard_conventions_block(
     """
     sections: list[str] = []
     if no_scratch_files:
-        if allowed_root_files:
-            allowed = ", ".join(f"`{p}`" for p in allowed_root_files)
-            allowed_note = f"The project additionally permits these repo-root files: {allowed}."
+        allowances = resolve_root_file_allowances(
+            stack=stack,
+            allowed_root_files=allowed_root_files,
+        )
+        defaults = ", ".join(f"`{item}`" for item in allowances.defaults)
+        if allowances.presets:
+            preset_lines = "\n".join(
+                f"  - `{preset.name}`: {', '.join(f'`{item}`' for item in preset.files)}"
+                for preset in allowances.presets
+            )
         else:
-            allowed_note = "The project has not declared any additional permitted repo-root files."
+            preset_lines = "  - none"
+        if allowances.project_additions:
+            additions = ", ".join(f"`{item}`" for item in allowances.project_additions)
+        else:
+            additions = "`none`"
         sections.append(
             "### No scratch files at the repo root\n\n"
-            "Files at the repository root are restricted to a canonical allowlist "
-            "(README, LICENSE, CHANGELOG, pyproject.toml, etc.) plus any files the "
-            "project explicitly declares as allowed. "
-            f"{allowed_note}\n\n"
+            "Allowed root files (current effective set):\n"
+            f"Defaults (community standards): {defaults}\n"
+            f"Stack presets:\n{preset_lines}\n"
+            f"Project additions: {additions}\n\n"
             "Any commit in this change that introduces a new repo-root file outside "
-            "this allowlist (for example: `test_*.py`, `*.lock` scratch files, "
-            "ad-hoc audit YAML, rename leftovers) is a **P1 finding**. Cite the "
+            "this effective set (not allowed by the defaults, an applied preset, "
+            "or a project-specific addition) is a **P1 finding**. Cite the "
             "specific file path and the convention by name (`no_scratch_files`). "
-            "The runtime workspace hygiene gate will also reject these — your job "
-            "as reviewer is to catch them before they land."
+            "The runtime workspace hygiene gate will also reject these, so use the "
+            "breakdown above to audit whether a repo-root file is actually legitimate."
         )
     if not sections:
         return ""

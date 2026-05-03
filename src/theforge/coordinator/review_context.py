@@ -24,15 +24,16 @@ if TYPE_CHECKING:
 def hard_convention_review_kwargs(config: ForgeConfig) -> dict[str, object]:
     """Extract the hard-convention kwargs that build_review_prompt expects.
 
-    Centralizes the propagation of ``config.conventions_hard`` (allowed_root_files,
-    no_scratch_files) into the reviewer prompt so the reviewer can proactively
-    reject diffs that introduce repo-root scratch files instead of relying on
-    the runtime hygiene gate as the sole backstop.
+    Centralizes the propagation of ``config.conventions_hard`` (stack,
+    allowed_root_files, no_scratch_files) into the reviewer prompt so the
+    reviewer can proactively reject diffs that introduce repo-root scratch
+    files instead of relying on the runtime hygiene gate as the sole backstop.
     """
     hard = config.conventions_hard
     if hard is None:
-        return {"allowed_root_files": None, "no_scratch_files": None}
+        return {"stack": None, "allowed_root_files": None, "no_scratch_files": None}
     return {
+        "stack": hard.stack,
         "allowed_root_files": hard.allowed_root_files,
         "no_scratch_files": hard.no_scratch_files,
     }

@@ -18,6 +18,7 @@ from theforge.conventions import (
     check_hard_conventions,
     new_hard_convention_violations_since_ref,
 )
+from theforge.root_file_conventions import ROOT_FILE_STACK_PRESETS
 
 
 def _make_config(**kwargs) -> HardConventionsConfig:
@@ -230,6 +231,7 @@ class TestTestMirrorCheck:
 
 
 def test_allowed_root_files_whitelist_is_stack_neutral() -> None:
+    assert "CODE_OF_CONDUCT.md" in _ALLOWED_ROOT_FILES
     assert "CONVENTIONS.md" in _ALLOWED_ROOT_FILES
     assert "conftest.py" not in _ALLOWED_ROOT_FILES
     assert "tox.ini" not in _ALLOWED_ROOT_FILES
@@ -507,6 +509,7 @@ class TestNoScratchFilesCheck:
         (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
         (tmp_path / "Makefile").write_text("all:\n\techo hi\n", encoding="utf-8")
         (tmp_path / "README.md").write_text("# Readme\n", encoding="utf-8")
+        (tmp_path / "CODE_OF_CONDUCT.md").write_text("Be kind.\n", encoding="utf-8")
         violations = _check_no_scratch_files(tmp_path)
         assert violations == []
 
@@ -524,9 +527,45 @@ class TestNoScratchFilesCheck:
         assert "package-lock.json" in files
         assert "yarn.lock" in files
 
+    def test_project_without_stack_presets_keeps_existing_behavior(self, tmp_path):
+        _write(tmp_path / "pyproject.toml", "[project]\n")
+        violations = _check_no_scratch_files(tmp_path)
+        assert any(v.rule == "no_scratch_files" and v.file == "pyproject.toml" for v in violations)
+
     def test_project_local_allowed_root_files_extend_whitelist(self, tmp_path):
         _write(tmp_path / "pyproject.toml", "[project]\n")
-        violations = _check_no_scratch_files(tmp_path, ("pyproject.toml",))
+        violations = _check_no_scratch_files(tmp_path, allowed_root_files=("pyproject.toml",))
+        assert violations == []
+
+    def test_each_stack_preset_allows_its_known_files(self, tmp_path):
+        for stack_name, files in ROOT_FILE_STACK_PRESETS.items():
+            for file_name in files:
+                _write(tmp_path / file_name, "ok\n")
+            violations = _check_no_scratch_files(tmp_path, stack=(stack_name,))
+            assert violations == [], stack_name
+            for file_name in files:
+                (tmp_path / file_name).unlink()
+
+    def test_multiple_stack_presets_compose(self, tmp_path):
+        _write(tmp_path / "pyproject.toml", "[project]\n")
+        _write(tmp_path / "package.json", "{}\n")
+        violations = _check_no_scratch_files(tmp_path, stack=("python", "javascript"))
+        assert violations == []
+
+    def test_unknown_files_still_violate_with_stack_preset(self, tmp_path):
+        _write(tmp_path / "pyproject.toml", "[project]\n")
+        _write(tmp_path / "scratch.txt", "oops\n")
+        violations = _check_no_scratch_files(tmp_path, stack=("python",))
+        assert any(v.rule == "no_scratch_files" and v.file == "scratch.txt" for v in violations)
+
+    def test_stack_preset_and_project_addition_compose(self, tmp_path):
+        _write(tmp_path / "pyproject.toml", "[project]\n")
+        _write(tmp_path / "my-project-config.yaml", "custom: true\n")
+        violations = _check_no_scratch_files(
+            tmp_path,
+            stack=("python",),
+            allowed_root_files=("my-project-config.yaml",),
+        )
         assert violations == []
 
     def test_dotfiles_not_flagged(self, tmp_path):

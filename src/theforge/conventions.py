@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from theforge.config.types import HardConventionsConfig
+from theforge.root_file_conventions import (
+    DEFAULT_ALLOWED_ROOT_FILES,
+    resolve_root_file_allowances,
+)
 
 
 @dataclass
@@ -33,7 +37,13 @@ def check_hard_conventions(
     if config.test_mirrors_source:
         violations.extend(_check_test_mirrors(project_root))
     if config.no_scratch_files:
-        violations.extend(_check_no_scratch_files(project_root, config.allowed_root_files))
+        violations.extend(
+            _check_no_scratch_files(
+                project_root,
+                stack=config.stack,
+                allowed_root_files=config.allowed_root_files,
+            )
+        )
     violations.extend(_check_stack_neutrality(project_root))
     return violations
 
@@ -279,40 +289,14 @@ def _best_match(name: str, adjacency: dict[str, list[str]]) -> str | None:
 
 # ── Scratch file check ────────────────────────────────────────────────
 
-# Files that legitimately live in the project root (non-hidden only).
-# Hidden files (dotfiles) are always skipped — they're almost always tooling config.
-_ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
-    {
-        # Build / tooling
-        "Makefile",
-        "makefile",
-        "Dockerfile",
-        "dockerignore",
-        # Documentation / metadata
-        "README.md",
-        "README.rst",
-        "README.txt",
-        "CHANGELOG.md",
-        "CHANGELOG.rst",
-        "CHANGELOG.txt",
-        "LICENSE",
-        "LICENSE.md",
-        "LICENSE.txt",
-        "LICENSE.rst",
-        "RELEASING.md",
-        "CONTRIBUTING.md",
-        "SECURITY.md",
-        "CLAUDE.md",
-        "AGENTS.md",
-        "CONVENTIONS.md",
-        # Orchestrator config
-        "forge.yaml",
-    }
-)
+_ALLOWED_ROOT_FILES: frozenset[str] = frozenset(DEFAULT_ALLOWED_ROOT_FILES)
 
 
 def _check_no_scratch_files(
-    project_root: Path, allowed_root_files: tuple[str, ...] = ()
+    project_root: Path,
+    *,
+    stack: tuple[str, ...] | list[str] = (),
+    allowed_root_files: tuple[str, ...] = (),
 ) -> list[ConventionViolation]:
     """Check that no unrecognised files exist directly in the project root.
 
@@ -326,7 +310,10 @@ def _check_no_scratch_files(
     configuration and pose no risk of accidental source-code pollution.
     """
     violations: list[ConventionViolation] = []
-    allowed_files = _ALLOWED_ROOT_FILES | frozenset(allowed_root_files)
+    allowed_files = resolve_root_file_allowances(
+        stack=stack,
+        allowed_root_files=allowed_root_files,
+    ).effective
     for f in sorted(project_root.iterdir()):
         if not f.is_file():
             continue
