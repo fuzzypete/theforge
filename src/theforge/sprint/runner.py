@@ -2004,6 +2004,9 @@ def run_sprint(
                                 _err,
                                 dep_result.state.branch_name,
                             )
+                            _set_outcome(
+                                dep, StoryOutcome.MERGE_FAILED, phase=dep_result.phase.name
+                            )
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                             _log(
