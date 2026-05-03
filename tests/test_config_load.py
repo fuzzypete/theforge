@@ -648,6 +648,96 @@ class TestDefaultFlags:
         config = load_config(config_path)
         assert config.review_pool_is_default is False
 
+    def test_models_custom_declares_and_selects_forge_yaml_model(self, tmp_path):
+        config_path = _write_config(
+            {
+                "models": {
+                    "enabled": ["claude/sonnet", "gpt-5.5"],
+                    "custom": {
+                        "gpt-5.5": {
+                            "provider": "openai",
+                            "model": "gpt-5.5",
+                            "tier": "strong",
+                            "input_cost_per_mtok": 5,
+                            "output_cost_per_mtok": 30,
+                        }
+                    },
+                },
+                "budget_usd": 50.0,
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.models == ["claude/sonnet", "gpt-5.5"]
+        assert config.custom_models == ("gpt-5.5",)
+        assert config.model_registry_sources["gpt-5.5"] == "forge.yaml"
+        assert config.model_registry["gpt-5.5"].model == "gpt-5.5"
+        assert config.dev_profile.registry_source in {"builtin", "forge.yaml"}
+
+    def test_models_custom_unknown_provider_rejected(self, tmp_path):
+        config_path = _write_config(
+            {
+                "models": {
+                    "custom": {
+                        "future-model": {
+                            "provider": "future-provider",
+                            "model": "future-model",
+                            "tier": "strong",
+                            "input_cost_per_mtok": 1,
+                            "output_cost_per_mtok": 1,
+                        }
+                    }
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="Unknown provider 'future-provider'"):
+            load_config(config_path)
+
+    def test_models_custom_builtin_conflict_requires_override(self, tmp_path):
+        config_path = _write_config(
+            {
+                "models": {
+                    "custom": {
+                        "openai/gpt-5.4": {
+                            "provider": "openai",
+                            "model": "gpt-5.4",
+                            "tier": "strong",
+                            "input_cost_per_mtok": 5,
+                            "output_cost_per_mtok": 30,
+                        }
+                    }
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="duplicates a built-in model id"):
+            load_config(config_path)
+
+    def test_models_custom_builtin_conflict_allowed_with_override(self, tmp_path):
+        config_path = _write_config(
+            {
+                "models": {
+                    "enabled": ["openai/gpt-5.4"],
+                    "custom": {
+                        "openai/gpt-5.4": {
+                            "provider": "openai",
+                            "model": "gpt-5.4",
+                            "tier": "strong",
+                            "input_cost_per_mtok": 5,
+                            "output_cost_per_mtok": 30,
+                            "override": True,
+                        }
+                    },
+                },
+                "budget_usd": 50.0,
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.model_registry_sources["openai/gpt-5.4"] == "forge.yaml"
+        assert config.custom_models == ("openai/gpt-5.4",)
+
 
 class TestConventionsConfig:
     def test_conventions_hard_parsed(self, tmp_path):

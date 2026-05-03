@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .models import AgentDef, TransportSpec
+    from .models import AgentDef, AgentSpec, TransportSpec
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
 
@@ -149,6 +149,8 @@ class ModelProfile:
     github_handle: str | None = None  # optional GitHub username for reviewer assignment
     fallback_models: tuple[str, ...] = ()  # additional models to try on quota/not-found failure
     sandbox_mode: str = "workspace-write"  # CLI sandbox: "workspace-write" | "read-only" | "none"
+    registry_id: str | None = None  # canonical model registry key, when sourced from a registry
+    registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     # Explicit TransportSpec — when set, it is the runtime dispatch source of
     # truth. None preserves the legacy inference from cli/provider for the
     # small number of paths (e.g. raw dataclass constructions in tests) that
@@ -534,6 +536,9 @@ class ForgeConfig:
     stuck_detection: StuckDetectionConfig = field(default_factory=StuckDetectionConfig)
     models_budget_usd: float | None = None  # set when models: key is used (v0.8 path)
     models_overrides: dict[str, Any] | None = None  # raw overrides: dict from v0.8 YAML
+    model_registry: dict[str, AgentSpec] = field(default_factory=dict)
+    model_registry_sources: dict[str, str] = field(default_factory=dict)
+    custom_models: tuple[str, ...] = ()
     diagnose: DiagnoseConfig = field(default_factory=DiagnoseConfig)
 
     @property

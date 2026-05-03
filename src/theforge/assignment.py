@@ -607,6 +607,8 @@ def _agent_to_profile(
         allowed_tools=allowed_tools,
         api_fallback=agent.api_fallback,
         phase=role,
+        registry_id=agent.registry_id,
+        registry_source=agent.registry_source,
     )
 
 
