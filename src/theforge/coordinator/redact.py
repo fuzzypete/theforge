@@ -84,6 +84,8 @@ def _redact_obj(obj: Any, secrets: set[str]) -> Any:
         return result
     if isinstance(obj, list):
         return [_redact_obj(item, secrets) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_redact_obj(item, secrets) for item in obj)
     if isinstance(obj, str):
         return _redact_value(obj, secrets)
     return obj

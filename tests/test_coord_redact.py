@@ -134,6 +134,37 @@ class TestRedactEnvironmentDict:
         assert result["runtime"]["environment"] == ["A", "B"]
 
 
+class TestRedactTuples:
+    def test_redacts_secret_string_inside_tuple(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text("TUPLE_SECRET=tuplesecretvalue1\n")
+        obj = ("safe", "contains tuplesecretvalue1")
+        result = redact(obj, env)
+        assert isinstance(result, tuple)
+        assert result[0] == "safe"
+        assert result[1] == "[REDACTED]"
+
+    def test_preserves_tuple_shape(self) -> None:
+        result = redact({"data": ("a", "b", 42)}, None)
+        assert isinstance(result["data"], tuple)
+        assert result["data"] == ("a", "b", 42)
+
+    def test_redacts_secret_key_value_in_tuple(self) -> None:
+        result = redact({"items": ({"token": "tok_abc"}, "safe")}, None)
+        assert isinstance(result["items"], tuple)
+        assert result["items"][0]["token"] == "[REDACTED]"
+        assert result["items"][1] == "safe"
+
+    def test_redacts_nested_tuples(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text("NESTED_SECRET=nestedsecretval1\n")
+        obj = (("inner", "nestedsecretval1"),)
+        result = redact(obj, env)
+        assert isinstance(result, tuple)
+        assert isinstance(result[0], tuple)
+        assert result[0][1] == "[REDACTED]"
+
+
 class TestRedactReturnsCopy:
     def test_original_not_mutated(self) -> None:
         original = {"password": "secret123", "name": "Alice"}
