@@ -62,6 +62,12 @@ class RunOutcome:
     dev_iterations: int
     dev_cost_usd: float
     preflight_model: str | None = None
+    dev_actual_model: str | None = None
+    dev_provider: str | None = None
+    dev_cli: str | None = None
+    preflight_actual_model: str | None = None
+    preflight_provider: str | None = None
+    preflight_cli: str | None = None
     preflight_cost_usd: float = 0.0
     reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
 
@@ -109,9 +115,58 @@ def _normalize_band(complexity: str | None) -> str:
     return {"low": "small", "high": "large"}.get(cl, "medium")
 
 
-def _ensure_model(data: dict, name: str) -> dict:
+def _provider_from_cli(cli: str | None) -> str | None:
+    return {
+        "claude": "anthropic",
+        "codex": "openai",
+        "gemini": "google",
+    }.get((cli or "").strip().lower() or "")
+
+
+def _transport_from_identity(provider: str | None, cli: str | None) -> str | None:
+    if cli:
+        return "cli"
+    if provider:
+        return "api"
+    return None
+
+
+def _identity_metadata(
+    *,
+    actual_model: str | None,
+    provider: str | None,
+    cli: str | None,
+) -> dict[str, str] | None:
+    model = (actual_model or "").strip()
+    inferred_provider = (provider or _provider_from_cli(cli) or "").strip()
+    transport = _transport_from_identity(inferred_provider or None, cli)
+    if not model or not inferred_provider:
+        return None
+    out = {
+        "provider": inferred_provider,
+        "model": model,
+    }
+    if transport:
+        out["transport"] = transport
+    if cli:
+        out["cli"] = cli
+    return out
+
+
+def _ensure_model(
+    data: dict,
+    name: str,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+) -> dict:
     models = data.setdefault("models", {})
-    return models.setdefault(name, {})
+    entry = models.setdefault(name, {})
+    metadata = _identity_metadata(actual_model=actual_model, provider=provider, cli=cli)
+    if metadata and not isinstance(entry.get("_identity"), dict):
+        entry["_identity"] = metadata
+    return entry
 
 
 def _update_dev(
@@ -175,7 +230,13 @@ def _update_preflight(entry: dict, cost_usd: float) -> None:
 def apply_run(data: dict, outcome: RunOutcome) -> dict:
     """Pure: fold one run outcome into the profiles dict, returning it."""
     band = _normalize_band(outcome.complexity)
-    dev_entry = _ensure_model(data, outcome.dev_model)
+    dev_entry = _ensure_model(
+        data,
+        outcome.dev_model,
+        actual_model=outcome.dev_actual_model,
+        provider=outcome.dev_provider,
+        cli=outcome.dev_cli,
+    )
     _update_dev(
         dev_entry,
         band,
@@ -184,7 +245,13 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         outcome.dev_cost_usd,
     )
     if outcome.preflight_model:
-        pf_entry = _ensure_model(data, outcome.preflight_model)
+        pf_entry = _ensure_model(
+            data,
+            outcome.preflight_model,
+            actual_model=outcome.preflight_actual_model,
+            provider=outcome.preflight_provider,
+            cli=outcome.preflight_cli,
+        )
         _update_preflight(pf_entry, outcome.preflight_cost_usd)
     for name, (cycles, findings, cost) in outcome.reviewers.items():
         rev_entry = _ensure_model(data, name)
@@ -256,24 +323,50 @@ def get_dev_success_rate(
     model: str,
     complexity: str | None = None,
     min_runs: int = 3,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
 ) -> float | None:
     """Return dev success rate for (model, complexity) or None under min_runs."""
-    models = (profiles or {}).get("models") or {}
-    entry = models.get(model)
-    if not isinstance(entry, dict):
-        return None
-    dev = entry.get("dev")
-    if not isinstance(dev, dict):
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    if not matching:
         return None
     if complexity is None:
-        runs = int(dev.get("runs", 0))
-        return float(dev.get("success_rate", 0.0)) if runs >= min_runs else None
+        runs = 0
+        successes = 0.0
+        for _, entry in matching:
+            dev = entry.get("dev")
+            if not isinstance(dev, dict):
+                continue
+            entry_runs = int(dev.get("runs", 0))
+            if entry_runs <= 0:
+                continue
+            runs += entry_runs
+            successes += _success_count(dev, entry_runs)
+        return round(successes / runs, 4) if runs >= min_runs and runs > 0 else None
     band = _normalize_band(complexity)
-    bc = (dev.get("by_complexity") or {}).get(band)
-    if not isinstance(bc, dict):
-        return None
-    runs = int(bc.get("runs", 0))
-    return float(bc.get("success_rate", 0.0)) if runs >= min_runs else None
+    runs = 0
+    successes = 0.0
+    for _, entry in matching:
+        dev = entry.get("dev")
+        if not isinstance(dev, dict):
+            continue
+        bc = (dev.get("by_complexity") or {}).get(band)
+        if not isinstance(bc, dict):
+            continue
+        entry_runs = int(bc.get("runs", 0))
+        if entry_runs <= 0:
+            continue
+        runs += entry_runs
+        successes += _success_count(bc, entry_runs)
+    return round(successes / runs, 4) if runs >= min_runs and runs > 0 else None
 
 
 def get_dev_complexity_stats(
@@ -282,26 +375,175 @@ def get_dev_complexity_stats(
     complexity: str | None,
     *,
     min_runs: int = 3,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
 ) -> dict[str, float] | None:
     """Return per-band dev averages when the complexity band has enough runs."""
-    models = (profiles or {}).get("models") or {}
-    entry = models.get(model)
-    if not isinstance(entry, dict):
-        return None
-    dev = entry.get("dev")
-    if not isinstance(dev, dict):
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    if not matching:
         return None
     band = _normalize_band(complexity)
-    bc = (dev.get("by_complexity") or {}).get(band)
-    if not isinstance(bc, dict):
-        return None
-    runs = int(bc.get("runs", 0))
-    if runs < min_runs:
-        return None
-    if "avg_iterations" not in bc or "avg_cost_usd" not in bc:
+    runs = 0
+    iterations_sum = 0.0
+    cost_sum = 0.0
+    for _, entry in matching:
+        dev = entry.get("dev")
+        if not isinstance(dev, dict):
+            continue
+        bc = (dev.get("by_complexity") or {}).get(band)
+        if not isinstance(bc, dict):
+            continue
+        entry_runs = int(bc.get("runs", 0))
+        if entry_runs <= 0:
+            continue
+        entry_iterations = _metric_sum(bc, entry_runs, "_iterations_sum", "avg_iterations")
+        entry_cost = _metric_sum(bc, entry_runs, "_cost_sum", "avg_cost_usd")
+        if entry_iterations is None or entry_cost is None:
+            return None
+        runs += entry_runs
+        iterations_sum += entry_iterations
+        cost_sum += entry_cost
+    if runs < min_runs or runs <= 0:
         return None
     return {
         "runs": float(runs),
-        "avg_iterations": float(bc.get("avg_iterations", 0.0)),
-        "avg_cost_usd": float(bc.get("avg_cost_usd", 0.0)),
+        "avg_iterations": round(iterations_sum / runs, 4),
+        "avg_cost_usd": round(cost_sum / runs, 6),
     }
+
+
+def _matching_profile_entries(
+    profiles: dict,
+    model_key: str,
+    *,
+    actual_model: str | None,
+    provider: str | None,
+    cli: str | None,
+) -> list[tuple[str, dict]]:
+    models = (profiles or {}).get("models") or {}
+    if not isinstance(models, dict):
+        return []
+    target = _resolve_identity(
+        model_key,
+        None,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    matching: list[tuple[str, dict]] = []
+    for key, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        if key == model_key:
+            matching.append((key, entry))
+            continue
+        if target is None:
+            continue
+        if _resolve_identity(key, entry) == target:
+            matching.append((key, entry))
+    return matching
+
+
+def _resolve_identity(
+    model_key: str,
+    entry: dict | None,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+) -> tuple[str, str] | None:
+    metadata = entry.get("_identity") if isinstance(entry, dict) else None
+    if isinstance(metadata, dict):
+        meta_provider = str(metadata.get("provider") or "").strip()
+        meta_model = str(metadata.get("model") or "").strip()
+        if meta_provider and meta_model:
+            return (meta_provider, meta_model)
+    explicit_provider = (provider or _provider_from_cli(cli) or "").strip()
+    explicit_model = (actual_model or "").strip()
+    if explicit_provider and explicit_model:
+        return (explicit_provider, explicit_model)
+    inferred = _infer_identity_from_key(model_key)
+    if inferred is not None:
+        return inferred
+    if explicit_provider and model_key:
+        return (explicit_provider, model_key)
+    return None
+
+
+def _infer_identity_from_key(model_key: str) -> tuple[str, str] | None:
+    stripped = (model_key or "").strip()
+    if not stripped:
+        return None
+    spec = _resolve_agent_spec_for_profile_key(stripped)
+    if spec is not None:
+        return (spec.provider, spec.model)
+    if stripped.endswith("-cli"):
+        return _identity_from_unique_spec(stripped[: -len("-cli")], transport="cli")
+    if stripped.endswith("-api"):
+        return _identity_from_unique_spec(stripped[: -len("-api")], transport="api")
+    return _identity_from_unique_spec(stripped)
+
+
+def _resolve_agent_spec_for_profile_key(model_key: str) -> Any | None:
+    try:
+        from theforge.config.models import AGENT_REGISTRY, resolve_agent_spec
+    except Exception:  # noqa: BLE001
+        return None
+    candidates = [model_key]
+    prefixes = {key.split("/", 1)[0] for key in AGENT_REGISTRY}
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        if model_key.startswith(f"{prefix}-"):
+            candidates.append(f"{prefix}/{model_key[len(prefix) + 1 :]}")
+    for candidate in candidates:
+        try:
+            return resolve_agent_spec(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _identity_from_unique_spec(
+    model_name: str,
+    transport: str | None = None,
+) -> tuple[str, str] | None:
+    try:
+        from theforge.config.models import AGENT_REGISTRY
+    except Exception:  # noqa: BLE001
+        return None
+    matches = []
+    for spec in AGENT_REGISTRY.values():
+        if spec.model != model_name:
+            continue
+        if transport is not None and spec.transport.kind != transport:
+            continue
+        matches.append((spec.provider, spec.model))
+    unique = set(matches)
+    if len(unique) == 1:
+        return next(iter(unique))
+    return None
+
+
+def _success_count(stats: dict[str, Any], runs: int) -> float:
+    if "_successes" in stats:
+        return float(stats.get("_successes", 0.0))
+    return float(stats.get("success_rate", 0.0)) * float(runs)
+
+
+def _metric_sum(
+    stats: dict[str, Any],
+    runs: int,
+    sum_key: str,
+    avg_key: str,
+) -> float | None:
+    if sum_key in stats:
+        return float(stats.get(sum_key, 0.0))
+    if avg_key in stats:
+        return float(stats.get(avg_key, 0.0)) * float(runs)
+    return None

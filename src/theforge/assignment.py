@@ -190,7 +190,15 @@ def _rerank_by_profiles(
     from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
 
     def _key(agent: AgentDef) -> tuple[int, float]:
-        rate = get_dev_success_rate(model_profiles, agent.name, complexity, min_runs)
+        rate = get_dev_success_rate(
+            model_profiles,
+            agent.name,
+            complexity,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+        )
         if rate is None:
             return (1, 0.0)
         # Negative rate so higher success sorts first among observed agents.
@@ -700,7 +708,14 @@ def assign_models(
         if dev_agent is not None and effective_profiles:
             from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
 
-            _rate = get_dev_success_rate(model_profiles, dev_agent.name, norm_complexity)
+            _rate = get_dev_success_rate(
+                model_profiles,
+                dev_agent.name,
+                norm_complexity,
+                actual_model=dev_agent.model,
+                provider=dev_agent.provider,
+                cli=dev_agent.cli,
+            )
             if _rate is not None:
                 rationale["dev"] += f" (profile success_rate={_rate:.2f} @ {norm_complexity})"
         if dev_agent is None:
