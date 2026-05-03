@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from theforge.sprint.shape_gate import (
     NEEDS_GROOMING_LABEL,
+    REOPENED_STALE_CONTRACT_CODE,
     ShapeGateResult,
     SkippedIssue,
     _fetch_bot_reason_codes,
@@ -132,6 +133,76 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
     assert result.skipped == []
 
 
+def test_reopened_issue_with_stale_body_is_skipped(tmp_path: Path) -> None:
+    issues = [{"number": 55, "title": "Reopened"}]
+
+    def fetch(_number, _project_root):
+        return {
+            "title": "Reopened",
+            "body": _RUNNABLE_BODY,
+            "labels": ["bug"],
+            "state": "OPEN",
+            "comments": [
+                {
+                    "author": {"login": "operator"},
+                    "body": "The original close only covered half the work.",
+                    "createdAt": "2026-05-02T12:30:00Z",
+                }
+            ],
+            "timeline": [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T12:00:00Z",
+                    "actor": {"login": "operator"},
+                }
+            ],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
+    assert "reconcile the body before sprinting or pass --force" in entry.detail
+
+
+def test_reopened_issue_with_body_edit_after_reopen_is_runnable(tmp_path: Path) -> None:
+    issues = [{"number": 56, "title": "Reconciled"}]
+
+    def fetch(_number, _project_root):
+        return {
+            "title": "Reconciled",
+            "body": _RUNNABLE_BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "comments": [
+                {
+                    "author": {"login": "operator"},
+                    "body": "Need one more follow-up change.",
+                    "createdAt": "2026-05-02T12:30:00Z",
+                }
+            ],
+            "timeline": [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T12:00:00Z",
+                    "actor": {"login": "operator"},
+                },
+                {
+                    "event": "edited",
+                    "created_at": "2026-05-02T13:00:00Z",
+                    "changes": {"body": {"from": "old body"}},
+                },
+            ],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
+
+    assert result.runnable == issues
+    assert result.skipped == []
+
+
 # ── Force override ─────────────────────────────────────────────────────────
 
 
@@ -146,11 +217,7 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
     def fetch(number, _project_root):
         if number == 1:
             return {"title": "Good", "body": _RUNNABLE_BODY, "labels": ["enhancement"]}
-        return {
-            "title": "Flagged",
-            "body": _RUNNABLE_BODY,
-            "labels": [NEEDS_GROOMING_LABEL],
-        }
+        return {"title": "Flagged", "body": _RUNNABLE_BODY, "labels": [NEEDS_GROOMING_LABEL]}
 
     result = apply_shape_gate(
         issues,
@@ -165,6 +232,38 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
     assert len(result.skipped) == 1
     assert result.skipped[0].issue_number == 2
     assert result.skipped[0].source == "label"
+
+
+def test_force_override_keeps_reopened_stale_contract_warning(tmp_path: Path) -> None:
+    issues = [{"number": 57, "title": "Reopened"}]
+
+    def fetch(_number, _project_root):
+        return {
+            "title": "Reopened",
+            "body": _RUNNABLE_BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "comments": [
+                {
+                    "author": {"login": "operator"},
+                    "body": "Still missing the reopen follow-up.",
+                    "createdAt": "2026-05-02T12:30:00Z",
+                }
+            ],
+            "timeline": [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T12:00:00Z",
+                    "actor": {"login": "operator"},
+                }
+            ],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch, force=True)
+
+    assert result.runnable == issues
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
 
 
 # ── Mixed sprint ───────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ from ..shape_check.heuristics import (
 )
 from ..task import ALLOW_MUTATE_FORGE_YAML_KEY, RECOGNIZED_STORY_TYPES, StoryTypeError, TaskStory
 from .manifest import _build_task_from_story
+from .reopen_context import analyze_reopen_contract, append_reopen_context
 
 if TYPE_CHECKING:
     from ..config import ForgeConfig
@@ -151,18 +152,8 @@ class GitHubIssueSource:
             return {}
         return metadata
 
-    def _fetch_issue_blockers(self, number: int, project_root: Path) -> list[int]:
-        """Return issue numbers that block this issue.
-
-        Best-effort: tries GitHub's timeline API first, then falls back to issue-body
-        text patterns. Native relationship payloads have varied over time, so the
-        parser accepts several candidate keys and event names.
-        """
-        blockers = self._fetch_issue_blockers_from_timeline(number, project_root)
-        return sorted(blockers)
-
-    def _fetch_issue_blockers_from_timeline(self, number: int, project_root: Path) -> set[int]:
-        """Return blocker issue numbers from the GitHub issue timeline."""
+    def _fetch_issue_timeline(self, number: int, project_root: Path) -> list[dict]:
+        """Return raw GitHub timeline events for an issue."""
         try:
             proc = subprocess.run(
                 [
@@ -178,23 +169,36 @@ class GitHubIssueSource:
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
-            return set()
+            return []
 
         if proc.returncode != 0:
-            return set()
+            return []
 
         try:
             data = json.loads(proc.stdout)
         except json.JSONDecodeError:
-            return set()
+            return []
 
         if not isinstance(data, list):
-            return set()
+            return []
+        return [item for item in data if isinstance(item, dict)]
 
+    def _fetch_issue_blockers(self, number: int, project_root: Path) -> list[int]:
+        """Return issue numbers that block this issue.
+
+        Best-effort: tries GitHub's timeline API first, then falls back to issue-body
+        text patterns. Native relationship payloads have varied over time, so the
+        parser accepts several candidate keys and event names.
+        """
+        blockers = self._fetch_issue_blockers_from_timeline(
+            self._fetch_issue_timeline(number, project_root)
+        )
+        return sorted(blockers)
+
+    def _fetch_issue_blockers_from_timeline(self, timeline: list[dict]) -> set[int]:
+        """Return blocker issue numbers from the GitHub issue timeline."""
         blockers: set[int] = set()
-        for item in data:
-            if not isinstance(item, dict):
-                continue
+        for item in timeline:
             event = str(item.get("event", "")).lower()
             if "blocked" not in event or "by" not in event or "unblock" in event:
                 continue
@@ -289,7 +293,14 @@ class GitHubIssueSource:
         number = int(ref)
         try:
             proc = subprocess.run(
-                ["gh", "issue", "view", str(number), "--json", "title,body,state,labels"],
+                [
+                    "gh",
+                    "issue",
+                    "view",
+                    str(number),
+                    "--json",
+                    "title,body,state,labels,closedAt,stateReason,updatedAt,comments",
+                ],
                 capture_output=True,
                 text=True,
                 cwd=str(project_root),
@@ -314,7 +325,9 @@ class GitHubIssueSource:
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")
         metadata = self._parse_issue_metadata(body)
-        blockers = self._fetch_issue_blockers(number, project_root)
+        timeline = self._fetch_issue_timeline(number, project_root)
+        reopen_state = analyze_reopen_contract(data, timeline)
+        blockers = sorted(self._fetch_issue_blockers_from_timeline(timeline))
         if not blockers:
             blockers = self._parse_issue_blockers_from_body_metadata(body)
         blocker_slugs = [f"issue-{blocker}" for blocker in blockers]
@@ -354,7 +367,7 @@ class GitHubIssueSource:
             name=title,
             story_path=None,
             slug=slug,
-            story_text=body,
+            story_text=append_reopen_context(body, reopen_state),
             depends_on=blocker_slugs,
             inferred_dependencies=blocker_slugs,
             dependency_warnings=dependency_warnings,
