@@ -171,6 +171,30 @@ def test_evaluate_forge_yaml_guard_honors_slug_matched_local_story_override(
     assert result.violating_keys == ("workspace",)
 
 
+def test_evaluate_forge_yaml_guard_passes_for_v010_optin_keys(tmp_path: Path) -> None:
+    """All v0.10.0 opt-in feature blocks must be operator-mutable without override."""
+    current_yaml = (
+        "intake:\n  grooming: true\n"
+        "conventions_advisory:\n  enabled: true\n"
+        "diagnose:\n  enabled: true\n"
+    )
+    (tmp_path / "forge.yaml").write_text(current_yaml, encoding="utf-8")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),  # base has no forge.yaml content
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps({"body": ""}), stderr=""),
+        ]
+
+        result = evaluate_forge_yaml_guard(tmp_path, base_branch="main")
+
+    assert result.ok is True
+    assert result.violating_keys == ()
+    assert set(result.changed_keys) == {"intake", "conventions_advisory", "diagnose"}
+
+
 def test_cmd_check_story_config_prints_violating_keys(capsys, tmp_path: Path) -> None:
     config_path = tmp_path / "forge.yaml"
     config_path.write_text("project: test\n", encoding="utf-8")

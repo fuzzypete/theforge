@@ -20,7 +20,9 @@ from theforge.task import (
     parse_story_frontmatter,
 )
 
-_ALLOWED_TOP_LEVEL_KEYS = frozenset({"assignment", "models"})
+_ALLOWED_TOP_LEVEL_KEYS = frozenset(
+    {"assignment", "models", "intake", "conventions_advisory", "diagnose"}
+)
 
 
 @dataclass(frozen=True)
