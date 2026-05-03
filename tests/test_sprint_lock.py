@@ -18,6 +18,7 @@ from theforge.sprint.lock import (
     cleanup_story_locks,
     integration_lock,
     release_story_locks,
+    sweep_story_locks,
 )
 
 # Use 'fork' so local functions can be passed to child processes without pickling.
@@ -40,8 +41,11 @@ class TestAcquireStoryLocks:
             assert conflicted == []
             assert len(fds) == 1
             lock_path = tmp_path / ".forge" / "locks" / "my-story.lock"
-            pid_text, fingerprint = lock_path.read_text(encoding="utf-8").strip().split("|", 1)
+            pid_text, timestamp, fingerprint = (
+                lock_path.read_text(encoding="utf-8").strip().split("|", 2)
+            )
             assert pid_text.isdigit()
+            assert timestamp
             assert fingerprint
         finally:
             release_story_locks(fds)
@@ -287,6 +291,45 @@ class TestCleanupStoryLocks:
         assert lock_path.exists()
 
 
+class TestSweepStoryLocks:
+    def test_removes_unlocked_stale_lock_files(self, tmp_path: Path) -> None:
+        lock_dir = tmp_path / ".forge" / "locks"
+        lock_dir.mkdir(parents=True)
+        stale_lock = lock_dir / "issue-1110.lock"
+        stale_lock.write_text("40858|Sat May  2 15:49:34 2026|old-start\n", encoding="utf-8")
+
+        removed = sweep_story_locks(tmp_path)
+
+        assert removed == [stale_lock]
+        assert not stale_lock.exists()
+
+    def test_keeps_live_locked_files(self, tmp_path: Path) -> None:
+        ready_event = _mp.Event()
+        release_event = _mp.Event()
+
+        def hold_lock(path: str, slug: str, ready: object, release: object) -> None:
+            fds, conflicted = acquire_story_locks([slug], Path(path))
+            if conflicted:
+                sys.exit(1)
+            ready.set()
+            release.wait(timeout=10)
+            release_story_locks(fds)
+
+        proc = _mp.Process(
+            target=hold_lock,
+            args=(str(tmp_path), "issue-1111", ready_event, release_event),
+        )
+        proc.start()
+        try:
+            assert ready_event.wait(timeout=5)
+            removed = sweep_story_locks(tmp_path)
+            assert removed == []
+            assert (tmp_path / ".forge" / "locks" / "issue-1111.lock").exists()
+        finally:
+            release_event.set()
+            proc.join(timeout=5)
+
+
 class TestCheckActiveWorktrees:
     def test_missing_worktree_is_not_active(self, tmp_path: Path) -> None:
         active = check_active_worktrees(["story-a"], ".forge/worktrees/{slug}", "main", tmp_path)
@@ -412,7 +455,7 @@ class TestIntegrationLock:
 
 
 class TestCmdSprintConflictGuard:
-    """cmd_sprint returns exit code 1 and prints conflicting slugs when locked."""
+    """cmd_sprint respects the launch lock conflict contract."""
 
     def _make_story(self, tmp_path: Path, slug: str) -> Path:
         story = tmp_path / f"{slug}.md"
@@ -441,20 +484,26 @@ class TestCmdSprintConflictGuard:
             interactive=False,
             verbose=False,
             no_notify=True,
+            force=False,
         )
 
-    def test_conflict_returns_exit_1(self, tmp_path: Path, capsys) -> None:
-        """cmd_sprint returns 1 when a story lock is already held."""
+    def test_conflict_drops_locked_story_and_runs_remaining(self, tmp_path: Path, capsys) -> None:
+        """Initial launch drops only the conflicted story and runs the rest."""
         from theforge import cli
 
-        story = self._make_story(tmp_path, "my-feature")
-        manifest = self._make_manifest(tmp_path, story)
+        story_a = self._make_story(tmp_path, "my-feature")
+        story_b = self._make_story(tmp_path, "other-feature")
+        manifest = self._make_manifest(tmp_path, story_a, story_b)
         args = self._make_args(tmp_path, manifest)
 
         mock_config = MagicMock()
         mock_config.project_root = tmp_path
         mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
         mock_config.workspace.base_branch = "main"
+        mock_config.workspace.branch_pattern = "forge/{slug}"
+
+        mock_result = MagicMock()
+        mock_result.specs_failed = 0
 
         ready_event = _mp.Event()
         release_event = _mp.Event()
@@ -474,16 +523,110 @@ class TestCmdSprintConflictGuard:
             assert ready_event.wait(timeout=5)
 
             with patch("theforge.cli.sprint.load_config", return_value=mock_config):
-                with patch("theforge.cli.sprint.run_sprint") as mock_run:
-                    rc = cli.cmd_sprint(args)
+                with patch("theforge.cli.sprint.run_sprint", return_value=mock_result) as mock_run:
+                    with patch("theforge.detach.remove_pid"):
+                        rc = cli.cmd_sprint(args)
 
-            assert rc == 1
-            mock_run.assert_not_called()
+            assert rc == 0
+            mock_run.assert_called_once()
+            assert mock_run.call_args.kwargs["dropped_slugs"] == {
+                "my-feature": "story-lock-held-by-other-process"
+            }
             captured = capsys.readouterr()
+            assert "DROPPED" in captured.err
             assert "my-feature" in captured.err
+            assert "alive=yes" in captured.err
         finally:
             release_event.set()
             proc.join(timeout=5)
+
+    def test_force_overrides_live_lock_and_runs_every_story(self, tmp_path: Path, capsys) -> None:
+        """--force warns and proceeds even when a live process holds a story lock."""
+        from theforge import cli
+
+        story = self._make_story(tmp_path, "my-feature")
+        manifest = self._make_manifest(tmp_path, story)
+        args = self._make_args(tmp_path, manifest)
+        args.force = True
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
+        mock_config.workspace.branch_pattern = "forge/{slug}"
+
+        mock_result = MagicMock()
+        mock_result.specs_failed = 0
+
+        ready_event = _mp.Event()
+        release_event = _mp.Event()
+
+        def hold_lock(path: str, slug: str, ready: object, release: object) -> None:
+            fds, _ = acquire_story_locks([slug], Path(path))
+            ready.set()
+            release.wait(timeout=10)
+            release_story_locks(fds)
+
+        proc = _mp.Process(
+            target=hold_lock,
+            args=(str(tmp_path), "my-feature", ready_event, release_event),
+        )
+        proc.start()
+        try:
+            assert ready_event.wait(timeout=5)
+            with patch("theforge.cli.sprint.load_config", return_value=mock_config):
+                with patch("theforge.cli.sprint.run_sprint", return_value=mock_result) as mock_run:
+                    with patch("theforge.detach.remove_pid"):
+                        rc = cli.cmd_sprint(args)
+
+            assert rc == 0
+            mock_run.assert_called_once()
+            assert mock_run.call_args.kwargs["dropped_slugs"] == {}
+            captured = capsys.readouterr()
+            assert "--force overrides apparent story lock conflicts" in captured.err
+            assert "Proceeding without launch locks" in captured.err
+        finally:
+            release_event.set()
+            proc.join(timeout=5)
+
+    def test_stale_lock_is_reaped_and_story_runs(self, tmp_path: Path, capsys) -> None:
+        """A dead-PID launch lock is removed during the pre-sprint sweep."""
+        from theforge import cli
+
+        story = self._make_story(tmp_path, "issue-1110")
+        manifest = self._make_manifest(tmp_path, story)
+        args = self._make_args(tmp_path, manifest)
+
+        lock_dir = tmp_path / ".forge" / "locks"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "issue-1110.lock"
+        lock_path.write_text(
+            "40858|Sat May  2 15:49:34 2026|Sat May  2 15:49:34 2026\n",
+            encoding="utf-8",
+        )
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
+        mock_config.workspace.branch_pattern = "forge/{slug}"
+
+        mock_result = MagicMock()
+        mock_result.specs_failed = 0
+
+        with patch("theforge.cli.sprint.load_config", return_value=mock_config):
+            with patch("theforge.cli.sprint.run_sprint", return_value=mock_result) as mock_run:
+                with patch("theforge.detach.remove_pid"):
+                    rc = cli.cmd_sprint(args)
+
+        assert rc == 0
+        mock_run.assert_called_once()
+        lock_parts = lock_path.read_text(encoding="utf-8").strip().split("|", 2)
+        assert len(lock_parts) == 3
+        assert lock_parts[0].isdigit()
+        assert lock_parts[1] != "Sat May  2 15:49:34 2026"
+        captured = capsys.readouterr()
+        assert "Reaped 1 stale story lock file" in captured.err
 
     def test_no_conflict_calls_run_sprint(self, tmp_path: Path) -> None:
         """cmd_sprint proceeds to run_sprint when no conflicts exist."""
@@ -526,7 +669,7 @@ class TestCmdSprintConflictGuard:
         worktree.mkdir(parents=True)
 
         with patch("theforge.cli.sprint.load_config", return_value=mock_config):
-            with patch("theforge.sprint.launch_guard.acquire_story_locks") as mock_locks:
+            with patch("theforge.sprint.launch_guard.acquire_story_locks_detailed") as mock_locks:
                 with patch(
                     "theforge.sprint.lock.subprocess.run",
                     return_value=MagicMock(returncode=0, stdout="1\n"),
@@ -548,6 +691,7 @@ class TestCmdSprintConflictGuard:
         mock_config.project_root = tmp_path
         mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
         mock_config.workspace.base_branch = "main"
+        mock_config.workspace.branch_pattern = "forge/{slug}"
 
         worktree = tmp_path / ".forge" / "worktrees" / "my-feature"
         worktree.mkdir(parents=True)

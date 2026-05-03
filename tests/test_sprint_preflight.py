@@ -4,12 +4,14 @@ import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from theforge.sprint.lock import _read_lock_metadata
+from theforge.sprint.lock import StoryLockConflict, _read_lock_metadata
 from theforge.sprint.preflight import (
     abort_for_active_worktrees,
     abort_for_running_stories,
     check_active_worktrees_or_continue,
+    drop_conflicting_running_stories,
     reacquire_story_locks_in_daemon,
+    warn_for_running_stories,
 )
 
 
@@ -23,12 +25,70 @@ def test_abort_for_active_worktrees_lists_slugs(capsys) -> None:
 
 
 def test_abort_for_running_stories_lists_slugs(capsys) -> None:
-    rc = abort_for_running_stories(["story-a", "story-b"])
+    rc = abort_for_running_stories(
+        [
+            StoryLockConflict(
+                slug="issue-1110",
+                lock_path=Path("/tmp/.forge/locks/issue-1110.lock"),
+                pid=40858,
+                pid_alive=False,
+                timestamp="Sat May  2 15:49:34 2026",
+            ),
+            StoryLockConflict(
+                slug="story-b",
+                lock_path=Path("/tmp/.forge/locks/story-b.lock"),
+                pid=5150,
+                pid_alive=True,
+                timestamp="Sat May  2 16:00:00 2026",
+            ),
+        ]
+    )
 
     assert rc == 1
     captured = capsys.readouterr()
     assert "Stories already running" in captured.err
-    assert "story-a, story-b" in captured.err
+    assert "#1110 (issue-1110)" in captured.err
+    assert "story-b" in captured.err
+    assert "pid=40858" in captured.err
+    assert "alive=no" in captured.err
+    assert "timestamp=Sat May  2 15:49:34 2026" in captured.err
+    assert "/tmp/.forge/locks/issue-1110.lock" in captured.err
+
+
+def test_warn_for_running_stories_mentions_force_override(capsys) -> None:
+    warn_for_running_stories(
+        [
+            StoryLockConflict(
+                slug="story-a",
+                lock_path=Path("/tmp/.forge/locks/story-a.lock"),
+                pid=1234,
+                pid_alive=True,
+                timestamp="Sat May  2 16:00:00 2026",
+            )
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "--force overrides" in captured.err
+    assert "Proceeding without launch locks" in captured.err
+
+
+def test_drop_conflicting_running_stories_mentions_continuation(capsys) -> None:
+    drop_conflicting_running_stories(
+        [
+            StoryLockConflict(
+                slug="story-a",
+                lock_path=Path("/tmp/.forge/locks/story-a.lock"),
+                pid=1234,
+                pid_alive=True,
+                timestamp="Sat May  2 16:00:00 2026",
+            )
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "DROPPED" in captured.err
+    assert "Continuing with the remaining stories." in captured.err
 
 
 def test_check_active_worktrees_returns_abort_when_active(tmp_path: Path) -> None:

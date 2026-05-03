@@ -135,7 +135,7 @@ def cmd_sprint(args: object) -> int:
     slugs = parse_manifest_slugs(config, manifest_path)
     reexec = _is_reexec()
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
-        slugs=slugs, config=config, resume=resume, allow_drop=reexec
+        slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
     )
     if launch_error is not None:
         return launch_error
@@ -214,12 +214,14 @@ def _acquire_launch_locks(
     resume: bool,
     *,
     allow_drop: bool = False,
+    force: bool = False,
 ) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
         slugs=slugs,
         config=config,
         resume=resume,
         allow_drop=allow_drop,
+        force=force,
     )
 
 
@@ -506,7 +508,7 @@ def _run_query_mode(
     slugs = [task.slug for task, _src, _ref in resolved.stories]
     reexec = _is_reexec()
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
-        slugs=slugs, config=config, resume=resume, allow_drop=reexec
+        slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
     )
     if launch_error is not None:
         return launch_error

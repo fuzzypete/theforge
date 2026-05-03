@@ -6,14 +6,16 @@ import sys
 from typing import Any
 
 from theforge.sprint.lock import (
-    acquire_story_locks,
+    acquire_story_locks_detailed,
     check_active_worktrees,
     check_escalated_worktrees,
+    sweep_story_locks,
 )
 from theforge.sprint.preflight import (
     abort_for_active_worktrees,
-    abort_for_running_stories,
     check_active_worktrees_or_continue,
+    drop_conflicting_running_stories,
+    warn_for_running_stories,
 )
 
 # Reason codes used as the value in the ``dropped_slugs`` mapping.  These are
@@ -29,6 +31,7 @@ def acquire_launch_story_locks(
     config: Any,
     resume: bool,
     allow_drop: bool = False,
+    force: bool = False,
 ) -> tuple[list, int | None, dict[str, str]]:
     """Acquire launch-time story locks after checking for active worktrees.
 
@@ -40,12 +43,11 @@ def acquire_launch_story_locks(
     a distinct outcome (``dropped`` / ``preserved``) rather than silently
     vanishing or falling back to a generic SKIPPED entry.
 
-    When ``allow_drop`` is False (default, initial launch), any active worktree
-    or locked-by-another-process conflict aborts the whole sprint — the caller
-    returns ``exit_code`` to the shell.  Escalated worktrees are still treated
-    as preserved (never collisions) and are removed from scheduling even on
-    the initial-launch path; otherwise a sprint resumed over an already-
-    escalated worktree would re-run it.
+    When ``allow_drop`` is False (default, initial launch), active-worktree
+    collisions still abort the whole sprint. Story-lock conflicts are resolved
+    per story: conflicting stories are dropped and the rest continue, unless
+    ``force`` is True, in which case the conflict is warned about and the story
+    proceeds without a launch lock.
 
     When ``allow_drop`` is True (re-exec path), conflicting stories are
     individually recorded in ``dropped_slugs`` and the remaining, unconflicted
@@ -82,9 +84,18 @@ def acquire_launch_story_locks(
             flush=True,
         )
 
+    reaped_lock_paths = sweep_story_locks(config.project_root)
+    if reaped_lock_paths:
+        print(
+            f"[forge] Reaped {len(reaped_lock_paths)} stale story lock file(s) at sprint launch.",
+            file=sys.stderr,
+            flush=True,
+        )
+
     if not allow_drop:
         # Initial-launch path: escalated stories are silently excluded from
-        # scheduling, but any other collision still aborts the whole sprint.
+        # scheduling, active worktree collisions still abort, and story-lock
+        # collisions are resolved per story.
         active_worktree_error = check_active_worktrees_or_continue(
             slugs=schedulable,
             config=config,
@@ -92,9 +103,21 @@ def acquire_launch_story_locks(
         )
         if active_worktree_error is not None:
             return [], active_worktree_error, dropped
-        locked_fds, conflicted = acquire_story_locks(schedulable, config.project_root)
-        if conflicted:
-            return [], abort_for_running_stories(conflicted), dropped
+        remaining = list(schedulable)
+        locked_fds: list = []
+        while remaining:
+            attempt_fds, conflicted = acquire_story_locks_detailed(remaining, config.project_root)
+            if not conflicted:
+                locked_fds = attempt_fds
+                break
+            conflicted_slugs = {conflict.slug for conflict in conflicted}
+            if force:
+                warn_for_running_stories(conflicted)
+            else:
+                for slug in conflicted_slugs:
+                    dropped[slug] = REASON_LOCK_HELD
+                drop_conflicting_running_stories(conflicted)
+            remaining = [slug for slug in remaining if slug not in conflicted_slugs]
         return locked_fds, None, dropped
 
     # ── Re-exec path: convert every collision into a per-story drop ─────
@@ -124,19 +147,14 @@ def acquire_launch_story_locks(
     live_slugs: list[str] = list(remaining)
     locked_fds: list = []
     while live_slugs:
-        attempt_fds, conflicted = acquire_story_locks(live_slugs, config.project_root)
+        attempt_fds, conflicted = acquire_story_locks_detailed(live_slugs, config.project_root)
         if not conflicted:
             locked_fds = attempt_fds
             break
-        for slug in conflicted:
+        for conflict in conflicted:
+            slug = conflict.slug
             dropped[slug] = REASON_LOCK_HELD
-        print(
-            f"[forge] DROPPED {', '.join(conflicted)}: story lock held by "
-            "another process after re-exec; continuing with remaining stories.",
-            file=sys.stderr,
-            flush=True,
-        )
-        abort_for_running_stories(conflicted)
+        drop_conflicting_running_stories(conflicted)
         live_slugs = [s for s in live_slugs if s not in dropped]
         # attempt_fds is already empty/released by acquire_story_locks on
         # conflict — loop around and reacquire for the surviving subset.

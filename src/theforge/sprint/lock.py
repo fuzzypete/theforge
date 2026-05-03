@@ -8,11 +8,12 @@ import shutil
 import subprocess
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from theforge import detach as _detach_mod
 from theforge.artifacts import ESCALATED_MARKER_PATH
-from theforge.pid import _current_process_fingerprint, _pid_matches_fingerprint
+from theforge.pid import _current_process_fingerprint, _is_pid_alive, _pid_matches_fingerprint
 
 _LOCK_METADATA_SEPARATOR = "|"
 _UNAVAILABLE_FINGERPRINT = "unavailable"
@@ -105,32 +106,95 @@ class SprintConflictError(Exception):
         super().__init__(f"Stories already running: {', '.join(conflicting_slugs)}")
 
 
-def _read_lock_metadata(fd) -> tuple[int | None, str | None]:
-    """Return ``(pid, fingerprint)`` from a lock file, if present and valid."""
+@dataclass(frozen=True)
+class StoryLockRecord:
+    """Parsed lock-file metadata."""
+
+    pid: int | None
+    timestamp: str | None
+    fingerprint: str | None
+
+
+@dataclass(frozen=True)
+class StoryLockConflict:
+    """Operator-facing description of a conflicting story lock."""
+
+    slug: str
+    lock_path: Path
+    pid: int | None
+    pid_alive: bool
+    timestamp: str | None
+
+
+def _read_lock_record(fd) -> StoryLockRecord:
+    """Return parsed lock metadata from *fd*.
+
+    Supported formats:
+
+    - ``<pid>|<timestamp>|<fingerprint>`` (current)
+    - ``<pid>|<fingerprint>`` (legacy)
+    - ``<pid>`` (legacy/corrupt)
+    """
     fd.seek(0)
     raw = fd.read().strip()
     if not raw:
-        return None, None
+        return StoryLockRecord(pid=None, timestamp=None, fingerprint=None)
 
-    pid_text, separator, fingerprint = raw.partition(_LOCK_METADATA_SEPARATOR)
+    parts = [part.strip() for part in raw.split(_LOCK_METADATA_SEPARATOR)]
     try:
-        pid = int(pid_text)
+        pid = int(parts[0])
     except ValueError:
-        return None, None
+        return StoryLockRecord(pid=None, timestamp=None, fingerprint=None)
 
-    normalized_fingerprint = fingerprint.strip() if separator else None
-    return pid, normalized_fingerprint or None
+    if len(parts) >= 3:
+        timestamp = parts[1] or None
+        fingerprint = _LOCK_METADATA_SEPARATOR.join(parts[2:]).strip() or None
+        return StoryLockRecord(pid=pid, timestamp=timestamp, fingerprint=fingerprint)
+
+    if len(parts) == 2:
+        legacy_field = parts[1] or None
+        return StoryLockRecord(pid=pid, timestamp=legacy_field, fingerprint=legacy_field)
+
+    return StoryLockRecord(pid=pid, timestamp=None, fingerprint=None)
+
+
+def _read_lock_metadata(fd) -> tuple[int | None, str | None]:
+    """Return ``(pid, fingerprint)`` from a lock file, if present and valid."""
+    record = _read_lock_record(fd)
+    return record.pid, record.fingerprint
 
 
 def _write_lock_metadata(fd) -> None:
     """Persist the current process PID plus a stable process fingerprint."""
     pid = os.getpid()
     fingerprint = _current_process_fingerprint(pid) or _UNAVAILABLE_FINGERPRINT
-    payload = f"{pid}{_LOCK_METADATA_SEPARATOR}{fingerprint}"
+    timestamp = time.ctime()
+    payload = f"{pid}{_LOCK_METADATA_SEPARATOR}{timestamp}{_LOCK_METADATA_SEPARATOR}{fingerprint}"
     fd.truncate(0)
     fd.seek(0)
     fd.write(payload)
     fd.flush()
+
+
+def _record_claims_live_holder(record: StoryLockRecord) -> bool:
+    """Return True when *record* still points at a live owning process instance."""
+    if record.pid is None:
+        return False
+    return _pid_matches_fingerprint(record.pid, record.fingerprint)
+
+
+def _conflict_from_record(
+    slug: str, lock_path: Path, record: StoryLockRecord
+) -> StoryLockConflict:
+    """Build a stable conflict description from lock metadata."""
+    pid_alive = False if record.pid is None else _is_pid_alive(record.pid)
+    return StoryLockConflict(
+        slug=slug,
+        lock_path=lock_path,
+        pid=record.pid,
+        pid_alive=pid_alive,
+        timestamp=record.timestamp,
+    )
 
 
 def check_escalated_worktrees(
@@ -204,14 +268,16 @@ def check_active_worktrees(
     return active
 
 
-def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, list[str]]:
+def acquire_story_locks_detailed(
+    slugs: list[str], project_root: Path
+) -> tuple[list, list[StoryLockConflict]]:
     """Try to acquire exclusive non-blocking flocks for each slug.
 
     Creates `.forge/locks/<slug>.lock` files under *project_root*.
 
     Returns:
         ``(locked_fds, [])`` when all locks are successfully acquired.
-        ``([], conflicting_slugs)`` if any slug is already locked by another
+        ``([], conflicting_locks)`` if any slug is already locked by another
         process. All successfully acquired locks are released before returning
         in the conflict case.
     """
@@ -222,7 +288,7 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
     lock_dir.mkdir(parents=True, exist_ok=True)
 
     locked_fds: list = []
-    conflicted: list[str] = []
+    conflicted: list[StoryLockConflict] = []
 
     for slug in slugs:
         lock_path = lock_dir / f"{slug}.lock"
@@ -236,10 +302,10 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
                 acquired_fd = fd
                 break
             except BlockingIOError:
-                owner_pid, owner_fingerprint = _read_lock_metadata(fd)
+                record = _read_lock_record(fd)
                 fd.close()
-                if owner_pid is None or _pid_matches_fingerprint(owner_pid, owner_fingerprint):
-                    conflicted.append(slug)
+                if record.pid is None or _record_claims_live_holder(record):
+                    conflicted.append(_conflict_from_record(slug, lock_path, record))
                     break
                 # TOCTOU: a live process could acquire this lock and write its
                 # metadata between the ownership check above and unlink() below.
@@ -253,13 +319,21 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
                 except FileNotFoundError:
                     continue
                 except OSError:
-                    conflicted.append(slug)
+                    conflicted.append(_conflict_from_record(slug, lock_path, record))
                     break
 
         if acquired_fd is not None:
             locked_fds.append(acquired_fd)
-        elif slug not in conflicted:
-            conflicted.append(slug)
+        elif all(conflict.slug != slug for conflict in conflicted):
+            conflicted.append(
+                StoryLockConflict(
+                    slug=slug,
+                    lock_path=lock_path,
+                    pid=None,
+                    pid_alive=False,
+                    timestamp=None,
+                )
+            )
 
     if conflicted:
         # Release all successfully acquired locks before returning
@@ -272,6 +346,12 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
         return [], conflicted
 
     return locked_fds, []
+
+
+def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, list[str]]:
+    """Backwards-compatible wrapper around :func:`acquire_story_locks_detailed`."""
+    locked_fds, conflicts = acquire_story_locks_detailed(slugs, project_root)
+    return locked_fds, [conflict.slug for conflict in conflicts]
 
 
 def release_story_locks(fds: list) -> None:
@@ -330,6 +410,51 @@ def cleanup_story_locks(
             continue
 
     return cleaned
+
+
+def sweep_story_locks(
+    project_root: Path,
+    *,
+    slugs: list[str] | None = None,
+) -> list[Path]:
+    """Remove unlocked story lock files at sprint launch.
+
+    Policy: any lock file in ``.forge/locks`` whose flock is not currently held
+    at sprint launch is stale and is removed, regardless of whether its recorded
+    PID is dead, recycled, or still alive. Live holders keep their flock and are
+    left in place for the conflict gate to inspect precisely.
+    """
+    lock_dir = project_root / ".forge" / "locks"
+    if not lock_dir.exists():
+        return []
+
+    if slugs is None:
+        lock_paths = sorted(lock_dir.glob("*.lock"))
+    else:
+        lock_paths = [lock_dir / f"{slug}.lock" for slug in slugs]
+
+    removed: list[Path] = []
+    for lock_path in lock_paths:
+        if not lock_path.exists():
+            continue
+        try:
+            fd = open(lock_path, "a+")  # noqa: WPS515,SIM115
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+        finally:
+            fd.close()
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            continue
+        removed.append(lock_path)
+
+    return removed
 
 
 @contextmanager
