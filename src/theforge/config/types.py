@@ -335,6 +335,8 @@ class PlanAgentReviewConfig:
         """Return pool list, or a single-profile pool from legacy scalar fields."""
         if self.pool:
             return self.pool
+        if not self.cli and not self.provider:
+            return []
         # Legacy single-profile: construct from scalar fields.
         from .defaults import API_PROVIDER_DEFAULT_TOOLS, DEFAULT_PREFLIGHT_PROFILE
 

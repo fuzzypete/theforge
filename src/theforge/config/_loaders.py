@@ -115,7 +115,11 @@ def _parse_plan_agent_review(
     par_provider = par_data.get("provider")
 
     if par_enabled:
-        if not par_cli and not par_provider:
+        has_pool = "pool" in par_data
+        adaptive_can_choose = assignment_cfg_enabled and bool(agents_list)
+        # Enabled-only plan review lets adaptive assignment populate the pool.
+        # Preserve the legacy Claude fallback only when adaptive has no candidates.
+        if not par_cli and not par_provider and not has_pool and not adaptive_can_choose:
             par_cli = "claude"
 
         if par_cli and par_cli not in SUPPORTED_CLIS:
