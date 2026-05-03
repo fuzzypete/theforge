@@ -164,7 +164,7 @@ class TestPreflightAudit:
                 "planner": "adaptive",
                 "plan_review": "adaptive",
                 "dev": "explicit_override",
-                "code_review": "budget_downgrade",
+                "code_review": "cap_downgrade",
             },
             "assignments": {
                 "planner": {"model": "opus", "source": "builtin"},
@@ -177,9 +177,11 @@ class TestPreflightAudit:
             },
             "rationale": {
                 "dev": "complexity score 7 (MEDIUM) -> tier strong",
-                "budget": "within budget cap $30.00 (estimated total $27.00)",
+                "per_story_routing_cost_cap": (
+                    "within per-story routing cost cap $30.00 (estimated total $27.00)"
+                ),
             },
-            "budget": {"budget_cap_usd": 30.0, "within_budget": True},
+            "per_story_routing_cost_cap": {"cap_usd": 30.0, "within_cap": True},
         }
 
         log = generate_audit_log(
@@ -192,10 +194,10 @@ class TestPreflightAudit:
         assert routing["source"] == "adaptive_assignment"
         assert routing["adaptive_enabled"] is True
         assert routing["role_sources"]["dev"] == "explicit_override"
-        assert routing["role_sources"]["code_review"] == "budget_downgrade"
+        assert routing["role_sources"]["code_review"] == "cap_downgrade"
         assert routing["assignments"]["dev"]["model"] == "opus"
         assert routing["assignments"]["dev"]["source"] == "forge.yaml"
-        assert "budget" in routing["rationale"]
+        assert "per_story_routing_cost_cap" in routing["rationale"]
 
 
 # ── Cost.agents tests ─────────────────────────────────────────────────

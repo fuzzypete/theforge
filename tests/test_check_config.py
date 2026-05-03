@@ -467,7 +467,7 @@ class TestCheckConfigAgentsSection:
             enabled=True,
             min_reviewers=1,
             max_reviewers=3,
-            budget_per_story_usd=15.0,
+            max_cost_per_story_usd=15.0,
         )
         config = _make_forge_config(tmp_path, agents=agents, assignment=assignment)
         with (
@@ -499,7 +499,7 @@ class TestCheckConfigAgentsSection:
         assert "AGENTS" not in out
 
     def test_assignment_budget_shown_in_header(self, tmp_path: Path, capsys) -> None:
-        assignment = AssignmentConfig(enabled=True, budget_per_story_usd=20.0)
+        assignment = AssignmentConfig(enabled=True, max_cost_per_story_usd=20.0)
         config = _make_forge_config(tmp_path, assignment=assignment)
         with (
             patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
@@ -511,7 +511,7 @@ class TestCheckConfigAgentsSection:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
-        assert "Budget:  $20.00/story" in out
+        assert "Per-story routing cost cap: $20.00/story" in out
 
     def test_no_budget_header_when_assignment_disabled(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)  # assignment disabled
@@ -525,6 +525,7 @@ class TestCheckConfigAgentsSection:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
+        assert "Per-story routing cost cap" not in out
         assert "Budget:" not in out
 
 

@@ -446,7 +446,7 @@ def test_routing_decision_matches_pre_and_post_migration():
         min_reviewers=1,
         max_reviewers=2,
         prefer_cross_provider=True,
-        budget_per_story_usd=50.0,
+        max_cost_per_story_usd=50.0,
         escalation_memory=False,
         adaptive_enabled=True,
     )

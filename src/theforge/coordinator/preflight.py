@@ -833,12 +833,53 @@ def _apply_complexity_adaptation(
     return new_config
 
 
+def _emit_cap_downgrade_warning(
+    log: Callable[[str], None],
+    cap_audit: dict[str, object],
+    downgraded_roles: set[str],
+    *,
+    story_slug: str | None,
+) -> None:
+    """Print a visible terminal warning when the per-story routing cost cap forced a downgrade.
+
+    The warning fires when ``_enforce_budget`` either dropped a reviewer or
+    swapped a selected role for a cheaper one — i.e. adaptive's preferred
+    selection was overridden by the cap.
+    """
+    if not cap_audit.get("downgraded"):
+        return
+    cap = cap_audit.get("cap_usd")
+    preferred = cap_audit.get("preferred") or {}
+    if not isinstance(preferred, dict):
+        return
+    final_total = cap_audit.get("final_total_usd")
+    initial_total = preferred.get("total_usd")
+    pref_dev = (preferred.get("dev") or {}).get("model")
+    pref_cr = [r.get("model") for r in preferred.get("code_reviewers", []) if isinstance(r, dict)]
+    pref_pr = [r.get("model") for r in preferred.get("plan_reviewers", []) if isinstance(r, dict)]
+    pref_planner = (preferred.get("planner") or {}).get("model")
+    story_label = f"story {story_slug}" if story_slug else "story"
+    log(
+        f"  ⚠ {story_label}: per-story routing cost cap ${cap:.2f} forces downgrade"
+        if isinstance(cap, (int, float))
+        else f"  ⚠ {story_label}: per-story routing cost cap forces downgrade"
+    )
+    pref_total_str = f" @ ~${initial_total:.2f}" if isinstance(initial_total, (int, float)) else ""
+    log(
+        f"    adaptive selected: dev={pref_dev}, planner={pref_planner}, "
+        f"plan_reviewers={pref_pr}, code_reviewers={pref_cr}{pref_total_str}"
+    )
+    final_total_str = f" @ ~${final_total:.2f}" if isinstance(final_total, (int, float)) else ""
+    log(f"    after cap:         downgraded roles={sorted(downgraded_roles)}{final_total_str}")
+
+
 def _apply_preflight_config(
     config: ForgeConfig,
     state: "CoordinatorState",
     *,
     log: Callable[[str], None] | None = None,
     log_verbose: Callable[[str], None] | None = None,
+    task_slug: str | None = None,
 ) -> ForgeConfig:
     """Apply complexity-driven config updates using values already stored on state."""
     complexity = state.preflight_complexity or "medium"
@@ -972,14 +1013,15 @@ def _apply_preflight_config(
             + _decision.dev.budget_usd
             + sum(p.budget_usd for p in _decision.code_reviewers)
         )
-        _budget_cap = config.assignment.budget_per_story_usd
-        _within = _runtime_total <= _budget_cap
+        _cap = config.assignment.max_cost_per_story_usd
         _new_audit = dict(_decision.budget_audit)
         _new_audit["final_total_usd"] = round(_runtime_total, 2)
-        _new_audit["within_budget"] = _within
-        if not _within:
-            _new_audit["override_forced_overrun"] = True
-            _new_audit["locked_roles"] = sorted(set(_explicit.keys()))
+        if _cap is not None:
+            _within = _runtime_total <= _cap
+            _new_audit["within_cap"] = _within
+            if not _within:
+                _new_audit["override_forced_overrun"] = True
+                _new_audit["locked_roles"] = sorted(set(_explicit.keys()))
         _decision = _dc_replace(_decision, budget_audit=_new_audit)
 
     _replace_kwargs: dict[str, object] = {
@@ -1010,12 +1052,13 @@ def _apply_preflight_config(
     state._explicit_roles = _explicit_roles
     _existing_routing_audit = dict(state.complexity_routing_audit or {})
     _adaptive_enabled = config.assignment.adaptive_enabled
-    _budget_audit = dict(_decision.budget_audit)
-    _budget_downgraded_roles = {
+    _cap_audit = dict(_decision.budget_audit)
+    _cap_downgraded_roles = {
         str(step.get("role"))
-        for step in _budget_audit.get("steps", [])
+        for step in _cap_audit.get("steps", [])
         if isinstance(step, dict) and step.get("role")
     }
+    _emit_cap_downgrade_warning(_log, _cap_audit, _cap_downgraded_roles, story_slug=task_slug)
 
     # Map audit roles to whichever explicit-source hint indicates an override.
     # _explicit (passed to assign_models) keys: dev/preflight/planner/code_review/plan_review
@@ -1034,8 +1077,8 @@ def _apply_preflight_config(
             return "explicit_override"
         if not _adaptive_enabled:
             return "static"
-        if role in _budget_downgraded_roles:
-            return "budget_downgrade"
+        if role in _cap_downgraded_roles:
+            return "cap_downgrade"
         return "adaptive"
 
     _per_role_sources = {
@@ -1075,7 +1118,7 @@ def _apply_preflight_config(
             "code_reviewers": [_assignment_entry(p) for p in _decision.code_reviewers],
         },
         "rationale": dict(_decision.rationale),
-        "budget": _budget_audit,
+        "per_story_routing_cost_cap": _cap_audit,
         **({"config_model_routing": _existing_routing_audit} if _existing_routing_audit else {}),
     }
 

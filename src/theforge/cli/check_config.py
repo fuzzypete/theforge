@@ -265,7 +265,14 @@ def _format_config(
                     provider_labels.append(lbl)
             lines.append(f"Providers: {', '.join(provider_labels)}")
     elif config.assignment.enabled:
-        lines.append(f"Budget:  ${config.assignment.budget_per_story_usd:.2f}/story")
+        _cap = config.assignment.max_cost_per_story_usd
+        if _cap is None:
+            lines.append(
+                "Per-story routing cost cap: unset "
+                "(adaptive routes by complexity; only budget_usd enforces spend)"
+            )
+        else:
+            lines.append(f"Per-story routing cost cap: ${_cap:.2f}/story")
     lines.append("")
 
     if config.models or config.custom_models:
@@ -408,9 +415,12 @@ def _format_config(
     lines.append("SETTINGS")
     if config.assignment.enabled:
         a = config.assignment
+        if a.max_cost_per_story_usd is None:
+            cap_str = "no per-story routing cost cap configured"
+        else:
+            cap_str = f"per-story routing cost cap=${a.max_cost_per_story_usd:.2f}/story"
         lines.append(
-            f"  assignment:    enabled  (min={a.min_reviewers}, max={a.max_reviewers},"
-            f" budget=${a.budget_per_story_usd:.2f}/story)"
+            f"  assignment:    enabled  (min={a.min_reviewers}, max={a.max_reviewers}, {cap_str})"
         )
     else:
         lines.append("  assignment:    disabled")

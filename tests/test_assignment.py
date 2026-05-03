@@ -34,7 +34,7 @@ def _make_cfg(**kwargs) -> AssignmentConfig:
         min_reviewers=1,
         max_reviewers=3,
         prefer_cross_provider=True,
-        budget_per_story_usd=100.0,  # generous default so budget tests can be explicit
+        max_cost_per_story_usd=100.0,  # generous default so budget tests can be explicit
         escalation_memory=True,
     )
     defaults.update(kwargs)
@@ -168,7 +168,7 @@ def test_tier_selection_medium():
 def test_tier_selection_high():
     """HIGH complexity: plan=strong, dev=strong; code_review excludes dev model."""
     agents = _make_agents_one_per_tier()
-    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, budget_per_story_usd=1000.0)
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, max_cost_per_story_usd=1000.0)
     decision = assign_models(agents, cfg, "large")
 
     assert decision.dev.model == "opus"  # strong
@@ -197,7 +197,7 @@ def test_cross_provider_with_three_reviewers():
     """With prefer_cross_provider and 2 providers, 3 reviewers still returns valid pool."""
     agents = _make_agents_cross_provider()
     cfg = _make_cfg(
-        min_reviewers=3, max_reviewers=3, prefer_cross_provider=True, budget_per_story_usd=1000.0
+        min_reviewers=3, max_reviewers=3, prefer_cross_provider=True, max_cost_per_story_usd=1000.0
     )
     decision = assign_models(agents, cfg, "large")
 
@@ -385,7 +385,7 @@ def test_explicit_override_survives_budget_downgrade_pressure():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=6.0,
+        max_cost_per_story_usd=6.0,
         prefer_cross_provider=False,
     )
     explicit_dev = ModelProfile(
@@ -418,7 +418,7 @@ def test_explicit_override_records_forced_overrun_when_budget_unmet():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=2.0,  # very tight cap
+        max_cost_per_story_usd=2.0,  # very tight cap
         prefer_cross_provider=False,
     )
     explicit_dev = ModelProfile(
@@ -431,7 +431,7 @@ def test_explicit_override_records_forced_overrun_when_budget_unmet():
         allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
     )
 
-    with pytest.warns(UserWarning, match="Budget cap"):
+    with pytest.warns(UserWarning, match="per-story routing cost cap"):
         decision = assign_models(
             agents,
             cfg,
@@ -440,7 +440,7 @@ def test_explicit_override_records_forced_overrun_when_budget_unmet():
         )
 
     assert decision.dev.model == "custom-model"
-    assert decision.budget_audit["within_budget"] is False
+    assert decision.budget_audit["within_cap"] is False
     assert decision.budget_audit.get("override_forced_overrun") is True
     assert "dev" in decision.budget_audit.get("locked_roles", [])
 
@@ -497,7 +497,7 @@ def test_budget_cap_enforcement():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=10.0,
+        max_cost_per_story_usd=10.0,
         prefer_cross_provider=False,
     )
 
@@ -529,7 +529,7 @@ def test_budget_cap_plan_phase_downgraded():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=12.0,
+        max_cost_per_story_usd=12.0,
         prefer_cross_provider=False,
     )
 
@@ -568,7 +568,7 @@ def test_budget_cap_downgrade_dev_respects_floor():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=5.0,
+        max_cost_per_story_usd=5.0,
         prefer_cross_provider=False,
     )
     import warnings
@@ -582,7 +582,7 @@ def test_budget_cap_downgrade_dev_respects_floor():
         f"Dev should stay strong for HIGH; got {decision.dev.name}"
     )
     # Budget cannot be met, so a warning must have been issued
-    assert any("Budget cap" in str(w.message) for w in caught), (
+    assert any("per-story routing cost cap" in str(w.message) for w in caught), (
         "Expected budget-cap warning when floor prevents the cap from being met"
     )
 
@@ -606,7 +606,7 @@ def test_budget_cap_downgrade_dev_medium_stops_at_mid():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=20.0,
+        max_cost_per_story_usd=20.0,
         prefer_cross_provider=False,
     )
     import warnings
@@ -627,7 +627,7 @@ def test_budget_cap_preserves_strong_planner_when_dev_is_also_strong():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=15.0,
+        max_cost_per_story_usd=15.0,
         prefer_cross_provider=False,
     )
     import warnings
@@ -638,10 +638,10 @@ def test_budget_cap_preserves_strong_planner_when_dev_is_also_strong():
 
     assert decision.dev.model == "opus"
     assert decision.planner.model == "opus"
-    assert decision.budget_audit["within_budget"] is False
+    assert decision.budget_audit["within_cap"] is False
     assert "planner" in decision.budget_audit.get("protected_roles", [])
-    assert "protected roles" in decision.rationale["budget"]
-    assert any("Budget cap" in str(w.message) for w in caught)
+    assert "protected roles" in decision.rationale["per_story_routing_cost_cap"]
+    assert any("per-story routing cost cap" in str(w.message) for w in caught)
 
 
 def test_budget_cap_records_downgrade_rationale():
@@ -650,13 +650,13 @@ def test_budget_cap_records_downgrade_rationale():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=10.0,
+        max_cost_per_story_usd=10.0,
         prefer_cross_provider=False,
     )
 
     decision = assign_models(agents, cfg, "medium")
 
-    assert "budget cap $10.00" in decision.rationale["budget"]
+    assert "per-story routing cost cap $10.00" in decision.rationale["per_story_routing_cost_cap"]
     assert decision.budget_audit["downgraded"] is True
     assert decision.budget_audit["final_total_usd"] <= 10.0
     assert decision.budget_audit["steps"]
@@ -668,14 +668,14 @@ def test_budget_cap_keeps_planner_rationale_aligned_with_final_model():
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
-        budget_per_story_usd=10.0,
+        max_cost_per_story_usd=10.0,
         prefer_cross_provider=False,
     )
 
     decision = assign_models(agents, cfg, "medium", complexity_score=4)
 
     assert decision.planner.model == "haiku"
-    assert "budget adjusted -> final model haiku" in decision.rationale["planner"]
+    assert "per-story routing cost cap $10.00 downgraded to haiku" in decision.rationale["planner"]
     assert any(step["role"] == "planner" for step in decision.budget_audit["steps"])
 
 
@@ -1015,3 +1015,65 @@ def test_guardrail_mid_promoted_to_strong_for_large():
     decision = assign_models(agents, cfg, "large", escalation_history=history)
 
     assert decision.dev.name == "opus", f"Expected strong (opus) for HIGH, got {decision.dev.name}"
+
+
+# ── per-story routing cost cap (split from sprint budget) ──────────────
+
+
+def test_unset_cap_preserves_adaptive_full_pool_on_high_complexity():
+    """AC: with cap unset, a score-9 large story keeps adaptive's full reviewer pool/tier."""
+    from dataclasses import replace as _dc_replace
+
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("deepseek-r1", "deepseek", "deepseek-reasoner", 1.0, 600, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, max_cost_per_story_usd=None)
+
+    # Reference run with a generous cap captures adaptive's preferred selection.
+    ref_decision = assign_models(
+        agents,
+        _dc_replace(cfg, max_cost_per_story_usd=1000.0),
+        "large",
+        complexity_score=9,
+    )
+
+    # With cap unset, selection must match the unconstrained reference exactly.
+    decision = assign_models(agents, cfg, "large", complexity_score=9)
+
+    assert decision.budget_audit["downgraded"] is False
+    assert decision.budget_audit["steps"] == []
+    assert decision.budget_audit["cap_usd"] is None
+    assert len(decision.code_reviewers) == len(ref_decision.code_reviewers)
+    assert decision.dev.model == ref_decision.dev.model
+    assert [r.model for r in decision.code_reviewers] == [
+        r.model for r in ref_decision.code_reviewers
+    ]
+    cap_text = decision.rationale["per_story_routing_cost_cap"]
+    assert "unset" in cap_text
+    assert "budget" not in cap_text.lower()
+
+
+def test_set_cap_records_preferred_snapshot_in_audit():
+    """AC support: when cap downgrades selection, audit records adaptive's preferred selection."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        max_cost_per_story_usd=10.0,
+        prefer_cross_provider=False,
+    )
+
+    decision = assign_models(agents, cfg, "medium")
+
+    audit = decision.budget_audit
+    assert audit["downgraded"] is True
+    preferred = audit["preferred"]
+    assert preferred["dev"]["model"]
+    assert preferred["planner"]["model"]
+    assert preferred["total_usd"] > audit["final_total_usd"]
+    # Audit must never carry the word "budget" in its top-level keys
+    assert "budget" not in audit
+    assert "budget_cap_usd" not in audit

@@ -373,12 +373,12 @@ def _check_promotion(
 def _enforce_budget(
     decision: AssignmentDecision,
     agents: list[AgentDef],
-    budget_per_story_usd: float,
+    max_cost_per_story_usd: float,
     dev_floor_tier: str = "cheap",
     planner_floor_tier: str | None = None,
     locked_roles: set[str] | None = None,
 ) -> AssignmentDecision:
-    """Downgrade highest-cost non-preflight model if over budget cap.
+    """Downgrade highest-cost non-preflight model if over the per-story routing cost cap.
 
     Candidates for downgrade: planner, plan_reviewers, dev, code_reviewers.
     Preflight is excluded to preserve classification quality.
@@ -394,24 +394,27 @@ def _enforce_budget(
 
     locked_roles = locked_roles or set()
     initial_total = _decision_total(decision)
+    preferred_snapshot = _preferred_snapshot(decision, initial_total)
     budget_steps: list[dict[str, object]] = []
     protected_roles: set[str] = set()
 
-    if initial_total <= budget_per_story_usd:
+    if initial_total <= max_cost_per_story_usd:
         rationale = dict(decision.rationale)
-        rationale["budget"] = (
-            f"within budget cap ${budget_per_story_usd:.2f} (estimated total ${initial_total:.2f})"
+        rationale["per_story_routing_cost_cap"] = (
+            f"within per-story routing cost cap ${max_cost_per_story_usd:.2f} "
+            f"(estimated total ${initial_total:.2f})"
         )
         return _dc_replace(
             decision,
             rationale=rationale,
             budget_audit={
-                "budget_cap_usd": budget_per_story_usd,
+                "cap_usd": max_cost_per_story_usd,
                 "initial_total_usd": round(initial_total, 2),
                 "final_total_usd": round(initial_total, 2),
-                "within_budget": True,
+                "within_cap": True,
                 "downgraded": False,
                 "steps": [],
+                "preferred": preferred_snapshot,
             },
         )
 
@@ -440,9 +443,9 @@ def _enforce_budget(
             cheapest = min(cheaper_options, key=lambda a: a.budget_usd)
             return cheapest.to_model_profile(allowed_tools=profile.allowed_tools)
 
-    # Iteratively downgrade until within budget (max 10 passes)
+    # Iteratively downgrade until within cap (max 10 passes)
     for _ in range(10):
-        if _decision_total(decision) <= budget_per_story_usd:
+        if _decision_total(decision) <= max_cost_per_story_usd:
             break
 
         # Find highest-cost non-preflight profile that can be downgraded.
@@ -547,63 +550,89 @@ def _enforce_budget(
                 break
 
     final_total = _decision_total(decision)
-    within_budget = final_total <= budget_per_story_usd
+    within_cap = final_total <= max_cost_per_story_usd
     rationale = dict(decision.rationale)
     impacted_roles = {
         str(step.get("role"))
         for step in budget_steps
         if isinstance(step, dict) and step.get("role")
     }
+    cap_phrase = f"per-story routing cost cap ${max_cost_per_story_usd:.2f}"
     if "planner" in impacted_roles and "planner" in rationale:
-        rationale["planner"] += f"; budget adjusted -> final model {decision.planner.model}"
+        _p = decision.planner
+        rationale["planner"] += f"; {cap_phrase} downgraded to {_p.model} @ ${_p.budget_usd:.2f}"
     if "dev" in impacted_roles and "dev" in rationale:
-        rationale["dev"] += f"; budget adjusted -> final model {decision.dev.model}"
+        _d = decision.dev
+        rationale["dev"] += f"; {cap_phrase} downgraded to {_d.model} @ ${_d.budget_usd:.2f}"
     if "plan_review" in impacted_roles and "plan_review" in rationale:
+        _pr_total = sum(p.budget_usd for p in decision.plan_reviewers)
         rationale["plan_review"] += (
-            f"; budget adjusted -> final reviewers {[p.model for p in decision.plan_reviewers]}"
+            f"; {cap_phrase} downgraded to "
+            f"{[p.model for p in decision.plan_reviewers]} @ ${_pr_total:.2f}"
         )
     if "code_review" in impacted_roles and "code_review" in rationale:
+        _cr_total = sum(p.budget_usd for p in decision.code_reviewers)
         rationale["code_review"] += (
-            f"; budget adjusted -> final reviewers {[p.model for p in decision.code_reviewers]}"
+            f"; {cap_phrase} downgraded to "
+            f"{[p.model for p in decision.code_reviewers]} @ ${_cr_total:.2f}"
         )
     if budget_steps:
-        rationale["budget"] = (
-            f"budget cap ${budget_per_story_usd:.2f}: downgraded to "
-            f"${final_total:.2f} via {len(budget_steps)} adjustment(s)"
+        rationale["per_story_routing_cost_cap"] = (
+            f"{cap_phrase}: downgraded to ${final_total:.2f} via {len(budget_steps)} adjustment(s)"
         )
-    elif within_budget:
-        rationale["budget"] = (
-            f"within budget cap ${budget_per_story_usd:.2f} (estimated total ${final_total:.2f})"
+    elif within_cap:
+        rationale["per_story_routing_cost_cap"] = (
+            f"within {cap_phrase} (estimated total ${final_total:.2f})"
         )
     else:
-        rationale["budget"] = (
-            f"budget cap ${budget_per_story_usd:.2f} could not be met; "
-            f"estimated total ${final_total:.2f}"
+        rationale["per_story_routing_cost_cap"] = (
+            f"{cap_phrase} could not be met; estimated total ${final_total:.2f}"
         )
     if protected_roles:
-        rationale["budget"] += f" (protected roles: {sorted(protected_roles)})"
+        rationale["per_story_routing_cost_cap"] += f" (protected roles: {sorted(protected_roles)})"
 
-    if not within_budget:
+    if not within_cap:
         warnings.warn(
-            f"[adaptive] Budget cap ${budget_per_story_usd:.2f} cannot be met; "
-            f"actual total ${final_total:.2f}",
+            f"[adaptive] per-story routing cost cap ${max_cost_per_story_usd:.2f} "
+            f"cannot be met; actual total ${final_total:.2f}",
             stacklevel=2,
         )
 
     audit: dict[str, object] = {
-        "budget_cap_usd": budget_per_story_usd,
+        "cap_usd": max_cost_per_story_usd,
         "initial_total_usd": round(initial_total, 2),
         "final_total_usd": round(final_total, 2),
-        "within_budget": within_budget,
+        "within_cap": within_cap,
         "downgraded": bool(budget_steps),
         "steps": budget_steps,
+        "preferred": preferred_snapshot,
     }
     if protected_roles:
         audit["protected_roles"] = sorted(protected_roles)
-    if not within_budget and locked_roles:
+    if not within_cap and locked_roles:
         audit["override_forced_overrun"] = True
         audit["locked_roles"] = sorted(locked_roles)
     return _dc_replace(decision, rationale=rationale, budget_audit=audit)
+
+
+def _preferred_snapshot(decision: AssignmentDecision, total_usd: float) -> dict[str, object]:
+    """Capture adaptive's pre-cap selection for warning emission and audit."""
+    return {
+        "dev": {"model": decision.dev.model, "budget_usd": round(decision.dev.budget_usd, 2)},
+        "planner": {
+            "model": decision.planner.model,
+            "budget_usd": round(decision.planner.budget_usd, 2),
+        },
+        "plan_reviewers": [
+            {"model": p.model, "budget_usd": round(p.budget_usd, 2)}
+            for p in decision.plan_reviewers
+        ],
+        "code_reviewers": [
+            {"model": p.model, "budget_usd": round(p.budget_usd, 2)}
+            for p in decision.code_reviewers
+        ],
+        "total_usd": round(total_usd, 2),
+    }
 
 
 def _agent_to_profile(
@@ -924,8 +953,36 @@ def assign_models(
         rationale=rationale,
     )
 
-    # Enforce budget cap — pass dev floor so the enforcer never downgrades dev
-    # below the complexity-required tier.
+    # Enforce per-story routing cost cap — pass dev floor so the enforcer never
+    # downgrades dev below the complexity-required tier.  When the cap is unset
+    # (None), adaptive's selection is preserved as-is and only the sprint-wide
+    # budget_usd guard remains.
+    cap = assignment_config.max_cost_per_story_usd
+    if cap is None:
+        for _role in ("planner", "dev", "plan_review", "code_review"):
+            if _role in rationale:
+                rationale[_role] += "; per-story routing cost cap: unset"
+        rationale["per_story_routing_cost_cap"] = (
+            "unset — adaptive routes by complexity; no per-story cap enforcement"
+        )
+        from dataclasses import replace as _dc_replace
+
+        _initial_total = _decision_total(decision)
+        decision = _dc_replace(
+            decision,
+            rationale=rationale,
+            budget_audit={
+                "cap_usd": None,
+                "initial_total_usd": round(_initial_total, 2),
+                "final_total_usd": round(_initial_total, 2),
+                "within_cap": True,
+                "downgraded": False,
+                "steps": [],
+                "preferred": _preferred_snapshot(decision, _initial_total),
+            },
+        )
+        return decision
+
     planner_floor_tier = None
     if (
         planner_target_tier == "strong"
@@ -936,7 +993,7 @@ def assign_models(
     decision = _enforce_budget(
         decision,
         agents,
-        assignment_config.budget_per_story_usd,
+        cap,
         dev_floor_tier=dev_base_tier,
         planner_floor_tier=planner_floor_tier,
         locked_roles=locked_roles,
