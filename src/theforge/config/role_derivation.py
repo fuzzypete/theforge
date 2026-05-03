@@ -13,7 +13,7 @@ from typing import Any
 
 from ..routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 from .defaults import DEFAULT_DEV_PROFILE, DEFAULT_PREFLIGHT_PROFILE, DEFAULT_REVIEW_PROFILE
-from .models import ModelInfo, _resolve_model_info
+from .models import AgentSpec, ModelInfo, _resolve_model_info
 from .schema import (
     DevRoleConfig,
     ModelRef,
@@ -91,6 +91,8 @@ def _make_model_ref(
         provider=info.provider,
         budget_usd=budget_usd,
         timeout_seconds=timeout_seconds,
+        registry_id=info.registry_id,
+        registry_source=info.registry_source,
         transport=info.transport,
     )
 
@@ -158,6 +160,7 @@ def derive_roles(
     budget_usd: float = 10.0,
     complexity: str | None = None,
     complexity_score: int | None = None,
+    registry: dict[str, AgentSpec] | None = None,
 ) -> RoleAssignment:
     """Map a simple model list to a RoleAssignment.
 
@@ -213,7 +216,7 @@ def derive_roles(
     )
 
     # Build (model_key, ModelInfo) pairs and sort: cheapest first, then by capability desc
-    infos = [(m, _resolve_model_info(m)) for m in models]
+    infos = [(m, _resolve_model_info(m, registry=registry)) for m in models]
     sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
 
     # Phase-eligibility-aware candidate pools — a model's AgentSpec may exclude it

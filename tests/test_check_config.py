@@ -21,7 +21,8 @@ from theforge.config import (
     TransportSpec,
     WorkspaceConfig,
 )
-from theforge.config.models import AgentDef
+from theforge.config.models import AGENT_REGISTRY, AgentDef, AgentSpec
+from theforge.config.models import TransportSpec as ModelTransportSpec
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -66,6 +67,9 @@ def _make_forge_config(
     models: list[str] | None = None,
     models_budget_usd: float | None = None,
     models_overrides: dict | None = None,
+    model_registry: dict[str, AgentSpec] | None = None,
+    model_registry_sources: dict[str, str] | None = None,
+    custom_models: tuple[str, ...] = (),
 ) -> ForgeConfig:
     if review_pool is None:
         review_pool = [_api_profile("claude-reviewer")]
@@ -107,6 +111,9 @@ def _make_forge_config(
         models=models,
         models_budget_usd=models_budget_usd,
         models_overrides=models_overrides,
+        model_registry=model_registry or dict(AGENT_REGISTRY),
+        model_registry_sources=model_registry_sources or {k: "builtin" for k in AGENT_REGISTRY},
+        custom_models=custom_models,
     )
 
 
@@ -287,6 +294,46 @@ class TestCheckConfigHappyPath:
         assert "deepseek" in deepseek_review_line
         assert "api" in deepseek_review_line
         assert "cli:deepseek" not in deepseek_review_line
+
+    def test_model_registry_section_distinguishes_builtin_and_forge_yaml_models(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        custom_registry = dict(AGENT_REGISTRY)
+        custom_registry["gpt-5.5"] = AgentSpec(
+            provider="openai",
+            model="gpt-5.5",
+            transport=ModelTransportSpec(kind="cli", runner="codex", executable="codex"),
+            tier="strong",
+            capability=9,
+            cost_rank=3,
+            registry_source="forge.yaml",
+            input_cost_per_mtok=5.0,
+            output_cost_per_mtok=30.0,
+        )
+        config = _make_forge_config(
+            tmp_path,
+            models=["claude/sonnet", "gpt-5.5"],
+            models_budget_usd=10.0,
+            model_registry=custom_registry,
+            model_registry_sources={
+                **{k: "builtin" for k in AGENT_REGISTRY},
+                "gpt-5.5": "forge.yaml",
+            },
+            custom_models=("gpt-5.5",),
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "MODEL REGISTRY" in out
+        assert "selected builtin:" in out
+        assert "claude/sonnet" in out
+        assert "selected forge.yaml:" in out
+        assert "gpt-5.5" in out
+        assert "declared forge.yaml:" in out
 
     def test_provider_label_unknown_model_warns_without_prefix_fallback(self) -> None:
         warnings: list[str] = []

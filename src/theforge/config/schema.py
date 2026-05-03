@@ -52,6 +52,8 @@ class ModelRef:
     max_iterations: int | None = None  # override default agent loop iterations
     max_tool_output_bytes: int = 51200  # cap for tool output (50 KB default)
     api_fallback: ApiFallbackConfig | None = None  # CLI-only same-provider API fallback
+    registry_id: str | None = None  # canonical model registry key, when sourced from a registry
+    registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     # Explicit TransportSpec — carried through derive_roles → bridge → ModelProfile
     # so runtime dispatch reads TransportSpec.kind rather than inferring from cli/provider.
     transport: TransportSpec | None = None

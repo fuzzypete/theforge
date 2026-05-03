@@ -167,10 +167,13 @@ class TestPreflightAudit:
                 "code_review": "budget_downgrade",
             },
             "assignments": {
-                "planner": "opus",
-                "dev": "opus",
-                "plan_reviewers": ["sonnet"],
-                "code_reviewers": ["sonnet", "haiku"],
+                "planner": {"model": "opus", "source": "builtin"},
+                "dev": {"model": "opus", "source": "forge.yaml"},
+                "plan_reviewers": [{"model": "sonnet", "source": "builtin"}],
+                "code_reviewers": [
+                    {"model": "sonnet", "source": "builtin"},
+                    {"model": "haiku", "source": "builtin"},
+                ],
             },
             "rationale": {
                 "dev": "complexity score 7 (MEDIUM) -> tier strong",
@@ -190,7 +193,8 @@ class TestPreflightAudit:
         assert routing["adaptive_enabled"] is True
         assert routing["role_sources"]["dev"] == "explicit_override"
         assert routing["role_sources"]["code_review"] == "budget_downgrade"
-        assert routing["assignments"]["dev"] == "opus"
+        assert routing["assignments"]["dev"]["model"] == "opus"
+        assert routing["assignments"]["dev"]["source"] == "forge.yaml"
         assert "budget" in routing["rationale"]
 
 

@@ -15,13 +15,18 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import AgentDef, _resolve_model_info
+from .models import AgentDef, AgentSpec, _resolve_model_info
 from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
 
 _COST_RANK_TO_TIER = {1: "cheap", 2: "mid", 3: "strong"}
 
 
-def _agents_from_models(models: list[str], budget_usd: float) -> list[AgentDef]:
+def _agents_from_models(
+    models: list[str],
+    budget_usd: float,
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> list[AgentDef]:
     """Derive AgentDef pool from the v0.8 models: list.
 
     Each entry becomes one agent keyed by the slash-replaced model key so names
@@ -35,7 +40,7 @@ def _agents_from_models(models: list[str], budget_usd: float) -> list[AgentDef]:
     per_agent_budget = budget_usd / len(models)
     agents: list[AgentDef] = []
     for key in models:
-        info = _resolve_model_info(key)
+        info = _resolve_model_info(key, registry=registry)
         tier = _COST_RANK_TO_TIER.get(info.cost_rank, "mid")
         agents.append(
             AgentDef(
@@ -46,6 +51,8 @@ def _agents_from_models(models: list[str], budget_usd: float) -> list[AgentDef]:
                 timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
                 tier=tier,
                 cli=info.cli,
+                registry_id=info.registry_id,
+                registry_source=info.registry_source,
             )
         )
     return agents
@@ -190,6 +197,8 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
 def _auto_assign_models(
     models: list[str],
     budget_usd: float,
+    *,
+    registry: dict[str, AgentSpec] | None = None,
 ) -> tuple[ModelProfile, ModelProfile, list[ModelProfile], ModelProfile | None]:
     """Auto-assign models to stages from a declarative pool.
 
@@ -206,7 +215,7 @@ def _auto_assign_models(
     - synthesis: max(2%, $1) when pool > 1
     - each reviewer: remaining / pool_size
     """
-    infos = [(m, _resolve_model_info(m)) for m in models]
+    infos = [(m, _resolve_model_info(m, registry=registry)) for m in models]
     sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
 
     dev_key, dev_info = sorted_models[0]
@@ -235,6 +244,8 @@ def _auto_assign_models(
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
         allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
         phase="dev",
+        registry_id=dev_info.registry_id,
+        registry_source=dev_info.registry_source,
     )
     preflight_profile = ModelProfile(
         name="preflight",
@@ -245,6 +256,8 @@ def _auto_assign_models(
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
         allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
         phase="preflight",
+        registry_id=preflight_info.registry_id,
+        registry_source=preflight_info.registry_source,
     )
     review_pool = [
         ModelProfile(
@@ -255,6 +268,8 @@ def _auto_assign_models(
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
             allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+            registry_id=i.registry_id,
+            registry_source=i.registry_source,
         )
         for k, i in review_pairs
     ]
@@ -270,6 +285,8 @@ def _auto_assign_models(
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
             allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+            registry_id=synth_info.registry_id,
+            registry_source=synth_info.registry_source,
         )
 
     return dev_profile, preflight_profile, review_pool, synthesis_profile

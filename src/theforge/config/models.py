@@ -61,6 +61,9 @@ class AgentSpec:
     dev_capable: bool = True  # whether this agent is allowed to own the dev role
     phase_eligibility: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
     tool_mode: str = "auto"  # "auto" = follow transport default; reserved for future use
+    registry_source: str = "builtin"  # "builtin" | "forge.yaml"
+    input_cost_per_mtok: float | None = None
+    output_cost_per_mtok: float | None = None
 
 
 # Canonical transport objects — referenced by AGENT_REGISTRY entries.
@@ -83,6 +86,17 @@ _PROVIDER_API_TRANSPORT_MAP: dict[str, TransportSpec] = {
     "openai": _TRANSPORT_OPENAI_API,
     "google": _TRANSPORT_GOOGLE_API,
     "deepseek": _TRANSPORT_DEEPSEEK_API,
+}
+
+_MODEL_OVERLAY_PROVIDER_MAP: dict[str, tuple[str, TransportSpec]] = {
+    "anthropic": ("anthropic", _TRANSPORT_CLAUDE_CLI),
+    "claude": ("anthropic", _TRANSPORT_CLAUDE_CLI),
+    "openai": ("openai", _TRANSPORT_CODEX_CLI),
+    "openai-api": ("openai", _TRANSPORT_OPENAI_API),
+    "deepseek": ("deepseek", _TRANSPORT_DEEPSEEK_API),
+    "google": ("google", _TRANSPORT_GOOGLE_API),
+    "gemini": ("google", _TRANSPORT_GOOGLE_API),
+    "gemini-cli": ("google", _TRANSPORT_GEMINI_CLI),
 }
 
 
@@ -132,6 +146,10 @@ class ModelInfo:
     dev_capable: bool = True  # False for models whose CLI doesn't support dev tools
     provider: str | None = None  # API transport, mutually exclusive with cli
     phase_eligibility: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+    registry_id: str | None = None  # canonical model registry key
+    registry_source: str = "builtin"  # "builtin" | "forge.yaml"
+    input_cost_per_mtok: float | None = None
+    output_cost_per_mtok: float | None = None
     transport: TransportSpec | None = None  # the canonical TransportSpec this view was built from
 
 
@@ -148,6 +166,8 @@ class AgentDef:
     cli: str | None = None  # "claude", "codex", etc. — set for CLI agents
     api_fallback: ApiFallbackConfig | None = None
     strengths: tuple[str, ...] = ()
+    registry_id: str | None = None
+    registry_source: str = "builtin"
 
     def to_model_profile(self, *, allowed_tools: tuple[str, ...] = ()) -> ModelProfile:
         """Convert to a ModelProfile for use in coordinator config."""
@@ -160,6 +180,8 @@ class AgentDef:
             timeout_seconds=self.timeout_seconds,
             allowed_tools=allowed_tools,
             api_fallback=self.api_fallback,
+            registry_id=self.registry_id,
+            registry_source=self.registry_source,
         )
 
 
@@ -345,13 +367,60 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
 }
 
 
-def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
+def known_model_overlay_providers() -> tuple[str, ...]:
+    """Return accepted provider/adaptor tokens for forge.yaml model overlays."""
+    return tuple(sorted(_MODEL_OVERLAY_PROVIDER_MAP))
+
+
+def overlay_transport(provider: str) -> tuple[str, TransportSpec]:
+    """Resolve a forge.yaml provider token to its provider family and transport."""
+    if provider not in _MODEL_OVERLAY_PROVIDER_MAP:
+        known = ", ".join(sorted(_MODEL_OVERLAY_PROVIDER_MAP))
+        raise ValueError(
+            f"Unknown provider {provider!r} in models.custom. Known providers/adapters: {known}"
+        )
+    return _MODEL_OVERLAY_PROVIDER_MAP[provider]
+
+
+def custom_model_capability(tier: str) -> int:
+    """Return the default capability score for a custom model tier."""
+    by_tier = {"cheap": 6, "fast": 7, "strong": 9}
+    if tier not in by_tier:
+        raise ValueError(f"models.custom tier must be one of {sorted(by_tier)}, got {tier!r}")
+    return by_tier[tier]
+
+
+def custom_model_cost_rank(input_cost_per_mtok: float, output_cost_per_mtok: float) -> int:
+    """Map per-MTok pricing to the routing cost bands used by the registry."""
+    price_signal = max(float(input_cost_per_mtok), float(output_cost_per_mtok))
+    if price_signal <= 5.0:
+        return 1
+    if price_signal <= 25.0:
+        return 2
+    return 3
+
+
+def custom_model_dev_capable(transport: TransportSpec) -> bool:
+    """Return whether a custom model transport can own the dev role."""
+    return not (transport.kind == "cli" and transport.runner == "gemini")
+
+
+def _spec_to_model_info(
+    model_key: str | AgentSpec,
+    spec: AgentSpec | None = None,
+) -> ModelInfo:
     """Project an AgentSpec down to the legacy ModelInfo view.
 
     Carries `phase_eligibility` and the underlying `TransportSpec` through the
     projection so role derivation can filter by phase and runtime dispatch can
     read the explicit transport rather than re-inferring it from cli/provider.
     """
+    if spec is None:
+        spec = model_key
+        assert isinstance(spec, AgentSpec)
+        model_key = spec.model
+
+    assert isinstance(model_key, str)
     if spec.transport.kind == "cli":
         return ModelInfo(
             cli=spec.transport.runner,
@@ -362,6 +431,10 @@ def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
             dev_capable=spec.dev_capable,
             provider=None,
             phase_eligibility=spec.phase_eligibility,
+            registry_id=model_key,
+            registry_source=spec.registry_source,
+            input_cost_per_mtok=spec.input_cost_per_mtok,
+            output_cost_per_mtok=spec.output_cost_per_mtok,
             transport=spec.transport,
         )
     return ModelInfo(
@@ -373,13 +446,17 @@ def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
         dev_capable=spec.dev_capable,
         provider=spec.provider,
         phase_eligibility=spec.phase_eligibility,
+        registry_id=model_key,
+        registry_source=spec.registry_source,
+        input_cost_per_mtok=spec.input_cost_per_mtok,
+        output_cost_per_mtok=spec.output_cost_per_mtok,
         transport=spec.transport,
     )
 
 
 # Derived legacy view — exactly mirrors AGENT_REGISTRY.
 MODEL_REGISTRY: dict[str, ModelInfo] = {
-    k: _spec_to_model_info(v) for k, v in AGENT_REGISTRY.items()
+    k: _spec_to_model_info(k, v) for k, v in AGENT_REGISTRY.items()
 }
 
 
@@ -404,34 +481,46 @@ def apply_model_info(profile: _ProfileT, info: ModelInfo) -> _ProfileT:
         "model": info.model,
         "provider": info.provider,
     }
+    if "registry_id" in profile_fields:
+        updates["registry_id"] = info.registry_id
+    if "registry_source" in profile_fields:
+        updates["registry_source"] = info.registry_source
     if "transport" in profile_fields:
         updates["transport"] = info.transport
     return replace(profile, **updates)
 
 
-def resolve_agent_spec(model_key: str) -> AgentSpec:
+def resolve_agent_spec(
+    model_key: str,
+    registry: dict[str, AgentSpec] | None = None,
+) -> AgentSpec:
     """Resolve a `provider/model` key to its AgentSpec.
 
     Raises ValueError for any key not present in AGENT_REGISTRY — there is no
     provider-prefix-to-CLI guessing. To support a new model, add an explicit
     registry entry.
     """
-    if model_key not in AGENT_REGISTRY:
-        known = sorted(AGENT_REGISTRY)
+    effective_registry = registry or AGENT_REGISTRY
+    if model_key not in effective_registry:
+        known = sorted(effective_registry)
         raise ValueError(
             f"Unknown model {model_key!r}: not in AGENT_REGISTRY. "
             f"Add an explicit registry entry. Known models: {known}"
         )
-    return AGENT_REGISTRY[model_key]
+    return effective_registry[model_key]
 
 
-def _resolve_model_info(model_key: str) -> ModelInfo:
+def _resolve_model_info(
+    model_key: str,
+    registry: dict[str, AgentSpec] | None = None,
+) -> ModelInfo:
     """Resolve a model key to its legacy ModelInfo view.
 
     Delegates to resolve_agent_spec(): unknown keys raise ValueError rather than
     falling back to a prefix-derived CLI.
     """
-    return _spec_to_model_info(resolve_agent_spec(model_key))
+    spec = resolve_agent_spec(model_key, registry=registry)
+    return _spec_to_model_info(model_key, spec)
 
 
 def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:

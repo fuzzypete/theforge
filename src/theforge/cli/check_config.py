@@ -111,10 +111,14 @@ def _thinking_budget_label(profile: ModelProfile) -> str:
     return f"  thinking_budget={profile.thinking_budget}"
 
 
-def _provider_label(model_key: str, warnings_list: list[str] | None = None) -> str:
+def _provider_label(
+    model_key: str,
+    warnings_list: list[str] | None = None,
+    registry: dict | None = None,
+) -> str:
     """Return a short human-readable label for a model key like 'claude/sonnet'."""
     try:
-        spec = resolve_agent_spec(model_key)
+        spec = resolve_agent_spec(model_key, registry=registry)
     except ValueError as exc:
         if warnings_list is not None:
             warnings_list.append(str(exc))
@@ -142,6 +146,7 @@ def _format_complexity_aware_section(
     models: list[str],
     budget_usd: float,
     overrides: dict | None,
+    registry: dict | None = None,
 ) -> list[str]:
     """Build the DERIVED ROLES section for v0.8 simple-mode configs.
 
@@ -149,9 +154,21 @@ def _format_complexity_aware_section(
     routing table so the operator can verify complexity-aware routing at a glance.
     """
     _ov = overrides or {}
-    ra_low = derive_roles(models, _ov, budget_usd=budget_usd, complexity="LOW")
-    ra_mid = derive_roles(models, _ov, budget_usd=budget_usd, complexity="MEDIUM")
-    ra_high = derive_roles(models, _ov, budget_usd=budget_usd, complexity="HIGH")
+    ra_low = derive_roles(models, _ov, budget_usd=budget_usd, complexity="LOW", registry=registry)
+    ra_mid = derive_roles(
+        models,
+        _ov,
+        budget_usd=budget_usd,
+        complexity="MEDIUM",
+        registry=registry,
+    )
+    ra_high = derive_roles(
+        models,
+        _ov,
+        budget_usd=budget_usd,
+        complexity="HIGH",
+        registry=registry,
+    )
 
     lines: list[str] = []
     lines.append("DERIVED ROLES (complexity-aware)")
@@ -242,7 +259,7 @@ def _format_config(
             seen: set[str] = set()
             provider_labels: list[str] = []
             for mk in config.models:
-                lbl = _provider_label(mk, warnings_list)
+                lbl = _provider_label(mk, warnings_list, registry=config.model_registry)
                 if lbl not in seen:
                     seen.add(lbl)
                     provider_labels.append(lbl)
@@ -251,12 +268,48 @@ def _format_config(
         lines.append(f"Budget:  ${config.assignment.budget_per_story_usd:.2f}/story")
     lines.append("")
 
+    if config.models or config.custom_models:
+        lines.append("MODEL REGISTRY")
+        if config.models:
+            builtin_models = [
+                model_id
+                for model_id in config.models
+                if config.model_registry_sources.get(model_id, "builtin") == "builtin"
+            ]
+            forge_yaml_models = [
+                model_id
+                for model_id in config.models
+                if config.model_registry_sources.get(model_id) == "forge.yaml"
+            ]
+            if builtin_models:
+                lines.append(f"  {'selected builtin:':<18}{', '.join(builtin_models)}")
+            if forge_yaml_models:
+                lines.append(f"  {'selected forge.yaml:':<18}{', '.join(forge_yaml_models)}")
+        if config.custom_models:
+            custom_details = []
+            for model_id in config.custom_models:
+                spec = config.model_registry.get(model_id)
+                if spec is None:
+                    continue
+                provider_label, transport_label = _split_provider_transport(
+                    spec.transport.executable if spec.transport.kind == "cli" else None,
+                    spec.provider,
+                    spec.transport,
+                )
+                custom_details.append(
+                    f"{model_id} [{provider_label} {transport_label} -> {spec.model}]"
+                )
+            if custom_details:
+                lines.append(f"  {'declared forge.yaml:':<18}{', '.join(custom_details)}")
+        lines.append("")
+
     # ── DERIVED ROLES (v0.8 simple mode) ─────────────────────────────────
     if config.models and config.models_budget_usd is not None:
         derived_lines = _format_complexity_aware_section(
             config.models,
             config.models_budget_usd,
             overrides=config.models_overrides,
+            registry=config.model_registry,
         )
         lines.extend(derived_lines)
         lines.append("")

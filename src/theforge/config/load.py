@@ -25,7 +25,17 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import AGENT_REGISTRY, _parse_assignment, resolve_agent_spec
+from .models import (
+    AGENT_REGISTRY,
+    AgentSpec,
+    _parse_assignment,
+    custom_model_capability,
+    custom_model_cost_rank,
+    custom_model_dev_capable,
+    known_model_overlay_providers,
+    overlay_transport,
+    resolve_agent_spec,
+)
 from .profiles import (
     CLI_PROVIDER_MAP,
     _agents_from_models,
@@ -63,7 +73,166 @@ from .types import (
 log = logging.getLogger("theforge.config")
 
 
-def _derive_auto_provider_fallbacks(models: list[str]) -> dict[str, ApiFallbackConfig]:
+def _parse_models_section(
+    raw_models: Any,
+) -> tuple[list[str] | None, dict[str, Any], bool]:
+    """Normalize the top-level models section.
+
+    Returns ``(enabled_models, custom_raw, simple_mode_enabled)`` where:
+    - ``enabled_models`` is the selected model list for v0.8 simple mode
+    - ``custom_raw`` is the raw ``models.custom`` mapping (possibly empty)
+    - ``simple_mode_enabled`` indicates whether the config opted into simple mode
+    """
+    if isinstance(raw_models, list):
+        return [str(m) for m in raw_models], {}, True
+    if raw_models is None:
+        raise ValueError("'models' must be a non-empty list")
+    if not isinstance(raw_models, dict):
+        raise ValueError(
+            "forge.yaml 'models' must be either a non-empty list or a mapping with "
+            "'enabled' and/or 'custom'"
+        )
+
+    unknown = set(raw_models) - {"enabled", "custom"}
+    if unknown:
+        raise ValueError(
+            "forge.yaml 'models' mapping only supports 'enabled' and 'custom'; "
+            f"unknown key(s): {sorted(unknown)}"
+        )
+
+    enabled_raw = raw_models.get("enabled")
+    custom_raw = raw_models.get("custom", {})
+    if enabled_raw is not None and (not isinstance(enabled_raw, list) or len(enabled_raw) == 0):
+        raise ValueError("forge.yaml 'models.enabled' must be a non-empty list")
+    if not isinstance(custom_raw, dict):
+        raise ValueError("forge.yaml 'models.custom' must be a mapping")
+
+    return (
+        [str(m) for m in enabled_raw] if enabled_raw is not None else None,
+        custom_raw,
+        enabled_raw is not None,
+    )
+
+
+def _parse_custom_model_registry(custom_raw: dict[str, Any]) -> dict[str, AgentSpec]:
+    """Parse and validate user-declared model overlays from forge.yaml."""
+    registry: dict[str, AgentSpec] = {}
+    for canonical_id, decl in custom_raw.items():
+        if not isinstance(canonical_id, str) or not canonical_id:
+            raise ValueError("forge.yaml 'models.custom' keys must be non-empty strings")
+        if not isinstance(decl, dict):
+            raise ValueError(f"forge.yaml 'models.custom.{canonical_id}' must be a mapping")
+
+        missing = [
+            key
+            for key in (
+                "provider",
+                "model",
+                "tier",
+                "input_cost_per_mtok",
+                "output_cost_per_mtok",
+            )
+            if key not in decl
+        ]
+        if missing:
+            raise ValueError(
+                "forge.yaml "
+                f"'models.custom.{canonical_id}' is missing required field(s): {missing}"
+            )
+
+        provider = decl["provider"]
+        model = decl["model"]
+        tier = decl["tier"]
+        if not isinstance(provider, str) or not provider:
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}.provider' must be a non-empty string"
+            )
+        if not isinstance(model, str) or not model:
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}.model' must be a non-empty string"
+            )
+        if not isinstance(tier, str) or not tier:
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}.tier' must be a non-empty string"
+            )
+
+        if provider not in known_model_overlay_providers():
+            known = ", ".join(known_model_overlay_providers())
+            raise ValueError(
+                f"Unknown provider {provider!r} in models.custom.{canonical_id}. "
+                f"Known providers/adapters: {known}"
+            )
+
+        input_cost = decl["input_cost_per_mtok"]
+        output_cost = decl["output_cost_per_mtok"]
+        if (
+            isinstance(input_cost, bool)
+            or not isinstance(input_cost, (int, float))
+            or float(input_cost) < 0
+        ):
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}.input_cost_per_mtok' must be a "
+                f"non-negative number, got {input_cost!r}"
+            )
+        if (
+            isinstance(output_cost, bool)
+            or not isinstance(output_cost, (int, float))
+            or float(output_cost) < 0
+        ):
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}.output_cost_per_mtok' must be a "
+                f"non-negative number, got {output_cost!r}"
+            )
+
+        normalized_provider, transport = overlay_transport(provider)
+        registry[canonical_id] = AgentSpec(
+            provider=normalized_provider,
+            model=model,
+            transport=transport,
+            tier=tier,
+            capability=custom_model_capability(tier),
+            cost_rank=custom_model_cost_rank(float(input_cost), float(output_cost)),
+            dev_capable=custom_model_dev_capable(transport),
+            registry_source="forge.yaml",
+            input_cost_per_mtok=float(input_cost),
+            output_cost_per_mtok=float(output_cost),
+        )
+    return registry
+
+
+def _merge_model_registry(
+    custom_registry: dict[str, AgentSpec],
+    custom_raw: dict[str, Any],
+) -> dict[str, AgentSpec]:
+    """Merge built-in and forge.yaml model registries."""
+    merged = dict(AGENT_REGISTRY)
+    for canonical_id, spec in custom_registry.items():
+        override = bool(custom_raw.get(canonical_id, {}).get("override", False))
+        if canonical_id in AGENT_REGISTRY and not override:
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}' duplicates a built-in model id. "
+                "Set override: true to replace the built-in entry explicitly."
+            )
+        merged[canonical_id] = spec
+    return merged
+
+
+def _validate_selected_models(models: list[str], registry: dict[str, AgentSpec]) -> None:
+    """Validate the selected simple-mode model ids against the merged registry."""
+    for model_key in models:
+        if model_key not in registry and "/" not in model_key:
+            raise ValueError(
+                f"Model entry {model_key!r} must be in 'provider/model' format (contains '/') "
+                "or be declared under models.custom"
+            )
+        resolve_agent_spec(model_key, registry=registry)
+
+
+def _derive_auto_provider_fallbacks(
+    models: list[str],
+    *,
+    registry: dict[str, AgentSpec],
+) -> dict[str, ApiFallbackConfig]:
     """Auto-wire same-provider API fallbacks for CLI transport models.
 
     Returns only unambiguous per-provider fallbacks. If multiple CLI models from the
@@ -73,12 +242,12 @@ def _derive_auto_provider_fallbacks(models: list[str]) -> dict[str, ApiFallbackC
     cli_models_by_provider: dict[str, set[str]] = {}
     api_models_by_provider: dict[str, set[str]] = {}
 
-    for spec in AGENT_REGISTRY.values():
+    for spec in registry.values():
         if spec.transport.kind == "api":
             api_models_by_provider.setdefault(spec.provider, set()).add(spec.model)
 
     for model_key in models:
-        spec = resolve_agent_spec(model_key)
+        spec = resolve_agent_spec(model_key, registry=registry)
         if spec.transport.kind != "cli":
             continue
         cli_models_by_provider.setdefault(spec.provider, set()).add(spec.model)
@@ -104,7 +273,10 @@ def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
     """
     if "models" not in raw:
         return
-    if not isinstance(raw.get("models"), list):
+    models_raw = raw.get("models")
+    if isinstance(models_raw, dict):
+        models_raw = models_raw.get("enabled")
+    if not isinstance(models_raw, list):
         return
 
     par_raw = raw.get("plan_agent_review")
@@ -125,7 +297,7 @@ def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
     model_key = next(
         (
             key
-            for key in (raw.get("models") or [])
+            for key in models_raw
             if key in AGENT_REGISTRY
             and (spec := resolve_agent_spec(str(key))).transport.kind == "cli"
             and spec.provider == CLI_PROVIDER_MAP.get(cli)
@@ -357,23 +529,22 @@ def load_config(config_path: Path) -> ForgeConfig:
     _derived_par_profile: ModelProfile | None = None
     budget_usd_val: float | None = None
     _raw_overrides: dict[str, Any] | None = None
-
+    model_registry = dict(AGENT_REGISTRY)
+    model_registry_sources = {key: "builtin" for key in AGENT_REGISTRY}
+    custom_models: tuple[str, ...] = ()
     if "models" in raw:
-        models_list = raw["models"]
-        if not isinstance(models_list, list) or len(models_list) == 0:
-            raise ValueError("'models' must be a non-empty list")
-        for m in models_list:
-            if "/" not in str(m):
-                raise ValueError(
-                    f"Model entry {m!r} must be in 'provider/model' format (contains '/')"
-                )
-            if str(m) not in AGENT_REGISTRY:
-                known_providers = sorted({k.split("/", 1)[0] for k in AGENT_REGISTRY})
-                raise ValueError(
-                    f"Unknown model {m!r}: not in AGENT_REGISTRY. "
-                    f"Known providers: {known_providers}. "
-                    "Add an explicit registry entry to support a new model."
-                )
+        models_list, custom_raw, simple_mode_enabled = _parse_models_section(raw["models"])
+    else:
+        models_list, custom_raw, simple_mode_enabled = (None, {}, False)
+    custom_registry = _parse_custom_model_registry(custom_raw)
+    if custom_registry:
+        model_registry = _merge_model_registry(custom_registry, custom_raw)
+        custom_models = tuple(sorted(custom_registry))
+        model_registry_sources.update({key: "forge.yaml" for key in custom_registry})
+
+    if simple_mode_enabled:
+        assert models_list is not None
+        _validate_selected_models(models_list, model_registry)
         budget_usd_raw = raw.get("budget_usd", 50.0)
         budget_usd_val = float(budget_usd_raw)
         if budget_usd_val <= 0:
@@ -390,9 +561,10 @@ def load_config(config_path: Path) -> ForgeConfig:
             else None
         )
         _ra = derive_roles(
-            [str(m) for m in models_list],
+            models_list,
             overrides=_par_derive_overrides,
             budget_usd=budget_usd_val,
+            registry=model_registry,
         )
         _bridge = role_assignment_to_profiles(_ra)
         dev_profile = _bridge["dev_profile"]
@@ -435,9 +607,12 @@ def load_config(config_path: Path) -> ForgeConfig:
                     for p in review_pool
                 ]
 
-        models = [str(m) for m in models_list]
+        models = list(models_list)
         if auto_api_fallback:
-            auto_provider_fallbacks = _derive_auto_provider_fallbacks(models)
+            auto_provider_fallbacks = _derive_auto_provider_fallbacks(
+                models,
+                registry=model_registry,
+            )
             provider_fallbacks = {**auto_provider_fallbacks, **provider_fallbacks}
         # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
         # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
@@ -583,7 +758,9 @@ def load_config(config_path: Path) -> ForgeConfig:
     # assignment (assign_models) has candidates to pick from. When no models:
     # key is configured, the pool is empty and assignment falls back to the
     # static dev/review profiles above.
-    agents_list = _agents_from_models(models, budget_usd_val) if models else []
+    agents_list = (
+        _agents_from_models(models, budget_usd_val, registry=model_registry) if models else []
+    )
     assignment_cfg = _parse_assignment(raw.get("assignment", {}))
 
     _raw_par = raw.get("plan_agent_review", {})
@@ -983,5 +1160,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         stuck_detection=stuck_detection_cfg,
         models_budget_usd=budget_usd_val,
         models_overrides=_raw_overrides,
+        model_registry=model_registry,
+        model_registry_sources=model_registry_sources,
+        custom_models=custom_models,
         diagnose=diagnose_cfg,
     )

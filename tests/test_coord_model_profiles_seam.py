@@ -231,7 +231,8 @@ def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeyp
     assert audit["source"] == "adaptive_assignment"
     assert audit["adaptive_enabled"] is True
     assert audit["role_sources"]["dev"] == "adaptive"
-    assert audit["assignments"]["dev"] == state._adaptive_decision.dev.model
+    assert audit["assignments"]["dev"]["model"] == state._adaptive_decision.dev.model
+    assert audit["assignments"]["dev"]["source"] == state._adaptive_decision.dev.registry_source
     assert "dev" in audit["rationale"]
     assert "budget_cap_usd" in audit["budget"]
 
@@ -300,7 +301,7 @@ def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pres
 
     audit = state.complexity_routing_audit
     assert audit is not None
-    assert audit["assignments"]["planner"] == "opus"
+    assert audit["assignments"]["planner"]["model"] == "opus"
     assert audit["rationale"]["planner"].startswith("complexity score 9 → tier strong")
     assert audit["role_sources"]["planner"] == "adaptive"
     assert audit["budget"]["within_budget"] is False
@@ -463,8 +464,8 @@ def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, mon
     assert audit["role_sources"]["planner"] == "explicit_override"
     assert audit["role_sources"]["code_review"] == "explicit_override"
     # The audit's recorded planner/code_reviewers must match what runtime uses.
-    assert audit["assignments"]["planner"] == explicit_planner_model
-    assert audit["assignments"]["code_reviewers"] == [
+    assert audit["assignments"]["planner"]["model"] == explicit_planner_model
+    assert [entry["model"] for entry in audit["assignments"]["code_reviewers"]] == [
         explicit_reviewer.model,
         explicit_reviewer.model,
     ]
@@ -619,10 +620,12 @@ def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monk
     audit = state.complexity_routing_audit
     assert audit is not None
     # Planner must show the explicit model, not an adaptive selection.
-    assert audit["assignments"]["planner"] == explicit_plan_model
+    assert audit["assignments"]["planner"]["model"] == explicit_plan_model
     assert audit["role_sources"]["planner"] == "explicit_override"
     # Code reviewer must show the explicit pool, not an adaptive selection.
-    assert audit["assignments"]["code_reviewers"] == [explicit_reviewer.model]
+    assert [entry["model"] for entry in audit["assignments"]["code_reviewers"]] == [
+        explicit_reviewer.model
+    ]
     assert audit["role_sources"]["code_review"] == "explicit_override"
     # The adaptive decision must also have the explicit planner so plan_flow
     # will see it when "planner" is in _explicit_roles.

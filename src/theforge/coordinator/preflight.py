@@ -1045,6 +1045,13 @@ def _apply_preflight_config(
         "dev": _role_source("dev"),
         "code_review": _role_source("code_review"),
     }
+
+    def _assignment_entry(profile):  # type: ignore[no-untyped-def]
+        return {
+            "model": profile.model,
+            "source": getattr(profile, "registry_source", "builtin"),
+        }
+
     state.complexity_routing_audit = {
         "complexity": complexity,
         "complexity_score": complexity_score,
@@ -1053,11 +1060,11 @@ def _apply_preflight_config(
         "explicit_overrides": sorted(_explicit_roles),
         "role_sources": _per_role_sources,
         "assignments": {
-            "preflight": _decision.preflight.model,
-            "planner": _decision.planner.model,
-            "plan_reviewers": [p.model for p in _decision.plan_reviewers],
-            "dev": _decision.dev.model,
-            "code_reviewers": [p.model for p in _decision.code_reviewers],
+            "preflight": _assignment_entry(_decision.preflight),
+            "planner": _assignment_entry(_decision.planner),
+            "plan_reviewers": [_assignment_entry(p) for p in _decision.plan_reviewers],
+            "dev": _assignment_entry(_decision.dev),
+            "code_reviewers": [_assignment_entry(p) for p in _decision.code_reviewers],
         },
         "rationale": dict(_decision.rationale),
         "budget": _budget_audit,

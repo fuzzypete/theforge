@@ -57,6 +57,8 @@ def _role_config_to_profile(
         max_iterations=ref.max_iterations,
         max_tool_output_bytes=ref.max_tool_output_bytes,
         api_fallback=ref.api_fallback,
+        registry_id=ref.registry_id,
+        registry_source=ref.registry_source,
         review_role=review_role,
         phase=phase,
         sandbox_mode=sandbox_mode,
