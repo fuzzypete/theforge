@@ -78,6 +78,38 @@ stories:
 | `auto_merge` | No | `false` | Auto-merge approved stories to main |
 | `stories` | Yes | — | Ordered list of stories — local file paths or `{issue: N}` dicts |
 
+### Story bundling (relational, scheduler-decided)
+
+When a sprint contains two or more eligible stories, the sprint scheduler may
+group them into a *bundle*. Bundling eligibility is **relational** — it is
+recomputed at sprint-schedule time after every story's preflight has run, and
+is decided by the coordinator from objective signals. There is no
+per-story flag the preflight agent emits to opt in.
+
+A pair of stories is bundle-eligible when **all** hold:
+
+- Both have `work_type` in `{bug, mechanical}` and `complexity == small` (the
+  per-story prerequisite — bundling is restricted to bounded, low-blast-radius work).
+- The pair has positive evidence of code overlap: matching `Area:` label in the
+  story body, **or** an intersection of known `likely_files` reported by preflight.
+- Neither depends on the other (no manifest `depends_on` cycle into the bundle).
+- The combined complexity weight stays under the bundle ceiling.
+
+**Asymmetric overlap defaults.** Bundling and collision-DAG serialization use
+opposite defaults when footprint information is missing:
+
+- *Bundling* is fail-closed against unknown footprint: if either story's
+  `likely_files` is `None` and they share no `Area:` label, the pair is **not**
+  bundled. Gluing unrelated work into one PR is a worse failure than running
+  serially.
+- *Collision-DAG serialization* is fail-closed in the opposite direction:
+  unknown footprint forces serialization, because letting an undetected conflict
+  run in parallel is worse than over-serializing safe parallel work.
+
+The `bundle_candidate` field in per-story audit dumps is **scheduler-written
+audit output** — it reflects "the scheduler placed this story in a bundle",
+not anything the preflight agent asserted.
+
 ### Story entry formats
 
 | Format | Description |
