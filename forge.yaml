@@ -24,6 +24,9 @@ models:
   #     input_cost_per_mtok: 5.00   # TODO: verify
   #     output_cost_per_mtok: 15.00 # TODO: verify
 
+plan_agent_review:
+  enabled: true
+
 provider_fallbacks:
   openai:
     model: gpt-5.4
@@ -42,11 +45,6 @@ workspace:
   # Bounds queued auto-merge polling. Expiry is fail-closed: story is marked
   # failed and dependents remain blocked. Increase for slow CI environments.
   merge_wait_timeout_seconds: 3600
-
-intake:
-  grooming: true
-  auto_fix: true
-  auto_fix_mode: comment
 
 validation:
   # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
