@@ -142,7 +142,7 @@ class TestRedactTuples:
         result = redact(obj, env)
         assert isinstance(result, tuple)
         assert result[0] == "safe"
-        assert result[1] == "[REDACTED]"
+        assert result[1] == "contains [REDACTED]"
 
     def test_preserves_tuple_shape(self) -> None:
         result = redact({"data": ("a", "b", 42)}, None)
