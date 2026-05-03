@@ -22,8 +22,10 @@ from pathlib import Path
 
 from ..shape_check import Shape, ShapeResult, check
 from ..shape_check.types import Severity
+from .reopen_context import analyze_reopen_contract, format_reopen_stale_detail
 
 NEEDS_GROOMING_LABEL = "needs-grooming"
+REOPENED_STALE_CONTRACT_CODE = "reopened_stale_contract"
 
 # Bot comments from #806b embed machine-readable reason codes on a single
 # line so local re-runs can match the Action's verdict exactly. Accept either
@@ -61,7 +63,7 @@ class ShapeGateResult:
 
 
 def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
-    """Fetch ``{title, body, labels}`` for a single issue via ``gh``.
+    """Fetch issue detail for a single issue via ``gh``.
 
     Returns ``None`` on any fetch failure so callers can decide whether to
     fail-open (leave the issue runnable) or fail-closed.
@@ -74,7 +76,7 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
                 "view",
                 str(number),
                 "--json",
-                "title,body,labels",
+                "title,body,labels,state,closedAt,stateReason,updatedAt,comments",
             ],
             capture_output=True,
             text=True,
@@ -98,7 +100,42 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
         "title": data.get("title", "") or "",
         "body": data.get("body", "") or "",
         "labels": label_names,
+        "state": data.get("state", "OPEN"),
+        "closedAt": data.get("closedAt"),
+        "stateReason": data.get("stateReason"),
+        "updatedAt": data.get("updatedAt"),
+        "comments": data.get("comments") or [],
+        "timeline": _fetch_issue_timeline(number, project_root),
     }
+
+
+def _fetch_issue_timeline(number: int, project_root: Path | None) -> list[dict]:
+    """Return raw issue timeline events, or an empty list when unavailable."""
+    try:
+        proc = subprocess.run(
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{{owner}}/{{repo}}/issues/{number}/timeline?per_page=100",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root) if project_root else None,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
 
 
 def _fetch_bot_reason_codes(number: int, project_root: Path | None) -> list[str]:
@@ -243,6 +280,7 @@ def apply_shape_gate(
         labels = detail["labels"]
         title = detail["title"] or title_short
         body = detail["body"]
+        reopen_state = analyze_reopen_contract(detail, detail.get("timeline") or [])
         local = check(
             title,
             body,
@@ -263,6 +301,18 @@ def apply_shape_gate(
                         local,
                         fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
                     ),
+                )
+            )
+            continue
+
+        if reopen_state.has_stale_body:
+            skipped.append(
+                SkippedIssue(
+                    issue_number=number,
+                    reason_codes=(REOPENED_STALE_CONTRACT_CODE,),
+                    source="local_check",
+                    title=title_short,
+                    detail=format_reopen_stale_detail(reopen_state),
                 )
             )
             continue

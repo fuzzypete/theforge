@@ -135,6 +135,45 @@ class TestGitHubIssueSource:
         assert task.inferred_dependencies == ["issue-7", "issue-12"]
         assert task.dependency_warnings == []
 
+    def test_fetch_appends_reopen_comment_to_story_text(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": "## What happened\nOriginal contract",
+                "state": "OPEN",
+                "comments": [
+                    {
+                        "author": {"login": "operator"},
+                        "body": "The remaining work is to wire reopen context into sprint intake.",
+                        "createdAt": "2026-05-02T12:30:00Z",
+                    }
+                ],
+            }
+        )
+        timeline = json.dumps(
+            [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T12:00:00Z",
+                    "actor": {"login": "operator"},
+                }
+            ]
+        )
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=0, stdout=timeline, stderr=""),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert "## Reopen Context" in task.story_text
+        assert "operator" in task.story_text
+        assert (
+            "The remaining work is to wire reopen context into sprint intake." in task.story_text
+        )
+        assert "Original contract" in task.story_text
+
     @pytest.mark.parametrize(
         "body, expected",
         [
