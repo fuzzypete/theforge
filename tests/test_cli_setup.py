@@ -552,6 +552,25 @@ class TestCmdInitHooks:
         captured = capsys.readouterr()
         assert "post_run.sh" in captured.err
 
+    def test_existing_stale_generated_hook_warns(self, tmp_path, monkeypatch, capsys):
+        """forge init-hooks warns when the installed generated hook needs operator action."""
+        monkeypatch.chdir(tmp_path)
+        hooks_dir = tmp_path / ".forge" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        sh_path = hooks_dir / "post_run.sh"
+        sh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "*Filed by theforge post_run hook.*\n"
+            'gh issue create --label "forge-finding"\n',
+            encoding="utf-8",
+        )
+
+        rc = cmd_init_hooks(self._make_args())
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "stale" in captured.err
+        assert "needs-triage" in captured.err
+
     def test_idempotent_skips_existing_readme(self, tmp_path, monkeypatch, capsys):
         """forge init-hooks does not overwrite existing README.md."""
         monkeypatch.chdir(tmp_path)

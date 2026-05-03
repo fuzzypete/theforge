@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -229,6 +230,53 @@ hooks:
 """
 
 
+def resolve_hook_path(project_root: Path, hook_command: str | None) -> Path | None:
+    """Return the script path for a configured hook command, if it is path-like."""
+    if not hook_command:
+        return None
+    try:
+        parts = shlex.split(hook_command)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    path = Path(parts[0])
+    if not path.is_absolute():
+        path = project_root / path
+    return path
+
+
+def post_run_hook_upgrade_warnings(project_root: Path, hook_command: str | None) -> list[str]:
+    """Return operator-facing warnings for stale generated post_run hooks."""
+    path = resolve_hook_path(project_root, hook_command)
+    if path is None or not path.exists():
+        return []
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    generated_finding_hook = (
+        "Filed by theforge post_run hook" in content and '--label "forge-finding"' in content
+    )
+    if not generated_finding_hook:
+        return []
+
+    warnings: list[str] = []
+    if '--label "needs-triage"' not in content:
+        warnings.append(
+            f"{path}: generated finding hook is stale; newly filed forge findings will "
+            "miss needs-triage until the hook is updated."
+        )
+    if 'gh label create "needs-triage"' not in content:
+        warnings.append(
+            f"{path}: generated finding hook does not ensure the needs-triage label "
+            "exists before filing findings."
+        )
+    return warnings
+
+
 def cmd_init_hooks(args: object) -> int:
     """Scaffold .forge/hooks/post_run.sh and .forge/hooks/README.md."""
     project_root = Path.cwd()
@@ -242,6 +290,9 @@ def cmd_init_hooks(args: object) -> int:
 
     if sh_path.exists():
         skipped.append(str(sh_path))
+        warnings = post_run_hook_upgrade_warnings(project_root, str(sh_path))
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
     else:
         sh_path.write_text(_POST_RUN_SH, encoding="utf-8")
         sh_path.chmod(0o755)
