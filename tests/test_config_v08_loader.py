@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from theforge.config import load_config
+from theforge.coordinator.preflight import _apply_preflight_config
+from theforge.coordinator.state import CoordinatorState
 
 # Patch check_agent_auth to always succeed so tests don't need real credentials.
 _auth_ok = patch(
@@ -57,6 +59,69 @@ models:
     assert cfg.dev_profile.model == "sonnet"
     assert len(cfg.review_pool) == 1
     assert cfg.review_pool[0].model == "opus"
+
+
+def test_v08_plan_agent_review_enabled_does_not_pin_explicit_model(tmp_path, monkeypatch):
+    """With adaptive assignment, enabled-only plan_agent_review lets adaptive choose."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+  - openai/gpt-5.4-pro
+  - google/gemini-3.1-pro-preview
+assignment:
+  enabled: true
+  budget_per_story_usd: 100.0
+plan:
+  enabled: true
+plan_agent_review:
+  enabled: true
+""",
+    )
+    with (
+        _auth_ok,
+        patch("theforge.config.load.check_agent_auth", return_value=(True, "")),
+    ):
+        cfg = load_config(cfg_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+
+    assert cfg.plan_agent_review.enabled is True
+    assert cfg.plan_agent_review.profiles == []
+
+    state = CoordinatorState()
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 9
+    updated = _apply_preflight_config(cfg, state)
+
+    assert updated.plan_agent_review.pool
+    assert state._adaptive_decision is not None
+    assert "explicit override" not in state._adaptive_decision.rationale["plan_review"]
+
+
+def test_v08_plan_agent_review_enabled_defaults_to_claude_without_adaptive_pool(tmp_path):
+    """Legacy enabled-only plan_agent_review still creates a Claude reviewer."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+plan:
+  enabled: true
+  model: opus
+plan_agent_review:
+  enabled: true
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+
+    profiles = cfg.plan_agent_review.profiles
+    assert len(profiles) == 1
+    assert profiles[0].cli == "claude"
+    assert profiles[0].model == "sonnet"
 
 
 # ── Simple mode + overrides ───────────────────────────────────────────────────
