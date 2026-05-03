@@ -175,6 +175,8 @@ class TestCheckConfigHappyPath:
         out = capsys.readouterr().out
         assert "generated finding hook is stale" in out
         assert "needs-triage" in out
+        assert "forge init-hooks" in out
+        assert "--update" not in out
 
     def test_sections_present(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)

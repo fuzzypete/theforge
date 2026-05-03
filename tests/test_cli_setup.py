@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +24,8 @@ from theforge.cli import (
     cmd_init_hooks,
     cmd_secrets_init,
 )
+from theforge.cli import hooks as hooks_module
+from theforge.cli.hooks import created_labels, static_issue_labels
 from theforge.config import (
     DEFAULT_VALIDATION,
     ForgeConfig,
@@ -570,6 +576,122 @@ class TestCmdInitHooks:
         captured = capsys.readouterr()
         assert "stale" in captured.err
         assert "needs-triage" in captured.err
+        assert "forge init-hooks" in captured.err
+        assert "--update" not in captured.err
+
+    def test_existing_hook_warning_tracks_future_template_labels(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Stale-hook detection compares against the template, not one hard-coded label."""
+        monkeypatch.chdir(tmp_path)
+        future_template = hooks_module._POST_RUN_SH.replace(
+            '--label "needs-triage" \\',
+            '--label "needs-triage" \\\n      --label "release-intake" \\',
+            1,
+        )
+        monkeypatch.setattr(hooks_module, "_POST_RUN_SH", future_template)
+        hooks_dir = tmp_path / ".forge" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        sh_path = hooks_dir / "post_run.sh"
+        sh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "*Filed by theforge post_run hook.*\n"
+            'gh issue create --label "forge-finding" --label "needs-triage"\n',
+            encoding="utf-8",
+        )
+
+        rc = cmd_init_hooks(self._make_args())
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "release-intake" in captured.err
+
+    def test_repo_configured_hook_matches_generated_required_labels(self):
+        """The checked-in active hook carries the generated template's static labels."""
+        repo_root = Path(__file__).resolve().parents[1]
+        live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
+        live_content = live_hook.read_text(encoding="utf-8")
+
+        assert static_issue_labels(live_content) >= static_issue_labels(hooks_module._POST_RUN_SH)
+        assert created_labels(live_content) >= created_labels(hooks_module._POST_RUN_SH)
+
+    def test_repo_configured_hook_files_findings_with_needs_triage(self, tmp_path):
+        """Execute the checked-in active hook with fake gh/jq and inspect gh calls."""
+        repo_root = Path(__file__).resolve().parents[1]
+        live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh_log = tmp_path / "gh.log"
+
+        gh = bin_dir / "gh"
+        gh.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$GH_LOG"\nexit 0\n',
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+
+        jq = bin_dir / "jq"
+        jq.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "query = sys.argv[-1]\n"
+            "data = json.loads(sys.stdin.read())\n"
+            "if query == '.verdict': print(data['verdict'])\n"
+            "elif query == '.slug': print(data['slug'])\n"
+            "elif query == '.branch': print(data['branch'])\n"
+            "elif query == '.summary': print(data['summary'])\n"
+            "elif query == '.findings | length': print(len(data['findings']))\n"
+            "elif query == '.findings[]':\n"
+            "    print('\\n'.join(json.dumps(item) for item in data['findings']))\n"
+            "elif query == '.severity': print(data['severity'])\n"
+            "elif query == '.file': print(data['file'])\n"
+            "elif query == '.line // empty': print(data.get('line') or '')\n"
+            "elif query == '.description': print(data['description'])\n"
+            "elif query == '.suggestion // empty': print(data.get('suggestion') or '')\n"
+            "elif query == '(.reviewers // []) | length':\n"
+            "    print(len(data.get('reviewers') or []))\n"
+            "else: raise SystemExit(f'unhandled jq query: {query}')\n",
+            encoding="utf-8",
+        )
+        jq.chmod(0o755)
+
+        payload = {
+            "verdict": "APPROVE",
+            "slug": "issue-test",
+            "branch": "fix/test",
+            "summary": "approved with finding",
+            "findings": [
+                {
+                    "severity": "P2",
+                    "file": "src/example.py",
+                    "line": 12,
+                    "description": "example finding",
+                    "suggestion": "",
+                }
+            ],
+        }
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_LOG": str(gh_log),
+        }
+        env.pop("FORGE_GH_PR_REVIEWS", None)
+
+        result = subprocess.run(
+            [str(live_hook)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            cwd=repo_root,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        calls = gh_log.read_text(encoding="utf-8")
+        assert "label create needs-triage" in calls
+        assert "issue create" in calls
+        assert "--label needs-triage" in calls
 
     def test_idempotent_skips_existing_readme(self, tmp_path, monkeypatch, capsys):
         """forge init-hooks does not overwrite existing README.md."""
