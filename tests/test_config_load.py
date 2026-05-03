@@ -662,6 +662,8 @@ class TestConventionsConfig:
                         "max_test_file_lines": 800,
                         "no_circular_imports": True,
                         "test_mirrors_source": False,
+                        "stack": ["python", "js"],
+                        "allowed_root_files": ["my-project-config.yaml"],
                     }
                 }
             },
@@ -673,6 +675,8 @@ class TestConventionsConfig:
         assert config.conventions_hard.max_test_file_lines == 800
         assert config.conventions_hard.no_circular_imports is True
         assert config.conventions_hard.test_mirrors_source is False
+        assert config.conventions_hard.stack == ("python", "javascript")
+        assert config.conventions_hard.allowed_root_files == ("my-project-config.yaml",)
 
     def test_conventions_absent_is_none(self, tmp_path):
         """forge.yaml without conventions section yields conventions_hard=None."""
@@ -691,6 +695,7 @@ class TestConventionsConfig:
         assert config.conventions_hard.max_test_file_lines == 1000
         assert config.conventions_hard.no_circular_imports is True
         assert config.conventions_hard.test_mirrors_source is True
+        assert config.conventions_hard.stack == ()
 
     def test_conventions_hard_invalid_type_raises(self, tmp_path):
         """conventions.hard with wrong type raises ValueError."""
@@ -699,6 +704,23 @@ class TestConventionsConfig:
             tmp_path,
         )
         with pytest.raises(ValueError, match="max_module_lines"):
+            load_config(config_path)
+
+    def test_conventions_hard_stack_accepts_single_string(self, tmp_path):
+        config_path = _write_config(
+            {"conventions": {"hard": {"stack": "node"}}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.conventions_hard is not None
+        assert config.conventions_hard.stack == ("javascript",)
+
+    def test_conventions_hard_unknown_stack_raises(self, tmp_path):
+        config_path = _write_config(
+            {"conventions": {"hard": {"stack": ["python", "elixir"]}}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="unknown preset"):
             load_config(config_path)
 
     def test_conventions_advisory_defaults(self, tmp_path):

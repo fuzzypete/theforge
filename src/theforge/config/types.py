@@ -441,6 +441,7 @@ class HardConventionsConfig:
     no_circular_imports: bool = True
     test_mirrors_source: bool = True
     no_scratch_files: bool = True
+    stack: tuple[str, ...] = ()
     allowed_root_files: tuple[str, ...] = ()
 
 
