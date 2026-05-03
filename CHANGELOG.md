@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stale generated post-run hooks:** `forge check-config` now warns and exits
+  non-zero when the configured generated findings hook is missing static labels
+  or label setup required by the current template. The warning names the stale
+  hook and describes how to refresh it.
 
 ## [0.9.0] — 2026-05-01
 

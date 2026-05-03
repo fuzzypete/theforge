@@ -6,6 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
+from theforge.cli.hooks import post_run_hook_upgrade_warnings
 from theforge.cli.shared import _find_config
 from theforge.config import (
     ForgeConfig,
@@ -506,6 +507,13 @@ def cmd_check_config(args: object) -> int:
 
     for agent in config.agents:
         _run_auth(agent.to_model_profile(allowed_tools=()), "agent", auth_results, config.secrets)
+
+    captured_warnings.extend(
+        post_run_hook_upgrade_warnings(
+            config.project_root,
+            config.hooks.post_run if config.hooks else None,
+        )
+    )
 
     output, exit_code = _format_config(config, auth_results)
 

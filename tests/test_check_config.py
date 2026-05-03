@@ -12,6 +12,7 @@ from theforge.config import (
     DEFAULT_VALIDATION,
     AssignmentConfig,
     ForgeConfig,
+    HooksConfig,
     LogConfig,
     ModelProfile,
     PlanAgentReviewConfig,
@@ -145,6 +146,37 @@ class TestCheckConfigHappyPath:
         assert "REVIEW POOL" in out
         assert "SETTINGS" in out
         assert "WARNINGS" not in out
+
+    def test_warns_for_stale_generated_post_run_hook(self, tmp_path: Path, capsys) -> None:
+        hooks_dir = tmp_path / ".forge" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        hook = hooks_dir / "post_run.sh"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "*Filed by theforge post_run hook.*\n"
+            'gh issue create --label "forge-finding"\n',
+            encoding="utf-8",
+        )
+        config = replace(
+            _make_forge_config(tmp_path),
+            hooks=HooksConfig(post_run=".forge/hooks/post_run.sh"),
+        )
+        with (
+            patch(
+                "theforge.cli.check_config._find_config",
+                return_value=tmp_path / "forge.yaml",
+            ),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            exit_code = cmd_check_config(_make_args())
+
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "generated finding hook is stale" in out
+        assert "needs-triage" in out
+        assert "forge init-hooks" in out
+        assert "--update" not in out
 
     def test_sections_present(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)

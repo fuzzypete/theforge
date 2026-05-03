@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -229,6 +231,100 @@ hooks:
 """
 
 
+def resolve_hook_path(project_root: Path, hook_command: str | None) -> Path | None:
+    """Return the script path for a configured hook command, if it is path-like."""
+    if not hook_command:
+        return None
+    try:
+        parts = shlex.split(hook_command)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    path = Path(parts[0])
+    if not path.is_absolute():
+        path = project_root / path
+    return path
+
+
+_STATIC_LABEL_RE = re.compile(r"--label\s+(?:\"([^\"$`\\]+)\"|'([^'$`\\]+)'|([A-Za-z0-9_.:-]+))")
+_LABEL_CREATE_RE = re.compile(
+    r"gh\s+label\s+create\s+(?:\"([^\"$`\\]+)\"|'([^'$`\\]+)'|([A-Za-z0-9_.:-]+))"
+)
+
+
+def _capture_label(match: re.Match[str]) -> str | None:
+    label = next((group for group in match.groups() if group), None)
+    if label is None or "$" in label:
+        return None
+    return label
+
+
+def static_issue_labels(script: str) -> set[str]:
+    """Return literal labels applied by gh issue create calls in a shell hook."""
+    labels: set[str] = set()
+    for match in _STATIC_LABEL_RE.finditer(script):
+        label = _capture_label(match)
+        if label:
+            labels.add(label)
+    return labels
+
+
+def created_labels(script: str) -> set[str]:
+    """Return literal labels created or refreshed by gh label create commands."""
+    labels: set[str] = set()
+    for match in _LABEL_CREATE_RE.finditer(script):
+        label = _capture_label(match)
+        if label:
+            labels.add(label)
+    return labels
+
+
+def _looks_like_generated_finding_hook(content: str) -> bool:
+    normalized = content.lower()
+    has_generated_marker = "theforge" in normalized and "post_run hook" in normalized
+    return has_generated_marker and "gh issue create" in normalized and "forge-finding" in content
+
+
+def post_run_hook_upgrade_warnings(project_root: Path, hook_command: str | None) -> list[str]:
+    """Return operator-facing warnings for stale generated post_run hooks."""
+    path = resolve_hook_path(project_root, hook_command)
+    if path is None or not path.exists():
+        return []
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    if not _looks_like_generated_finding_hook(content):
+        return []
+
+    warnings: list[str] = []
+    expected_issue_labels = static_issue_labels(_POST_RUN_SH)
+    actual_issue_labels = static_issue_labels(content)
+    missing_issue_labels = sorted(expected_issue_labels - actual_issue_labels)
+    if missing_issue_labels:
+        warnings.append(
+            f"{path}: generated finding hook is stale; newly filed forge findings will miss "
+            f"{', '.join(missing_issue_labels)} until the hook is updated. Update the hook "
+            "from the current template by moving the existing file aside and running "
+            "`forge init-hooks`, or copy the missing label lines from src/theforge/cli/hooks.py."
+        )
+
+    expected_created_labels = created_labels(_POST_RUN_SH)
+    actual_created_labels = created_labels(content)
+    missing_created_labels = sorted(expected_created_labels - actual_created_labels)
+    if missing_created_labels:
+        warnings.append(
+            f"{path}: generated finding hook does not ensure "
+            f"{', '.join(missing_created_labels)} exists before filing findings. Update the "
+            "hook from the current template by moving the existing file aside and running "
+            "`forge init-hooks`, or copy the missing label setup from src/theforge/cli/hooks.py."
+        )
+    return warnings
+
+
 def cmd_init_hooks(args: object) -> int:
     """Scaffold .forge/hooks/post_run.sh and .forge/hooks/README.md."""
     project_root = Path.cwd()
@@ -242,6 +338,9 @@ def cmd_init_hooks(args: object) -> int:
 
     if sh_path.exists():
         skipped.append(str(sh_path))
+        warnings = post_run_hook_upgrade_warnings(project_root, str(sh_path))
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
     else:
         sh_path.write_text(_POST_RUN_SH, encoding="utf-8")
         sh_path.chmod(0o755)
