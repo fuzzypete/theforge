@@ -174,6 +174,9 @@ def derive_limits(
     retry_policy: "RetryPolicy",
     *,
     model_name: str,
+    model_actual: str | None = None,
+    model_provider: str | None = None,
+    model_cli: str | None = None,
     base_timeout_seconds: int,
     base_budget_usd: float,
     static_dev_max: int,
@@ -201,6 +204,9 @@ def derive_limits(
         "cap_dev": cap_dev,
         "cap_review": cap_review,
         "model_name": model_name,
+        "model_actual": model_actual,
+        "model_provider": model_provider,
+        "model_cli": model_cli,
         "headroom_factor": _HEADROOM_FACTOR,
         "min_profile_runs": _MIN_PROFILE_RUNS,
         "base_timeout_seconds": base_timeout_seconds,
@@ -244,6 +250,9 @@ def derive_limits(
             model_name,
             complexity_band,
             min_runs=_MIN_PROFILE_RUNS,
+            actual_model=model_actual,
+            provider=model_provider,
+            cli=model_cli,
         )
     profile_runs = int(profile_stats["runs"]) if profile_stats is not None else 0
     audit["profile_history_runs"] = profile_runs

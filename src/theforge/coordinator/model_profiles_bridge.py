@@ -52,10 +52,22 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     return RunOutcome(
         complexity=complexity,
         dev_model=config.dev_profile.name,
+        dev_actual_model=getattr(config.dev_profile, "model", None),
+        dev_provider=getattr(config.dev_profile, "provider", None),
+        dev_cli=getattr(config.dev_profile, "cli", None),
         dev_success=bool(success),
         dev_iterations=dev_iterations,
         dev_cost_usd=float(state.total_dev_cost or 0.0),
         preflight_model=config.preflight_profile.name
+        if getattr(config, "preflight_profile", None)
+        else None,
+        preflight_actual_model=getattr(config.preflight_profile, "model", None)
+        if getattr(config, "preflight_profile", None)
+        else None,
+        preflight_provider=getattr(config.preflight_profile, "provider", None)
+        if getattr(config, "preflight_profile", None)
+        else None,
+        preflight_cli=getattr(config.preflight_profile, "cli", None)
         if getattr(config, "preflight_profile", None)
         else None,
         preflight_cost_usd=float(state.total_preflight_cost or 0.0),

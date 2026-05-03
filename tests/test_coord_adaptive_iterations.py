@@ -172,6 +172,62 @@ def test_profiles_inform_adaptive_dev_limits(tmp_path: Path):
     assert result.audit["profile_history_runs"] == 3
 
 
+def test_fragmented_profile_aliases_inform_adaptive_dev_limits(tmp_path: Path):
+    """derive_limits aggregates same-model history split across profile aliases."""
+    policy = RetryPolicy(
+        max_dev_iterations=3,
+        max_review_cycles=2,
+        max_dev_iterations_cap=6,
+        max_review_cycles_cap=4,
+        adaptive_iterations=True,
+    )
+    profiles = {
+        "models": {
+            "openai-gpt-5.4": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 2,
+                            "avg_iterations": 3.0,
+                            "avg_cost_usd": 1.0,
+                        }
+                    }
+                }
+            },
+            "openai-api-gpt-5.4": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 2,
+                            "avg_iterations": 4.0,
+                            "avg_cost_usd": 1.5,
+                        }
+                    }
+                }
+            },
+        }
+    }
+
+    result = derive_limits(
+        5,
+        "medium",
+        policy,
+        model_name="openai-gpt-5.4",
+        model_actual="gpt-5.4",
+        model_provider="openai",
+        model_cli="codex",
+        base_timeout_seconds=900,
+        base_budget_usd=10.0,
+        static_dev_max=3,
+        review_history_path=None,
+        model_profiles=profiles,
+    )
+    assert result.dev_max == 6
+    assert result.dev_timeout_seconds == 1800
+    assert result.dev_budget_usd == 2.5
+    assert result.audit["profile_history_runs"] == 4
+
+
 def test_determinism_seam(tmp_path: Path):
     """Same complexity + same history → identical adaptive limits."""
     policy = RetryPolicy(

@@ -116,6 +116,36 @@ def test_apply_run_preflight():
     assert pf["avg_cost_usd"] == 0.30
 
 
+def test_apply_run_stamps_identity_metadata():
+    data: dict = {"models": {}}
+    outcome = RunOutcome(
+        complexity="small",
+        dev_model="claude-sonnet",
+        dev_success=True,
+        dev_iterations=1,
+        dev_cost_usd=0.1,
+        dev_actual_model="sonnet",
+        dev_cli="claude",
+        preflight_model="openai-gpt-5.4",
+        preflight_actual_model="gpt-5.4",
+        preflight_provider="openai",
+        preflight_cost_usd=0.2,
+    )
+    apply_run(data, outcome)
+
+    assert data["models"]["claude-sonnet"]["_identity"] == {
+        "provider": "anthropic",
+        "model": "sonnet",
+        "transport": "cli",
+        "cli": "claude",
+    }
+    assert data["models"]["openai-gpt-5.4"]["_identity"] == {
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "transport": "api",
+    }
+
+
 def test_complexity_normalization_handles_legacy_enums():
     data: dict = {"models": {}}
     # LOW / HIGH should map to small / large
@@ -310,6 +340,63 @@ def test_get_dev_success_rate_requires_min_runs():
     assert get_dev_success_rate(profiles, "gemini", "medium") is None
 
 
+def test_get_dev_success_rate_aggregates_fragmented_aliases():
+    profiles = {
+        "models": {
+            "claude-sonnet": {
+                "dev": {
+                    "by_complexity": {
+                        "small": {"runs": 2, "success_rate": 0.5},
+                    }
+                }
+            },
+            "sonnet-cli": {
+                "dev": {
+                    "by_complexity": {
+                        "small": {"runs": 3, "success_rate": round(2 / 3, 4)},
+                    }
+                }
+            },
+            "openai-gpt-5.4": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {"runs": 2, "success_rate": 0.5},
+                    }
+                }
+            },
+            "openai-api-gpt-5.4": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {"runs": 2, "success_rate": 1.0},
+                    }
+                }
+            },
+        }
+    }
+
+    assert (
+        get_dev_success_rate(
+            profiles,
+            "claude-sonnet",
+            "small",
+            actual_model="sonnet",
+            cli="claude",
+        )
+        == 0.6
+    )
+    assert (
+        get_dev_success_rate(
+            profiles,
+            "openai-gpt-5.4",
+            "medium",
+            actual_model="gpt-5.4",
+            provider="openai",
+            cli="codex",
+        )
+        == 0.75
+    )
+
+
 def test_get_dev_complexity_stats_requires_band_averages():
     profiles = {
         "models": {
@@ -330,6 +417,47 @@ def test_get_dev_complexity_stats_requires_band_averages():
         "runs": 3.0,
         "avg_iterations": 2.5,
         "avg_cost_usd": 1.25,
+    }
+
+
+def test_get_dev_complexity_stats_aggregates_fragmented_aliases():
+    profiles = {
+        "models": {
+            "claude-sonnet": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 2,
+                            "avg_iterations": 3.0,
+                            "avg_cost_usd": 1.0,
+                        }
+                    }
+                }
+            },
+            "sonnet-cli": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 3,
+                            "avg_iterations": 5.0,
+                            "avg_cost_usd": 2.0,
+                        }
+                    }
+                }
+            },
+        }
+    }
+
+    assert get_dev_complexity_stats(
+        profiles,
+        "claude-sonnet",
+        "medium",
+        actual_model="sonnet",
+        cli="claude",
+    ) == {
+        "runs": 5.0,
+        "avg_iterations": 4.2,
+        "avg_cost_usd": 1.6,
     }
 
 
