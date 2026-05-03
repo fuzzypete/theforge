@@ -29,6 +29,9 @@ from .models import (
     ModelInfo,
     TransportSpec,
     apply_model_info,
+    canonical_id_for_spec,
+    canonical_model_id,
+    is_canonical_model_id,
     resolve_agent_spec,
 )
 from .types import (
@@ -94,6 +97,9 @@ __all__ = [
     "MODEL_REGISTRY",
     "TransportSpec",
     "apply_model_info",
+    "canonical_id_for_spec",
+    "canonical_model_id",
+    "is_canonical_model_id",
     "resolve_agent_spec",
     # defaults
     "API_PROVIDER_DEFAULT_TOOLS",

@@ -28,6 +28,17 @@ from .routing import score_to_dev_tier
 log = logging.getLogger(__name__)
 
 
+def _agent_canonical_id(agent: AgentDef) -> str | None:
+    """Derive the canonical model ID (provider/model/transport) for an agent."""
+    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+
+    return canonical_id_from_identity(
+        actual_model=agent.model,
+        provider=agent.provider,
+        cli=agent.cli,
+    )
+
+
 def _has_auth(agent: AgentDef, secrets: dict[str, str] | None = None) -> bool:
     """Return True if the agent's provider has usable auth.
 
@@ -325,20 +336,30 @@ def _check_promotion(
     dev_agent_name: str,
     history: list[EscalationRecord],
     sprint_promotions: dict[str, str] | None,
+    *,
+    dev_canonical_id: str | None = None,
 ) -> str | None:
     """Return promoted tier string if promotion is warranted, else None.
 
     Checks sprint_promotions cache first (sticky within sprint).
-    Looks at last 10 records matching complexity+dev_model.
+    Looks at last 10 records matching complexity and dev model identity.
+    Records are matched against ``dev_canonical_id`` when provided (so
+    canonicalized history records still match the agent), and against the
+    legacy ``dev_agent_name`` as a fallback for unmigrated history.
     Promotes if 2+ have outcome=ESCALATE.
     """
     if sprint_promotions and complexity in sprint_promotions:
         return sprint_promotions[complexity]
 
+    def _matches(r: EscalationRecord) -> bool:
+        if r.complexity != complexity:
+            return False
+        if dev_canonical_id and r.dev_model == dev_canonical_id:
+            return True
+        return r.dev_model == dev_agent_name
+
     # Filter to last 10 matching records
-    matching = [
-        r for r in history if r.complexity == complexity and r.dev_model == dev_agent_name
-    ][-10:]
+    matching = [r for r in history if _matches(r)][-10:]
 
     if not matching:
         return None
@@ -673,8 +694,13 @@ def assign_models(
             complexity=norm_complexity,
         )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
+        dev_canonical = _agent_canonical_id(dev_agent_for_check) if dev_agent_for_check else None
         promoted = _check_promotion(
-            norm_complexity, dev_model_name, effective_history, effective_promotions
+            norm_complexity,
+            dev_model_name,
+            effective_history,
+            effective_promotions,
+            dev_canonical_id=dev_canonical,
         )
         effective_dev_tier = dev_base_tier
         if promoted is not None:
@@ -683,7 +709,11 @@ def assign_models(
             _matching = [
                 r
                 for r in effective_history
-                if r.complexity == norm_complexity and r.dev_model == dev_model_name
+                if r.complexity == norm_complexity
+                and (
+                    r.dev_model == dev_model_name
+                    or (dev_canonical and r.dev_model == dev_canonical)
+                )
             ][-10:]
             escalation_cnt = sum(1 for r in _matching if r.outcome == "ESCALATE")
             rationale["dev"] = (

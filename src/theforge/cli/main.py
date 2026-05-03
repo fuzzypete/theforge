@@ -15,6 +15,7 @@ from theforge.cli import (
     hooks,
     ideate,
     index,
+    migrate_profiles,
     providers,
     review,
     run,
@@ -61,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.register_parser(subparsers)
     todo.register_parser(subparsers)
     diagnose.register_parser(subparsers)
+    migrate_profiles.register_parser(subparsers)
     status.register_parsers(subparsers)
 
     return parser
@@ -96,6 +98,7 @@ def main() -> None:
         "eval-preflight": eval_cmd.cmd_eval_preflight,
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
+        "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
         "status": status.cmd_status,
         "logs": status.cmd_logs,
         "stop": status.cmd_stop,

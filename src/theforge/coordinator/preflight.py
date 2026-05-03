@@ -1047,9 +1047,17 @@ def _apply_preflight_config(
     }
 
     def _assignment_entry(profile):  # type: ignore[no-untyped-def]
+        from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+
+        canonical = canonical_id_from_identity(
+            actual_model=getattr(profile, "model", None),
+            provider=getattr(profile, "provider", None),
+            cli=getattr(profile, "cli", None),
+        )
         return {
             "model": profile.model,
             "source": getattr(profile, "registry_source", "builtin"),
+            "canonical_id": canonical or "",
         }
 
     state.complexity_routing_audit = {

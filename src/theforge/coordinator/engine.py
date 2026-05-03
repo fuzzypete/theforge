@@ -1034,14 +1034,21 @@ def _record_run_memory(
             append_escalation_record as _append_esc,
         )
 
+        from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+
         _esc_path = config.project_root / ".forge" / "assignment_history.yaml"
         _esc_outcome = "DONE" if result.success else "ESCALATE"
+        _esc_canonical = canonical_id_from_identity(
+            actual_model=getattr(config.dev_profile, "model", None),
+            provider=getattr(config.dev_profile, "provider", None),
+            cli=getattr(config.dev_profile, "cli", None),
+        )
         _esc_record = _EscRec(
             story=task.slug,
             complexity=state.preflight_complexity.upper()
             if state.preflight_complexity in ("small", "medium", "large")
             else state.preflight_complexity,
-            dev_model=config.dev_profile.name,
+            dev_model=_esc_canonical or config.dev_profile.name,
             outcome=_esc_outcome,
             reason=state.escalation_note or "",
             timestamp=datetime.datetime.utcnow().isoformat() + "Z",
