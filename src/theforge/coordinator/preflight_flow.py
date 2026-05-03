@@ -76,6 +76,38 @@ def _evidence_is_too_thin(evidence: str) -> bool:
     return len(evidence.strip()) < 20
 
 
+def _detect_preflight_risk_signals(
+    story_content: str,
+    project_root: Path,
+    branch_name: str,
+    base_branch: str,
+) -> list[str]:
+    """Return risk signals indicating preflight verification is load-bearing.
+
+    These are the signals that distinguish a story where preflight is a
+    confidence boost (safe to fall through on agent failure) from a story
+    where preflight is the only check that would catch contract drift
+    (must escalate on agent failure rather than silently PROCEED).
+
+    Signals returned as short identifier strings so they can be logged,
+    audited, and matched on without parsing free-form prose.
+    """
+    signals: list[str] = []
+    # Reopened-with-new-context stories carry a "## Reopen Context" block
+    # appended by sprint/reopen_context.py. Its presence means an operator
+    # left a follow-up comment after the issue was reopened — the body and
+    # the operator's intent may have diverged.
+    if story_content and "## Reopen Context" in story_content:
+        signals.append("reopen_context_in_body")
+    # A branch with commits ahead of base means a previous run already
+    # produced work for this story — the story is in-progress, not fresh.
+    # Re-sprinting without preflight verification risks re-doing or
+    # contradicting prior commits.
+    if _has_prior_execution_evidence(project_root, branch_name, base_branch):
+        signals.append("prior_execution_on_branch")
+    return signals
+
+
 def _has_prior_execution_evidence(
     project_root: "Path", branch_name: str, base_branch: str
 ) -> bool:
@@ -296,14 +328,45 @@ def _run_preflight_phase(
             state.preflight_degraded_reason = "parse_error"
             _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
     else:
-        verdict, reason = (
-            "PROCEED",
-            f"Preflight agent failed (exit={preflight_result.exit_code}); "
-            "falling back to conservative PROCEED.",
+        # Preflight agent failed (timeout, SIGKILL, non-zero exit). Whether
+        # it is safe to fall through to a conservative PROCEED depends on
+        # whether preflight was a confidence boost or the load-bearing check
+        # that catches contract drift. Detect risk signals deterministically
+        # from local state — no extra agent calls — and escalate when any
+        # signal indicates the story may be stale relative to the codebase.
+        risk_signals = _detect_preflight_risk_signals(
+            story_content,
+            config.project_root,
+            branch_name,
+            config.workspace.base_branch,
         )
+        state.preflight_risk_signals = risk_signals
         state.preflight_degraded = True
-        state.preflight_degraded_reason = "timeout_no_verdict"
-        _log("  ⚠ PREFLIGHT failed — fallback PROCEED (degraded)")
+        if risk_signals:
+            verdict = "BLOCKED"
+            reason = (
+                f"Preflight agent failed (exit={preflight_result.exit_code}); "
+                f"risk signals present ({', '.join(risk_signals)}) — escalating "
+                "rather than silently sprinting on an unverified contract."
+            )
+            state.preflight_degraded_reason = "agent_failed_with_risk_signals"
+            state.preflight_failure_action = "escalate"
+            _log(
+                f"  ✗ PREFLIGHT failed (exit={preflight_result.exit_code}) with "
+                f"risk signals [{', '.join(risk_signals)}] — escalating"
+            )
+        else:
+            verdict, reason = (
+                "PROCEED",
+                f"Preflight agent failed (exit={preflight_result.exit_code}); "
+                "no risk signals detected — falling back to conservative PROCEED.",
+            )
+            state.preflight_degraded_reason = "timeout_no_verdict"
+            state.preflight_failure_action = "proceed"
+            _log(
+                f"  ⚠ PREFLIGHT failed (exit={preflight_result.exit_code}) — "
+                "no risk signals; fallback PROCEED (degraded)"
+            )
 
     state.preflight_verdict = verdict
     state.preflight_reason = reason
@@ -607,6 +670,11 @@ def _run_preflight_phase(
             workspace_path=workspace_path,
         ),
         "criteria_checked": state.preflight_criteria_checked,
+        "degraded": state.preflight_degraded,
+        "degraded_reason": state.preflight_degraded_reason,
+        "risk_signals": list(state.preflight_risk_signals),
+        "failure_action": state.preflight_failure_action,
+        "attempts": attempts,
     }
     state.preflight_cache_snapshot = dict(_preflight_artifact["cache_snapshot"])
     _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
