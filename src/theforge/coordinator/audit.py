@@ -547,6 +547,14 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "cache_validation": state.preflight_cache_validation or None,
                 "degraded": state.preflight_degraded,
                 "degraded_reason": state.preflight_degraded_reason,
+                "risk_signals": list(state.preflight_risk_signals),
+                "failure_action": state.preflight_failure_action,
+                "attempts": (
+                    list(state.preflight_result.raw.get("attempts", []))
+                    if state.preflight_result is not None
+                    and isinstance(state.preflight_result.raw, dict)
+                    else []
+                ),
                 **(
                     {"complexity_routing": state.complexity_routing_audit}
                     if state.complexity_routing_audit is not None

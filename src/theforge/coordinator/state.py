@@ -317,6 +317,15 @@ class CoordinatorState:
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None
     preflight_criteria_checked: list[dict] = field(default_factory=list)
+    # Risk signals consulted when preflight agent failed and the coordinator
+    # had to choose between conservative PROCEED and explicit escalation.
+    # Empty list means no signals were detected (or preflight succeeded so
+    # the question never arose).
+    preflight_risk_signals: list[str] = field(default_factory=list)
+    # Outcome of the failure-fallback policy: "proceed" (no risk signals →
+    # conservative PROCEED) or "escalate" (risk signals present → BLOCKED).
+    # None when preflight did not fail.
+    preflight_failure_action: str | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
         None  # contents of the worktree plan file, passed to dev (raw string for audit)

@@ -18,6 +18,7 @@ from coord_test_helpers import (
 from theforge.config.types import ModelProfile
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase
+from theforge.runners import AgentResult
 
 # ── BLOCKED output with an ambiguous/verifiability reason ────────────────────
 
@@ -282,6 +283,152 @@ class TestPreflightConservativeFallback:
         assert result.state.preflight_sufficiency == "needs_planning"
         # small→medium upgrade should have fired
         assert result.state.preflight_complexity in ("medium", "large")
+        assert result.phase == Phase.DONE
+        assert result.success is True
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=True)
+    def test_sigkill_with_prior_commits_escalates(
+        self,
+        mock_evidence,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """SIGKILL on a story with prior-execution evidence escalates, not PROCEED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(success=False, output="", cost_usd=0.0)
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert result.state.preflight_failure_action == "escalate"
+        assert "prior_execution_on_branch" in result.state.preflight_risk_signals
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "agent_failed_with_risk_signals"
+        assert result.phase == Phase.ESCALATE
+        assert result.success is False
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=False)
+    def test_sigkill_with_reopen_context_escalates(
+        self,
+        mock_evidence,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """SIGKILL on a reopened story (## Reopen Context block in body) escalates."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        # Append a reopen-context block to the spec — simulates what
+        # sprint/reopen_context.py adds for a reopened issue.
+        spec_text = task.story_path.read_text(encoding="utf-8")
+        task.story_path.write_text(
+            spec_text + "\n\n## Reopen Context\n\nThis issue was reopened on 2026-05-01.\n"
+            "Operator follow-up:\n\n> the previous attempt missed the audit fields\n",
+            encoding="utf-8",
+        )
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        # exit_code=-9 simulates SIGKILL
+        mock_preflight.return_value = AgentResult(
+            success=False,
+            output="",
+            session_id=None,
+            cost_usd=0.04,
+            exit_code=-9,
+            raw={},
+            profile_name="preflight",
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert result.state.preflight_failure_action == "escalate"
+        assert "reopen_context_in_body" in result.state.preflight_risk_signals
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "agent_failed_with_risk_signals"
+        assert "exit=-9" in (result.state.preflight_reason or "")
+        assert result.phase == Phase.ESCALATE
+        assert result.success is False
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=False)
+    def test_sigkill_without_risk_signals_still_proceeds(
+        self,
+        mock_evidence,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """Fresh story (no reopen, no prior commits) preserves conservative PROCEED on SIGKILL."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = AgentResult(
+            success=False,
+            output="",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=-9,
+            raw={},
+            profile_name="preflight",
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_failure_action == "proceed"
+        assert result.state.preflight_risk_signals == []
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "timeout_no_verdict"
         assert result.phase == Phase.DONE
         assert result.success is True
 
