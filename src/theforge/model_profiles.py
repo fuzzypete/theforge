@@ -29,7 +29,9 @@ fields in place. They are part of the persisted schema.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +102,34 @@ def save_profiles(path: Path, data: dict[str, Any]) -> None:
             yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=True)
     except Exception as exc:  # noqa: BLE001
         log.warning("[model_profiles] Failed to write %s: %s", path, exc)
+
+
+def load_reset_history(path: Path) -> dict[str, list[dict[str, Any]]]:
+    """Read the profile reset audit log; return an empty skeleton if absent/bad."""
+    if not path.exists():
+        return {"resets": []}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[model_profiles] Failed to load reset history %s: %s", path, exc)
+        return {"resets": []}
+    if not isinstance(data, dict):
+        return {"resets": []}
+    resets = data.get("resets")
+    if not isinstance(resets, list):
+        data["resets"] = []
+    return data
+
+
+def save_reset_history(path: Path, data: dict[str, list[dict[str, Any]]]) -> None:
+    """Write the reset audit log to disk; best-effort (warns but doesn't raise)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[model_profiles] Failed to write reset history %s: %s", path, exc)
 
 
 # ── Pure aggregation ──────────────────────────────────────────────────────
@@ -247,6 +277,51 @@ def _update_preflight(entry: dict, cost_usd: float) -> None:
     pf["runs"] = runs
     pf["_cost_sum"] = cost_sum
     pf["avg_cost_usd"] = round(cost_sum / runs, 6)
+
+
+def _zero_dev_bucket(bucket: dict) -> None:
+    bucket["runs"] = 0
+    bucket["_successes"] = 0
+    bucket["_iterations_sum"] = 0.0
+    bucket["_cost_sum"] = 0.0
+    bucket["success_rate"] = 0.0
+    bucket["avg_iterations"] = 0.0
+    bucket["avg_cost_usd"] = 0.0
+
+
+def _zero_review_section(section: dict) -> None:
+    section["runs"] = 0
+    section["_findings_sum"] = 0.0
+    section["_cost_sum"] = 0.0
+    section["avg_findings"] = 0.0
+    section["avg_cost_usd"] = 0.0
+
+
+def _zero_preflight_section(section: dict) -> None:
+    section["runs"] = 0
+    section["_cost_sum"] = 0.0
+    section["avg_cost_usd"] = 0.0
+
+
+def _recompute_dev_section(section: dict) -> None:
+    by = section.setdefault("by_complexity", {})
+    runs = 0
+    successes = 0
+    iterations = 0.0
+    cost = 0.0
+    for band in COMPLEXITY_BANDS:
+        bucket = by.setdefault(band, {})
+        runs += int(bucket.get("runs", 0))
+        successes += int(bucket.get("_successes", 0))
+        iterations += float(bucket.get("_iterations_sum", 0.0))
+        cost += float(bucket.get("_cost_sum", 0.0))
+    section["runs"] = runs
+    section["_successes"] = successes
+    section["_iterations_sum"] = iterations
+    section["_cost_sum"] = cost
+    section["success_rate"] = round(successes / runs, 4) if runs > 0 else 0.0
+    section["avg_iterations"] = round(iterations / runs, 4) if runs > 0 else 0.0
+    section["avg_cost_usd"] = round(cost / runs, 6) if runs > 0 else 0.0
 
 
 def apply_run(data: dict, outcome: RunOutcome) -> dict:
@@ -497,6 +572,187 @@ def _resolve_identity(
     if explicit_provider and model_key:
         return (explicit_provider, model_key)
     return None
+
+
+def summarize_profile_scope(
+    data: dict | None,
+    canonical_id: str,
+    *,
+    role: str | None = None,
+    complexity: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return the exact slices a reset would affect, with pre-reset counts."""
+    models = (data or {}).get("models") or {}
+    if not isinstance(models, dict):
+        return []
+    entry = models.get(canonical_id)
+    if not isinstance(entry, dict):
+        return []
+
+    normalized_complexity = _normalize_band(complexity) if complexity is not None else None
+    summaries: list[dict[str, Any]] = []
+    if normalized_complexity is not None:
+        roles = ("dev",)
+    else:
+        roles = (role,) if role else ROLES
+
+    for current_role in roles:
+        section = entry.get(current_role)
+        if not isinstance(section, dict):
+            if current_role == "dev" and normalized_complexity is not None:
+                summaries.append(
+                    {
+                        "role": "dev",
+                        "complexity": normalized_complexity,
+                        "runs": 0,
+                        "successes": 0,
+                        "avg_iterations": 0.0,
+                        "avg_cost_usd": 0.0,
+                    }
+                )
+            continue
+
+        if current_role == "dev":
+            if normalized_complexity is not None:
+                bucket = (section.get("by_complexity") or {}).get(normalized_complexity) or {}
+                if not isinstance(bucket, dict):
+                    bucket = {}
+                summaries.append(
+                    {
+                        "role": "dev",
+                        "complexity": normalized_complexity,
+                        "runs": int(bucket.get("runs", 0)),
+                        "successes": int(bucket.get("_successes", 0)),
+                        "avg_iterations": float(bucket.get("avg_iterations", 0.0)),
+                        "avg_cost_usd": float(bucket.get("avg_cost_usd", 0.0)),
+                    }
+                )
+                continue
+            summaries.append(
+                {
+                    "role": "dev",
+                    "complexity": None,
+                    "runs": int(section.get("runs", 0)),
+                    "successes": int(section.get("_successes", 0)),
+                    "avg_iterations": float(section.get("avg_iterations", 0.0)),
+                    "avg_cost_usd": float(section.get("avg_cost_usd", 0.0)),
+                    "by_complexity": deepcopy(section.get("by_complexity") or {}),
+                }
+            )
+            continue
+
+        summary = {
+            "role": current_role,
+            "complexity": None,
+            "runs": int(section.get("runs", 0)),
+            "avg_cost_usd": float(section.get("avg_cost_usd", 0.0)),
+        }
+        if current_role == "review":
+            summary["avg_findings"] = float(section.get("avg_findings", 0.0))
+        summaries.append(summary)
+
+    return summaries
+
+
+def reset_profile_data(
+    data: dict | None,
+    canonical_id: str,
+    *,
+    role: str | None = None,
+    complexity: str | None = None,
+) -> tuple[dict, list[dict[str, Any]]]:
+    """Pure: reset one canonical model's profile data, optionally scoped."""
+    updated = deepcopy(data if isinstance(data, dict) else {"models": {}})
+    models = updated.setdefault("models", {})
+    if not isinstance(models, dict):
+        updated["models"] = {}
+        models = updated["models"]
+
+    pre_reset = summarize_profile_scope(
+        updated,
+        canonical_id,
+        role=role,
+        complexity=complexity,
+    )
+    if canonical_id not in models or not isinstance(models.get(canonical_id), dict):
+        return updated, pre_reset
+
+    entry = models[canonical_id]
+    normalized_complexity = _normalize_band(complexity) if complexity is not None else None
+
+    if role == "dev" and normalized_complexity is not None:
+        dev = entry.setdefault("dev", {})
+        by = dev.setdefault("by_complexity", {})
+        bucket = by.setdefault(normalized_complexity, {})
+        _zero_dev_bucket(bucket)
+        _recompute_dev_section(dev)
+        return updated, pre_reset
+
+    if normalized_complexity is not None:
+        dev = entry.setdefault("dev", {})
+        by = dev.setdefault("by_complexity", {})
+        bucket = by.setdefault(normalized_complexity, {})
+        _zero_dev_bucket(bucket)
+        _recompute_dev_section(dev)
+        return updated, pre_reset
+
+    roles = (role,) if role else ROLES
+    for current_role in roles:
+        if current_role == "dev":
+            dev = entry.setdefault("dev", {})
+            by = dev.setdefault("by_complexity", {})
+            for band in COMPLEXITY_BANDS:
+                _zero_dev_bucket(by.setdefault(band, {}))
+            _recompute_dev_section(dev)
+        elif current_role == "review":
+            _zero_review_section(entry.setdefault("review", {}))
+        elif current_role == "preflight":
+            _zero_preflight_section(entry.setdefault("preflight", {}))
+
+    return updated, pre_reset
+
+
+def record_profile_reset(
+    *,
+    profiles_path: Path,
+    reset_history_path: Path,
+    canonical_id: str,
+    operator: str,
+    role: str | None = None,
+    complexity: str | None = None,
+    reason: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Reset one canonical model profile slice and append an audit log entry."""
+    data = load_profiles(profiles_path)
+    updated, pre_reset = reset_profile_data(
+        data,
+        canonical_id,
+        role=role,
+        complexity=complexity,
+    )
+    save_profiles(profiles_path, updated)
+
+    changed = any(int(summary.get("runs", 0)) > 0 for summary in pre_reset)
+    entry = {
+        "timestamp": timestamp
+        or datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "operator": operator,
+        "scope": {
+            "canonical_id": canonical_id,
+            "role": role,
+            "complexity": _normalize_band(complexity) if complexity is not None else None,
+        },
+        "changed": changed,
+        "pre_reset": pre_reset,
+    }
+    if reason:
+        entry["reason"] = reason
+
+    history = load_reset_history(reset_history_path)
+    history.setdefault("resets", []).append(entry)
+    save_reset_history(reset_history_path, history)
+    return entry
 
 
 def _infer_identity_from_key(model_key: str) -> tuple[str, str] | None:

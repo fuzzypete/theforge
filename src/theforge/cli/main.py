@@ -16,6 +16,7 @@ from theforge.cli import (
     ideate,
     index,
     migrate_profiles,
+    profiles,
     providers,
     review,
     run,
@@ -63,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     todo.register_parser(subparsers)
     diagnose.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
+    profiles.register_parser(subparsers)
     status.register_parsers(subparsers)
 
     return parser
@@ -99,6 +101,7 @@ def main() -> None:
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
+        "profiles": profiles.cmd_profiles,
         "status": status.cmd_status,
         "logs": status.cmd_logs,
         "stop": status.cmd_stop,
