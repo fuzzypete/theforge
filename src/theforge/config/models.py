@@ -367,6 +367,33 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
 }
 
 
+# ── Canonical model identity ─────────────────────────────────────────
+#
+# The canonical model ID is the single key under which all profile data,
+# assignment history and audit records accumulate. Two registrations resolve
+# to the same canonical ID iff they refer to the same actual provider, model
+# and transport.kind. Format: ``<provider>/<model>/<transport.kind>``
+# (e.g. ``anthropic/sonnet/cli``, ``openai/gpt-5.4/api``).
+
+
+def canonical_model_id(provider: str, model: str, transport_kind: str) -> str:
+    """Build the canonical ID from its three constituent parts."""
+    return f"{provider}/{model}/{transport_kind}"
+
+
+def canonical_id_for_spec(spec: AgentSpec) -> str:
+    """Return the canonical ID for an :class:`AgentSpec`."""
+    return canonical_model_id(spec.provider, spec.model, spec.transport.kind)
+
+
+def is_canonical_model_id(value: str | None) -> bool:
+    """Return True if ``value`` already follows the canonical format."""
+    if not value or not isinstance(value, str):
+        return False
+    parts = value.split("/")
+    return len(parts) == 3 and bool(parts[0]) and bool(parts[1]) and parts[2] in ("cli", "api")
+
+
 def known_model_overlay_providers() -> tuple[str, ...]:
     """Return accepted provider/adaptor tokens for forge.yaml model overlays."""
     return tuple(sorted(_MODEL_OVERLAY_PROVIDER_MAP))

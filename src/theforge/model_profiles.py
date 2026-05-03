@@ -153,6 +153,26 @@ def _identity_metadata(
     return out
 
 
+def canonical_id_from_identity(
+    *,
+    actual_model: str | None,
+    provider: str | None,
+    cli: str | None,
+) -> str | None:
+    """Derive a canonical model ID from runtime identity fields.
+
+    Returns None when the input is too thin to identify a canonical
+    (provider+model+transport) — e.g. role-shaped names like ``"dev"`` that
+    carry no provider hint.
+    """
+    inferred_provider = (provider or _provider_from_cli(cli) or "").strip()
+    transport = _transport_from_identity(inferred_provider or None, cli)
+    model = (actual_model or "").strip()
+    if not (model and inferred_provider and transport):
+        return None
+    return f"{inferred_provider}/{model}/{transport}"
+
+
 def _ensure_model(
     data: dict,
     name: str,
@@ -162,7 +182,9 @@ def _ensure_model(
     cli: str | None = None,
 ) -> dict:
     models = data.setdefault("models", {})
-    entry = models.setdefault(name, {})
+    canonical = canonical_id_from_identity(actual_model=actual_model, provider=provider, cli=cli)
+    storage_key = canonical or name
+    entry = models.setdefault(storage_key, {})
     metadata = _identity_metadata(actual_model=actual_model, provider=provider, cli=cli)
     if metadata and not isinstance(entry.get("_identity"), dict):
         entry["_identity"] = metadata
@@ -528,6 +550,362 @@ def _identity_from_unique_spec(
     if len(unique) == 1:
         return next(iter(unique))
     return None
+
+
+# ── Canonical-ID migration ────────────────────────────────────────────────
+
+
+def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> str | None:
+    """Return canonical ID (`provider/model/transport`) for a legacy storage key.
+
+    Resolution order:
+      1. ``_identity`` metadata stamped on the entry (richest, most reliable).
+      2. Already-canonical key (idempotency: ``anthropic/sonnet/cli`` → itself).
+      3. Direct AGENT_REGISTRY match (e.g. ``claude/sonnet`` registry slot).
+      4. ``-cli``/``-api`` suffix-aware unique-spec lookup
+         (e.g. ``sonnet-cli`` → unique anthropic/sonnet CLI spec).
+      5. Bare-name unique-spec lookup with constructable transport
+         (e.g. ``deepseek-deepseek-reasoner`` → unique deepseek/deepseek-reasoner
+         API spec).
+
+    Returns ``None`` when the key cannot be resolved unambiguously — those keys
+    are reported as ambiguous by the migration tool and left under their legacy
+    storage names rather than guessed at.
+    """
+    key = (model_key or "").strip()
+    if not key:
+        return None
+
+    if isinstance(entry, dict):
+        metadata = entry.get("_identity")
+        if isinstance(metadata, dict):
+            provider = str(metadata.get("provider") or "").strip()
+            model = str(metadata.get("model") or "").strip()
+            transport = str(metadata.get("transport") or "").strip()
+            if not transport and metadata.get("cli"):
+                transport = "cli"
+            if provider and model and transport in ("cli", "api"):
+                return f"{provider}/{model}/{transport}"
+
+    # Already canonical?
+    parts = key.split("/")
+    if len(parts) == 3 and parts[2] in ("cli", "api"):
+        return key
+
+    spec = _resolve_agent_spec_for_profile_key(key)
+    if spec is not None:
+        return f"{spec.provider}/{spec.model}/{spec.transport.kind}"
+
+    transport_hint: str | None = None
+    base = key
+    if key.endswith("-cli"):
+        transport_hint = "cli"
+        base = key[: -len("-cli")]
+    elif key.endswith("-api"):
+        transport_hint = "api"
+        base = key[: -len("-api")]
+
+    spec = _unique_registry_spec(base, transport_hint)
+    if spec is not None:
+        return f"{spec.provider}/{spec.model}/{spec.transport.kind}"
+
+    if transport_hint is None:
+        # Try `<provider>-<model>` style: split at the first dash where the
+        # prefix matches a known provider, e.g. ``deepseek-deepseek-reasoner``
+        # → provider=deepseek, model=deepseek-reasoner.
+        try:
+            from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            AGENT_REGISTRY = {}  # type: ignore[assignment]
+        for spec_obj in AGENT_REGISTRY.values():
+            prefix = f"{spec_obj.provider}-"
+            if key.startswith(prefix):
+                model_part = key[len(prefix) :]
+                if model_part == spec_obj.model:
+                    same_model = [
+                        s
+                        for s in AGENT_REGISTRY.values()
+                        if s.provider == spec_obj.provider and s.model == spec_obj.model
+                    ]
+                    transports = {s.transport.kind for s in same_model}
+                    if len(transports) == 1:
+                        return f"{spec_obj.provider}/{spec_obj.model}/{spec_obj.transport.kind}"
+
+    return None
+
+
+def _unique_registry_spec(model_name: str, transport: str | None) -> Any | None:
+    try:
+        from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    matches = [
+        spec
+        for spec in AGENT_REGISTRY.values()
+        if spec.model == model_name and (transport is None or spec.transport.kind == transport)
+    ]
+    # Unique by (provider, model, transport) — keep all distinct triples to
+    # detect ambiguity (e.g. CLI + API for same model with no transport hint).
+    triples = {(s.provider, s.model, s.transport.kind) for s in matches}
+    if len(triples) == 1:
+        return matches[0]
+    return None
+
+
+def _bucket_summary(entry: dict) -> dict[str, float | int]:
+    """Headline numbers for an entry, used in the migration report."""
+    runs = 0
+    successes = 0.0
+    cost = 0.0
+    iterations = 0.0
+    for role in ("dev", "review", "preflight"):
+        sec = entry.get(role)
+        if not isinstance(sec, dict):
+            continue
+        sec_runs = int(sec.get("runs", 0))
+        runs += sec_runs
+        if role == "dev":
+            successes += _success_count(sec, sec_runs)
+            cost += float(sec.get("_cost_sum", float(sec.get("avg_cost_usd", 0.0)) * sec_runs))
+            iterations += float(
+                sec.get("_iterations_sum", float(sec.get("avg_iterations", 0.0)) * sec_runs)
+            )
+        elif role == "review":
+            cost += float(sec.get("_cost_sum", float(sec.get("avg_cost_usd", 0.0)) * sec_runs))
+        elif role == "preflight":
+            cost += float(sec.get("_cost_sum", float(sec.get("avg_cost_usd", 0.0)) * sec_runs))
+    return {
+        "runs": runs,
+        "successes": successes,
+        "cost_usd": round(cost, 6),
+        "iterations": round(iterations, 4),
+    }
+
+
+def _merge_dev(target: dict, src: dict) -> None:
+    runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
+    successes = int(target.get("_successes", 0)) + int(src.get("_successes", 0))
+    iter_sum = float(target.get("_iterations_sum", 0.0)) + float(src.get("_iterations_sum", 0.0))
+    cost_sum = float(target.get("_cost_sum", 0.0)) + float(src.get("_cost_sum", 0.0))
+    # If accumulators absent on src, derive from runs * avg fields.
+    if "_successes" not in src and "runs" in src:
+        successes = int(target.get("_successes", 0)) + int(
+            round(float(src.get("success_rate", 0.0)) * int(src.get("runs", 0)))
+        )
+    if "_iterations_sum" not in src and "runs" in src:
+        iter_sum = float(target.get("_iterations_sum", 0.0)) + float(
+            src.get("avg_iterations", 0.0)
+        ) * int(src.get("runs", 0))
+    if "_cost_sum" not in src and "runs" in src:
+        cost_sum = float(target.get("_cost_sum", 0.0)) + float(src.get("avg_cost_usd", 0.0)) * int(
+            src.get("runs", 0)
+        )
+
+    target["runs"] = runs
+    target["_successes"] = successes
+    target["_iterations_sum"] = iter_sum
+    target["_cost_sum"] = cost_sum
+    if runs > 0:
+        target["success_rate"] = round(successes / runs, 4)
+        target["avg_iterations"] = round(iter_sum / runs, 4)
+        target["avg_cost_usd"] = round(cost_sum / runs, 6)
+
+    src_by = src.get("by_complexity") or {}
+    if src_by:
+        target_by = target.setdefault("by_complexity", {})
+        for band, bc_src in src_by.items():
+            if not isinstance(bc_src, dict):
+                continue
+            bc_target = target_by.setdefault(band, {})
+            bc_runs = int(bc_target.get("runs", 0)) + int(bc_src.get("runs", 0))
+            bc_succ = int(bc_target.get("_successes", 0)) + int(
+                bc_src.get(
+                    "_successes",
+                    round(float(bc_src.get("success_rate", 0.0)) * int(bc_src.get("runs", 0))),
+                )
+            )
+            bc_iter = float(bc_target.get("_iterations_sum", 0.0)) + float(
+                bc_src.get(
+                    "_iterations_sum",
+                    float(bc_src.get("avg_iterations", 0.0)) * int(bc_src.get("runs", 0)),
+                )
+            )
+            bc_cost = float(bc_target.get("_cost_sum", 0.0)) + float(
+                bc_src.get(
+                    "_cost_sum",
+                    float(bc_src.get("avg_cost_usd", 0.0)) * int(bc_src.get("runs", 0)),
+                )
+            )
+            bc_target["runs"] = bc_runs
+            bc_target["_successes"] = bc_succ
+            bc_target["_iterations_sum"] = bc_iter
+            bc_target["_cost_sum"] = bc_cost
+            if bc_runs > 0:
+                bc_target["success_rate"] = round(bc_succ / bc_runs, 4)
+                bc_target["avg_iterations"] = round(bc_iter / bc_runs, 4)
+                bc_target["avg_cost_usd"] = round(bc_cost / bc_runs, 6)
+
+
+def _merge_review(target: dict, src: dict) -> None:
+    runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
+    find_sum = float(target.get("_findings_sum", 0.0)) + float(
+        src.get("_findings_sum", float(src.get("avg_findings", 0.0)) * int(src.get("runs", 0)))
+    )
+    cost_sum = float(target.get("_cost_sum", 0.0)) + float(
+        src.get("_cost_sum", float(src.get("avg_cost_usd", 0.0)) * int(src.get("runs", 0)))
+    )
+    target["runs"] = runs
+    target["_findings_sum"] = find_sum
+    target["_cost_sum"] = cost_sum
+    if runs > 0:
+        target["avg_findings"] = round(find_sum / runs, 4)
+        target["avg_cost_usd"] = round(cost_sum / runs, 6)
+
+
+def _merge_preflight(target: dict, src: dict) -> None:
+    runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
+    cost_sum = float(target.get("_cost_sum", 0.0)) + float(
+        src.get("_cost_sum", float(src.get("avg_cost_usd", 0.0)) * int(src.get("runs", 0)))
+    )
+    target["runs"] = runs
+    target["_cost_sum"] = cost_sum
+    if runs > 0:
+        target["avg_cost_usd"] = round(cost_sum / runs, 6)
+
+
+def _merge_entry(target: dict, src: dict) -> None:
+    if not isinstance(src, dict):
+        return
+    for role, merger in (
+        ("dev", _merge_dev),
+        ("review", _merge_review),
+        ("preflight", _merge_preflight),
+    ):
+        sec = src.get(role)
+        if not isinstance(sec, dict):
+            continue
+        target_sec = target.setdefault(role, {})
+        merger(target_sec, sec)
+    src_id = src.get("_identity")
+    if isinstance(src_id, dict) and not isinstance(target.get("_identity"), dict):
+        target["_identity"] = dict(src_id)
+
+
+def migrate_profiles_data(
+    data: dict | None,
+) -> tuple[dict, list[dict]]:
+    """Pure: rewrite ``data`` so legacy alias entries merge under canonical IDs.
+
+    Idempotent. Re-running on already-migrated data returns the same dict.
+    Ambiguous keys (those with no unambiguous resolution) are left in place and
+    flagged in the report. The report is a list of dicts — each entry is either
+    a merge record (``canonical_id``, ``merged_from``, ``combined``) or an
+    ambiguous-skip record (``ambiguous_key``, ``reason``).
+    """
+    models = (data or {}).get("models") or {}
+    if not isinstance(models, dict):
+        models = {}
+
+    groups: dict[str, list[tuple[str, dict]]] = {}
+    ambiguous: list[tuple[str, dict]] = []
+
+    for key, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        canonical = canonical_id_for_legacy_key(key, entry)
+        if canonical is None:
+            ambiguous.append((key, entry))
+        else:
+            groups.setdefault(canonical, []).append((key, entry))
+
+    new_models: dict[str, dict] = {}
+    report: list[dict] = []
+
+    for canonical, members in groups.items():
+        if len(members) == 1 and members[0][0] == canonical:
+            # Already canonical with no aliases to merge.
+            new_models[canonical] = members[0][1]
+            continue
+        merged: dict = {}
+        # Stamp identity early so later metadata wins are skipped.
+        provider, model, transport = canonical.split("/", 2)
+        merged["_identity"] = {
+            "provider": provider,
+            "model": model,
+            "transport": transport,
+        }
+        if transport == "cli":
+            cli_runner = _provider_to_cli_runner(provider)
+            if cli_runner:
+                merged["_identity"]["cli"] = cli_runner
+        for _, entry in members:
+            _merge_entry(merged, entry)
+        new_models[canonical] = merged
+        report.append(
+            {
+                "canonical_id": canonical,
+                "merged_from": [{"key": k, **_bucket_summary(e)} for k, e in members],
+                "combined": _bucket_summary(merged),
+            }
+        )
+
+    for key, entry in ambiguous:
+        new_models[key] = entry
+        report.append(
+            {
+                "ambiguous_key": key,
+                "reason": "could not resolve to a unique canonical identity",
+            }
+        )
+
+    out = dict(data or {})
+    out["models"] = new_models
+    return out, report
+
+
+def _provider_to_cli_runner(provider: str) -> str | None:
+    return {"anthropic": "claude", "openai": "codex", "google": "gemini"}.get(provider)
+
+
+def migrate_history_data(
+    data: dict | None,
+) -> tuple[dict, list[dict]]:
+    """Pure: canonicalize ``dev_model`` field on each escalation record.
+
+    For records whose ``dev_model`` resolves to a canonical ID, the field is
+    overwritten in place. Records that cannot be resolved are left unchanged
+    and reported. Idempotent.
+    """
+    if not isinstance(data, dict):
+        return {"escalations": []}, []
+    records = data.get("escalations") or []
+    if not isinstance(records, list):
+        return {"escalations": []}, []
+
+    new_records: list[dict] = []
+    report: list[dict] = []
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        new_r = dict(r)
+        legacy = str(r.get("dev_model") or "").strip()
+        canonical = canonical_id_for_legacy_key(legacy) if legacy else None
+        if canonical and canonical != legacy:
+            new_r["dev_model"] = canonical
+            report.append(
+                {
+                    "from": legacy,
+                    "to": canonical,
+                    "story": r.get("story"),
+                }
+            )
+        elif legacy and canonical is None:
+            report.append({"ambiguous_key": legacy, "story": r.get("story")})
+        new_records.append(new_r)
+
+    out = dict(data)
+    out["escalations"] = new_records
+    return out, report
 
 
 def _success_count(stats: dict[str, Any], runs: int) -> float:

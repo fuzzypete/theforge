@@ -133,17 +133,22 @@ def test_apply_run_stamps_identity_metadata():
     )
     apply_run(data, outcome)
 
-    assert data["models"]["claude-sonnet"]["_identity"] == {
+    # Storage now keys by canonical ID (provider/model/transport.kind), not by
+    # the legacy profile name. The legacy `dev_model` and `preflight_model`
+    # arguments are display labels only.
+    assert data["models"]["anthropic/sonnet/cli"]["_identity"] == {
         "provider": "anthropic",
         "model": "sonnet",
         "transport": "cli",
         "cli": "claude",
     }
-    assert data["models"]["openai-gpt-5.4"]["_identity"] == {
+    assert data["models"]["openai/gpt-5.4/api"]["_identity"] == {
         "provider": "openai",
         "model": "gpt-5.4",
         "transport": "api",
     }
+    assert "claude-sonnet" not in data["models"]
+    assert "openai-gpt-5.4" not in data["models"]
 
 
 def test_complexity_normalization_handles_legacy_enums():
