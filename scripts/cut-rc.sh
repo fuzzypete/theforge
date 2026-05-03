@@ -63,9 +63,11 @@ RC_VERSION="${VERSION}rc${RC_NUM}"
 RC_TAG="v${RC_VERSION}"
 RELEASE_BRANCH="release/v$(echo "$VERSION" | cut -d. -f1,2)"
 
-CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+# CURRENT_VERSION is read after the release branch is checked out (step 4)
+# to avoid bumping against a stale main version when the release branch is
+# already at a prior RC.
+CURRENT_VERSION=""
 
-echo "Current version : $CURRENT_VERSION"
 echo "Cutting RC      : $RC_VERSION"
 echo "RC tag          : $RC_TAG"
 echo "Release branch  : $RELEASE_BRANCH"
@@ -123,17 +125,30 @@ if git ls-remote --tags origin "refs/tags/$RC_TAG" | grep -q "$RC_TAG"; then
     exit 1
 fi
 
-# --- 5. Bump pyproject to RC version ---
+# --- 5. Read current pyproject version (now that release branch is up to date) ---
+CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+echo "==> Current version on $RELEASE_BRANCH: $CURRENT_VERSION"
+if [[ "$CURRENT_VERSION" == "$RC_VERSION" ]]; then
+    echo "Error: pyproject is already at $RC_VERSION on $RELEASE_BRANCH." >&2
+    exit 1
+fi
+
+# --- 6. Bump pyproject to RC version ---
 echo "==> Bumping pyproject.toml to $RC_VERSION..."
 if [[ "$DRY_RUN" == false ]]; then
     sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$RC_VERSION\"/" pyproject.toml
+    BUMPED=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+    if [[ "$BUMPED" != "$RC_VERSION" ]]; then
+        echo "Error: pyproject bump failed — version is $BUMPED, expected $RC_VERSION." >&2
+        exit 1
+    fi
 fi
 
-# --- 6. Gate ---
+# --- 7. Gate ---
 echo "==> Running gate..."
 run make gate
 
-# --- 7. Commit, tag, push ---
+# --- 8. Commit, tag, push ---
 echo "==> Committing, tagging, pushing..."
 run git add pyproject.toml
 run git commit -m "chore: cut $RC_TAG"
@@ -141,13 +156,27 @@ run git tag "$RC_TAG"
 run git push -u origin "$RELEASE_BRANCH"
 run git push origin "$RC_TAG"
 
-# --- 8. Install the RC into the active env ---
+# --- 9. Install the RC into the active env, then assert the right binary is on PATH ---
 if [[ "$NO_INSTALL" == false ]]; then
     echo "==> Installing $RC_TAG into active Python environment..."
     run pip install --force-reinstall "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
     if [[ "$DRY_RUN" == false ]]; then
-        INSTALLED_VERSION=$(forge --version 2>/dev/null || echo "unknown")
-        echo "    forge --version: $INSTALLED_VERSION"
+        INSTALLED_VERSION=$(forge --version 2>/dev/null || echo "")
+        FORGE_PATH=$(command -v forge 2>/dev/null || echo "<not found>")
+        PIP_PATH=$(command -v pip 2>/dev/null || echo "<not found>")
+        PYTHON_PATH=$(command -v python 2>/dev/null || echo "<not found>")
+        echo "    forge --version  : $INSTALLED_VERSION"
+        echo "    forge on PATH    : $FORGE_PATH"
+        echo "    pip on PATH      : $PIP_PATH"
+        echo "    python on PATH   : $PYTHON_PATH"
+        if [[ "$INSTALLED_VERSION" != *"$RC_VERSION"* ]]; then
+            echo "" >&2
+            echo "Error: installed forge version does not match RC ($RC_VERSION)." >&2
+            echo "       'pip install' may have targeted a different environment than the 'forge' on PATH." >&2
+            echo "       Compare the pip/python/forge paths above and reinstall into the correct env, e.g.:" >&2
+            echo "         \"\$PYTHON_PATH\" -m pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@${RC_TAG}" >&2
+            exit 1
+        fi
     fi
 else
     echo "==> Skipping install (--no-install)."
@@ -155,7 +184,7 @@ else
     echo "      pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
 fi
 
-# --- 9. Print test ladder ---
+# --- 10. Print test ladder ---
 echo ""
 echo "==> $RC_TAG cut on $RELEASE_BRANCH."
 echo ""

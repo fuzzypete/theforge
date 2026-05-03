@@ -55,7 +55,26 @@ RELEASE_BRANCH="release/v$(echo "$VERSION" | cut -d. -f1,2)"
 NEXT_DEV="$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0.dev0"}')"
 NEXT_MILESTONE="v$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')"
 
-CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+# CURRENT_VERSION is read after the release branch is pulled (step 3) so a
+# stale local checkout can't pass the RC precondition with one version while
+# the bump-and-tag operates on a different version.
+CURRENT_VERSION=""
+RC_NUM=""
+RC_TAG=""
+
+run() {
+    echo "+ $*"
+    if [[ "$DRY_RUN" == false ]]; then
+        "$@"
+    fi
+}
+
+echo "Promoting to    : $VERSION"
+echo "Release branch  : $RELEASE_BRANCH"
+echo "Next dev        : $NEXT_DEV"
+echo "Next milestone  : $NEXT_MILESTONE"
+echo "Dry run         : $DRY_RUN"
+echo ""
 
 # --- 1. Verify on release branch ---
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -65,31 +84,30 @@ if [[ "$CURRENT_BRANCH" != "$RELEASE_BRANCH" ]]; then
     exit 1
 fi
 
-# --- 2. Verify current version is an RC of the target ---
+# --- 2. Verify clean tree ---
+echo "==> Verifying clean state..."
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "Error: working tree is dirty. Commit or stash changes before promoting." >&2
+    exit 1
+fi
+
+# --- 3. Pull release branch BEFORE reading version ---
+if git show-ref --verify --quiet "refs/remotes/origin/$RELEASE_BRANCH"; then
+    run git pull --ff-only origin "$RELEASE_BRANCH"
+fi
+
+# --- 4. Read current version from the up-to-date release branch and validate it's an RC ---
+CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 if [[ ! "$CURRENT_VERSION" =~ ^${VERSION}rc[0-9]+$ ]]; then
-    echo "Error: current pyproject version is $CURRENT_VERSION; expected ${VERSION}rcN." >&2
+    echo "Error: current pyproject version on $RELEASE_BRANCH is $CURRENT_VERSION; expected ${VERSION}rcN." >&2
     echo "       Cut an RC first: scripts/cut-rc.sh $VERSION" >&2
     exit 1
 fi
 RC_NUM=$(echo "$CURRENT_VERSION" | sed "s/^${VERSION}rc//")
 RC_TAG="v$CURRENT_VERSION"
+echo "==> Current RC: $CURRENT_VERSION ($RC_TAG)"
 
-echo "Current RC      : $CURRENT_VERSION (rc$RC_NUM)"
-echo "Promoting to    : $VERSION"
-echo "Release branch  : $RELEASE_BRANCH"
-echo "Next dev        : $NEXT_DEV"
-echo "Next milestone  : $NEXT_MILESTONE"
-echo "Dry run         : $DRY_RUN"
-echo ""
-
-run() {
-    echo "+ $*"
-    if [[ "$DRY_RUN" == false ]]; then
-        "$@"
-    fi
-}
-
-# --- 3. Verify milestone is empty ---
+# --- 5. Verify milestone is empty ---
 echo "==> Checking milestone v$VERSION..."
 OPEN_ISSUES=$(gh issue list --repo fuzzypete/theforge --milestone "v$VERSION" --state open --json number --jq 'length')
 if [[ "$OPEN_ISSUES" != "0" ]]; then
@@ -99,17 +117,7 @@ if [[ "$OPEN_ISSUES" != "0" ]]; then
 fi
 echo "    Milestone clean."
 
-# --- 4. Verify clean tree, pull release branch ---
-echo "==> Verifying clean state..."
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "Error: working tree is dirty. Commit or stash changes before promoting." >&2
-    exit 1
-fi
-if git show-ref --verify --quiet "refs/remotes/origin/$RELEASE_BRANCH"; then
-    run git pull --ff-only origin "$RELEASE_BRANCH"
-fi
-
-# --- 5. Refuse if final tag already exists ---
+# --- 6. Refuse if final tag already exists ---
 if git rev-parse --verify --quiet "v$VERSION" >/dev/null; then
     echo "Error: tag v$VERSION already exists locally." >&2
     exit 1
@@ -119,11 +127,11 @@ if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q "v$VERSION"; then
     exit 1
 fi
 
-# --- 6. Gate ---
+# --- 7. Gate ---
 echo "==> Running gate..."
 run make gate
 
-# --- 7. Update CHANGELOG ---
+# --- 8. Update CHANGELOG ---
 echo "==> Updating CHANGELOG..."
 TODAY=$(date +%Y-%m-%d)
 if [[ "$DRY_RUN" == false ]]; then
@@ -138,13 +146,31 @@ if [[ "$DRY_RUN" == false ]]; then
         CHANGELOG.md
 fi
 
-# --- 8. Bump pyproject from RC to final ---
+# --- 9. Bump pyproject from RC to final ---
 echo "==> Bumping pyproject.toml: $CURRENT_VERSION -> $VERSION..."
 if [[ "$DRY_RUN" == false ]]; then
     sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$VERSION\"/" pyproject.toml
+    BUMPED=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+    if [[ "$BUMPED" != "$VERSION" ]]; then
+        echo "Error: pyproject bump failed — version is $BUMPED, expected $VERSION." >&2
+        exit 1
+    fi
 fi
 
-# --- 9. Commit, tag, push ---
+# --- 10. Capture release notes from the RELEASE BRANCH's CHANGELOG ---
+# Must happen before checking out main, since main may only have [Unreleased].
+echo "==> Capturing release notes from $RELEASE_BRANCH CHANGELOG..."
+if [[ "$DRY_RUN" == false ]]; then
+    RELEASE_NOTES=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+    if [[ -z "$RELEASE_NOTES" ]]; then
+        echo "Error: release notes for [$VERSION] are empty. Did the CHANGELOG bump produce a section?" >&2
+        exit 1
+    fi
+else
+    RELEASE_NOTES="(dry-run: would be extracted from CHANGELOG.md after bump)"
+fi
+
+# --- 11. Commit, tag, push release branch ---
 echo "==> Committing, tagging, pushing..."
 run git add CHANGELOG.md pyproject.toml
 run git commit -m "chore: release v$VERSION"
@@ -152,7 +178,7 @@ run git tag "v$VERSION"
 run git push origin "$RELEASE_BRANCH"
 run git push origin "v$VERSION"
 
-# --- 10. Bump main to next dev ---
+# --- 12. Bump main to next dev ---
 echo "==> Bumping main to $NEXT_DEV..."
 run git checkout main
 run git pull --ff-only
@@ -164,14 +190,13 @@ run git add pyproject.toml
 run git commit -m "chore: begin v$NEXT_DEV development [skip ci]"
 run git push origin main
 
-# --- 11. GitHub Release ---
+# --- 13. GitHub Release (using notes captured before main checkout) ---
 echo "==> Creating GitHub release..."
-RELEASE_NOTES=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
 run gh release create "v$VERSION" --repo fuzzypete/theforge \
     --title "v$VERSION" \
     --notes "$RELEASE_NOTES"
 
-# --- 12. Post-release doc review issue ---
+# --- 14. Post-release doc review issue ---
 echo "==> Creating post-release doc review issue for $NEXT_MILESTONE..."
 DOC_REVIEW_BODY="## What
 
@@ -235,7 +260,7 @@ run gh issue create --repo fuzzypete/theforge \
     --label "documentation" \
     --milestone "$NEXT_MILESTONE"
 
-# --- 13. Reminders the script intentionally does not automate ---
+# --- 15. Reminders the script intentionally does not automate ---
 echo ""
 echo "Promoted v$VERSION (from $RC_TAG)."
 echo ""
