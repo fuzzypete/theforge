@@ -5,11 +5,22 @@ project: theforge
 # and synthesis roles automatically from this list and the story complexity.
 # See docs/guides/inputs-reference.md for the full schema reference.
 models:
-  - claude/sonnet
-  - claude/opus
-  - openai/gpt-5.4
-  - deepseek/deepseek-reasoner
-  - google/gemini-3.1-pro-preview
+  enabled:
+    - claude/sonnet
+    - claude/opus
+    - openai/gpt-5.4
+    - openai/gpt-5.5
+    - deepseek/deepseek-reasoner
+    - google/gemini-3.1-pro-preview
+  custom:
+    # GPT-5.5 — added via the user-declared registry overlay shipped in #1184
+    # (v0.10.0). Costs are placeholders; verify against current OpenAI pricing.
+    openai/gpt-5.5:
+      provider: openai            # routes via Codex CLI; use 'openai-api' for the API adapter
+      model: gpt-5.5
+      tier: strong
+      input_cost_per_mtok: 5.00   # TODO: verify
+      output_cost_per_mtok: 15.00 # TODO: verify
 
 provider_fallbacks:
   openai:
