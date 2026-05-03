@@ -17,23 +17,101 @@ This document defines how TheForge releases are cut, maintained, and hotfixed.
 
 ---
 
-## Cutting a new release
+## Cutting a new release — RC flow (preferred)
 
-Use the release script — it handles all steps automatically:
+Releases ship via a release-candidate ladder so dogfood sprints exercise the
+candidate against the next milestone's stories before the final tag is cut.
+The pattern: cut an RC, install it as the dogfood `forge` binary, run a small
+sprint ladder against it, promote when the ladder passes (or cut another RC
+if it doesn't).
+
+### 1. Cut an RC
 
 ```bash
-scripts/release.sh X.Y.Z
+scripts/cut-rc.sh X.Y.Z         # first RC: cuts vX.Y.ZrcN with N=0
+scripts/cut-rc.sh X.Y.Z 1       # subsequent RCs: explicit RC_NUM
+scripts/cut-rc.sh --dry-run X.Y.Z
+scripts/cut-rc.sh --no-install X.Y.Z   # skip auto-installing the RC into the active env
 ```
 
-Use `--dry-run` to preview what it will do without making changes:
+`cut-rc.sh`:
+
+- prints the open issues remaining in milestone `vX.Y.Z` (informational only —
+  RC cuts deliberately do **not** require a clean milestone)
+- creates or fast-forwards `release/vX.Y` from `main`
+- bumps `pyproject.toml` to `X.Y.ZrcN` (PEP 440)
+- runs `make gate`
+- commits, tags `vX.Y.ZrcN`, pushes branch and tag
+- pip-installs the RC into the active Python environment (so `forge --version`
+  reports the RC and dogfood sprints exercise the candidate)
+- prints the test ladder
+
+The install step is intentional: cutting an RC and dogfooding it are the same
+muscle-memory action. Use `--no-install` if you need to install on a different
+machine or env.
+
+### 2. Run the test ladder against the RC
+
+The ladder is three sprints of ascending complexity, all run on TheForge's own
+repo against the RC binary:
+
+| Pass       | Story shape                                              |
+|------------|----------------------------------------------------------|
+| Smoke      | Small, well-scoped story (low spend, gross-breakage check) |
+| Boundary   | Medium-complexity story touching CLI/precondition surface |
+| Moneyshot  | High-complexity story (exercises adaptive routing decisions) |
 
 ```bash
-scripts/release.sh --dry-run X.Y.Z
+forge sprint --verbose --issues <small-issue>            --budget 50 --parallel 1
+forge sprint --verbose --issues <medium-issue>           --budget 50 --parallel 1
+forge sprint --verbose --issues <high-complexity-issue>  --budget 50 --parallel 1
 ```
 
-The script: verifies the milestone is closed, runs `make gate`, updates
-CHANGELOG, bumps `pyproject.toml`, tags and pushes, cuts the release branch,
-bumps main to the next dev version, and creates the GitHub release.
+Pick the candidates from the **next** milestone (so the work also makes progress
+on the next release) — exact picks are per-release, not scripted.
+
+Watch for: regressions in any behavior shipped by `vX.Y.Z`, surprising routing
+decisions, missing or wrong audit/log wording, anything that contradicts the
+release's CHANGELOG entry.
+
+### 3. Either fix or promote
+
+- **Ladder passes** → `scripts/promote-rc.sh X.Y.Z`
+- **Ladder fails** → fix on `release/vX.Y`, then `scripts/cut-rc.sh X.Y.Z N+1`
+
+### 4. Promote the RC to a final release
+
+```bash
+scripts/promote-rc.sh X.Y.Z
+scripts/promote-rc.sh --dry-run X.Y.Z
+```
+
+`promote-rc.sh`:
+
+- requires you are on `release/vX.Y` with `pyproject.toml` version = `X.Y.ZrcN`
+- requires milestone `vX.Y.Z` has zero open issues (this is where the milestone
+  block lives, not in `cut-rc.sh`)
+- runs `make gate`
+- updates `CHANGELOG.md` (`[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, new
+  `[Unreleased]` inserted)
+- bumps `pyproject.toml` from `X.Y.ZrcN` to `X.Y.Z`
+- commits, tags `vX.Y.Z`, pushes
+- bumps `main` to the next `.dev0` version
+- creates the GitHub release from the CHANGELOG section
+- files the post-release doc-review issue against the next milestone
+
+After promotion, the script prints reminders for the manual follow-ups it
+intentionally does **not** automate:
+
+1. Update the dogfood install pin to the new release tag.
+2. Forward-port any RC fixes from `release/vX.Y` to `main` if main has diverged.
+3. Run the post-release doc review.
+
+### Direct release from main (legacy)
+
+`scripts/release.sh X.Y.Z` still exists for releasing directly from main without
+an RC ladder. Use only when an RC dogfood pass would add no signal — for
+example, a one-line patch. Default path is the RC flow above.
 
 ### Manual steps (reference)
 
