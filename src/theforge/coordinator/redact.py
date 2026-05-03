@@ -63,8 +63,7 @@ def _redact_value(val: str, secrets: set[str]) -> str:
     """Replace occurrences of any known secret inside a string value."""
     for secret in secrets:
         if secret in val:
-            val = "[REDACTED]"
-            break
+            val = val.replace(secret, "[REDACTED]")
     return val
 
 

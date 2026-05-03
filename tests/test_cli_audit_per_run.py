@@ -161,4 +161,4 @@ class TestPerRunFileWrite:
 
         run_file = tmp_path / ".forge" / "audits" / "runs" / "run-env-redact-001.json"
         data = json.loads(run_file.read_text())
-        assert data["output"] == "[REDACTED]"
+        assert data["output"] == "using key [REDACTED] in request"
