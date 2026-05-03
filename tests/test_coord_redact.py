@@ -14,7 +14,7 @@ class TestRedactEnvFile:
         env = tmp_path / ".env"
         env.write_text("MY_SECRET=supersecretvalue123\n")
         result = redact({"output": "token is supersecretvalue123 done"}, env)
-        assert result["output"] == "[REDACTED]"
+        assert result["output"] == "token is [REDACTED] done"
 
     def test_skips_values_shorter_than_8_chars(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
@@ -35,20 +35,20 @@ class TestRedactEnvFile:
         env = tmp_path / ".env"
         env.write_text('API_KEY="mysecretkey9876"\n')
         result = redact({"header": "Bearer mysecretkey9876"}, env)
-        assert result["header"] == "[REDACTED]"
+        assert result["header"] == "Bearer [REDACTED]"
 
     def test_ignores_comment_lines(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
         env.write_text("# This is a comment\nREAL_SECRET=actualsecretval\n")
         result = redact({"v": "actualsecretval is here"}, env)
-        assert result["v"] == "[REDACTED]"
+        assert result["v"] == "[REDACTED] is here"
 
     def test_recursive_replacement_in_nested_dict(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
         env.write_text("DEEP_SECRET=deepsecretvalue\n")
         obj = {"outer": {"inner": "contains deepsecretvalue here"}}
         result = redact(obj, env)
-        assert result["outer"]["inner"] == "[REDACTED]"
+        assert result["outer"]["inner"] == "contains [REDACTED] here"
 
     def test_recursive_replacement_in_list(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
@@ -56,7 +56,25 @@ class TestRedactEnvFile:
         obj = {"items": ["safe string", "contains listsecretvalue1 inside"]}
         result = redact(obj, env)
         assert result["items"][0] == "safe string"
-        assert result["items"][1] == "[REDACTED]"
+        assert result["items"][1] == "contains [REDACTED] inside"
+
+    def test_preserves_context_around_secret(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text("MY_TOKEN=secrettoken99\n")
+        story_body = "Story: use token secrettoken99 to auth. See docs for details."
+        result = redact({"body": story_body}, env)
+        assert result["body"] == "Story: use token [REDACTED] to auth. See docs for details."
+
+    def test_multiple_distinct_secrets_all_redacted(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text("FIRST_SECRET=firstsecret12\nSECOND_SECRET=secondsecret34\n")
+        val = "call firstsecret12 then secondsecret34 done"
+        result = redact({"cmd": val}, env)
+        assert "firstsecret12" not in result["cmd"]
+        assert "secondsecret34" not in result["cmd"]
+        assert "call" in result["cmd"]
+        assert "then" in result["cmd"]
+        assert "done" in result["cmd"]
 
 
 class TestRedactSecretKeys:
