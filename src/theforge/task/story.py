@@ -15,6 +15,14 @@ class StoryTypeError(ValueError):
 
 
 @dataclass(frozen=True)
+class FrontmatterParseResult:
+    """Parsed frontmatter plus any operator-facing recovery warning."""
+
+    data: dict
+    warning: str | None = None
+
+
+@dataclass(frozen=True)
 class TaskStory:
     """A single unit of work for the orchestrator to execute."""
 
@@ -52,6 +60,49 @@ load_spec = load_story
 
 
 def parse_story_frontmatter(story_path: Path) -> dict:
+    return inspect_story_frontmatter(story_path).data
+
+
+def _parse_frontmatter_block(text: str, *, source_name: str) -> FrontmatterParseResult:
+    """Parse a leading YAML frontmatter block and preserve recovery warnings."""
+    if not text.startswith("---"):
+        return FrontmatterParseResult(data={})
+
+    end = text.find("---", 3)
+    if end == -1:
+        return FrontmatterParseResult(
+            data={},
+            warning=(
+                f"{source_name} starts with YAML frontmatter but has no closing '---'; "
+                "ignoring the block and any dependency declarations inside it"
+            ),
+        )
+
+    frontmatter = text[3:end].strip()
+    try:
+        result = yaml.safe_load(frontmatter) or {}
+    except yaml.YAMLError:
+        return FrontmatterParseResult(
+            data={},
+            warning=(
+                f"{source_name} has malformed YAML frontmatter; "
+                "ignoring the block and any dependency declarations inside it"
+            ),
+        )
+
+    if not isinstance(result, dict):
+        return FrontmatterParseResult(
+            data={},
+            warning=(
+                f"{source_name} frontmatter must be a YAML mapping; "
+                "ignoring the block and any dependency declarations inside it"
+            ),
+        )
+
+    return FrontmatterParseResult(data=result)
+
+
+def inspect_story_frontmatter(story_path: Path) -> FrontmatterParseResult:
     """Extract YAML frontmatter from a story file.
 
     Story files can optionally have YAML frontmatter delimited by ---::
@@ -67,21 +118,10 @@ def parse_story_frontmatter(story_path: Path) -> dict:
     If no frontmatter is present, returns empty dict.
     """
     text = story_path.read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        return {}
-
-    end = text.find("---", 3)
-    if end == -1:
-        return {}
-
-    frontmatter = text[3:end].strip()
-    try:
-        result = yaml.safe_load(frontmatter) or {}
-    except yaml.YAMLError:
-        return {}
-
-    if not isinstance(result, dict):
-        return {}
+    parsed = _parse_frontmatter_block(text, source_name=f"story file {story_path.name!r}")
+    result = parsed.data
+    if not result:
+        return parsed
 
     # R3: gate must be a string if present; drop non-string values to prevent
     # AttributeError when _is_gate_skip() calls .lower() on a non-string.
@@ -106,7 +146,7 @@ def parse_story_frontmatter(story_path: Path) -> dict:
             )
         result["type"] = normalized
 
-    return result
+    return FrontmatterParseResult(data=result, warning=parsed.warning)
 
 
 def frontmatter_allows_forge_yaml_mutation(frontmatter: dict) -> bool:

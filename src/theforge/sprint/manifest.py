@@ -10,7 +10,11 @@ import yaml
 
 from ..coordinator.state import CoordinatorResult
 from ..shape_check.heuristics import derive_fix_ready
-from ..task import TaskStory, frontmatter_allows_forge_yaml_mutation, parse_story_frontmatter
+from ..task import (
+    TaskStory,
+    frontmatter_allows_forge_yaml_mutation,
+    inspect_story_frontmatter,
+)
 
 if TYPE_CHECKING:
     from .sources import StorySource
@@ -173,7 +177,8 @@ def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[
 def _build_task_from_story(story_path: Path) -> TaskStory:
     """Build a TaskStory from a story file using frontmatter if available."""
     # Import here to avoid circular imports; cli._build_task is essentially the same logic
-    fm = parse_story_frontmatter(story_path)
+    parsed = inspect_story_frontmatter(story_path)
+    fm = parsed.data
 
     slug = fm.get("slug") or story_path.stem
     name = fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title())
@@ -190,7 +195,13 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
     except (ValueError, TypeError):
         github_issue = None
     story_type = fm.get("type")
+    dependency_warnings: list[str] = []
     type_warnings: list[str] = []
+    if parsed.warning is not None:
+        dependency_warnings.append(parsed.warning)
+        import logging as _logging  # noqa: PLC0415
+
+        _logging.getLogger(__name__).warning(parsed.warning)
     if story_type is None:
         warning = (
             f"file-sourced story {story_path.name!r} has no 'type:' frontmatter field — "
@@ -225,6 +236,7 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         test_target=fm.get("test_target"),
         gate_override=fm.get("gate"),
         depends_on=depends_on,
+        dependency_warnings=dependency_warnings,
         github_issue=github_issue,
         allow_mutate_forge_yaml=frontmatter_allows_forge_yaml_mutation(fm),
         type=story_type,

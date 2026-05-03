@@ -135,6 +135,27 @@ class TestGitHubIssueSource:
         assert task.inferred_dependencies == ["issue-7", "issue-12"]
         assert task.dependency_warnings == []
 
+    def test_fetch_warns_when_issue_frontmatter_is_malformed(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": "---\ndepends_on: issue-12\nbroken: [\n---\n\n## Details\nFix it.",
+                "state": "OPEN",
+            }
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="preview unavailable"),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert task.depends_on == []
+        assert task.inferred_dependencies == []
+        assert task.dependency_warnings
+        assert "malformed YAML frontmatter" in task.dependency_warnings[0]
+        assert any("depends_on: issue-12" in warning for warning in task.dependency_warnings)
+
     def test_fetch_appends_reopen_comment_to_story_text(self, tmp_path: Path) -> None:
         issue_data = json.dumps(
             {

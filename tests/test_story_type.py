@@ -62,6 +62,20 @@ class TestFileSourceMigrationWarning:
         assert task.type == "enhancement"
         assert task.type_warnings == []
 
+    def test_malformed_frontmatter_surfaces_dependency_warning(self, tmp_path: Path) -> None:
+        story = tmp_path / "broken.md"
+        story.write_text(
+            "---\nname: broken\nslug: broken\ndepends_on: story-a\nbroken: [\n---\n# body\n",
+            encoding="utf-8",
+        )
+
+        task = _build_task_from_story(story)
+
+        assert task.depends_on == []
+        assert task.dependency_warnings
+        assert "malformed YAML frontmatter" in task.dependency_warnings[0]
+        assert "dependency declarations inside it" in task.dependency_warnings[0]
+
 
 class TestGitHubLabelTypeMapping:
     def test_bug_label_yields_bug_type(self) -> None:

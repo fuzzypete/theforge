@@ -9,14 +9,18 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-import yaml
-
 from ..shape_check.heuristics import (
     FIX_READY_STATUS_LABELS,
     RECOGNIZED_STATUS_LABELS,
     derive_fix_ready,
 )
-from ..task import ALLOW_MUTATE_FORGE_YAML_KEY, RECOGNIZED_STORY_TYPES, StoryTypeError, TaskStory
+from ..task import (
+    ALLOW_MUTATE_FORGE_YAML_KEY,
+    RECOGNIZED_STORY_TYPES,
+    StoryTypeError,
+    TaskStory,
+)
+from ..task.story import FrontmatterParseResult, _parse_frontmatter_block
 from .manifest import _build_task_from_story
 from .reopen_context import analyze_reopen_contract, append_reopen_context
 
@@ -139,18 +143,9 @@ class FileSource:
 class GitHubIssueSource:
     """Loads story specs from GitHub issues via the gh CLI."""
 
-    def _parse_issue_metadata(self, body: str) -> dict:
+    def _parse_issue_metadata(self, body: str, number: int) -> FrontmatterParseResult:
         """Return parsed leading YAML metadata from an issue body, if present."""
-        metadata_match = _ISSUE_FRONTMATTER_RE.match(body)
-        if metadata_match is None:
-            return {}
-        try:
-            metadata = yaml.safe_load(metadata_match.group("yaml")) or {}
-        except yaml.YAMLError:
-            return {}
-        if not isinstance(metadata, dict):
-            return {}
-        return metadata
+        return _parse_frontmatter_block(body, source_name=f"GH issue #{number} metadata")
 
     def _fetch_issue_timeline(self, number: int, project_root: Path) -> list[dict]:
         """Return raw GitHub timeline events for an issue."""
@@ -210,7 +205,9 @@ class GitHubIssueSource:
                         blockers.add(blocker_number)
         return blockers
 
-    def _parse_issue_blockers_from_body_metadata(self, body: str) -> list[int]:
+    def _parse_issue_blockers_from_body_metadata(
+        self, body: str, metadata: dict | None = None
+    ) -> list[int]:
         """Return blocker issue numbers from explicit issue-body YAML metadata.
 
         GitHub issues may declare scheduler dependencies in leading YAML
@@ -223,7 +220,7 @@ class GitHubIssueSource:
 
         Free-form prose is intentionally excluded from this parser.
         """
-        metadata = self._parse_issue_metadata(body)
+        metadata = metadata if metadata is not None else self._parse_issue_metadata(body, 0).data
         if not metadata:
             return []
 
@@ -246,6 +243,8 @@ class GitHubIssueSource:
 
     def _body_without_issue_metadata(self, body: str) -> str:
         """Return issue body with the structured metadata block removed."""
+        if self._parse_issue_metadata(body, number=0).warning is not None:
+            return body
         return _ISSUE_FRONTMATTER_RE.sub("", body, count=1)
 
     def _body_without_illustrative_markdown(self, body: str) -> str:
@@ -324,14 +323,17 @@ class GitHubIssueSource:
 
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")
-        metadata = self._parse_issue_metadata(body)
+        metadata_result = self._parse_issue_metadata(body, number)
+        metadata = metadata_result.data
         timeline = self._fetch_issue_timeline(number, project_root)
         reopen_state = analyze_reopen_contract(data, timeline)
         blockers = sorted(self._fetch_issue_blockers_from_timeline(timeline))
         if not blockers:
-            blockers = self._parse_issue_blockers_from_body_metadata(body)
+            blockers = self._parse_issue_blockers_from_body_metadata(body, metadata)
         blocker_slugs = [f"issue-{blocker}" for blocker in blockers]
         dependency_warnings = self._dependency_authoring_warnings(body, blockers)
+        if metadata_result.warning is not None:
+            dependency_warnings = [metadata_result.warning, *dependency_warnings]
 
         label_names = [
             lbl.get("name", "").strip().lower()
