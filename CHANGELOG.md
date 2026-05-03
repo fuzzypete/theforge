@@ -7,12 +7,199 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The headline of v0.10.0 is **workflow determinism and operator trust**. v0.9.0
+introduced adaptive intelligence; v0.10.0 makes the work that adaptive
+intelligence drives observable, reproducible, and trustworthy. Sprint state
+surfaces no longer disagree with each other. Audit truth is preserved through
+redaction. Failure modes that previously stranded work — null-byte PR bodies,
+silent dependency loss, fragmented profile history, contaminated escalation
+state — now surface or self-recover. Issue intake is structured (issue type and
+fix-readiness as first-class inputs, automatic remediation of shape gaps before
+stories are dropped) so the dev pipeline runs against signal, not guesses. A
+new `forge diagnose` flow separates root-cause discovery from fix work for
+symptom bugs. Models gain canonical identity and a user-declared registry
+overlay so adding a model no longer requires a TheForge release.
+
+This release continues the **dogfood-from-releases** discipline: floor-blocker
+fixes for substrate quality (state coherence across audit/summary/status,
+preflight verification on reopened stories, reviewer AC enforcement) landed to
+make v0.10.0 safe to build v0.11.0 on.
+
+### Added
+
+- **`forge diagnose` flow:** a separate flow for root-cause discovery on symptom
+  bugs, distinct from fix work. Operators can run diagnosis as its own bounded
+  step before deciding whether to sprint a fix. (#1154)
+- **Issue type as first-class structured input:** sprint contract reads issue
+  type from a structured field instead of inferring it from prose, so dev
+  agents reason against the operator's intent rather than rephrasing it. (#1142)
+- **Fix-readiness signal as structured intake input:** symptom bugs, diagnosed
+  bugs, and fix-ready bugs are distinguishable in the intake contract so
+  preflight and plan-review can route them differently. (#1153)
+- **Intake remediation gate:** sprint intake auto-fixes shape and grooming
+  failures (or proposes a comment-mode fix) before dropping stories. The model
+  shifts from "groom by hand or skip" to "Forge proposes the repair." (#1110,
+  #1270)
+- **User-declared model registry overlay in `forge.yaml`:** adding a model on
+  an existing adapter no longer requires a TheForge release. The overlay
+  composes with the built-in registry and is recorded in the audit. (#1184)
+- **Canonical model identity scheme:** every model now has a stable canonical
+  ID; historical profile records are aliased to the canonical ID so adaptive
+  routing reads consolidated history. (#1106, #1291)
+- **Profile maintenance command:** operators can reset, exclude, or audit
+  contaminated model profile history without editing files by hand. (#1292)
+- **Stack presets for root file conventions:** Python, Node, Go, Rust, and Java
+  repos no longer have to hand-enumerate language-standard root files —
+  `stack:` in `forge.yaml` selects a preset. (#1265)
+- **`forge status --watch` live attach:** `--watch` attaches to a live sprint
+  and degrades gracefully when state is partial; operators no longer need a
+  perfect state file to see what's happening. (#1144)
+- **Workspace hygiene gate:** repo tree mutations outside DEV are rejected so
+  stray scratch files cannot strand subsequent runs. Project-configurable
+  allowed-paths convention exposes this to non-default project layouts. (#1179,
+  #1180)
+- **Issue/story authoring guide:** a use-case-organized authoring guide,
+  verified against code, lives in repo docs alongside the existing reference
+  material. (#948)
+- **Shape gate flags implementation-plan content:** issue bodies that contain
+  Design sections, file paths, function names, or line numbers are flagged
+  `needs-grooming` so HOW-leakage doesn't enter sprints as if it were WHAT.
+  (#1273)
+- **Plan-review per-reviewer audit detail:** plan-review audit summaries record
+  each reviewer's pass/fail individually so debugging no longer requires
+  grepping raw logs. (#952)
+- **Migrated project lessons to repo-versioned `CONVENTIONS.md`:** project-level
+  lessons that previously lived only in user memory are now repo-versioned and
+  visible to every dev agent and reviewer. Shared CONVENTIONS.md replaces
+  duplicated guidance across CLAUDE.md / AGENTS.md. (#1116, #1156)
+
+### Changed
+
+- **`budget_per_story_usd` removed; replaced by
+  `assignment.max_cost_per_story_usd` (BREAKING):** the per-story routing cost
+  cap is now a separate concept from sprint-wide budget, lives under the
+  `assignment:` block, and defaults to `None` (no cap) instead of `$15.0`.
+  Operators using the old key must rename it. (#1311, #1317)
+- **Hardcoded `plan_agent_review.pool` removed from dogfood `forge.yaml`:**
+  adaptive sizes the reviewer pool by complexity. Operators with `pool:` set
+  in their own config should remove it. (#1268)
+- **Routing policy SSOT:** score-to-tier threshold logic that previously lived
+  in three places is consolidated into one source of truth so adaptive
+  decisions are reproducible. (#1107)
+- **Project memory propagated to spawned agents:** dev agents and reviewers
+  spawned in worktree subprocesses inherit project memory instead of starting
+  empty. (#1155)
+
 ### Fixed
 
+- **Audit redaction destroyed context:** redaction replaced entire string
+  values with `[REDACTED]` instead of substituting only the secret substring.
+  Multi-line text containing a secret — story bodies, plans, command output —
+  is now preserved with `[REDACTED]` in place of the secret only. Multiple
+  distinct secrets in a single value are now all redacted. (#799)
+- **Audit redaction bypassed tuples:** secrets stored in tuple values reached
+  the on-disk audit unredacted because the recursive redactor had no tuple
+  branch. Now covered. (#800)
+- **Malformed YAML frontmatter silently dropped dependency declarations:**
+  `depends_on` lines inside a story's broken frontmatter were lost (YAML parse
+  failed, prose scan never saw the block). Now produces a visible operator
+  warning at sprint start and an audit entry. (#880)
+- **Sprint summary disagreed with audit on MERGE_FAILED state:** the queued-PR
+  dep-poll-failure branch updated audit but not sprint-summary, so `forge
+  status` showed DONE for deps that had actually failed to merge. State is now
+  consistent across both surfaces. (#1277)
+- **Disabled advisory issue filing reported prior issues as "newly filed" on
+  every run:** the disabled-filing path overloaded one return channel for
+  "preserved in artifact" and "newly filed this run." Separated. (#1274)
+- **`forge status` MODEL column showed "panel(N)" for completed stories:**
+  completed-story rows now show the dev model that did the work. (#1113)
+- **`forge status` conflated ALREADY_DONE with missing-work failure:** the two
+  states are now distinct in the operator-facing display. (#1200)
+- **`forge status` showed only one sprint with multiple running:** all active
+  sprints are visible. (#1203)
+- **PRESERVED state applied to empty worktrees:** sprint no longer refuses to
+  re-run a story whose "preserved" worktree contains no work. (#1201)
+- **Worktree cleanup left empty `.forge/` subdirectories behind:** stale shells
+  no longer accumulate in `.forge/worktrees/`. (#1190)
+- **Sprint `--resume` manifest included already-merged stories then SKIPPED
+  them with a misleading "workspace creation failed" message:** resume now
+  filters and reports correctly. (#1129)
+- **Cross-sprint conflict detection trusted stale lock files:** PID
+  verification is required before treating a lock as live; single-story
+  conflict no longer aborts the entire sprint; `--force` is honored. (#1264)
+- **Story marked `final_phase: DONE` despite `landing_status: failed`:**
+  terminal-state contradictions in audit and status display are eliminated.
+  (#1262)
+- **Advisory convention violations were recorded only in per-run audit and
+  never aggregated:** rolling artifact aggregates and surfaces them so
+  convention drift is operator-visible instead of accumulating in a black
+  hole. (#1260)
+- **Merge automation crashed on null-byte PR bodies:** LLM-produced PR bodies
+  containing NUL no longer strand dev work. The offending input is captured
+  with a real traceback. (#1256)
+- **Reopen context never entered the sprint contract:** dev agents now reason
+  from reopen comments, not just the original issue body. (#1271)
+- **Preflight SIGKILL fallback was too permissive:** "conservative PROCEED" no
+  longer lets reopened or contract-changed stories sprint without preflight
+  verification. (#1272)
+- **Dev phase had no retry on transient provider errors:** one API hiccup no
+  longer escalates the story; transient failures are retried before
+  escalation. (#1196)
+- **Gate timeout with dev commits was misclassified as terminal:** treated as a
+  retryable validation failure now; dev gets the timeout evidence and a chance
+  to fix. (#1216)
+- **Stuck-pattern detector false-terminated legitimate exploration:** the
+  no-file-modifications arm is demoted to telemetry; termination requires
+  high-confidence signal. (#1215)
+- **CLI runner missed Codex "you've hit your usage limit" signature:** the
+  fallback patterns and resumed-retry path now cover this case. (#1225)
+- **Reviewers passed PRs without verifying acceptance criteria:** review
+  contract now requires checking that ACs are actually fulfilled, not just
+  that the diff is coherent — catching silent-contract-swap merges. (#1224)
+- **Gate scrub left agent CLI binaries on PATH:** auth check now agrees between
+  dev and CI; scrub removes provider CLIs along with credentials. (#1119)
+- **Sprint dependency-prose parser fired false positives on code blocks:**
+  parser ignores code-fenced content and emits accurate guidance. (#1114)
+- **Sprint shape-check read stale `shape-check-v1` comments:** live label state
+  is the source of truth; an issue with the `epic` label removed is no longer
+  skipped. (#1186)
+- **Local shape check keyword-matched against story body:** legitimate words
+  like "umbrella" or "epic" used as use-case labels no longer trigger false
+  `epic_or_tracking` skips. (#1192)
+- **`plan_agent_review: enabled` silently injected `cli: claude` default:**
+  adaptive routing can pick the plan reviewer instead of being preempted by
+  the silent default. (#1310)
+- **Sprint budget carried sunk cost from prior sprints:** budget enforcement
+  is now strictly per-sprint. (#1053)
+- **Sprint intake remediation called a deferred placeholder agent caller:**
+  the configured agent-backed grooming path is invoked instead of the
+  placeholder. (#1270)
+- **Adaptive routing read fragmented model profile history:** canonical model
+  identity consolidates history so promotions operate on full evidence rather
+  than partial. (#1290)
+- **`gate_timeout: 45` was too tight for parallel sprint load:** dogfood
+  default raised; auto-scaling tracked separately for v0.11.0. (#1293)
 - **Stale generated post-run hooks:** `forge check-config` now warns and exits
-  non-zero when the configured generated findings hook is missing static labels
-  or label setup required by the current template. The warning names the stale
-  hook and describes how to refresh it.
+  non-zero when the configured generated findings hook is missing static
+  labels or label setup required by the current template. The warning names
+  the stale hook and describes how to refresh it.
+- **Sprint bundling never fired:** documented bundling was a no-op because
+  eligibility was gated on a per-story preflight flag the prompt never asked
+  the LLM to set. Eligibility is now decided at the sprint scheduler level
+  from preflight signals. (#1348)
+- **Review summary "(persistent)" tag rendered next to wrong severity count:**
+  the tag now describes the matched severity it actually refers to. (#955)
+
+### Removed
+
+- **`budget_per_story_usd`:** see Changed for the rename to
+  `assignment.max_cost_per_story_usd`. (#1311)
+
+### Documentation
+
+- **Post-release doc review for v0.9.0:** verification template forced each
+  claim to be checked against code, not against other docs. Outcomes folded
+  into v0.10.0 as appropriate. (#1185)
 
 ## [0.9.0] — 2026-05-01
 
