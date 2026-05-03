@@ -42,6 +42,53 @@ _VENV_GUARD_RE = re.compile(
 )
 
 
+def _claude_project_slug(path: Path) -> str:
+    """Encode a filesystem path the same way Claude Code names ~/.claude/projects/<slug>/.
+
+    Mirrors runner_claude._get_claude_session_id: replace separators in the resolved
+    absolute path with hyphens. Keep this in sync with that encoding.
+    """
+    return str(path.resolve()).replace("/", "-")
+
+
+def _propagate_claude_memory(project_root: Path, workspace_path: Path) -> None:
+    """Symlink the worktree's Claude project memory dir to the main project's.
+
+    Claude Code stores per-project memory under ~/.claude/projects/<encoded-cwd>/memory/.
+    A worktree's cwd encodes to a different slug than the main project, so a dev
+    subprocess spawned in the worktree starts with empty memory. Symlinking the
+    worktree's memory dir back to the main project's makes them share state, so
+    lessons accumulated by interactive sessions reach forge dev agents.
+
+    Best-effort: failures are logged but never block workspace creation.
+    """
+    try:
+        if workspace_path.resolve() == project_root.resolve():
+            return
+        claude_projects = Path.home() / ".claude" / "projects"
+        if not claude_projects.is_dir():
+            return
+        main_memory = claude_projects / _claude_project_slug(project_root) / "memory"
+        if not main_memory.is_dir():
+            return
+        worktree_proj_dir = claude_projects / _claude_project_slug(workspace_path)
+        worktree_proj_dir.mkdir(parents=True, exist_ok=True)
+        link = worktree_proj_dir / "memory"
+        if link.is_symlink():
+            try:
+                if link.resolve() == main_memory.resolve():
+                    return
+            except OSError:
+                pass
+            link.unlink()
+        elif link.exists():
+            # Real directory already present — don't clobber unknown user data.
+            return
+        link.symlink_to(main_memory, target_is_directory=True)
+    except OSError as exc:
+        _cu._log(f"⚠ WORKSPACE  failed to propagate Claude memory: {exc}")
+
+
 def _resolve_setup_command(cmd: str) -> str:
     """Replace {forge_python} with the shell-safe path to the running interpreter.
 
@@ -694,6 +741,7 @@ def _create_workspace(
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path, purge=True)
+            _propagate_claude_memory(config.project_root, workspace_path)
             return workspace_path, branch_name, None
 
     if not no_pull:
@@ -726,6 +774,7 @@ def _create_workspace(
                     if not ok_s:
                         return None, None, f"Workspace setup command failed: {out_s}"
                 _deindex_forge_artifacts(existing_wt, purge=True)
+                _propagate_claude_memory(config.project_root, existing_wt)
                 return existing_wt, branch_name, None
             else:
                 _cu._log("⚠ WORKSPACE  linked worktree directory missing — pruning")
@@ -753,6 +802,7 @@ def _create_workspace(
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path, purge=True)
+            _propagate_claude_memory(config.project_root, workspace_path)
             return workspace_path, branch_name, None
         else:
             _cu._log(
@@ -780,4 +830,5 @@ def _create_workspace(
             return None, None, f"Workspace setup command failed: {output}"
 
     _deindex_forge_artifacts(workspace_path, purge=True)
+    _propagate_claude_memory(config.project_root, workspace_path)
     return workspace_path, branch_name, None
