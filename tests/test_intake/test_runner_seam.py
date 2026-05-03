@@ -9,9 +9,19 @@ must have a seam-level test that doesn't rely on the full sprint pipeline.
 
 from __future__ import annotations
 
-from theforge.intake import IntakeFinding, IntakeSeverity
+from unittest.mock import patch
+
+from theforge.config import (
+    DEFAULT_DEV_PROFILE,
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_REVIEW_PROFILE,
+    DEFAULT_VALIDATION,
+    ForgeConfig,
+    RetryPolicy,
+    WorkspaceConfig,
+)
 from theforge.sprint.query import NormalizedDependencyPlan
-from theforge.sprint.runner import _filter_normalized_for_intake, _intake_agent_caller_stub
+from theforge.sprint.runner import _build_intake_agent_caller, _filter_normalized_for_intake
 from theforge.task import TaskStory
 
 
@@ -43,13 +53,24 @@ def test_filter_preserves_existing_blocked_entries():
     assert "a" in new.blocked["b"]
 
 
-def test_intake_agent_caller_stub_returns_none():
-    findings = [
-        IntakeFinding(
-            code="missing_acceptance_criteria",
-            severity=IntakeSeverity.BLOCK,
-            location="acceptance_criteria",
-            problem="no AC",
-        )
-    ]
-    assert _intake_agent_caller_stub("body", findings) is None
+def test_build_intake_agent_caller_returns_none_when_profile_unavailable(tmp_path):
+    config = ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+    )
+    with patch("theforge.sprint.runner.check_agent_auth", return_value=(False, "auth missing")):
+        caller, detail = _build_intake_agent_caller(config=config, log=lambda *_: None)
+
+    assert caller is None
+    assert "auth missing" in detail
