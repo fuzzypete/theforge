@@ -127,3 +127,58 @@ def test_update_advisory_violations_files_issue_once_when_enabled(tmp_path):
     assert entry["issue"]["url"] == "https://github.com/example/repo/issues/123"
     assert entry["issue"]["label"] == "refactor-debt"
     assert entry["issue"]["milestone"] == "v0.12.0"
+
+
+def test_update_advisory_violations_disabled_filing_does_not_report_prior_issue_as_newly_filed(
+    tmp_path,
+):
+    # First run: filing enabled, issue gets created.
+    config_enabled = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            issue_filing=AdvisoryIssueFilingConfig(
+                enabled=True,
+                threshold_percent=25.0,
+                label="refactor-debt",
+            )
+        ),
+    )
+    observed_at = dt.datetime(2026, 5, 2, 18, 45, tzinfo=dt.timezone.utc)
+    gh_result = subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=0,
+        stdout="https://github.com/example/repo/issues/99\n",
+        stderr="",
+    )
+    with patch("theforge.advisory_conventions.subprocess.run", return_value=gh_result):
+        result_run1 = update_advisory_violations(
+            config_enabled,
+            [_violation()],
+            observed_at=observed_at,
+            run_id="run-a",
+            story_slug="story-a",
+        )
+    assert len(result_run1["newly_filed_issues"]) == 1
+
+    # Second and third runs: filing disabled. Prior issue block must be preserved
+    # in the artifact but must NOT appear in newly_filed_issues.
+    config_disabled = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            issue_filing=AdvisoryIssueFilingConfig(enabled=False)
+        ),
+    )
+    for run_id in ("run-b", "run-c"):
+        result = update_advisory_violations(
+            config_disabled,
+            [_violation(line_count=970)],
+            observed_at=observed_at + dt.timedelta(hours=1),
+            run_id=run_id,
+            story_slug="story-b",
+        )
+        assert result["newly_filed_issues"] == [], f"{run_id}: expected no newly-filed issues"
+        artifact = load_advisory_summary(config_disabled)
+        entry = next(iter(artifact["entries"].values()))
+        assert entry["issue"]["url"] == "https://github.com/example/repo/issues/99", (
+            f"{run_id}: prior issue block must be preserved in artifact"
+        )

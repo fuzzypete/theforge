@@ -170,7 +170,7 @@ def _entry_percent_over(entry: dict[str, Any]) -> float | None:
 def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, Any] | None:
     issue_cfg = config.conventions_advisory.issue_filing
     if not issue_cfg.enabled:
-        return entry.get("issue") if isinstance(entry.get("issue"), dict) else None
+        return None
     if isinstance(entry.get("issue"), dict):
         return entry["issue"]
     percent_over = _entry_percent_over(entry)
