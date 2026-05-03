@@ -512,6 +512,141 @@ def check_implementation_design_dump(
     return None
 
 
+_PLAN_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+"
+    r"(?P<title>"
+    r"design"
+    r"|implementation(?:\s+(?:plan|notes|details|strategy|approach))?"
+    r"|technical\s+design"
+    r"|proposed\s+(?:implementation|design|approach)"
+    r")\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_FILE_LINE_RE = re.compile(
+    r"(?<![\w/])"
+    r"(?P<path>(?:[\w][\w./-]*/)?[\w][\w.-]*\.(?:py|pyi|js|jsx|ts|tsx|yaml|yml|json|sh|toml|rs|go|java|rb))"
+    r":(?P<line>\d+)\b"
+)
+
+_FILE_PATH_RE = re.compile(
+    r"(?<![\w/])"
+    r"(?:[\w][\w.-]*/)+[\w][\w.-]*\.(?:py|pyi|js|jsx|ts|tsx|yaml|yml|json|sh|toml|rs|go|java|rb|md)"
+    r"(?![\w./])"
+)
+
+_PLAN_EXCEPTION_RE = re.compile(
+    r"^\s*(?:implementation\s+target|refactor\s+target)\s*:\s*\S",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_FENCE_RE = re.compile(r"^\s*```")
+
+
+def _strip_fenced_blocks(body: str) -> str:
+    out: list[str] = []
+    in_fence = False
+    for line in body.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_EXAMPLE_HEADING_RE = re.compile(
+    r"^\s{0,3}(?P<hashes>#{1,6})\s+"
+    r"(?:examples?|target(?:\s+(?:sketch|output|state))?|"
+    r"what\s+it\s+should\s+look\s+like)"
+    r"\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_example_section(body: str) -> str:
+    out: list[str] = []
+    skip_level: int | None = None
+    for line in body.splitlines():
+        if skip_level is not None:
+            heading_m = re.match(r"^\s{0,3}(#{1,6})\s+", line)
+            if heading_m and len(heading_m.group(1)) <= skip_level:
+                skip_level = None
+                out.append(line)
+            continue
+        m = _EXAMPLE_HEADING_RE.match(line)
+        if m:
+            skip_level = len(m.group("hashes"))
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def check_implementation_plan_in_body(
+    title: str, body: str, labels: Iterable[str]
+) -> Reason | None:
+    """Flag issue bodies that contain implementation-plan content (HOW, not WHAT).
+
+    A story body is meant to describe observable behavior. When it instead
+    pre-names file paths, function signatures, line numbers, or carries a
+    ``## Design`` section, the body becomes a structural plan that dev agents
+    can verify against existing code while missing the actually-undelivered
+    behavior — the failure mode documented in superseded issue #1110.
+
+    Bug-format issues are exempt because their Diagnosis section is required
+    to name the affected code path. Stories that legitimately describe a
+    refactor of one named module can opt out by adding a body line of the form
+    ``Implementation target: <path>``.
+    """
+    if is_bug_format_issue(body, labels):
+        return None
+    if _PLAN_EXCEPTION_RE.search(body):
+        return None
+
+    pruned = _strip_example_section(_strip_fenced_blocks(body))
+
+    signals: list[str] = []
+
+    heading_match = _PLAN_HEADING_RE.search(pruned)
+    if heading_match is not None:
+        heading_text = heading_match.group(0).strip()
+        signals.append(f"plan-style heading {heading_text!r}")
+
+    file_line_hits = [m.group(0) for m in _FILE_LINE_RE.finditer(pruned)]
+    if file_line_hits:
+        sample = sorted(set(file_line_hits))[:3]
+        signals.append(f"{len(file_line_hits)} file:line reference(s) (e.g. {', '.join(sample)})")
+
+    pruned_no_fileline = _FILE_LINE_RE.sub("", pruned)
+    path_hits = _FILE_PATH_RE.findall(pruned_no_fileline)
+    distinct_paths = sorted(set(path_hits))
+    if distinct_paths:
+        sample = distinct_paths[:3]
+        signals.append(
+            f"{len(path_hits)} file path reference(s) "
+            f"({len(distinct_paths)} distinct, e.g. {', '.join(sample)})"
+        )
+
+    fires = heading_match is not None or bool(file_line_hits) or len(distinct_paths) >= 2
+    if not fires:
+        return None
+
+    return Reason(
+        code="implementation_plan_in_body",
+        severity=Severity.BLOCKING,
+        detail=(
+            "Body contains implementation-plan content (HOW belongs in the plan "
+            "phase, not the issue body): "
+            + "; ".join(signals)
+            + ". Rewrite acceptance criteria as observable behavior and remove "
+            "any ## Design / ## Implementation section. To opt out for a "
+            "legitimate single-file refactor, add a body line "
+            "'Implementation target: <path>'."
+        ),
+    )
+
+
 def check_no_observable_done_state(title: str, body: str, labels: Iterable[str]) -> Reason | None:
     if is_bug_format_issue(body, labels):
         return None

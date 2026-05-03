@@ -416,6 +416,15 @@ def build_review_prompt(
           that may be stale or wrong. Notes are NOT acceptance criteria — do not
           flag a spec mismatch because reality diverges from a Note. Only evaluate
           compliance against explicit acceptance criteria and requirements.
+        - **WHAT-not-HOW body rule**: An issue body must describe observable
+          behavior, not implementation. If the spec body contains a `## Design`
+          (or equivalent) section, file paths, function names, or line numbers
+          in its acceptance criteria, treat those as informational only —
+          verify the implementation against the *behavior* the criterion
+          describes, not against the named code locations. The shape gate
+          flags such bodies as `implementation_plan_in_body`; if you see a
+          body that should have been flagged but slipped through, note it
+          in `summary` so the operator can re-shape the issue.
         - **Spec-to-runtime traceability**: For each AC in the spec, verify
           BOTH layers: (a) the logic exists in the codebase, AND (b) it is
           actually invoked at runtime by the calling code. Code that produces
