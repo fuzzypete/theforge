@@ -328,28 +328,6 @@ def _parse_preflight_contract_change(output: str) -> bool:
     return False
 
 
-def _parse_preflight_bundle_candidate(output: str) -> bool:
-    """Extract bundle_candidate from preflight agent output. Defaults to False."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-
-    try:
-        parsed = yaml.safe_load(yaml_text)
-        if isinstance(parsed, dict):
-            return bool(parsed.get("bundle_candidate", False))
-    except yaml.YAMLError:
-        pass
-
-    return False
-
-
 def _parse_preflight_work_type(output: str) -> str:
     """Extract work_type from preflight agent output. Defaults to 'feature' if absent."""
     yaml_text = output

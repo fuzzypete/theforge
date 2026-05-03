@@ -145,27 +145,32 @@ plan:
     assert preflight_states[slug].preflight_likely_files == ["src/foo.py", "tests/test_foo.py"]
 
 
-def test_compute_bundle_assignments_respects_preflight_bundle_candidate_false() -> None:
+def test_compute_bundle_assignments_does_not_require_preflight_flag() -> None:
+    """Bundling eligibility is purely relational — no per-story LLM flag is consulted.
+
+    The legacy preflight_bundle_candidate flag has been removed as a gating input
+    (the preflight prompt never asked for it and the decision is cross-story).
+    Two small bug stories sharing an area: tag must bundle regardless of whether
+    the legacy flag was True or False on either side.
+    """
     tasks = [
-        _task("story-12", 12),
-        _task("story-15", 15),
+        TaskStory(
+            name="story-12",
+            slug="story-12",
+            story_path=Path("stories/story-12.md"),
+            depends_on=[],
+            github_issue=12,
+            story_text="Area: api",
+        ),
+        TaskStory(
+            name="story-15",
+            slug="story-15",
+            story_path=Path("stories/story-15.md"),
+            depends_on=[],
+            github_issue=15,
+            story_text="Area: api",
+        ),
     ]
-    tasks[0] = TaskStory(
-        name=tasks[0].name,
-        slug=tasks[0].slug,
-        story_path=tasks[0].story_path,
-        depends_on=tasks[0].depends_on,
-        github_issue=tasks[0].github_issue,
-        story_text="Area: api",
-    )
-    tasks[1] = TaskStory(
-        name=tasks[1].name,
-        slug=tasks[1].slug,
-        story_path=tasks[1].story_path,
-        depends_on=tasks[1].depends_on,
-        github_issue=tasks[1].github_issue,
-        story_text="Area: api",
-    )
     states = {
         "story-12": CoordinatorState(
             preflight_work_type="bug",
@@ -176,12 +181,12 @@ def test_compute_bundle_assignments_respects_preflight_bundle_candidate_false() 
         "story-15": CoordinatorState(
             preflight_work_type="bug",
             preflight_complexity="small",
-            preflight_bundle_candidate=True,
+            preflight_bundle_candidate=False,
             preflight_likely_files=["src/api.py"],
         ),
     }
 
-    assert compute_bundle_assignments(states, tasks) == []
+    assert compute_bundle_assignments(states, tasks) == [["story-12", "story-15"]]
 
 
 def test_compute_bundle_assignments_uses_complexity_weights_under_ceiling() -> None:
@@ -207,13 +212,11 @@ def test_compute_bundle_assignments_uses_complexity_weights_under_ceiling() -> N
         "story-12": CoordinatorState(
             preflight_work_type="bug",
             preflight_complexity="small",
-            preflight_bundle_candidate=True,
             preflight_likely_files=["src/api.py"],
         ),
         "story-15": CoordinatorState(
             preflight_work_type="bug",
             preflight_complexity="small",
-            preflight_bundle_candidate=True,
             preflight_likely_files=["src/api.py"],
         ),
     }
@@ -222,3 +225,93 @@ def test_compute_bundle_assignments_uses_complexity_weights_under_ceiling() -> N
         ["story-12", "story-15"]
     ]
     assert compute_bundle_assignments(states, tasks, complexity_ceiling=1) == []
+
+
+def test_compute_bundle_assignments_redact_py_pair() -> None:
+    """The #799/#800 fixture: two small redact.py bug fixes must bundle.
+
+    This is the canonical case from issue #1348 — two stories with work_type=bug,
+    complexity=small, and identical single-file likely_files were never bundling
+    because the prior gate required an LLM-emitted flag the preflight prompt did
+    not ask for. The new contract is purely relational: shared known footprint
+    + work_type + complexity is sufficient.
+    """
+    tasks = [
+        TaskStory(
+            name="issue-799",
+            slug="issue-799",
+            story_path=Path("stories/issue-799.md"),
+            depends_on=[],
+            github_issue=799,
+        ),
+        TaskStory(
+            name="issue-800",
+            slug="issue-800",
+            story_path=Path("stories/issue-800.md"),
+            depends_on=[],
+            github_issue=800,
+        ),
+    ]
+    states = {
+        "issue-799": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_likely_files=["src/theforge/coordinator/redact.py"],
+        ),
+        "issue-800": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_likely_files=["src/theforge/coordinator/redact.py"],
+        ),
+    }
+
+    assert compute_bundle_assignments(states, tasks) == [["issue-799", "issue-800"]]
+
+
+def test_bundle_overlap_fails_closed_on_unknown_likely_files() -> None:
+    """Bundling refuses to glue stories together when likely_files is unknown.
+
+    Asymmetric default vs. collision-DAG: bundle path requires positive evidence
+    of overlap (matching area: tag or known-files intersection). Two stories
+    with no area: tag and likely_files=None must NOT bundle.
+    """
+    tasks = [
+        _task("story-12", 12),
+        _task("story-15", 15),
+    ]
+    states = {
+        "story-12": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_likely_files=None,
+        ),
+        "story-15": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_likely_files=None,
+        ),
+    }
+
+    assert compute_bundle_assignments(states, tasks) == []
+
+
+def test_collision_dag_serializes_unknown_footprint_pair() -> None:
+    """Collision-DAG must continue to fail-closed in the over-serialize direction.
+
+    The asymmetric overlap-default contract: bundling refuses to glue unknown
+    footprints (above), but the collision-DAG path is unaffected by the new
+    bundle predicate — it uses likely_files indexing in compute_synthetic_edges,
+    so two stories sharing a known file still get serialized. This test locks in
+    that the bundle-side change does not regress the DAG-side behavior for the
+    known-overlap case.
+    """
+    tasks = [
+        _task("story-12", 12),
+        _task("story-15", 15),
+    ]
+    states = {
+        "story-12": CoordinatorState(preflight_likely_files=["src/shared.py"]),
+        "story-15": CoordinatorState(preflight_likely_files=["src/shared.py"]),
+    }
+
+    assert compute_synthetic_edges(states, tasks) == {"story-15": ["story-12"]}

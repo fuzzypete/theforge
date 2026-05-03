@@ -1517,6 +1517,13 @@ def run_sprint(
     bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)
     if bundle_assignments:
         _log(f"Computed deterministic bundles: {bundle_assignments}")
+    # Audit signal: stamp scheduler decision onto preflight_states so downstream
+    # audit serialization (per-story sprint audit, cached_preflight_state carry)
+    # reflects the actual bundling decision. The field used to be sourced from
+    # preflight LLM output and is now scheduler-written.
+    _scheduled_bundled_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
+    for _slug, _state in preflight_states.items():
+        _state.preflight_bundle_candidate = _slug in _scheduled_bundled_slugs
     synthetic_edges = compute_synthetic_edges(preflight_states, normalized.tasks)
     if synthetic_edges:
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")

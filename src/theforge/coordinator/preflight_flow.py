@@ -39,7 +39,6 @@ from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
     _apply_preflight_config,
     _detect_large_preflight_story_categories,
-    _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
     _parse_preflight_complexity_score,
     _parse_preflight_contract_change,
@@ -425,8 +424,9 @@ def _run_preflight_phase(
         state.preflight_work_type = work_type
         contract_change = _parse_preflight_contract_change(preflight_result.output)
         state.preflight_contract_change = contract_change
-        bundle_candidate = _parse_preflight_bundle_candidate(preflight_result.output)
-        state.preflight_bundle_candidate = bundle_candidate
+        # preflight_bundle_candidate is no longer sourced from the preflight LLM —
+        # the prompt never asked for it and the decision is relational (cross-story).
+        # The sprint scheduler writes this field after compute_bundle_assignments.
         criteria_checked = _parse_preflight_criteria_checked(preflight_result.output)
         state.preflight_criteria_checked = criteria_checked
 
@@ -518,7 +518,6 @@ def _run_preflight_phase(
         _log(f"  Sufficiency: {sufficiency}")
         _log(f"  Work type: {work_type}")
         _log(f"  Contract change: {contract_change}")
-        _log(f"  Bundle candidate: {bundle_candidate}")
         if _warnings:
             _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
         if _likely_files is not None:
@@ -615,7 +614,6 @@ def _run_preflight_phase(
             state.preflight_work_type = "bug"
         else:
             state.preflight_work_type = "feature"
-        state.preflight_bundle_candidate = False
 
     if state_update_fn is not None:
         state_update_fn(

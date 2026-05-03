@@ -45,13 +45,14 @@ def _extract_area_label(task: TaskStory) -> str | None:
 
 
 def build_bundle_hint(task: TaskStory, state: CoordinatorState) -> BundleHint:
+    # Eligibility is per-story prerequisite only — work_type + complexity. The
+    # cross-story relational decision (overlap with a sibling) lives in
+    # compute_bundle_assignments. The legacy LLM-emitted preflight_bundle_candidate
+    # flag is no longer consulted here; the field is now scheduler-written audit
+    # output meaning "the scheduler placed this story in a bundle".
     work_type = state.preflight_work_type
     complexity = state.preflight_complexity
-    bundle_candidate = bool(
-        state.preflight_bundle_candidate
-        and work_type in {"bug", "mechanical"}
-        and complexity == "small"
-    )
+    bundle_candidate = bool(work_type in {"bug", "mechanical"} and complexity == "small")
     return BundleHint(
         slug=task.slug,
         work_type=work_type,
@@ -71,7 +72,28 @@ def _bundle_sort_key(task: TaskStory) -> tuple[int, str]:
     return (issue if issue is not None else sys.maxsize, task.slug)
 
 
-def _tasks_overlap_by_signal(left: BundleHint, right: BundleHint) -> bool:
+def _bundle_overlap(left: BundleHint, right: BundleHint) -> bool:
+    """Bundling overlap predicate — fail-closed on unknown footprint.
+
+    Returning True means the two stories may safely share a single dev pass.
+    Unknown likely_files on either side is NOT enough to glue stories together
+    (would risk merging unrelated work into one PR), so we require an explicit
+    overlap signal: matching area: labels, OR a known-files intersection.
+    """
+    if left.area is not None and left.area == right.area:
+        return True
+    if left.likely_files is None or right.likely_files is None:
+        return False
+    return bool(set(left.likely_files) & set(right.likely_files))
+
+
+def _collision_overlap(left: BundleHint, right: BundleHint) -> bool:
+    """Collision-DAG overlap predicate — fail-closed on unknown footprint.
+
+    Returning True means the two stories must serialize. Unknown likely_files
+    forces serialization because letting an undetected conflict run in parallel
+    is a worse failure than over-serializing safe parallel work.
+    """
     if left.area is not None and left.area == right.area:
         return True
     if left.likely_files is None or right.likely_files is None:
@@ -130,7 +152,7 @@ def compute_bundle_assignments(
                 continue
             if total_complexity + candidate_complexity > complexity_ceiling:
                 continue
-            if not _tasks_overlap_by_signal(hint, candidate_hint):
+            if not _bundle_overlap(hint, candidate_hint):
                 continue
             if task.slug in candidate.depends_on or candidate.slug in task.depends_on:
                 continue
