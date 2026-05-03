@@ -11,6 +11,11 @@ injectable callables so the module remains testable without network.
 
 from __future__ import annotations
 
+from .agent_rewrite import (
+    AgentRewriteResult,
+    build_agent_rewrite_prompt,
+    parse_agent_rewrite_output,
+)
 from .findings import (
     FixType,
     IntakeFinding,
@@ -27,12 +32,15 @@ from .remediation import (
 
 __all__ = [
     "FixType",
+    "AgentRewriteResult",
     "IntakeFinding",
     "IntakeOutcome",
     "IntakeOutcomeKind",
     "IntakeSeverity",
     "apply_mechanical_fixes",
+    "build_agent_rewrite_prompt",
     "findings_from_shape_result",
     "groom_check",
+    "parse_agent_rewrite_output",
     "run_intake_remediation",
 ]

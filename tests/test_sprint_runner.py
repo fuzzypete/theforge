@@ -23,6 +23,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.config.types import IntakeConfig
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint.dag import (
     StoryDAG,
@@ -32,9 +33,11 @@ from theforge.sprint.dag import (
 )
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
+    _build_intake_agent_caller,
     _make_worker_phase_fn,
     _refresh_external_satisfied,
     _run_baseline_gate,
+    _run_intake_remediation_pass,
     _terminal_story_model,
     run_sprint,
 )
@@ -82,6 +85,57 @@ def _make_result_with_dev_runs(*dev_results: AgentResult) -> CoordinatorResult:
         state=state,
         message="done",
     )
+
+
+def test_build_intake_agent_caller_uses_configured_runner(tmp_path: Path) -> None:
+    config = _make_runner_config(tmp_path)
+    with (
+        patch("theforge.sprint.runner.check_agent_auth", return_value=(True, "")),
+        patch("theforge.sprint.runner.run_agent") as mock_run_agent,
+        patch("theforge.sprint.runner.log_agent_result"),
+    ):
+        mock_run_agent.return_value = AgentResult(
+            success=True,
+            output="```markdown\n## What\n\nRewritten.\n```",
+            session_id=None,
+            cost_usd=0.12,
+            exit_code=0,
+            raw={},
+            profile_name="intake-remediation",
+            model_used="sonnet",
+            transport_used="cli",
+        )
+        caller, detail = _build_intake_agent_caller(config=config, log=lambda *_: None)
+        assert detail == ""
+        assert caller is not None
+        result = caller("old body", [])
+
+    assert result.replacement == "## What\n\nRewritten."
+    assert result.model_used == "sonnet"
+    assert result.cost_usd == 0.12
+    assert result.transport_used == "cli"
+
+
+def test_run_intake_remediation_pass_records_missing_caller_reason(tmp_path: Path) -> None:
+    config = _make_runner_config(tmp_path)
+    config = replace(
+        config,
+        intake=IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+    task = TaskStory(name="Issue 7", slug="issue-7", github_issue=7)
+
+    with (
+        patch(
+            "theforge.sprint.runner._build_intake_agent_caller",
+            return_value=(None, "auth missing"),
+        ),
+        patch("theforge.sprint.runner.run_intake_remediation") as mock_run,
+    ):
+        mock_run.return_value = {"issue-7": MagicMock()}
+        _run_intake_remediation_pass(config=config, tasks=[task], log=lambda *_: None)
+
+    assert mock_run.call_args.kwargs["agent_caller"] is None
+    assert mock_run.call_args.kwargs["missing_agent_detail"] == "auth missing"
 
 
 # ── build_dag: unknown slug handling ──────────────────────────────────

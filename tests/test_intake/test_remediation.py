@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from theforge.intake import (
+    AgentRewriteResult,
     IntakeOutcomeKind,
     run_intake_remediation,
 )
@@ -97,7 +98,7 @@ def test_auto_fix_comment_mode_posts_replacement_and_drops():
     edit_body, edit_calls = _record_calls()
 
     def agent(body, findings):
-        return _PASSING_BODY
+        return AgentRewriteResult(replacement=_PASSING_BODY, detail="agent produced replacement")
 
     outcomes = run_intake_remediation(
         [task],
@@ -124,7 +125,7 @@ def test_auto_fix_edit_mode_updates_body_and_remediates():
     edit_body, edit_calls = _record_calls()
 
     def agent(body, findings):
-        return _PASSING_BODY
+        return AgentRewriteResult(replacement=_PASSING_BODY, detail="agent produced replacement")
 
     outcomes = run_intake_remediation(
         [task],
@@ -140,6 +141,7 @@ def test_auto_fix_edit_mode_updates_body_and_remediates():
     out = outcomes[task.slug]
     assert out.kind is IntakeOutcomeKind.REMEDIATED
     assert out.proposed_replacement == _PASSING_BODY
+    assert out.audit["remediation_source"] == "agent"
     assert len(edit_calls) == 1
     assert post_calls == []
 
@@ -150,7 +152,7 @@ def test_auto_fix_edit_mode_keeps_failing_body_off_issue():
     edit_body, edit_calls = _record_calls()
 
     def agent(body, findings):
-        return _FAILING_BODY  # still failing
+        return AgentRewriteResult(replacement=_FAILING_BODY, detail="agent produced replacement")
 
     outcomes = run_intake_remediation(
         [task],
@@ -174,7 +176,7 @@ def test_agent_called_at_most_once_per_story():
 
     def agent(body, findings):
         calls.append(1)
-        return _PASSING_BODY
+        return AgentRewriteResult(replacement=_PASSING_BODY, detail="agent produced replacement")
 
     run_intake_remediation(
         [task],
@@ -212,3 +214,67 @@ def test_failed_fetch_falls_open():
         fetch_detail=lambda *_: None,
     )
     assert outcomes[task.slug].kind is IntakeOutcomeKind.PASSED
+
+
+def test_missing_agent_caller_fails_explicitly():
+    task = _make_task()
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        agent_caller=None,
+        missing_agent_detail=(
+            "auto-fix enabled but no intake agent caller is available: auth missing"
+        ),
+        fetch_detail=_make_fetch({"title": "T", "body": _FAILING_BODY, "labels": ["enhancement"]}),
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_SHAPE
+    assert out.detail == "auto-fix enabled but no intake agent caller is available: auth missing"
+    assert out.audit["remediation_source"] == "missing_agent"
+    assert out.audit["agent"]["attempted"] is False
+
+
+def test_mechanical_only_remediation_is_distinguished_from_agent_flow():
+    task = _make_task()
+    post_comment, post_calls = _record_calls()
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=False,
+        auto_fix_enabled=True,
+        auto_fix_mode="comment",
+        fetch_detail=_make_fetch({"title": "T", "body": _PASSING_BODY, "labels": []}),
+        post_comment=post_comment,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_SHAPE
+    assert out.audit["remediation_source"] == "mechanical"
+    assert out.audit["agent"]["attempted"] is False
+    assert len(out.audit["mechanical_findings"]) == 1
+    assert post_calls
+
+
+def test_agent_no_output_is_distinguished_in_audit():
+    task = _make_task()
+
+    def agent(body, findings):
+        return AgentRewriteResult(replacement=None, detail="model refused rewrite", attempted=True)
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch({"title": "T", "body": _FAILING_BODY, "labels": ["enhancement"]}),
+        post_comment=lambda *_: True,
+        edit_body=lambda *_: True,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.detail == "model refused rewrite"
+    assert out.audit["remediation_source"] == "agent_no_output"
+    assert out.audit["agent"]["attempted"] is True

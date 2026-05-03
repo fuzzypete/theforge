@@ -12,11 +12,13 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
 
 from ..config import ForgeConfig
+from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
 from ..coordinator.gate import run_gate_full
@@ -32,8 +34,11 @@ from ..coordinator.util import (
 )
 from ..coordinator.workspace import sweep_orphan_worktrees
 from ..intake import (
+    AgentRewriteResult,
     IntakeOutcome,
     IntakeOutcomeKind,
+    build_agent_rewrite_prompt,
+    parse_agent_rewrite_output,
     run_intake_remediation,
 )
 from ..log_util import _log_line
@@ -73,6 +78,8 @@ from .state_writer import SprintStateWriter
 from .story_state import SprintStoryState, StoryOutcome, coerce_outcome
 
 _UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
+run_agent = None
+log_agent_result = None
 
 
 def _log(msg: str) -> None:
@@ -88,23 +95,75 @@ def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
     _deindex_forge_artifacts(config.project_root)
 
 
-def _intake_agent_caller_stub(_body: str, findings: list) -> str | None:
-    """Minimal default agent caller for the intake remediation gate.
+def _ensure_intake_runner() -> None:
+    global run_agent, log_agent_result
+    if run_agent is not None and log_agent_result is not None:
+        return
+    import theforge.runners as _r  # noqa: PLC0415
 
-    A real LLM-backed rewrite is a deferred follow-up; until that lands,
-    this stub records the deferral explicitly in the sprint log and returns
-    None so the orchestrator routes the story to DROPPED_AFTER_FIX (with
-    findings preserved) instead of silently masquerading as DROPPED_SHAPE.
-    The intent: an operator who sets ``intake.auto_fix: true`` and sees a
-    drop should be able to tell from the audit trail that the agent path
-    fired but produced no rewrite, not that auto-fix was never attempted.
-    """
-    codes = ", ".join(getattr(f, "code", "?") for f in findings)
-    _log(
-        "Intake auto-fix agent caller is a stub (no LLM wired). "
-        f"Returning no rewrite for {len(findings)} semantic finding(s): {codes}"
-    )
-    return None
+    if run_agent is None:
+        run_agent = _r.run_agent
+    if log_agent_result is None:
+        log_agent_result = _r.log_agent_result
+
+
+def _build_intake_agent_caller(
+    *,
+    config: ForgeConfig,
+    log: Callable[[str], None],
+) -> tuple[Callable[[str, list], AgentRewriteResult] | None, str]:
+    """Build the configured intake remediation caller or return an explicit reason."""
+    _ensure_intake_runner()
+    try:
+        profile = replace(
+            config.dev_profile,
+            name="intake-remediation",
+            phase="preflight",
+            allowed_tools=(),
+        )
+    except TypeError:
+        detail = "auto-fix enabled but no intake agent caller is available: invalid dev profile"
+        log(detail)
+        return None, detail
+    ready, reason = check_agent_auth(profile, config.secrets)
+    if not ready:
+        detail = f"auto-fix enabled but no intake agent caller is available: {reason}"
+        log(f"Intake remediation agent unavailable: {reason}")
+        return None, detail
+
+    def _call(body: str, findings: list) -> AgentRewriteResult:
+        prompt = build_agent_rewrite_prompt(body, findings)
+        result = run_agent(
+            prompt=prompt,
+            profile=profile,
+            working_dir=config.project_root,
+            quiet=True,
+            secrets=config.secrets,
+            plain_text=True,
+        )
+        log_agent_result(result, "INTAKE_REMEDIATION")
+        if not result.success:
+            output_snippet = (result.output or "").strip()[:200] or "unknown error"
+            detail = f"agent invocation failed: {output_snippet}"
+            return AgentRewriteResult(
+                replacement=None,
+                detail=detail,
+                attempted=True,
+                profile_name=profile.name,
+                model_used=result.model_used or profile.model,
+                cost_usd=result.cost_usd,
+                transport_used=result.transport_used,
+            )
+        parsed = parse_agent_rewrite_output(result.output)
+        return replace(
+            parsed,
+            profile_name=profile.name,
+            model_used=result.model_used or profile.model,
+            cost_usd=result.cost_usd,
+            transport_used=result.transport_used,
+        )
+
+    return _call, ""
 
 
 def _run_intake_remediation_pass(
@@ -120,22 +179,34 @@ def _run_intake_remediation_pass(
     that case, preserving today's behavior exactly.
     """
     intake_cfg = getattr(config, "intake", None)
-    grooming_enabled = bool(getattr(intake_cfg, "grooming", False))
-    auto_fix_enabled = bool(getattr(intake_cfg, "auto_fix", False))
-    auto_fix_mode = getattr(intake_cfg, "auto_fix_mode", "comment") or "comment"
+    grooming_raw = getattr(intake_cfg, "grooming", False)
+    auto_fix_raw = getattr(intake_cfg, "auto_fix", False)
+    auto_fix_mode_raw = getattr(intake_cfg, "auto_fix_mode", "comment")
+    grooming_enabled = grooming_raw if isinstance(grooming_raw, bool) else False
+    auto_fix_enabled = auto_fix_raw if isinstance(auto_fix_raw, bool) else False
+    auto_fix_mode = auto_fix_mode_raw if isinstance(auto_fix_mode_raw, str) else "comment"
+    auto_fix_mode = auto_fix_mode or "comment"
     if not grooming_enabled and not auto_fix_enabled:
         return {}
     log(
         "Intake remediation gate: grooming="
         f"{grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode}"
     )
+    agent_caller = None
+    missing_agent_detail = "auto-fix enabled but no agent caller wired"
+    if auto_fix_enabled:
+        agent_caller, missing_agent_detail = _build_intake_agent_caller(
+            config=config,
+            log=log,
+        )
     return run_intake_remediation(
         tasks,
         config.project_root,
         grooming_enabled=grooming_enabled,
         auto_fix_enabled=auto_fix_enabled,
         auto_fix_mode=auto_fix_mode,
-        agent_caller=_intake_agent_caller_stub if auto_fix_enabled else None,
+        agent_caller=agent_caller,
+        missing_agent_detail=missing_agent_detail,
     )
 
 
@@ -1397,6 +1468,7 @@ def run_sprint(
                     "intake_kind": outcome.kind.value,
                     "intake_findings": [f.as_dict() for f in outcome.findings],
                     "intake_detail": outcome.detail,
+                    "intake_audit": dict(outcome.audit),
                 },
                 reason=outcome.detail or outcome.kind.value,
             )
