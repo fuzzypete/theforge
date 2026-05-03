@@ -42,7 +42,7 @@ title (or overridden in the sprint manifest), and the issue title supplies
 |-------|----------|---------|-------------|
 | `name` | Yes | — | Human-readable title. Shows in logs and audit. |
 | `slug` | Yes | — | Branch name (`forge/{slug}`), worktree path. Lowercase-with-dashes. |
-| `test_target` | No | `tests/` | Stack-neutral test target substituted for `{test_target}` in the gate command. |
+| `test_target` | No | `.` | Stack-neutral test target substituted for `{test_target}` in the gate command. |
 | `gate` | No | project default | Override gate: `"none"` (skip), `"lint"`, or custom command. |
 | `depends_on` | No | `[]` | Slugs that must be merged before this story runs (sprint mode). |
 
