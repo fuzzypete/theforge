@@ -12,6 +12,7 @@ from theforge.shape_check.heuristics import (
     check_bug_missing_diagnosis,
     check_epic_or_tracking,
     check_implementation_design_dump,
+    check_implementation_plan_in_body,
     check_missing_acceptance_criteria,
     check_missing_example,
     check_missing_type,
@@ -60,6 +61,7 @@ def check(
         check_missing_example,
         check_no_observable_done_state,
         check_implementation_design_dump,
+        check_implementation_plan_in_body,
     ):
         r = fn(title, body, labels)
         if r is not None:

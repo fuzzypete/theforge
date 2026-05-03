@@ -19,6 +19,7 @@ from theforge.shape_check.classifier import classify
 from theforge.shape_check.heuristics import (
     check_epic_or_tracking,
     check_implementation_design_dump,
+    check_implementation_plan_in_body,
     check_missing_acceptance_criteria,
     check_missing_example,
     check_no_observable_done_state,
@@ -271,6 +272,168 @@ class TestImplementationDesignDump:
         assert check_implementation_design_dump("T", WELL_FORMED_AC, []) is None
 
 
+class TestImplementationPlanInBody:
+    def test_clean_what_only_body_passes(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            The command must succeed for valid inputs.
+
+            ## Acceptance Criteria
+            - The command returns 0 on success.
+            - Failure writes a diagnostic to stderr.
+            """
+        )
+        assert check_implementation_plan_in_body("T", body, []) is None
+
+    def test_design_section_is_flagged(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            We need a hygiene gate before DEV.
+
+            ## Acceptance Criteria
+            - Phase boundaries are enforced before DEV iterations begin.
+
+            ## Design
+            The hygiene gate uses a snapshot of git status taken at phase entry,
+            compared against a snapshot at phase exit. Mutations are flagged.
+            """
+        )
+        r = check_implementation_plan_in_body("T", body, [])
+        assert r is not None
+        assert r.code == "implementation_plan_in_body"
+        assert r.severity is Severity.BLOCKING
+        assert "Design" in r.detail
+
+    def test_file_paths_and_function_names_flagged(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            Add a hygiene gate.
+
+            ## Acceptance Criteria
+            - The gate fires after `normalize_dependency_plan` and before
+              `run_batch_preflight` in `src/theforge/coordinator/runner.py`.
+            - `src/theforge/coordinator/workspace_hygiene.py` is called for
+              each phase transition.
+            - Tests added at `tests/test_coord_workspace_hygiene.py` cover
+              the three boundaries.
+            """
+        )
+        r = check_implementation_plan_in_body("T", body, [])
+        assert r is not None
+        assert r.code == "implementation_plan_in_body"
+        assert "file path reference" in r.detail
+
+    def test_file_line_reference_flagged(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            Refactor.
+
+            ## Acceptance Criteria
+            - The fix is applied at src/theforge/runner.py:109.
+            """
+        )
+        r = check_implementation_plan_in_body("T", body, [])
+        assert r is not None
+        assert "file:line" in r.detail
+
+    def test_refactor_exception_path_permits_file_paths(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            Split the monolithic runner.py into per-phase modules.
+
+            Implementation target: src/theforge/coordinator/runner.py
+
+            ## Acceptance Criteria
+            - The src/theforge/coordinator/runner.py module is split into
+              dev_phase.py, review_phase.py, and validate_phase.py.
+            - Public entry points remain importable from runner.py.
+            """
+        )
+        assert check_implementation_plan_in_body("T", body, []) is None
+
+    def test_single_file_path_does_not_fire(self):
+        # A single config-file mention in prose is not an implementation plan.
+        body = textwrap.dedent(
+            """\
+            ## What
+            Honor the threshold value declared in forge.yaml.
+
+            ## Acceptance Criteria
+            - The runtime reads the configured threshold and applies it.
+            """
+        )
+        assert check_implementation_plan_in_body("T", body, []) is None
+
+    def test_bug_format_issue_is_exempt(self):
+        # Bugs legitimately name affected code paths in their Diagnosis section
+        # — the WHAT-not-HOW rule applies to features, not symptom reports.
+        body = textwrap.dedent(
+            """\
+            ## What happened
+            Command exits 1 instead of 0.
+
+            ## What was expected
+            Command exits 0 on success.
+
+            ## Diagnosis
+            - Observed symptom: wrong exit code.
+            - Evidence: reproduction in run abc123.
+            - Ruled out: config drift.
+            - Confirmed cause: off-by-one at src/theforge/runner.py:42.
+            - Affected code path: runner.exit_code.
+            - Fix-success criterion: command returns 0.
+            """
+        )
+        assert check_implementation_plan_in_body("T", body, ["bug"]) is None
+
+    def test_fenced_code_blocks_do_not_trip_check(self):
+        # Diagnostic samples inside fenced blocks shouldn't count — they're
+        # often illustrative output, not implementation guidance.
+        body = textwrap.dedent(
+            """\
+            ## What
+            Improve diagnostics.
+
+            ## Acceptance Criteria
+            - The diagnostic emits the offending file path.
+
+            ```
+            error in src/foo/bar.py:42
+            error in src/foo/baz.py:10
+            ```
+            """
+        )
+        assert check_implementation_plan_in_body("T", body, []) is None
+
+    def test_example_section_is_excluded(self):
+        # An Example section may legitimately illustrate a "bad" body shape
+        # (typically wrapped in a fenced markdown block); the check itself
+        # should not flag the host issue for that demonstration content.
+        body = textwrap.dedent(
+            """\
+            ## What
+            The shape gate must flag bodies with implementation-plan content.
+
+            ## Acceptance Criteria
+            - Bodies containing structural plan signals are flagged.
+
+            ## Example
+            Bad body that should be flagged:
+
+            ```markdown
+            ## Design
+            See src/theforge/runner.py:42 and src/theforge/cli.py:10.
+            ```
+            """
+        )
+        assert check_implementation_plan_in_body("T", body, []) is None
+
+
 class TestNoObservableDoneState:
     def test_no_ac(self):
         r = check_no_observable_done_state("T", "## What\nprose", [])
@@ -423,6 +586,25 @@ class TestCheckAggregation:
         result = check("Shape gate blocks bugs", body, ["bug"])
         assert result.shape is Shape.NEEDS_GROOMING
         assert any(r.code == "bug_missing_diagnosis" for r in result.reasons)
+
+    def test_implementation_plan_in_body_flags_as_needs_grooming(self):
+        body = textwrap.dedent(
+            """\
+            ## What
+            Add a hygiene gate.
+
+            ## Acceptance Criteria
+            - The gate runs in `src/theforge/coordinator/runner.py`.
+            - Tests are added at `tests/test_coord_workspace_hygiene.py`.
+
+            ## Design
+            Snapshot git status at phase entry and exit; diff to detect mutations.
+            """
+        )
+        result = check("Add hygiene gate", body, ["enhancement"])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.suggested_action is SuggestedAction.CLARIFY
+        assert any(r.code == "implementation_plan_in_body" for r in result.reasons)
 
     def test_bug_with_complete_diagnosis_is_runnable(self):
         result = check("Bug: command exits incorrectly", DIAGNOSED_BUG_BODY, ["bug"])
