@@ -236,6 +236,13 @@ class ValidationConfig:
     gate_debug_timeout: int | None = None  # seconds; None = same resolved value as gate_timeout
     test_command: str | None = None  # canonical command for intermediate test runs in dev loop
     pre_validate_command: str | None = None  # optional command run before dirty check
+    # Adaptive gate-timeout scaling under sprint --parallel N. The baseline
+    # gate_timeout above is the alone-time budget. When mode == "adaptive"
+    # (default), sprint start scales the effective gate_timeout by host CPU
+    # contention. "fixed" disables scaling so gate_timeout is a hard ceiling
+    # regardless of parallelism.
+    gate_cpu_cores: int | None = None  # operator hint for gate CPU demand; None => host_cores
+    gate_timeout_scale: str = "adaptive"  # "adaptive" | "fixed"
 
 
 @dataclass(frozen=True)
