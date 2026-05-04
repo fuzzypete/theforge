@@ -1,7 +1,9 @@
 """Process detachment primitives for forge run/sprint.
 
-Provides double-fork daemonization, App Nap suppression (macOS),
-PID file management, and run status queries.
+Provides spawn-based daemonization (re-exec via subprocess.Popen so the
+detached process is a fresh interpreter — required for macOS Objective-C
+fork-safety), App Nap suppression (macOS), PID file management, and run
+status queries.
 """
 
 from __future__ import annotations
@@ -10,10 +12,18 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+# Env sentinel used to mark a re-exec'd detached child. Read by
+# ``is_detached_child()`` so cli/sprint.py and cli/run.py can skip the
+# daemonize step in the child while still running the workload.
+_DETACHED_ENV = "FORGE_DETACHED"
+_DETACHED_RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
+_DETACHED_SLUG_ENV = "FORGE_DETACHED_SLUG"
 
 # Module-level list to prevent GC of App Nap activity tokens
 _APP_NAP_ACTIVITIES: list[Any] = []
@@ -315,76 +325,89 @@ def write_reexec_redirect(
 # ── Daemonization ────────────────────────────────────────────────────
 
 
-def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
-    """Double-fork daemonize, redirect stdio, write PID file.
+def is_detached_child() -> bool:
+    """Return True when this process is a re-exec'd detached child.
 
-    On return from this function in the parent, we have already exited 0
-    after printing run_id and log path. The grandchild (daemon) continues.
+    Set by ``daemonize_run`` in the parent before spawning. cli/sprint.py
+    and cli/run.py read this to skip the daemonize step in the child while
+    still running the workload.
+    """
+    return os.environ.get(_DETACHED_ENV) == "1"
 
-    Raises RuntimeError if os.fork() is unavailable (Windows).
+
+def setup_detached_child(run_id: str, slug: str, project_root: Path) -> None:
+    """Initialize a re-exec'd detached child: write PID file and redirect file.
+
+    The parent already redirected stdin/stdout/stderr via ``subprocess.Popen``
+    kwargs, so no fd manipulation is needed here. We just write the PID file
+    so ``forge status`` can find this run, and write the re-exec redirect
+    sidecar if this child was launched by a coordinator post-pull execv.
     """
     log_file = project_root / ".forge" / "logs" / slug / f"run-{run_id}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save original stdout for the pre-fork print
-    orig_stdout = sys.stdout
-
-    # First fork
-    try:
-        pid = os.fork()
-    except AttributeError:
-        raise RuntimeError("os.fork() not available on this platform")
-
-    if pid > 0:
-        # Parent: wait for intermediate child then exit
-        os.waitpid(pid, 0)
-        # Print run info to original terminal before exiting
-        print("[forge] Run started in background", file=orig_stdout)
-        print(f"[forge] Run ID:  {run_id}", file=orig_stdout)
-        print(f"[forge] Log:     {log_file}", file=orig_stdout)
-        print("[forge] Status:  forge status", file=orig_stdout)
-        print(f"[forge] Logs:    forge logs {run_id}", file=orig_stdout)
-        orig_stdout.flush()
-        sys.exit(0)
-
-    # Intermediate child: become session leader
-    os.setsid()
-
-    # Second fork — prevents re-acquiring a controlling terminal
-    try:
-        pid = os.fork()
-    except AttributeError:
-        pass
-    else:
-        if pid > 0:
-            sys.exit(0)
-
-    # Grandchild: write PID file, redirect stdio
     write_pid(run_id, slug, project_root)
 
-    # If this is a re-exec (source changed after git pull), write a sidecar
-    # redirect file so the log follower can switch to this new run without
-    # relying on log-line parsing (which LLM output could spoof).
+    # Coordinator post-pull execv inherits FORGE_DETACHED + FORGE_PREV_RUN_ID
+    # in env. Write the redirect sidecar so the log follower can switch.
     prev_run_id = os.environ.pop("FORGE_PREV_RUN_ID", None)
     if prev_run_id:
         write_reexec_redirect(prev_run_id, run_id, log_file, project_root)
 
-    # Redirect stdin to /dev/null — use raw fd ops to avoid issues with
-    # Python file objects in forked processes
-    null_fd = os.open(os.devnull, os.O_RDONLY)
-    os.dup2(null_fd, 0)  # fd 0 = stdin
-    os.close(null_fd)
 
-    # Redirect stdout/stderr to log file
+def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
+    """Spawn a fresh interpreter as a detached child and exit the parent.
+
+    Replaces the previous ``os.fork()``-based double-fork daemonization to
+    avoid macOS Objective-C fork-safety crashes when the parent has already
+    initialized Foundation/CoreFoundation (e.g., via subprocess work).
+
+    The child re-executes the forge CLI with ``FORGE_DETACHED=1`` set in the
+    environment; the entry point detects the sentinel via
+    ``is_detached_child()`` and skips this function, calling
+    ``setup_detached_child`` instead.
+
+    This function never returns in the parent — it always calls ``sys.exit(0)``.
+    """
+    log_file = project_root / ".forge" / "logs" / slug / f"run-{run_id}.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Re-exec env: orthogonal to FORGE_PREV_RUN_ID (coordinator-reexec sentinel).
+    env = dict(os.environ)
+    env[_DETACHED_ENV] = "1"
+    env[_DETACHED_RUN_ID_ENV] = run_id
+    env[_DETACHED_SLUG_ENV] = slug
+
     log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    os.dup2(log_fd, 1)  # fd 1 = stdout
-    os.dup2(log_fd, 2)  # fd 2 = stderr
-    os.close(log_fd)
+    try:
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "theforge.cli", *sys.argv[1:]],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,
+            close_fds=True,
+            env=env,
+            cwd=os.getcwd(),
+        )
+    finally:
+        os.close(log_fd)
 
-    # Re-open Python-level file objects pointing at the new fds
-    sys.stdin = open(os.devnull, encoding="utf-8")  # noqa: WPS515
-    sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)  # noqa: WPS515
-    sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)  # noqa: WPS515
+    # Write PID file pre-emptively so a `forge status` invoked immediately
+    # after launch has something to read. The child also writes it on entry
+    # via setup_detached_child (idempotent — same pid, same slug).
+    runs_dir = project_root / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = runs_dir / f"{run_id}.pid"
+    pid_file.write_text(f"{proc.pid}\n{slug}\n", encoding="utf-8")
+
+    print("[forge] Run started in background")
+    print(f"[forge] Run ID:  {run_id}")
+    print(f"[forge] Log:     {log_file}")
+    print("[forge] Status:  forge status")
+    print(f"[forge] Logs:    forge logs {run_id}")
+    sys.stdout.flush()
+    sys.exit(0)
 
 
 # ── Signal / cleanup helpers ─────────────────────────────────────────
