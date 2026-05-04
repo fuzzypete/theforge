@@ -97,6 +97,9 @@ retry:
   max_dev_iterations: 3
   max_dev_transport_retries: 2
   max_review_cycles: 3
+  adaptive_iterations: true
+  max_dev_iterations_cap: 5
+  max_review_cycles_cap: 5
 
 plan:
   enabled: true
