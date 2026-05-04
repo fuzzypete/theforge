@@ -80,6 +80,7 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
                 "bundle_candidate": False,
                 "blocked_by": [],
                 "complexity": "medium",
+                "complexity_score": 7,
                 "detail": {"dev_iteration": 2, "dev_max_iterations": 3},
             },
             {
@@ -106,6 +107,7 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
     assert e1.cost_usd == pytest.approx(0.12)
     assert e1.bundle_candidate is False
     assert e1.complexity == "medium"
+    assert e1.complexity_score == 7
     assert e1.stage == "iter=2/3"
     assert e1.detail == "running"
 
@@ -366,7 +368,7 @@ def test_read_completed_status_uses_audit_for_terminal_stage_and_detail(tmp_path
     audit_dir = tmp_path / ".forge" / "logs" / "audit-sprint" / "issue-8"
     audit_dir.mkdir(parents=True, exist_ok=True)
     audit_data = {
-        "preflight": {"complexity": "medium"},
+        "preflight": {"complexity": "medium", "complexity_score": 4},
         "reviews": [
             {
                 "verdict": "APPROVE",
@@ -384,6 +386,7 @@ def test_read_completed_status_uses_audit_for_terminal_stage_and_detail(tmp_path
     assert entries[0].stage == "2 cyc / 1 iter"
     assert entries[0].detail == "APPROVE 0P1 0P2 — No findings remain."
     assert entries[0].complexity == "medium"
+    assert entries[0].complexity_score == 4
 
 
 def test_read_completed_status_already_done_prefers_preflight_reason(tmp_path: Path) -> None:
@@ -772,6 +775,74 @@ def test_display_sprint_status_column_header_present(tmp_path: Path) -> None:
     assert "DETAIL" in output
 
 
+def test_display_sprint_status_prefers_numeric_complexity_score(tmp_path: Path) -> None:
+    """When a numeric complexity_score is available, the COMPLEXITY column shows it
+    instead of the band string."""
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "score-run.pid").write_text("12345\nscore-sprint\n")
+
+    _make_state_file(
+        tmp_path,
+        "score-run",
+        "score-sprint",
+        [
+            {
+                "slug": "issue-77",
+                "path": "Issue #77",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 0.05,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "complexity": "medium",
+                "complexity_score": 7,
+                "detail": {"dev_iteration": 1, "dev_max_iterations": 3},
+            },
+        ],
+    )
+
+    code, output = _run_sprint_status(tmp_path, "score-run")
+    assert code == 0
+    assert " 7 " in output or output.rstrip().endswith(" 7")
+    # Header still says COMPLEXITY but the row value should not be the band.
+    row_lines = [line for line in output.splitlines() if "Issue #77" in line]
+    assert row_lines, output
+    assert "medium" not in row_lines[0]
+
+
+def test_display_sprint_status_falls_back_to_band_when_score_absent(tmp_path: Path) -> None:
+    """Without a complexity_score, the COMPLEXITY column still shows the band."""
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "band-run.pid").write_text("12345\nband-sprint\n")
+
+    _make_state_file(
+        tmp_path,
+        "band-run",
+        "band-sprint",
+        [
+            {
+                "slug": "issue-78",
+                "path": "Issue #78",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 0.05,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "complexity": "large",
+                "detail": {"dev_iteration": 1, "dev_max_iterations": 3},
+            },
+        ],
+    )
+
+    code, output = _run_sprint_status(tmp_path, "band-run")
+    assert code == 0
+    row_lines = [line for line in output.splitlines() if "Issue #78" in line]
+    assert row_lines, output
+    assert "large" in row_lines[0]
+
+
 def test_display_sprint_status_wraps_long_detail_without_truncation(tmp_path: Path) -> None:
     runs_dir = tmp_path / ".forge" / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -949,6 +1020,7 @@ def test_worker_phase_fn_forwards_coordinator_detail(tmp_path: Path) -> None:
             "iteration": 0,
             "cost_usd": 0.01,
             "complexity": "medium",
+            "complexity_score": 6,
             "detail": {
                 "preflight_verdict": "PROCEED",
                 "preflight_sufficiency": "implementation_ready",
@@ -959,6 +1031,7 @@ def test_worker_phase_fn_forwards_coordinator_detail(tmp_path: Path) -> None:
     story = data["stories"][0]
     assert story["phase"] == "PREFLIGHT"
     assert story["complexity"] == "medium"
+    assert story["complexity_score"] == 6
     assert story["detail"]["preflight_verdict"] == "PROCEED"
     assert story["detail"]["preflight_sufficiency"] == "implementation_ready"
 

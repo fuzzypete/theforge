@@ -212,11 +212,17 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     elapsed_s = getattr(entry, "elapsed_seconds", None)
     detail = getattr(entry, "detail", "")
     complexity = getattr(entry, "complexity", None)
+    complexity_score = getattr(entry, "complexity_score", None)
     model = getattr(entry, "model", None)
 
     phase_str = phase if phase else "—"
     stage_str = stage if stage else "—"
-    complexity_str = complexity if complexity else "—"
+    if isinstance(complexity_score, int):
+        complexity_str = str(complexity_score)
+    elif complexity:
+        complexity_str = complexity
+    else:
+        complexity_str = "—"
     model_str = model if model else "—"
     if len(model_str) > 24:
         model_str = model_str[:24]

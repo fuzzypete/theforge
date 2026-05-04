@@ -384,6 +384,7 @@ def _coordinator_loop(
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost,
                         "complexity": state.preflight_complexity,
+                        "complexity_score": state.preflight_complexity_score,
                         "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,
@@ -414,6 +415,7 @@ def _coordinator_loop(
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost,
                         "complexity": state.preflight_complexity,
+                        "complexity_score": state.preflight_complexity_score,
                         "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,

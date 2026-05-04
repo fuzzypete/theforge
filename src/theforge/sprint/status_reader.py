@@ -26,6 +26,7 @@ class StoryStatusEntry:
     stage: str = ""
     detail: str = ""
     complexity: str | None = None
+    complexity_score: int | None = None
     model: str | None = None
 
 
@@ -142,6 +143,14 @@ def _outcome_to_status(outcome: str) -> str:
     if outcome in ("ESCALATE", "MERGE_FAILED"):
         return "failed"
     return "failed"
+
+
+def _normalize_complexity_score(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _normalize_complexity(value: object) -> str | None:
@@ -501,6 +510,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
 
         bundle_candidate = False
         complexity = None
+        complexity_score: int | None = None
         audit_data: dict | None = None
         if slug:
             audit_path = sprint_log_dir / slug / "audit.yaml"
@@ -513,6 +523,9 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                         if isinstance(preflight, dict):
                             bundle_candidate = bool(preflight.get("bundle_candidate", False))
                             complexity = _normalize_complexity(preflight.get("complexity"))
+                            complexity_score = _normalize_complexity_score(
+                                preflight.get("complexity_score")
+                            )
                 except Exception:
                     pass
 
@@ -543,6 +556,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 stage=stage,
                 detail=detail,
                 complexity=complexity,
+                complexity_score=complexity_score,
                 model=model_val,
             )
         )
@@ -586,6 +600,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
         if status_val in {"waiting", "blocked"} and blocked_by_val:
             phase_display = "waiting"
         stage, detail, complexity = _stage_and_detail_from_live_story(story)
+        complexity_score = _normalize_complexity_score(story.get("complexity_score"))
 
         if status_val in {"skipped", "blocked"}:
             model_val: str | None = None
@@ -606,6 +621,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 stage=stage,
                 detail=detail,
                 complexity=complexity,
+                complexity_score=complexity_score,
                 model=model_val,
             )
         )

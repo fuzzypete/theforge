@@ -159,6 +159,7 @@ class StoryStateEntry:
     bundle_candidate: bool = False
     blocked_by: list[str] = field(default_factory=list)
     complexity: str | None = None
+    complexity_score: int | None = None
     detail: dict = field(default_factory=dict)
     reason: str | None = None
     canonical_ref: str | None = None
@@ -209,6 +210,7 @@ class StoryStateEntry:
             "bundle_candidate": self.bundle_candidate,
             "blocked_by": list(self.blocked_by),
             "complexity": self.complexity,
+            "complexity_score": self.complexity_score,
             "detail": deepcopy(merged_detail),
             "reason": self.reason,
             "canonical_ref": self.canonical_ref,
@@ -246,6 +248,7 @@ class SprintStoryState:
         bundle_candidate: bool = False,
         blocked_by: list[str] | None = None,
         complexity: str | None = None,
+        complexity_score: int | None = None,
         detail: dict | None = None,
         reason: str | None = None,
         canonical_ref: str | None = None,
@@ -273,6 +276,8 @@ class SprintStoryState:
                 entry.blocked_by = list(blocked_by)
             if complexity is not None:
                 entry.complexity = complexity
+            if complexity_score is not None:
+                entry.complexity_score = complexity_score
             if detail is not None:
                 entry.detail = dict(detail)
             if reason is not None:
@@ -317,6 +322,11 @@ class SprintStoryState:
                     entry.blocked_by = list(v)
                 elif k == "complexity":
                     entry.complexity = v  # type: ignore[assignment]
+                elif k == "complexity_score":
+                    if isinstance(v, int):
+                        entry.complexity_score = v
+                    elif v is None:
+                        entry.complexity_score = None
                 elif k == "detail" and isinstance(v, dict):
                     entry.detail = dict(v)
                 elif k == "reason":
@@ -385,6 +395,11 @@ class SprintStoryState:
                 bundle_candidate=bool(d.get("bundle_candidate", False)),
                 blocked_by=list(d.get("blocked_by") or []),
                 complexity=d.get("complexity"),
+                complexity_score=(
+                    d.get("complexity_score")
+                    if isinstance(d.get("complexity_score"), int)
+                    else None
+                ),
                 detail=dict(d.get("detail") or {}),
                 reason=d.get("reason"),
                 canonical_ref=d.get("canonical_ref"),
@@ -402,6 +417,7 @@ class SprintStoryState:
                     "bundle_candidate",
                     "blocked_by",
                     "complexity",
+                    "complexity_score",
                     "detail",
                     "reason",
                     "canonical_ref",
