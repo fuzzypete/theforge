@@ -621,7 +621,7 @@ class TestCmdInitHooks:
         repo_root = Path(__file__).resolve().parents[1]
         live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
         if not live_hook.exists():
-            pytest.skip(".forge/hooks/post_run.sh is gitignored; drift check runs only on dev machines")
+            pytest.skip(".forge/hooks/post_run.sh missing (gitignored); dev-machine only")
         live_content = live_hook.read_text(encoding="utf-8")
 
         assert static_issue_labels(live_content) >= static_issue_labels(hooks_module._POST_RUN_SH)
@@ -632,7 +632,7 @@ class TestCmdInitHooks:
         repo_root = Path(__file__).resolve().parents[1]
         live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
         if not live_hook.exists():
-            pytest.skip(".forge/hooks/post_run.sh is gitignored; live-hook check runs only on dev machines")
+            pytest.skip(".forge/hooks/post_run.sh missing (gitignored); dev-machine only")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         gh_log = tmp_path / "gh.log"
@@ -722,7 +722,7 @@ class TestCmdInitHooks:
         repo_root = Path(__file__).resolve().parents[1]
         live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
         if not live_hook.exists():
-            pytest.skip(".forge/hooks/post_run.sh is gitignored; live-hook check runs only on dev machines")
+            pytest.skip(".forge/hooks/post_run.sh missing (gitignored); dev-machine only")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         gh_log = tmp_path / "gh.log"
