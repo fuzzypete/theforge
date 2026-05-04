@@ -24,9 +24,6 @@ models:
       input_cost_per_mtok: 5.00
       output_cost_per_mtok: 30.00
 
-plan_agent_review:
-  enabled: true
-
 provider_fallbacks:
   openai:
     model: gpt-5.4
@@ -76,6 +73,13 @@ conventions:
     - "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail — diagnosing sprint failures requires tracing real data, not reconstructing it"
     - "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing."
     - "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+  advisory:
+    artifact_path: ".forge/conventions/advisory.yaml"
+    summary_top_n: 10
+    noteworthy_threshold_percent: 10.0
+    commit_shared_artifact: false
+    issue_filing:
+      enabled: false
 
 assignment:
   enabled: true
@@ -91,10 +95,17 @@ stuck_detection:
 
 retry:
   max_dev_iterations: 3
+  max_dev_transport_retries: 2
   max_review_cycles: 3
 
 plan:
   enabled: true
+
+diagnose:
+  output_destination: comment
+  budget_usd: 1.50
+  timeout_seconds: 600
+  autonomous_default: true
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh
