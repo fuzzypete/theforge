@@ -113,8 +113,10 @@ def validate_review_yaml(data: Any) -> list[str]:
                     f"vague P1s block the pipeline without clear fix targets"
                 )
 
-        if not finding.get("description"):
-            errors.append(f"findings[{i}].description must be non-empty")
+        for prose_field in ("observed", "expected", "evidence"):
+            value = finding.get(prose_field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"findings[{i}].{prose_field} must be a non-empty string")
 
     # ── Cross-validation: verdict vs findings ─────────────────────
     if verdict == "APPROVE" and p1_count > 0:
@@ -360,7 +362,15 @@ def review_json_schema() -> dict:
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["severity", "file", "line", "description", "suggestion"],
+                    "required": [
+                        "severity",
+                        "file",
+                        "line",
+                        "observed",
+                        "expected",
+                        "evidence",
+                        "suggestion",
+                    ],
                     "properties": {
                         "severity": {
                             "type": "string",
@@ -368,8 +378,33 @@ def review_json_schema() -> dict:
                         },
                         "file": {"type": "string"},
                         "line": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-                        "description": {"type": "string"},
-                        "suggestion": {"type": "string"},
+                        "observed": {
+                            "type": "string",
+                            "description": (
+                                "One sentence describing the observed behaviour, "
+                                "without fix theory or verdict prose."
+                            ),
+                        },
+                        "expected": {
+                            "type": "string",
+                            "description": (
+                                "Category-level rule in flowing prose that "
+                                "generalises beyond this single trigger."
+                            ),
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": (
+                                "File path, line, or anchor pointing at the offending code."
+                            ),
+                        },
+                        "suggestion": {
+                            "type": "string",
+                            "description": (
+                                "Optional non-binding fix guidance. Use empty string "
+                                "when no suggestion is offered."
+                            ),
+                        },
                     },
                 },
             },

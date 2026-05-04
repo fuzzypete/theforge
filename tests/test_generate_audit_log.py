@@ -319,7 +319,7 @@ class TestReviewsFindings:
             severity="P1",
             file="src/foo.py",
             line=42,
-            description="Bug in error handling",
+            observed="Bug in error handling",
             suggestion="Fix it",
         )
         state = CoordinatorState()
@@ -351,13 +351,13 @@ class TestReviewsFindings:
         """p1_count and p2_count are still included alongside findings list."""
         findings = [
             ReviewFinding(
-                severity="P1", file="a.py", line=1, description="P1 issue", suggestion=None
+                severity="P1", file="a.py", line=1, observed="P1 issue", suggestion=None
             ),
             ReviewFinding(
-                severity="P2", file="b.py", line=2, description="P2 issue", suggestion=None
+                severity="P2", file="b.py", line=2, observed="P2 issue", suggestion=None
             ),
             ReviewFinding(
-                severity="P2", file="c.py", line=3, description="P2 issue 2", suggestion=None
+                severity="P2", file="c.py", line=3, observed="P2 issue 2", suggestion=None
             ),
         ]
         state = CoordinatorState()
@@ -405,7 +405,7 @@ class TestReviewsFindings:
             severity="P2",
             file="src/bar.py",
             line=None,
-            description="Missing docstring",
+            observed="Missing docstring",
             suggestion=None,
         )
         state = CoordinatorState()
@@ -444,7 +444,7 @@ class TestReviewsFindings:
                 verdict="REQUEST_CHANGES",
                 findings=[
                     ReviewFinding(
-                        severity="P1", file="x.py", line=1, description="issue", suggestion=None
+                        severity="P1", file="x.py", line=1, observed="issue", suggestion=None
                     )
                 ],
             )

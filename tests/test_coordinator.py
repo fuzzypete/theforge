@@ -147,7 +147,9 @@ findings:
   - severity: P1
     file: src/foo.py
     line: 10
-    description: "Off by one"
+    observed: "Off by one"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix it"
 story_compliance:
   matches_spec: false

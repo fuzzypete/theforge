@@ -1287,7 +1287,9 @@ class TestPrBodyContent:
                         "severity": "P2",
                         "file": "src/test.py",
                         "line": 9,
-                        "description": "Fix\x00 this edge case",
+                        "observed": "Fix\x00 this edge case",
+                        "expected": "project-contract category rule (test fixture)",
+                        "evidence": "(test fixture evidence)",
                     }
                 ],
                 "story_compliance": {"matches_spec": True, "mismatches": []},
@@ -1319,7 +1321,7 @@ class TestPrBodyContent:
         assert "Fix this edge case" in pr_bodies[0]
         assert review.sanitization_audit == {
             "summary": {"sanitized_chars": 1},
-            "findings[0].description": {"sanitized_chars": 1},
+            "findings[0].observed": {"sanitized_chars": 1},
         }
 
 

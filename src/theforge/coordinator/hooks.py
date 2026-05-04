@@ -211,8 +211,10 @@ def build_post_run_payload(
                 "severity": f.severity,
                 "file": f.file,
                 "line": f.line,
-                "description": f.description,
-                "suggestion": f.suggestion,
+                "observed": f.observed,
+                "expected": f.expected,
+                "evidence": f.evidence,
+                "suggestion": f.suggestion or "",
             }
             for f in last_review.findings
         ]
@@ -252,8 +254,10 @@ def build_post_run_payload(
                     "severity": f.severity,
                     "file": f.file,
                     "line": f.line,
-                    "description": f.description,
-                    "suggestion": f.suggestion,
+                    "observed": f.observed,
+                    "expected": f.expected,
+                    "evidence": f.evidence,
+                    "suggestion": f.suggestion or "",
                 }
                 for f in rr.findings
             ],

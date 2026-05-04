@@ -513,15 +513,25 @@ class TestCmdInitHooks:
         assert "#!/usr/bin/env bash" in content
 
     def test_post_run_sh_bug_format_compliant(self, tmp_path, monkeypatch):
-        """post_run.sh uses What happened/What was expected format, no Suggestion."""
+        """post_run.sh renders observed/expected/evidence and a non-binding suggestion section.
+
+        The body must read as a bug story (Observed/Expected/Evidence headings) so that
+        new findings pass bug shape gate without manual grooming. The legacy boilerplate
+        ``What was expected: Behavior conforming to ...`` line must not appear, and any
+        suggestion must be marked non-binding so it is not treated as HOW-leakage.
+        """
         monkeypatch.chdir(tmp_path)
         cmd_init_hooks(self._make_args())
         content = (tmp_path / ".forge" / "hooks" / "post_run.sh").read_text(encoding="utf-8")
-        assert "What happened" in content
-        assert "What was expected" in content
-        assert "Suggestion" not in content
-        assert "**Description:**" not in content
-        assert "**Location:**" not in content
+        assert "**Observed:**" in content
+        assert "**Expected:**" in content
+        assert "**Evidence:**" in content
+        # Suggestion appears only as a non-binding section heading.
+        assert "Suggested approach (non-binding)" in content
+        assert "non-binding" in content
+        # Legacy boilerplate must be gone.
+        assert "What happened" not in content
+        assert "Behavior conforming to" not in content
 
     def test_creates_readme(self, tmp_path, monkeypatch):
         """forge init-hooks creates .forge/hooks/README.md."""
@@ -610,6 +620,8 @@ class TestCmdInitHooks:
         """The checked-in active hook carries the generated template's static labels."""
         repo_root = Path(__file__).resolve().parents[1]
         live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
+        if not live_hook.exists():
+            pytest.skip(".forge/hooks/post_run.sh missing (gitignored); dev-machine only")
         live_content = live_hook.read_text(encoding="utf-8")
 
         assert static_issue_labels(live_content) >= static_issue_labels(hooks_module._POST_RUN_SH)
@@ -619,6 +631,8 @@ class TestCmdInitHooks:
         """Execute the checked-in active hook with fake gh/jq and inspect gh calls."""
         repo_root = Path(__file__).resolve().parents[1]
         live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
+        if not live_hook.exists():
+            pytest.skip(".forge/hooks/post_run.sh missing (gitignored); dev-machine only")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         gh_log = tmp_path / "gh.log"
@@ -646,8 +660,10 @@ class TestCmdInitHooks:
             "elif query == '.severity': print(data['severity'])\n"
             "elif query == '.file': print(data['file'])\n"
             "elif query == '.line // empty': print(data.get('line') or '')\n"
-            "elif query == '.description': print(data['description'])\n"
-            "elif query == '.suggestion // empty': print(data.get('suggestion') or '')\n"
+            "elif query == '.observed // \"\"': print(data.get('observed') or '')\n"
+            "elif query == '.expected // \"\"': print(data.get('expected') or '')\n"
+            "elif query == '.evidence // \"\"': print(data.get('evidence') or '')\n"
+            "elif query == '.suggestion // \"\"': print(data.get('suggestion') or '')\n"
             "elif query == '(.reviewers // []) | length':\n"
             "    print(len(data.get('reviewers') or []))\n"
             "else: raise SystemExit(f'unhandled jq query: {query}')\n",
@@ -665,8 +681,10 @@ class TestCmdInitHooks:
                     "severity": "P2",
                     "file": "src/example.py",
                     "line": 12,
-                    "description": "example finding",
+                    "observed": "example finding",
                     "suggestion": "",
+                    "expected": "project-contract category rule (test fixture)",
+                    "evidence": "(test fixture evidence)",
                 }
             ],
         }
@@ -692,6 +710,121 @@ class TestCmdInitHooks:
         assert "label create needs-triage" in calls
         assert "issue create" in calls
         assert "--label needs-triage" in calls
+
+    def test_repo_configured_hook_renders_shape_gate_clean_body(self, tmp_path):
+        """End-to-end: live hook + structured finding payload produces a body with
+        Observed/Expected/Evidence sections and a non-binding suggestion section,
+        and no boilerplate "Behavior conforming to" sentence.
+
+        This is the post_run-template counterpart of issue-1338's acceptance criterion
+        "a finding filed by the new hook passes bug shape gate without manual grooming".
+        """
+        repo_root = Path(__file__).resolve().parents[1]
+        live_hook = repo_root / ".forge" / "hooks" / "post_run.sh"
+        if not live_hook.exists():
+            pytest.skip(".forge/hooks/post_run.sh missing (gitignored); dev-machine only")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh_log = tmp_path / "gh.log"
+
+        # Capture the full gh argv (one line per arg) so the test can pull --body out
+        # of `gh issue create --title ... --body ...` invocations.
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'for a in "$@"; do printf "%s\\n" "$a" >> "$GH_LOG"; done\n'
+            'printf -- "---END---\\n" >> "$GH_LOG"\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+
+        # Use the real jq binary; the jq queries in the hook are too rich for the
+        # python fake stub to mirror exactly (multiline string interpolation).
+        # Skip the test if jq is not on PATH.
+        import shutil
+
+        real_jq = shutil.which("jq")
+        if real_jq is None:
+            import pytest as _pytest
+
+            _pytest.skip("real jq required for end-to-end body rendering")
+
+        payload = {
+            "verdict": "APPROVE",
+            "slug": "issue-test",
+            "branch": "fix/test",
+            "summary": "approved with one finding",
+            "findings": [
+                {
+                    "severity": "P1",
+                    "file": "src/example.py",
+                    "line": 12,
+                    "observed": (
+                        "When parse_config encounters a missing dependency entry, "
+                        "the loader silently drops the dep instead of surfacing the "
+                        "malformed file to the operator."
+                    ),
+                    "expected": (
+                        "When any required field is missing from a dependency entry, "
+                        "the loader must surface the malformed file with file/line "
+                        "context so operators can correct the source before the run "
+                        "advances; silently dropping declarations leaves runs incoherent."
+                    ),
+                    "evidence": "src/example.py near line 12 (parse_config dep loop)",
+                    "suggestion": "Raise StoryConfigError with the offending file path.",
+                },
+            ],
+        }
+        path_parts = [
+            str(bin_dir.resolve()),
+            str(Path(real_jq).parent),
+            os.environ["PATH"],
+        ]
+        env = {
+            **os.environ,
+            "PATH": os.pathsep.join(path_parts),
+            "GH_LOG": str(gh_log),
+        }
+        env.pop("FORGE_GH_PR_REVIEWS", None)
+
+        result = subprocess.run(
+            [str(live_hook)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            cwd=repo_root,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        log_text = gh_log.read_text(encoding="utf-8")
+        # Pull the body argument from the issue-create invocation. With one-arg-per-line
+        # capture, --body is followed by the body string before the next --flag.
+        lines = log_text.splitlines()
+        body_lines: list[str] = []
+        capture = False
+        for line in lines:
+            if line == "--body":
+                capture = True
+                continue
+            if capture:
+                if line.startswith("--") or line == "---END---":
+                    capture = False
+                    break
+                body_lines.append(line)
+        body = "\n".join(body_lines)
+
+        assert "**Observed:**" in body, body
+        assert "**Expected:**" in body, body
+        assert "**Evidence:**" in body, body
+        assert "Suggested approach (non-binding)" in body, body
+        # Legacy boilerplate must not appear.
+        assert "Behavior conforming to" not in body, body
+        assert "What happened" not in body, body
+        # The non-binding disclaimer must travel with the suggestion.
+        assert "non-binding" in body, body
 
     def test_idempotent_skips_existing_readme(self, tmp_path, monkeypatch, capsys):
         """forge init-hooks does not overwrite existing README.md."""

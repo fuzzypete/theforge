@@ -172,12 +172,16 @@ findings:
   - severity: P1
     file: src/foo.py
     line: 10
-    description: "Off by one"
+    observed: "Off by one"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix the boundary condition"
   - severity: P1
     file: src/bar.py
     line: 20
-    description: "Missing validation"
+    observed: "Missing validation"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Validate the input"
 story_compliance:
   matches_spec: true
@@ -421,7 +425,9 @@ findings:
     severity: P1
     file: src/older.py
     line: 9
-    description: "Older unresolved issue"
+    observed: "Older unresolved issue"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix older issue"
 story_compliance:
   matches_spec: true
@@ -438,13 +444,17 @@ findings:
     severity: P1
     file: src/older.py
     line: 9
-    description: "Older unresolved issue"
+    observed: "Older unresolved issue"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix older issue"
   - id: current-cycle-p1
     severity: P1
     file: src/current.py
     line: 11
-    description: "Current cycle issue"
+    observed: "Current cycle issue"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix current issue"
 story_compliance:
   matches_spec: true
@@ -533,7 +543,9 @@ findings:
   - severity: P2
     file: src/foo.py
     line: 5
-    description: "Missing log statement"
+    observed: "Missing log statement"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Add logger.info(...)"
 story_compliance:
   matches_spec: true

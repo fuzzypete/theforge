@@ -124,7 +124,7 @@ def _p1_review() -> ReviewResult:
         severity="P1",
         file="src/example.py",
         line=1,
-        description="Persistent bug",
+        observed="Persistent bug",
         suggestion="Fix it",
     )
     return ReviewResult(

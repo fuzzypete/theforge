@@ -144,7 +144,9 @@ def _cmd_classify_families(data: dict) -> dict:
             severity=f.get("severity", "P1"),
             file=f.get("file", ""),
             line=f.get("line"),
-            description=f.get("description", ""),
+            observed=f.get("observed", f.get("description", "")),
+            expected=f.get("expected", ""),
+            evidence=f.get("evidence", ""),
             suggestion=f.get("suggestion"),
         )
 

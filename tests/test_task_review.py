@@ -377,7 +377,7 @@ class TestReviewToDevHandoff:
             severity="P1",
             file="src/foo.py",
             line=42,
-            description="Off by one",
+            observed="Off by one",
             suggestion="Fix the index",
         )
         result = _make_review_result(
@@ -419,7 +419,7 @@ class TestReviewToDevHandoff:
             severity="P2",
             file="src/bar.py",
             line=10,
-            description="Minor issue",
+            observed="Minor issue",
             suggestion="Improve it",
         )
         result = _make_review_result(
@@ -438,7 +438,7 @@ class TestReviewToDevHandoff:
             severity="P1",
             file="src/foo.py",
             line=None,
-            description="Missing validation",
+            observed="Missing validation",
             suggestion="Add it",
         )
         result = _make_review_result(findings=[finding])
@@ -453,7 +453,7 @@ class TestReviewToDevHandoff:
             severity="P2",
             file="src/foo.py",
             line=5,
-            description="Needs cleanup",
+            observed="Needs cleanup",
             suggestion=None,
         )
         result = _make_review_result(findings=[finding])

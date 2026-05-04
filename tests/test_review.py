@@ -42,12 +42,16 @@ findings:
   - severity: P1
     file: src/batch.py
     line: 42
-    description: "Off-by-one: range(n) should be range(n+1)"
+    observed: "Off-by-one: range(n) should be range(n+1)"
+    expected: "project-contract category rule (test fixture)"
+    evidence: "(test fixture evidence)"
     suggestion: "Change range(n) to range(n+1)"
   - severity: P2
     file: src/batch.py
     line: 10
-    description: "Unused import os"
+    observed: "Unused import os"
+    expected: "project-contract category rule (test fixture)"
+    evidence: "(test fixture evidence)"
     suggestion: "Remove import os"
 story_compliance:
   matches_spec: false
@@ -128,7 +132,9 @@ class TestParseReviewOutput:
                         "severity": "P2",
                         "file": "src/batch.py",
                         "line": 5,
-                        "description": "Bad\x00 finding\x1f text",
+                        "observed": "Bad\x00 finding\x1f text",
+                        "expected": "rule\x00 prose",
+                        "evidence": "src/batch.py:5",
                     }
                 ],
                 "story_compliance": {"matches_spec": True, "mismatches": []},
@@ -137,10 +143,12 @@ class TestParseReviewOutput:
         )
 
         assert result.summary == "Safe summary"
-        assert result.findings[0].description == "Bad finding text"
+        assert result.findings[0].observed == "Bad finding text"
+        assert result.findings[0].expected == "rule prose"
         assert result.sanitization_audit == {
             "summary": {"sanitized_chars": 2},
-            "findings[0].description": {"sanitized_chars": 2},
+            "findings[0].observed": {"sanitized_chars": 2},
+            "findings[0].expected": {"sanitized_chars": 1},
         }
 
 
@@ -154,14 +162,14 @@ class TestFindingsToMarkdown:
                 severity="P1",
                 file="src/foo.py",
                 line=42,
-                description="Bug here",
+                observed="Bug here",
                 suggestion="Fix it",
             ),
             ReviewFinding(
                 severity="P2",
                 file="src/bar.py",
                 line=None,
-                description="Style issue",
+                observed="Style issue",
                 suggestion=None,
             ),
         ]
@@ -438,8 +446,10 @@ test_coverage:
                     "severity": "P1",
                     "file": "src/foo.py",
                     "line": 12,
-                    "description": "Prior P1 from cycle 1 is fixed",
+                    "observed": "Prior P1 from cycle 1 is fixed",
                     "suggestion": "No action needed",
+                    "expected": "project-contract category rule (test fixture)",
+                    "evidence": "(test fixture evidence)",
                 }
             ],
             "story_compliance": {"matches_spec": True, "mismatches": []},
@@ -471,12 +481,12 @@ def _make_review_result(
 
 
 def _p1_finding() -> ReviewFinding:
-    return ReviewFinding(severity="P1", file="foo.py", line=1, description="Bug", suggestion="Fix")
+    return ReviewFinding(severity="P1", file="foo.py", line=1, observed="Bug", suggestion="Fix")
 
 
 def _p2_finding() -> ReviewFinding:
     return ReviewFinding(
-        severity="P2", file="foo.py", line=2, description="Style", suggestion="Clean up"
+        severity="P2", file="foo.py", line=2, observed="Style", suggestion="Clean up"
     )
 
 
@@ -524,7 +534,7 @@ class TestBestIndividualResult:
 
 def _rf(severity: str, file: str, line: int | None, description: str) -> ReviewFinding:
     return ReviewFinding(
-        severity=severity, file=file, line=line, description=description, suggestion=None
+        severity=severity, file=file, line=line, observed=description, suggestion=None
     )
 
 
@@ -690,7 +700,9 @@ findings:
   - severity: P1
     file: src/foo.py
     line: "42"
-    description: "Bug with string line"
+    observed: "Bug with string line"
+    expected: "project-contract category rule (test fixture)"
+    evidence: "(test fixture evidence)"
     suggestion: "Fix it"
 story_compliance:
   matches_spec: true

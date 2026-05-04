@@ -83,7 +83,9 @@ findings:
   - severity: P1
     file: src/cli.py
     line: 42
-    description: "cli.py never wires gate_override into TaskStory"
+    observed: "cli.py never wires gate_override into TaskStory"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Wire it"
 story_compliance:
   matches_spec: false

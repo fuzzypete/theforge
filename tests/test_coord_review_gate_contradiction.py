@@ -39,7 +39,9 @@ findings:
   - severity: P1
     file: src/changed.py
     line: 10
-    description: "Missing null check in handler"
+    observed: "Missing null check in handler"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Add null guard"
 story_compliance:
   matches_spec: true
@@ -58,7 +60,9 @@ findings:
   - severity: P1
     file: src/unchanged.py
     line: 5
-    description: "Test failure: 435 tests fail with document is not defined"
+    observed: "Test failure: 435 tests fail with document is not defined"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix jsdom setup"
 story_compliance:
   matches_spec: true
@@ -77,7 +81,9 @@ findings:
   - severity: P1
     file: src/unchanged.py
     line: 5
-    description: "Build error in compilation step prevents deployment"
+    observed: "Build error in compilation step prevents deployment"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix import"
 story_compliance:
   matches_spec: true
@@ -96,7 +102,9 @@ findings:
   - severity: P1
     file: src/unchanged.py
     line: 5
-    description: "Lint fail: unused import in module"
+    observed: "Lint fail: unused import in module"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Remove import"
 story_compliance:
   matches_spec: true
@@ -115,7 +123,9 @@ findings:
   - severity: P1
     file: src/unchanged.py
     line: 5
-    description: "Missing validation in the data processing pipeline"
+    observed: "Missing validation in the data processing pipeline"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Add validation guard"
 story_compliance:
   matches_spec: true
@@ -134,7 +144,9 @@ findings:
   - severity: P1
     file: src/changed.py
     line: 10
-    description: "Test failure: import error prevents test collection"
+    observed: "Test failure: import error prevents test collection"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix the import"
 story_compliance:
   matches_spec: true

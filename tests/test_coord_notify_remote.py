@@ -512,7 +512,9 @@ findings:
   - severity: P1
     file: src/foo.py
     line: 10
-    description: "{long_desc}"
+    observed: "{long_desc}"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix it"
 story_compliance:
   matches_spec: false

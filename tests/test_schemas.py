@@ -34,8 +34,10 @@ class TestValidateReviewYaml:
                 "severity": "P1",
                 "file": "src/foo.py",
                 "line": 42,
-                "description": "Off by one",
+                "observed": "Off by one",
                 "suggestion": "Use range(n+1)",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             }
         ]
         errors = validate_review_yaml(data)
@@ -50,7 +52,15 @@ class TestValidateReviewYaml:
     def test_approve_with_p1_is_error(self):
         data = _valid_review()
         data["verdict"] = "APPROVE"
-        data["findings"] = [{"severity": "P1", "file": "x.py", "description": "Bug"}]
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "x.py",
+                "observed": "Bug",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
+            }
+        ]
         errors = validate_review_yaml(data)
         assert any("APPROVE" in e and "P1" in e for e in errors)
 
@@ -64,8 +74,10 @@ class TestValidateReviewYaml:
                 "severity": "P1",
                 "file": "src/foo.py",
                 "line": 42,
-                "description": "Prior P1 from Cycle 3 is fixed: null check was added",
+                "observed": "Prior P1 from Cycle 3 is fixed: null check was added",
                 "suggestion": "Move this acknowledgement to summary or omit it",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             }
         ]
         errors = validate_review_yaml(data)
@@ -74,7 +86,15 @@ class TestValidateReviewYaml:
     def test_request_changes_without_p1_is_error(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
-        data["findings"] = [{"severity": "P2", "file": "x.py", "description": "Style nit"}]
+        data["findings"] = [
+            {
+                "severity": "P2",
+                "file": "x.py",
+                "observed": "Style nit",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
+            }
+        ]
         errors = validate_review_yaml(data)
         assert any("REQUEST_CHANGES" in e and "P1" in e for e in errors)
 
@@ -99,14 +119,30 @@ class TestValidateReviewYaml:
     def test_finding_missing_file(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
-        data["findings"] = [{"severity": "P1", "file": "", "description": "Bug"}]
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "",
+                "observed": "Bug",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
+            }
+        ]
         errors = validate_review_yaml(data)
         assert any("file" in e for e in errors)
 
     def test_finding_invalid_severity(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
-        data["findings"] = [{"severity": "P0", "file": "x.py", "description": "Critical"}]
+        data["findings"] = [
+            {
+                "severity": "P0",
+                "file": "x.py",
+                "observed": "Critical",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
+            }
+        ]
         errors = validate_review_yaml(data)
         assert any("severity" in e for e in errors)
 
@@ -124,8 +160,10 @@ class TestValidateReviewYaml:
                 "severity": "P1",
                 "file": "src/foo.py",
                 "line": None,
-                "description": "Bug here",
+                "observed": "Bug here",
                 "suggestion": "Fix it",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             }
         ]
         errors = validate_review_yaml(data)
@@ -140,8 +178,10 @@ class TestValidateReviewYaml:
                 "severity": "P1",
                 "file": None,
                 "line": None,
-                "description": "Architecture violates separation of concerns",
+                "observed": "Architecture violates separation of concerns",
                 "suggestion": "Restructure the module boundaries",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             }
         ]
         errors = validate_review_yaml(data)
@@ -189,8 +229,10 @@ class TestValidateReviewYaml:
                 "severity": "P1",
                 "file": "src/foo.py",
                 "line": 5,
-                "description": "Missing coverage for the production-observed symptom",
+                "observed": "Missing coverage for the production-observed symptom",
                 "suggestion": "Add a test for the specific failure signature",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             }
         ]
         data["ac_verification"] = [
@@ -234,15 +276,19 @@ class TestValidateReviewYaml:
                 "severity": "P1",
                 "file": "src/foo.py",
                 "line": 10,
-                "description": "Blocking bug",
+                "observed": "Blocking bug",
                 "suggestion": "Fix it",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             },
             {
                 "severity": "P2",
                 "file": "src/foo.py",
                 "line": None,
-                "description": "Style nit",
+                "observed": "Style nit",
                 "suggestion": "Clean it up",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             },
         ]
         errors = validate_review_yaml(data)
@@ -267,7 +313,16 @@ class TestRepairReviewYaml:
 
     def test_does_not_flip_approve_with_p1(self):
         data = _valid_review()
-        data["findings"] = [{"severity": "P1", "file": "foo.py", "line": 10, "description": "bug"}]
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "foo.py",
+                "line": 10,
+                "observed": "bug",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
+            }
+        ]
         repair_review_yaml(data)
         assert data["verdict"] == "APPROVE"
 
@@ -280,7 +335,14 @@ class TestRepairReviewYaml:
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
         data["findings"] = [
-            {"severity": "P2", "file": "foo.py", "line": 10, "description": "style"}
+            {
+                "severity": "P2",
+                "file": "foo.py",
+                "line": 10,
+                "observed": "style",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
+            }
         ]
         repair_review_yaml(data)
         assert data["verdict"] == "REQUEST_CHANGES"  # NOT flipped
@@ -309,8 +371,10 @@ class TestRepairReviewYaml:
                     "severity": "P1",
                     "file": "x.py",
                     "line": 5,
-                    "description": "bug",
+                    "observed": "bug",
                     "suggestion": "fix",
+                    "expected": "project-contract category rule (test fixture)",
+                    "evidence": "(test fixture evidence)",
                 }
             ],
         }

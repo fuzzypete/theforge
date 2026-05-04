@@ -52,20 +52,35 @@ fi
 if [ "$findings_count" -gt 0 ]; then
   echo "$payload" | jq -c '.findings[]' | while read -r finding; do
     sev=$(echo "$finding" | jq -r '.severity')
-    desc=$(echo "$finding" | jq -r '.description')
+    observed=$(echo "$finding" | jq -r '.observed // ""')
+    expected=$(echo "$finding" | jq -r '.expected // ""')
+    evidence=$(echo "$finding" | jq -r '.evidence // ""')
+    suggestion=$(echo "$finding" | jq -r '.suggestion // ""')
 
-    # Title: [P1] slug: description (truncated to 72 chars)
-    raw_title="[${sev}] ${slug}: ${desc}"
+    # Title: [P1] slug: <observed> (truncated to 72 chars)
+    raw_title="[${sev}] ${slug}: ${observed}"
     title="${raw_title:0:72}"
 
-    body="**What happened:** ${desc}
+    body="**Observed:** ${observed}
 
-**What was expected:** Behavior conforming to the story spec for \\`${slug}\\`.
+**Expected:** ${expected}
+
+**Evidence:** ${evidence}"
+
+    if [ -n "$suggestion" ]; then
+      body="${body}
+
+## Suggested approach (non-binding)
+
+${suggestion}
+
+*Non-binding guidance from the reviewer; the dev agent is free to pick a different fix.*"
+    fi
+
+    body="${body}
 
 ---
-*Evidence: story \\`${slug}\\` · branch \\`${branch}\\` · verdict ${verdict}*
-
-*Filed by theforge post_run hook.*"
+*Filed by theforge post_run hook · \\`${slug}\\` · \\`${branch}\\` · ${verdict}.*"
 
     gh issue create \\
       --title "$title" \\
@@ -103,7 +118,7 @@ if [ "$reviewers_count" -le 1 ]; then
       (if ($r.findings | length) > 0 then
         "**Findings:**\\n" +
         ($r.findings | map(
-          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.description)"
+          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.observed // .description // "")"
         ) | join("\\n")) + "\\n\\n"
       else "" end) +
       "*Posted by theforge post_run hook.*"
@@ -130,7 +145,7 @@ else
     if [ "$r_findings_count" -gt 0 ]; then
       findings_text=$(echo "$reviewer" | jq -r '
         .findings | map(
-          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.description)"
+          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.observed // .description // "")"
         ) | join("\\n")
       ')
       comment_body="${comment_body}
@@ -186,8 +201,10 @@ The `post_run` hook receives a JSON object on stdin after every `forge run`:
       "severity": "P1 | P2",
       "file": "src/foo.py",
       "line": 42,
-      "description": "what is wrong",
-      "suggestion": "how to fix"
+      "observed": "one-sentence behaviour-only description",
+      "expected": "category-level rule in flowing prose",
+      "evidence": "file path + line/anchor",
+      "suggestion": "optional non-binding fix sketch (may be empty string)"
     }
   ],
   "reviewers": [
