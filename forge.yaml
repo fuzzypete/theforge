@@ -34,7 +34,7 @@ budget_usd: 50.0
 intake:
   grooming: true
   auto_fix: true
-  auto_fix_mode: comment
+  auto_fix_mode: edit
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"
