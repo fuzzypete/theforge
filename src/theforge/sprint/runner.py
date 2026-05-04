@@ -65,6 +65,7 @@ from .dag import (
     resolve_satisfied_dependencies,
 )
 from .display import _print_worker_status, _story_header
+from .gate_timeout_resolver import resolve_effective_gate_timeout
 from .lock import integration_lock
 from .manifest import (
     ResolvedSprint,
@@ -1213,6 +1214,57 @@ def run_sprint(
         file=sys.stderr,
         flush=True,
     )
+
+    # Resolve adaptive per-gate timeout once, propagate via dataclasses.replace
+    # so each per-story coordinator invocation reads the scaled value through
+    # the existing config.validation.gate_timeout path.
+    _gate_timeout_resolution = None
+    _baseline_gate_timeout = 600
+    try:
+        _baseline_gate_timeout = int(config.validation.gate_timeout or 600)
+        _host_cores = os.cpu_count() or 1
+        _gate_cpu_raw = config.validation.gate_cpu_cores
+        _gate_cpu_cores = int(_gate_cpu_raw) if _gate_cpu_raw else None
+        _mode = str(config.validation.gate_timeout_scale or "adaptive")
+        _gate_timeout_resolution = resolve_effective_gate_timeout(
+            baseline=_baseline_gate_timeout,
+            max_parallel=max_parallel,
+            host_cores=_host_cores,
+            gate_cpu_cores=_gate_cpu_cores,
+            mode=_mode,
+        )
+    except (TypeError, ValueError):
+        # Mock or partial config in tests; skip adaptive scaling silently.
+        _gate_timeout_resolution = None
+    if _gate_timeout_resolution is not None:
+        print(
+            f"[sprint] gate_timeout: {_gate_timeout_resolution.reason}",
+            file=sys.stderr,
+            flush=True,
+        )
+    if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
+        _gpc = _gate_timeout_resolution.gate_cpu_cores
+        _mp = _gate_timeout_resolution.max_parallel
+        _hc = _gate_timeout_resolution.host_cores
+        print(
+            f"[sprint] WARNING: gate CPU demand ({_gpc} cores × parallel {_mp} = "
+            f"{_gpc * _mp} cores) exceeds host capacity ({_hc} cores) by >50%; "
+            "consider lowering --parallel to avoid contention-driven gate timeouts",
+            file=sys.stderr,
+            flush=True,
+        )
+    if (
+        _gate_timeout_resolution is not None
+        and _gate_timeout_resolution.effective_timeout != _baseline_gate_timeout
+    ):
+        config = replace(
+            config,
+            validation=replace(
+                config.validation,
+                gate_timeout=_gate_timeout_resolution.effective_timeout,
+            ),
+        )
+
     for warning in _agent_cost_tracking_warnings(config):
         _log(warning)
     for task, _src, _ref in task_entries:

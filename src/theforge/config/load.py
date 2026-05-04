@@ -518,6 +518,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         gate_debug_timeout=val_data.get("gate_debug_timeout"),
         test_command=val_data.get("test_command"),
         pre_validate_command=val_data.get("pre_validate_command"),
+        gate_cpu_cores=val_data.get("gate_cpu_cores"),
+        gate_timeout_scale=str(val_data.get("gate_timeout_scale", "adaptive")),
     )
 
     # ── v0.8 models: key ──────────────────────────────────────────────
