@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
+from theforge.config import ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile
 from theforge.config.types import StuckDetectionConfig
 from theforge.coordinator.context_scope import plan_file_list
@@ -835,11 +835,20 @@ def _run_dev_phase(
             if not state.dev_escalated:
                 _old_model = config.dev_profile.model
                 if config.retry.auto_model_escalation and config.models is not None:
-                    _curr_key = _find_registry_key_for_profile(config.dev_profile)
+                    _registry = config.model_registry or None
+                    _curr_key = _find_registry_key_for_profile(
+                        config.dev_profile, registry=_registry
+                    )
                     if _curr_key is not None:
-                        _next_key = _escalate_dev_model(_curr_key, config.models)
+                        _next_key = _escalate_dev_model(
+                            _curr_key, config.models, registry=_registry
+                        )
                         if _next_key is not None:
-                            _next_info = MODEL_REGISTRY[_next_key]
+                            from theforge.config.models import (  # noqa: PLC0415
+                                _resolve_model_info,
+                            )
+
+                            _next_info = _resolve_model_info(_next_key, registry=_registry)
                             _new_dev = apply_model_info(config.dev_profile, _next_info)
                             config.dev_profile = _new_dev
                             state.dev_escalated = True
