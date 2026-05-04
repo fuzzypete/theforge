@@ -9,7 +9,7 @@ models:
     - claude/sonnet
     - claude/opus
     - openai/gpt-5.4
-    # - openai/gpt-5.5  # disabled pending #1355 (registry overlay bypassed by AGENT_REGISTRY direct-readers, crashes worker)
+    - openai/gpt-5.5  
     - deepseek/deepseek-reasoner
     - google/gemini-3.1-pro-preview
   custom:
