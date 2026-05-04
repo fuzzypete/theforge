@@ -29,12 +29,19 @@ class StoryOutcome(str, Enum):
     """Sprint story lifecycle outcome.
 
     Non-terminal: WAITING, RUNNING, BLOCKED.
-    Terminal: DONE, ALREADY_DONE, FAILED, MERGE_FAILED, ESCALATED, SKIPPED,
-    PRESERVED, DROPPED.
+    Terminal: DONE, ALREADY_DONE, FAILED, MERGE_FAILED, MERGE_ARMING_FAILED,
+    ESCALATED, SKIPPED, PRESERVED, DROPPED.
 
     MERGE_FAILED is the post-approval merge-step failure (dev + review succeeded
     but the integration step crashed/refused). It is distinct from FAILED (a
     generic non-success terminal state) and from DROPPED (story did not run).
+
+    MERGE_ARMING_FAILED is the narrower case where ``gh pr merge --auto``
+    failed at the auto-merge *arming* RPC (e.g. target branch lacks the
+    protection rules ``enablePullRequestAutoMerge`` requires) — the PR itself
+    is fine; only the arming step failed. Operator remediation differs from
+    MERGE_FAILED (configure branch protection or merge manually) so it gets
+    its own outcome.
     """
 
     WAITING = "waiting"
@@ -44,6 +51,7 @@ class StoryOutcome(str, Enum):
     ALREADY_DONE = "already_done"
     FAILED = "failed"
     MERGE_FAILED = "merge_failed"
+    MERGE_ARMING_FAILED = "merge_arming_failed"
     ESCALATED = "escalated"
     SKIPPED = "skipped"
     PRESERVED = "preserved"
@@ -72,6 +80,7 @@ class StoryOutcome(str, Enum):
         return self in {
             StoryOutcome.FAILED,
             StoryOutcome.MERGE_FAILED,
+            StoryOutcome.MERGE_ARMING_FAILED,
             StoryOutcome.ESCALATED,
             StoryOutcome.DROPPED,
             StoryOutcome.DROPPED_SHAPE,
@@ -88,6 +97,7 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.ALREADY_DONE,
     StoryOutcome.FAILED,
     StoryOutcome.MERGE_FAILED,
+    StoryOutcome.MERGE_ARMING_FAILED,
     StoryOutcome.ESCALATED,
     StoryOutcome.SKIPPED,
     StoryOutcome.PRESERVED,
@@ -105,6 +115,7 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.ALREADY_DONE: "done",
     StoryOutcome.FAILED: "failed",
     StoryOutcome.MERGE_FAILED: "failed",
+    StoryOutcome.MERGE_ARMING_FAILED: "failed",
     StoryOutcome.ESCALATED: "failed",
     StoryOutcome.SKIPPED: "skipped",
     StoryOutcome.PRESERVED: "preserved",
@@ -125,6 +136,7 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "already_done": StoryOutcome.ALREADY_DONE,
     "failed": StoryOutcome.FAILED,
     "merge_failed": StoryOutcome.MERGE_FAILED,
+    "merge_arming_failed": StoryOutcome.MERGE_ARMING_FAILED,
     "escalated": StoryOutcome.ESCALATED,
     "escalate": StoryOutcome.ESCALATED,  # phase-style alias seeded by runner
     "skipped": StoryOutcome.SKIPPED,

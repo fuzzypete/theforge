@@ -195,3 +195,197 @@ def test_dropped_remains_distinct_from_merge_failed() -> None:
     distinct state for stories that ran but failed at the merge step."""
     assert StoryOutcome.DROPPED is not StoryOutcome.MERGE_FAILED
     assert StoryOutcome.DROPPED.value != StoryOutcome.MERGE_FAILED.value
+
+
+# ── MERGE_ARMING_FAILED: distinct from MERGE_FAILED ─────────────────────
+
+
+def test_merge_arming_failed_is_distinct_terminal_failed_outcome() -> None:
+    """MERGE_ARMING_FAILED is its own terminal failed outcome — separate enum
+    value, separate name, but same failure-bucket semantics."""
+    assert StoryOutcome.MERGE_ARMING_FAILED is not StoryOutcome.MERGE_FAILED
+    assert StoryOutcome.MERGE_ARMING_FAILED.value != StoryOutcome.MERGE_FAILED.value
+    assert StoryOutcome.MERGE_ARMING_FAILED.is_terminal
+    assert StoryOutcome.MERGE_ARMING_FAILED.is_failed
+    assert not StoryOutcome.MERGE_ARMING_FAILED.is_succeeded
+
+
+def test_mark_merge_failed_arming_message_names_arming_distinction() -> None:
+    """When arming_failed=True, the result message must name the arming
+    distinction and point at branch-protection remediation, not at the PR."""
+    result = _approved_pending_result()
+    mark_merge_failed(
+        result.state,
+        result,
+        "enablePullRequestAutoMerge: Protected branch rules not configured",
+        "forge/story-x",
+        arming_failed=True,
+    )
+
+    assert result.phase is Phase.MERGE_FAILED
+    assert result.success is False
+    assert result.landing_status == "failed"
+    assert "Auto-merge arming failed" in result.message
+    assert "branch protection" in result.message.lower()
+    # Must NOT use the generic "story is recoverable" phrasing reserved for
+    # genuine rejections — operators should pursue config, not PR investigation.
+    assert "Story is recoverable but unmerged" not in result.message
+
+
+def test_outcome_to_status_maps_merge_arming_failed_to_failed() -> None:
+    assert _outcome_to_status("MERGE_ARMING_FAILED") == "failed"
+
+
+def test_terminal_phase_returns_merge_arming_failed() -> None:
+    """STAGE column must surface MERGE_ARMING_FAILED distinctly from
+    MERGE_FAILED so operators can choose the right next action."""
+    assert _terminal_phase("MERGE_ARMING_FAILED", []) == "MERGE_ARMING_FAILED"
+    assert _terminal_phase("MERGE_FAILED", []) == "MERGE_FAILED"
+
+
+def test_status_renderer_distinguishes_arming_from_rejection(tmp_path: Path) -> None:
+    """sprint-summary outcome=MERGE_ARMING_FAILED renders as STATUS=failed,
+    PHASE=MERGE_ARMING_FAILED with a detail naming the arming distinction —
+    distinct from a MERGE_FAILED row whose detail describes a real PR rejection."""
+    sprint_dir = tmp_path / ".forge" / "logs" / "sprint-test"
+    sprint_dir.mkdir(parents=True)
+    summary = {
+        "sprint": {"run_id": "abc"},
+        "stories": [
+            {
+                "slug": "story-arming",
+                "path": "Issue #1357",
+                "outcome": "MERGE_ARMING_FAILED",
+                "cost_usd": 4.27,
+                "verdict": "APPROVE",
+            },
+            {
+                "slug": "story-rejected",
+                "path": "Issue #1358",
+                "outcome": "MERGE_FAILED",
+                "cost_usd": 4.27,
+                "verdict": "APPROVE",
+            },
+        ],
+    }
+    summary_path = sprint_dir / "sprint-summary.yaml"
+    summary_path.write_text(yaml.safe_dump(summary), encoding="utf-8")
+
+    arming_dir = sprint_dir / "story-arming"
+    arming_dir.mkdir()
+    (arming_dir / "audit.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "outcome": {
+                    "final_phase": "MERGE_FAILED",
+                    "success": False,
+                    "message": (
+                        "Auto-merge arming failed: enablePullRequestAutoMerge. "
+                        "Configure branch protection on the target branch or merge "
+                        "manually with `gh pr merge <PR> --squash`."
+                    ),
+                },
+                "landing_status": "failed",
+                "error": "enablePullRequestAutoMerge: Protected branch rules not configured",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rejected_dir = sprint_dir / "story-rejected"
+    rejected_dir.mkdir()
+    (rejected_dir / "audit.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "outcome": {
+                    "final_phase": "MERGE_FAILED",
+                    "success": False,
+                    "message": "Merge failed: required CI check failed.",
+                },
+                "landing_status": "failed",
+                "error": "required CI check failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    entries = read_completed_status(summary_path)
+    assert len(entries) == 2
+    by_slug = {row.slug: row for row in entries}
+
+    arming_row = by_slug["story-arming"]
+    rejected_row = by_slug["story-rejected"]
+
+    assert arming_row.status == "failed"
+    assert rejected_row.status == "failed"
+
+    # PHASE column must distinguish the two failure modes.
+    assert arming_row.phase == "MERGE_ARMING_FAILED"
+    assert rejected_row.phase == "MERGE_FAILED"
+
+    # DETAIL column must surface the operator-actionable distinction.
+    assert "arming" in arming_row.detail.lower()
+    assert "branch protection" in arming_row.detail.lower()
+    assert "arming" not in rejected_row.detail.lower()
+
+
+# ── runner-level seam: outcome assignment from merge_info.arming_failed ──
+
+
+def test_runner_classify_records_merge_arming_failed_when_flag_set() -> None:
+    """runner._classify_and_record reads merge_info.arming_failed from the
+    coordinator result and assigns MERGE_ARMING_FAILED instead of MERGE_FAILED.
+    This is the seam test that covers the path from coordinator merge_info →
+    sprint outcome → sprint-summary serialization."""
+    from theforge.sprint.dag import StoryDAG
+    from theforge.sprint.runner import _classify_and_record
+    from theforge.sprint.story_state import SprintStoryState
+    from theforge.task import TaskStory as _TaskStory
+
+    task = _TaskStory(name="story-arming", slug="story-arming", story_path="specs/x.md")
+    state = CoordinatorState()
+    state.preflight_verdict = "PROCEED"
+    state.phase = Phase.MERGE_FAILED
+
+    arming_result = CoordinatorResult(
+        success=False,
+        phase=Phase.MERGE_FAILED,
+        state=state,
+        message="Auto-merge arming failed.",
+        merge={"action": "merge-pr", "merged": False, "arming_failed": True},
+        landing_status="failed",
+    )
+
+    rejected_state = CoordinatorState()
+    rejected_state.preflight_verdict = "PROCEED"
+    rejected_state.phase = Phase.MERGE_FAILED
+    rejected_result = CoordinatorResult(
+        success=False,
+        phase=Phase.MERGE_FAILED,
+        state=rejected_state,
+        message="Merge failed: required CI check failed.",
+        merge={"action": "merge-pr", "merged": False, "arming_failed": False},
+        landing_status="failed",
+    )
+
+    story_state = SprintStoryState()
+    story_state.register("story-arming", "specs/x.md")
+    story_state.register("story-rejected", "specs/y.md")
+
+    dag = StoryDAG([task, _TaskStory(name="story-rejected", slug="story-rejected")])
+
+    arming_outcome = _classify_and_record(task, arming_result, dag, set(), story_state=story_state)
+    rejected_outcome = _classify_and_record(
+        _TaskStory(name="story-rejected", slug="story-rejected"),
+        rejected_result,
+        dag,
+        set(),
+        story_state=story_state,
+    )
+
+    assert arming_outcome == StoryOutcome.MERGE_ARMING_FAILED
+    assert rejected_outcome == StoryOutcome.MERGE_FAILED
+    # The sprint-summary serialization derives from .name on the canonical
+    # outcome (audit.py:816), so the two failure modes produce distinct strings.
+    assert arming_outcome.name == "MERGE_ARMING_FAILED"
+    assert rejected_outcome.name == "MERGE_FAILED"

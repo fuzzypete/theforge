@@ -425,6 +425,83 @@ class TestMergePrFunction:
             "merge": MAX_MERGE_RETRIES,
         }
 
+    def test_arming_failure_marked_distinctly(self, tmp_path: Path) -> None:
+        """When gh pr merge --auto fails because GitHub refused to ARM auto-merge
+        (e.g. enablePullRequestAutoMerge / Protected branch rules not configured),
+        _merge_pr returns merge_info with arming_failed=True and a remediation
+        hint pointing at branch-protection configuration in the error string."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        arming_stderr = (
+            "GraphQL: Pull request Protected branch rules not configured for this "
+            "branch (enablePullRequestAutoMerge)"
+        )
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                return _make_subprocess_result(1, stderr=arming_stderr)
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/1357",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is False
+        assert result["merged"] is False
+        assert result.get("arming_failed") is True
+        assert "branch protection" in result["error"].lower()
+        assert "enablePullRequestAutoMerge" in result["error"]
+
+    def test_genuine_rejection_not_marked_as_arming_failure(self, tmp_path: Path) -> None:
+        """Generic merge rejections (CI failed, conflicts, branch-protection
+        review-required) must NOT be flagged as arming failures."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                return _make_subprocess_result(1, stderr="merge conflict with base branch")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is False
+        assert result.get("arming_failed") is False
+        assert "branch protection" not in result["error"].lower()
+
     def test_non_retryable_merge_failure_does_not_retry(self, tmp_path: Path) -> None:
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
