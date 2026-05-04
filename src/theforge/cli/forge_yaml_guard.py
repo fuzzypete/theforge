@@ -102,6 +102,29 @@ def _matches_story_issue(frontmatter: dict[str, Any], issue_number: int) -> bool
         return False
 
 
+def _branch_has_story_context(repo_root: Path, branch: str) -> bool:
+    """Return whether the current branch represents a per-story context.
+
+    A story context exists when the branch encodes an issue number
+    (feat/issue-N, fix/issue-N, etc.) or when a local story file under the
+    repo root matches the branch by issue number or slug. The mutation guard
+    only applies in story contexts; non-story branches (main, release/*,
+    detached HEAD, ad-hoc maintenance branches) have no story to attribute
+    a mutation to and the guard must short-circuit.
+    """
+    if _issue_number_from_branch(branch) is not None:
+        return True
+    slug = _branch_slug(branch)
+    for story_path in _iter_local_story_paths(repo_root):
+        frontmatter = parse_story_frontmatter(story_path)
+        if not frontmatter:
+            continue
+        story_slug = frontmatter.get("slug")
+        if story_slug == slug or story_path.stem == slug:
+            return True
+    return False
+
+
 def _local_story_override_active(repo_root: Path, branch: str) -> bool:
     """Return whether a matching local story file opts into forge.yaml mutations."""
     issue_number = _issue_number_from_branch(branch)
@@ -174,17 +197,19 @@ def evaluate_forge_yaml_guard(repo_root: Path, *, base_branch: str) -> ForgeYaml
     if not current_path.exists():
         return ForgeYamlGuardResult(ok=True)
 
-    # The mutation guard is per-story. If there is no story-branch context —
-    # detached HEAD (e.g. the sprint baseline gate's temporary worktree) or the
-    # current branch is the configured base itself (e.g. running `make gate`
-    # directly on a release branch) — there is no story mutation to attribute
-    # and the guard must short-circuit. Without this check, legitimate
-    # cross-branch divergence (release branch vs main) is misread as a
-    # forbidden story edit and blocks every sprint that runs the baseline gate.
-    # Branch-detection failures must propagate so the caller surfaces them
-    # explicitly rather than fail-open through the guard.
+    # The mutation guard is per-story. If the current branch has no story
+    # context — no issue-N token in the name and no matching local story
+    # file — there is no story to attribute a mutation to and the guard
+    # must short-circuit. This covers detached HEAD (sprint baseline gate
+    # worktrees), the configured base branch itself, release branches,
+    # main, and any ad-hoc maintenance branch. Without this check,
+    # legitimate cross-branch divergence (release branch vs main) is
+    # misread as a forbidden story edit and blocks `make gate` runs on
+    # release branches and `cut-rc.sh`. Branch-detection failures must
+    # propagate so the caller surfaces them explicitly rather than
+    # fail-open through the guard.
     current_branch = _current_branch(repo_root)
-    if current_branch in ("HEAD", base_branch):
+    if not _branch_has_story_context(repo_root, current_branch):
         return ForgeYamlGuardResult(ok=True)
 
     diff_proc = subprocess.run(

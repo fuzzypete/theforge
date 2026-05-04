@@ -245,6 +245,49 @@ def test_evaluate_forge_yaml_guard_skips_when_current_branch_is_base(tmp_path: P
     assert mock_run.call_count == 1
 
 
+def test_evaluate_forge_yaml_guard_skips_on_release_branch_with_main_as_base(
+    tmp_path: Path,
+) -> None:
+    """cut-rc.sh runs `make gate` on `release/v0.10` while `forge.yaml`
+    configures `main` as base. Without story context (no issue-N branch,
+    no matching local story file), the guard must short-circuit even
+    when current_branch != base_branch. Regression test for #1377."""
+    (tmp_path / "forge.yaml").write_text(
+        "conventions:\n  one: a\nretry:\n  attempts: 2\n", encoding="utf-8"
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="release/v0.10\n", stderr=""),
+        ]
+
+        result = evaluate_forge_yaml_guard(tmp_path, base_branch="main")
+
+    assert result.ok is True
+    assert result.changed_keys == ()
+    assert result.violating_keys == ()
+    # No diff attempted; the short-circuit fired on the absence of story context.
+    assert mock_run.call_count == 1
+
+
+def test_evaluate_forge_yaml_guard_skips_on_adhoc_non_story_branch(tmp_path: Path) -> None:
+    """Ad-hoc maintenance branches (no issue-N token, no matching local
+    story file) are not story-mutation contexts. Regression test for #1377."""
+    (tmp_path / "forge.yaml").write_text(
+        "validation:\n  gate_command: make gate\n", encoding="utf-8"
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="chore/cleanup\n", stderr=""),
+        ]
+
+        result = evaluate_forge_yaml_guard(tmp_path, base_branch="main")
+
+    assert result.ok is True
+    assert mock_run.call_count == 1
+
+
 def test_cmd_check_story_config_prints_violating_keys(capsys, tmp_path: Path) -> None:
     config_path = tmp_path / "forge.yaml"
     config_path.write_text("project: test\n", encoding="utf-8")
