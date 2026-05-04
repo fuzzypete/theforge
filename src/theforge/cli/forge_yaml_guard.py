@@ -181,11 +181,10 @@ def evaluate_forge_yaml_guard(repo_root: Path, *, base_branch: str) -> ForgeYaml
     # and the guard must short-circuit. Without this check, legitimate
     # cross-branch divergence (release branch vs main) is misread as a
     # forbidden story edit and blocks every sprint that runs the baseline gate.
-    try:
-        current_branch = _current_branch(repo_root)
-    except RuntimeError:
-        current_branch = ""
-    if current_branch in ("", "HEAD", base_branch):
+    # Branch-detection failures must propagate so the caller surfaces them
+    # explicitly rather than fail-open through the guard.
+    current_branch = _current_branch(repo_root)
+    if current_branch in ("HEAD", base_branch):
         return ForgeYamlGuardResult(ok=True)
 
     diff_proc = subprocess.run(
