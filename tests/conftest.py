@@ -167,6 +167,38 @@ def _enforce_network_integration_marker(request):
         _socket_module.socket = _BlockedSocket
 
 
+@pytest.fixture(autouse=True)
+def _enforce_cli_contract_marker(request, monkeypatch):
+    """Gate cli_contract tests behind THEFORGE_RUN_CLI_CONTRACT=1.
+
+    When the marker is present and the env gate is set, lift the network guard
+    and the coordinator-runner blockers and the credential scrub so the test
+    can spawn the real provider CLI to validate argv parsing.
+    """
+    marker = request.node.get_closest_marker("cli_contract")
+    if marker is None:
+        yield
+        return
+
+    if not os.environ.get("THEFORGE_RUN_CLI_CONTRACT"):
+        pytest.skip("set THEFORGE_RUN_CLI_CONTRACT=1 to run cli_contract tests")
+
+    _socket_module.socket = _REAL_SOCKET
+    monkeypatch.setattr("shutil.which", _REAL_WHICH)
+    try:
+        yield
+    finally:
+        _socket_module.socket = _BlockedSocket
+
+
+def require_cli(name: str) -> str:
+    """Return the absolute path to *name*, or skip the test if not on PATH."""
+    path = _REAL_WHICH(name)
+    if not path:
+        pytest.skip(f"{name!r} not installed on PATH")
+    return path
+
+
 @pytest.fixture
 def dev_profile() -> ModelProfile:
     return ModelProfile(

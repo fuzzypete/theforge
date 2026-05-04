@@ -43,6 +43,31 @@ def _try_parse_handoff(output: str) -> dict | None:
         return None
 
 
+# ── Argv builder ──────────────────────────────────────────────────────
+
+
+def build_argv(
+    *,
+    profile: ModelProfile,
+    prompt: str,
+    session_id: str | None = None,
+) -> list[str]:
+    """Construct argv for `npx @google/gemini-cli` invocation."""
+    cmd: list[str] = ["npx", "@google/gemini-cli"]
+    if session_id:
+        cmd += ["--resume", session_id]
+    cmd += [
+        "-p",
+        prompt,
+        "--yolo",
+        "-m",
+        profile.model,
+        "-o",
+        "json",
+    ]
+    return cmd
+
+
 # ── Gemini runner ─────────────────────────────────────────────────────
 
 
@@ -65,18 +90,7 @@ def _run_gemini(
     is not invocation-scoped and two concurrent gemini reviewers would trample each
     other's context.
     """
-    cmd: list[str] = ["npx", "@google/gemini-cli"]
-    if session_id:
-        cmd += ["--resume", session_id]
-    cmd += [
-        "-p",
-        prompt,
-        "--yolo",
-        "-m",
-        profile.model,
-        "-o",
-        "json",
-    ]
+    cmd: list[str] = build_argv(profile=profile, prompt=prompt, session_id=session_id)
 
     # NOTE: Gemini CLI has no --config flag for thinking config.
     # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.

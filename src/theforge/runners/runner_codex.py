@@ -46,6 +46,55 @@ def _try_parse_handoff(output: str) -> dict | None:
         return None
 
 
+# ── Argv builders ─────────────────────────────────────────────────────
+
+
+def build_argv(
+    *,
+    profile: ModelProfile,
+    working_dir: Path,
+    output_file: Path,
+    prompt: str,
+) -> list[str]:
+    """Construct argv for a fresh `codex exec` invocation."""
+    cmd: list[str] = [
+        "npx",
+        "@openai/codex",
+        "exec",
+        "--full-auto",
+        "-m",
+        profile.model,
+    ]
+    if profile.reasoning_effort:
+        cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
+    if profile.sandbox_mode != "none":
+        cmd += ["--sandbox", profile.sandbox_mode]
+    cmd += ["-C", str(working_dir), "-o", str(output_file), prompt]
+    return cmd
+
+
+def build_resume_argv(
+    *,
+    profile: ModelProfile,
+    output_file: Path,
+    session_id: str,
+) -> list[str]:
+    """Construct argv for `codex exec resume` (prompt provided via stdin)."""
+    cmd: list[str] = [
+        "npx",
+        "@openai/codex",
+        "exec",
+        "resume",
+        "--full-auto",
+        "-m",
+        profile.model,
+    ]
+    if profile.reasoning_effort:
+        cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
+    cmd += ["-o", str(output_file), session_id, "-"]
+    return cmd
+
+
 # ── Codex-specific helpers ────────────────────────────────────────────
 
 
@@ -116,33 +165,17 @@ def _run_codex(
     # Fresh runs still accept the explicit sandbox flag.
     # Fresh start: `codex exec [flags] <prompt>` (prompt as positional arg).
     if session_id:
-        cmd: list[str] = [
-            "npx",
-            "@openai/codex",
-            "exec",
-            "resume",
-            "--full-auto",
-            "-m",
-            profile.model,
-        ]
-        if profile.reasoning_effort:
-            cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-        cmd += ["-o", str(output_file), session_id, "-"]
+        cmd: list[str] = build_resume_argv(
+            profile=profile, output_file=output_file, session_id=session_id
+        )
         stdin_prompt: str | None = prompt
     else:
-        cmd = [
-            "npx",
-            "@openai/codex",
-            "exec",
-            "--full-auto",
-            "-m",
-            profile.model,
-        ]
-        if profile.reasoning_effort:
-            cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-        if profile.sandbox_mode != "none":
-            cmd += ["--sandbox", profile.sandbox_mode]
-        cmd += ["-C", str(working_dir), "-o", str(output_file), prompt]
+        cmd = build_argv(
+            profile=profile,
+            working_dir=working_dir,
+            output_file=output_file,
+            prompt=prompt,
+        )
         stdin_prompt = None
 
     start_wall = time.time()

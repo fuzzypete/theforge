@@ -629,6 +629,31 @@ class TestNoScratchFilesCheck:
         assert any(v.rule == "no_scratch_files" for v in violations)
 
 
+def test_runner_contract_coverage() -> None:
+    """Every CLI-backed runner module must have a matching contract test file.
+
+    Catches the failure mode behind issue #1014: a runner argv is changed
+    without anyone updating the mock-based test, and the real CLI silently
+    rejects the argv at runtime. A required contract file means the author
+    has to consider real-CLI parsing.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    runners_dir = repo_root / "src" / "theforge" / "runners"
+    contract_dir = repo_root / "tests" / "contract"
+    missing: list[str] = []
+    for path in sorted(runners_dir.glob("runner_*.py")):
+        name = path.stem  # e.g. runner_codex
+        short = name[len("runner_") :]  # e.g. codex
+        expected = contract_dir / f"test_{short}_cli_contract.py"
+        if not expected.is_file():
+            missing.append(f"{path.name} → expected {expected.relative_to(repo_root)}")
+    assert not missing, (
+        "CLI runner modules without contract test coverage:\n  "
+        + "\n  ".join(missing)
+        + "\nSee tests/contract/README.md."
+    )
+
+
 def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", *args],
