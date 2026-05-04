@@ -286,23 +286,24 @@ def build_review_prompt(
         - `suggestion`: OPTIONAL non-binding fix sketch, or empty string. The
           dev agent is not bound by it; do not phrase it as a directive.
 
-        Worked example for a sprint-summary/audit consistency bug:
+        Worked example for a status/audit consistency bug (paths are
+        illustrative — substitute the real file from your test_target):
 
         ```yaml
         - severity: P1
-          file: "src/theforge/sprint/runner.py"
-          line: 1912
+          file: "<path/to/affected_module>"
+          line: <line>
           observed: >-
-            When a dep's queued PR fails dependency-poll, sprint-summary.yaml
-            records the dep's outcome as DONE while audit.yaml records
-            MERGE_FAILED, so `forge status` and the audit disagree about the
-            dep's final state.
+            When a dependency's queued task fails its poll, the user-visible
+            status report records the outcome as DONE while the audit log
+            records FAILED, so the status command and the audit log disagree
+            about the dependency's final state.
           expected: >-
-            When a dep enters a terminal MERGE_FAILED state through any code
-            path, audit.yaml and sprint-summary.yaml must agree on that
-            terminal state, so operator-facing status and the audit record
-            never disagree about a dep's final outcome.
-          evidence: "src/theforge/sprint/runner.py near line 1912 (dep-poll-failure branch)"
+            When a unit of work enters a terminal failure state through any
+            code path, every operator-facing report and the audit record must
+            agree on that terminal state, so status output and the audit
+            record never disagree about a final outcome.
+          evidence: "<path/to/affected_module> near line <line> (failure branch)"
           suggestion: ""
         ```
 
@@ -358,20 +359,22 @@ def build_review_prompt(
             - `suggestion`: OPTIONAL non-binding sketch, or empty string. The
               dev agent is not bound by it; do not phrase it as a directive.
 
-            Worked example values for a sprint-summary/audit consistency bug:
+            Worked example values for a status/audit consistency bug (paths
+            are illustrative — substitute the real file from your test_target):
 
-              observed: "When a dep's queued PR fails dependency-poll,
-              sprint-summary.yaml records the dep's outcome as DONE while
-              audit.yaml records MERGE_FAILED, so `forge status` and the audit
-              disagree about the dep's final state."
+              observed: "When a dependency's queued task fails its poll, the
+              user-visible status report records the outcome as DONE while
+              the audit log records FAILED, so the status command and the
+              audit log disagree about the dependency's final state."
 
-              expected: "When a dep enters a terminal MERGE_FAILED state
-              through any code path, audit.yaml and sprint-summary.yaml must
-              agree on that terminal state, so operator-facing status and the
-              audit record never disagree about a dep's final outcome."
+              expected: "When a unit of work enters a terminal failure state
+              through any code path, every operator-facing report and the
+              audit record must agree on that terminal state, so status
+              output and the audit record never disagree about a final
+              outcome."
 
-              evidence: "src/theforge/sprint/runner.py near line 1912
-              (queued-PR dep-poll-failure branch)"
+              evidence: "<path/to/affected_module> near line <line>
+              (failure branch)"
 
               suggestion: ""
         """)
