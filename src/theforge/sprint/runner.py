@@ -1154,6 +1154,7 @@ def run_sprint(
     run_id: str | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
+    entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1820,16 +1821,24 @@ def run_sprint(
                 if _sk_codes
                 else (_sk_dict.get("detail") or _sk_dict.get("source") or "shape-gate")
             )
+            _sk_detail: dict = {
+                "shape_gate_source": _sk_dict.get("source"),
+                "shape_gate_codes": list(_sk_codes),
+                "final_outcome": "SKIPPED",
+            }
+            _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
+            if _sk_intake is not None:
+                _sk_detail["intake_kind"] = _sk_intake.kind.value
+                _sk_detail["intake_detail"] = _sk_intake.detail
+                _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
+                _sk_detail["intake_audit"] = dict(_sk_intake.audit)
+                _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _state_writer.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
                 outcome=StoryOutcome.SKIPPED,
                 reason=_sk_reason,
-                detail={
-                    "shape_gate_source": _sk_dict.get("source"),
-                    "shape_gate_codes": list(_sk_codes),
-                    "final_outcome": "SKIPPED",
-                },
+                detail=_sk_detail,
             )
     elif skipped_issues or []:
         # Headless invocation (no run_id) — still register skipped issues in
@@ -1842,11 +1851,22 @@ def run_sprint(
             _sk_slug = f"issue-{_sk_num}"
             _sk_codes = _sk_dict.get("reason_codes") or []
             _sk_reason = ", ".join(_sk_codes) if _sk_codes else "shape-gate"
+            _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
+            _sk_detail = None
+            if _sk_intake is not None:
+                _sk_detail = {
+                    "intake_kind": _sk_intake.kind.value,
+                    "intake_detail": _sk_intake.detail,
+                    "intake_findings": [f.as_dict() for f in _sk_intake.findings],
+                    "intake_audit": dict(_sk_intake.audit),
+                    "intake_proposed_replacement": _sk_intake.proposed_replacement,
+                }
             _story_state.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
                 outcome=StoryOutcome.SKIPPED,
                 reason=_sk_reason,
+                detail=_sk_detail,
             )
 
     # Parallel scheduling state

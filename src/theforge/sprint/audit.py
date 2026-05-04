@@ -845,6 +845,7 @@ def _write_sprint_summary(
                     "batch": 0,
                     "depends_on": list(entry.depends_on),
                     "drop_reason": entry.reason,
+                    "detail": dict(entry.detail) if entry.detail else None,
                 }
             )
     else:

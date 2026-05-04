@@ -244,6 +244,7 @@ def _emit_all_skipped_audit(
     sprint_name: str,
     budget_usd: float,
     skipped_issues: list,
+    intake_outcomes: "dict | None" = None,
 ) -> None:
     """Write sprint-audit.yaml and sprint-summary.yaml when every issue was
     gated out. Without this, an all-skipped sprint leaves no machine-readable
@@ -259,6 +260,7 @@ def _emit_all_skipped_audit(
     # issue so the all-skipped audit/summary projects from the same SoT
     # structure run_sprint() uses. Counts and the per-story list both flow
     # from this single source.
+    intake_outcomes = intake_outcomes or {}
     story_state = SprintStoryState()
     for sk in skipped_issues or []:
         sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
@@ -272,17 +274,25 @@ def _emit_all_skipped_audit(
             if sk_codes
             else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
         )
+        sk_detail: dict = {
+            "shape_gate_source": sk_dict.get("source"),
+            "shape_gate_codes": list(sk_codes),
+            "final_outcome": "SKIPPED",
+        }
+        outcome = intake_outcomes.get(sk_num)
+        if outcome is not None:
+            sk_detail["intake_kind"] = outcome.kind.value
+            sk_detail["intake_detail"] = outcome.detail
+            sk_detail["intake_findings"] = [f.as_dict() for f in outcome.findings]
+            sk_detail["intake_audit"] = dict(outcome.audit)
+            sk_detail["intake_proposed_replacement"] = outcome.proposed_replacement
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
             outcome=StoryOutcome.SKIPPED,
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",
-            detail={
-                "shape_gate_source": sk_dict.get("source"),
-                "shape_gate_codes": list(sk_codes),
-                "final_outcome": "SKIPPED",
-            },
+            detail=sk_detail,
         )
     canonical_counts = story_state.counts()
     manifest = ResolvedSprint(
@@ -355,6 +365,7 @@ def _run_query_mode(
 ) -> int:
     """Handle --milestone / --label / --issues query mode."""
     from theforge.sprint.dag import resolve_satisfied_dependencies
+    from theforge.sprint.entry_intake import remediate_entry_skipped_issues
     from theforge.sprint.query import (
         assign_dependency_batches_with_satisfied,
         build_resolved_sprint,
@@ -438,6 +449,18 @@ def _run_query_mode(
         issues = gate_result.runnable
         skipped_issues = gate_result.skipped
 
+        # Bridge to intake remediation: entry-skipped issues bypass the
+        # in-runner remediation pass, so route them through here. Suppress
+        # remediation under --force, which is the operator's explicit
+        # escape hatch.
+        entry_intake_outcomes: dict[int, object] = {}
+        if skipped_issues and not force:
+            entry_intake_outcomes = remediate_entry_skipped_issues(
+                skipped_issues,
+                config=config,
+                log=lambda m: print(f"[forge] {m}", file=sys.stderr),
+            )
+
         if not issues:
             print(
                 f"[forge] All {len(skipped_issues)} issue(s) skipped by shape gate "
@@ -452,6 +475,7 @@ def _run_query_mode(
                 or f"issues-{issues_arg}",
                 budget_usd=budget_usd,
                 skipped_issues=skipped_issues,
+                intake_outcomes=entry_intake_outcomes,
             )
             return 0
 
@@ -551,6 +575,7 @@ def _run_query_mode(
             run_id=run_id,
             dropped_slugs=dropped_slugs,
             skipped_issues=skipped_issues,
+            entry_intake_outcomes=entry_intake_outcomes,
         )
     except Exception as exc:
         import traceback
