@@ -140,7 +140,7 @@ def _outcome_to_status(outcome: str) -> str:
         return "done"
     if outcome == "SKIPPED":
         return "skipped"
-    if outcome in ("ESCALATE", "MERGE_FAILED"):
+    if outcome in ("ESCALATE", "MERGE_FAILED", "MERGE_ARMING_FAILED"):
         return "failed"
     return "failed"
 
@@ -394,6 +394,7 @@ def _stage_and_detail_from_completed_story(
     is_failure_outcome = outcome in {
         "FAILED",
         "MERGE_FAILED",
+        "MERGE_ARMING_FAILED",
         "ESCALATE",
         "ESCALATED",
         "DROPPED",

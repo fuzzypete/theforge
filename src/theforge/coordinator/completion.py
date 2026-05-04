@@ -32,6 +32,8 @@ def mark_merge_failed(
     result: CoordinatorResult,
     error: str | None,
     branch_name: str | None,
+    *,
+    arming_failed: bool = False,
 ) -> None:
     """Mutate state and result coherently when the merge step fails.
 
@@ -39,6 +41,10 @@ def mark_merge_failed(
     audit ``final_phase`` cannot disagree with ``landing_status``. Replaces
     ``result.message`` with a failure-cause string so downstream surfaces do not
     inherit a "completed" message that contradicts the failed landing.
+
+    When ``arming_failed`` is True, the failure is the auto-merge *arming* RPC
+    (the PR itself is fine); the message names the distinction so operators
+    pursue branch-protection configuration instead of investigating the PR.
     """
     state.phase = Phase.MERGE_FAILED
     result.phase = Phase.MERGE_FAILED
@@ -47,7 +53,15 @@ def mark_merge_failed(
     cause = error or "unknown"
     state.error = cause
     branch_part = f" Branch '{branch_name}' carries reviewed work." if branch_name else ""
-    result.message = f"Merge failed: {cause}.{branch_part} Story is recoverable but unmerged."
+    if arming_failed:
+        result.message = (
+            f"Auto-merge arming failed: {cause}.{branch_part} "
+            "The PR itself is not rejected — configure branch protection on the "
+            "target branch or merge manually with `gh pr merge <PR> --squash` "
+            "(without `--auto`)."
+        )
+    else:
+        result.message = f"Merge failed: {cause}.{branch_part} Story is recoverable but unmerged."
 
 
 def _archive_story_to_done(
@@ -571,11 +585,41 @@ def _step_create_pr(
     return {"success": True, "pr_url": pr_result["pr_url"]}
 
 
+_AUTO_MERGE_ARMING_MARKERS = (
+    "enablepullrequestautomerge",
+    "protected branch rules not configured",
+    "auto-merge is not allowed",
+    "auto merge is not allowed",
+    "allow_auto_merge",
+    "allowautomerge",
+)
+
+_AUTO_MERGE_ARMING_HINT = (
+    "Auto-merge arming was refused by GitHub; the PR itself was not rejected. "
+    "Configure branch protection on the target branch (enable required status "
+    "checks / allow auto-merge) or merge the PR manually with "
+    "`gh pr merge <PR> --squash --delete-branch` (without `--auto`)."
+)
+
+
+def _is_auto_merge_arming_error(stderr_text: str) -> bool:
+    """Return True if ``gh pr merge --auto`` stderr indicates the *arming*
+    step failed (rather than the PR being rejected on its merits)."""
+    if not stderr_text:
+        return False
+    lowered = stderr_text.lower()
+    return any(marker in lowered for marker in _AUTO_MERGE_ARMING_MARKERS)
+
+
 def _step_merge(project_root: Path, pr_url: str, merge_strategy: str) -> dict:
     """Execute ``gh pr merge --auto --{strategy}``.
 
     Returns ``{"success": True}`` or
-    ``{"success": False, "error": ..., "retryable": bool}``.
+    ``{"success": False, "error": ..., "retryable": bool, "arming_failed": bool}``.
+
+    ``arming_failed`` is True when GitHub refused to *arm* auto-merge (e.g.
+    target branch lacks the protection rules ``enablePullRequestAutoMerge``
+    requires) — distinct from a genuine PR rejection.
     """
     merge_retry_error = "base branch was modified"
     try:
@@ -592,6 +636,7 @@ def _step_merge(project_root: Path, pr_url: str, merge_strategy: str) -> dict:
             "success": False,
             "error": f"gh pr merge failed: {exc}",
             "retryable": False,
+            "arming_failed": False,
             "error_context": _build_exception_context(
                 exc,
                 cmd=["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
@@ -605,10 +650,16 @@ def _step_merge(project_root: Path, pr_url: str, merge_strategy: str) -> dict:
             if part and part.strip()
         )
         _pr_log.warning("gh pr merge --auto failed (exit %d): %s", merge_proc.returncode, err)
+        arming_failed = _is_auto_merge_arming_error(err)
+        if arming_failed:
+            error_msg = f"{_AUTO_MERGE_ARMING_HINT} Underlying error: {err}"
+        else:
+            error_msg = f"gh pr merge failed: {err}"
         return {
             "success": False,
-            "error": f"gh pr merge failed: {err}",
+            "error": error_msg,
             "retryable": merge_retry_error in err.lower(),
+            "arming_failed": arming_failed,
         }
 
     return {"success": True}
@@ -944,6 +995,7 @@ def _merge_pr(
                     merge_state=merge_state,
                     detail={
                         "error_context": merge_result.get("error_context"),
+                        "arming_failed": bool(merge_result.get("arming_failed")),
                     },
                 )
             _complete_step(merge_state, "merge")

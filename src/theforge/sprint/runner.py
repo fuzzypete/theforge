@@ -1082,7 +1082,11 @@ def _classify_and_record(
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
     elif landing_status == "failed":
-        outcome = StoryOutcome.MERGE_FAILED
+        merge_info = getattr(result, "merge", None) or {}
+        if isinstance(merge_info, dict) and merge_info.get("arming_failed"):
+            outcome = StoryOutcome.MERGE_ARMING_FAILED
+        else:
+            outcome = StoryOutcome.MERGE_FAILED
         dag.mark_skipped(task.slug)
     elif landing_status == "pending_integration":
         # Approved but merge deferred or queued — counts as succeeded, not yet in DAG
@@ -1391,6 +1395,7 @@ def run_sprint(
                 "ESCALATE": StoryOutcome.ESCALATED,
                 "FAILED": StoryOutcome.FAILED,
                 "MERGE_FAILED": StoryOutcome.MERGE_FAILED,
+                "MERGE_ARMING_FAILED": StoryOutcome.MERGE_ARMING_FAILED,
             }
             _mapped_outcome = _outcome_map.get(_prior_outcome)
             if _mapped_outcome is None:
@@ -2446,7 +2451,13 @@ def run_sprint(
                         # Optimistic classify recorded this as DONE; landing
                         # failed — correct the canonical outcome (terminal-to-
                         # terminal correction is permitted).
-                        _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
+                        _merge_info = result.merge if isinstance(result.merge, dict) else {}
+                        _failed_outcome = (
+                            StoryOutcome.MERGE_ARMING_FAILED
+                            if _merge_info.get("arming_failed")
+                            else StoryOutcome.MERGE_FAILED
+                        )
+                        _set_outcome(slug, _failed_outcome, phase=result.phase.name)
                     changed = True
                     while changed:
                         changed = False
@@ -2456,9 +2467,19 @@ def run_sprint(
                             if _attempt_integration(pending_slug, pending_task, pending_result):
                                 del pending_integration[pending_slug]
                                 if pending_result.landing_status == "failed":
+                                    _pending_merge_info = (
+                                        pending_result.merge
+                                        if isinstance(pending_result.merge, dict)
+                                        else {}
+                                    )
+                                    _pending_failed_outcome = (
+                                        StoryOutcome.MERGE_ARMING_FAILED
+                                        if _pending_merge_info.get("arming_failed")
+                                        else StoryOutcome.MERGE_FAILED
+                                    )
                                     _set_outcome(
                                         pending_slug,
-                                        StoryOutcome.MERGE_FAILED,
+                                        _pending_failed_outcome,
                                         phase=pending_result.phase.name,
                                     )
                                 changed = True

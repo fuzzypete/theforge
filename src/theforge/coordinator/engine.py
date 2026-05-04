@@ -1006,7 +1006,13 @@ def run_task(
             elif _merge_info.get("merge_queued"):
                 result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
             elif _landing_status == "failed":
-                mark_merge_failed(state, result, _merge_info.get("error"), branch_name)
+                mark_merge_failed(
+                    state,
+                    result,
+                    _merge_info.get("error"),
+                    branch_name,
+                    arming_failed=bool(_merge_info.get("arming_failed")),
+                )
 
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
@@ -1245,7 +1251,13 @@ def _run_resume_coordinator(
             elif _merge_info.get("merge_queued"):
                 result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
             elif _landing_status == "failed":
-                mark_merge_failed(state, result, _merge_info.get("error"), branch_name)
+                mark_merge_failed(
+                    state,
+                    result,
+                    _merge_info.get("error"),
+                    branch_name,
+                    arming_failed=bool(_merge_info.get("arming_failed")),
+                )
 
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
