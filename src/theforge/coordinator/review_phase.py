@@ -61,13 +61,12 @@ from .run_setup import save_trajectory_state
 from .state import (
     CoordinatorResult,
     CoordinatorState,
-    FindingRecord,
     Phase,
     RetryReason,
     ReviewCycleMetadata,
     ReviewIterationTelemetry,
 )
-from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_worktree_eval
+from .util import _fmt_duration, _log, _log_phase, _log_verbose
 
 
 def _perform_dev_model_escalation(
@@ -652,64 +651,26 @@ def _run_review_phase(
         sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
     )
 
-    # ── Finding classification via worktree subprocess ────────────────────
-    # Run update_finding_registry in the worktree's Python environment so that
-    # self-hosting sprints evaluate the worktree's classifier, not the
-    # coordinator's own copy. sys.path is never mutated; isolation is via
-    # PYTHONPATH in the subprocess.
-    _fr_payload: dict = {
-        "finding_registry": [
-            {
-                "finding_id": r.finding_id,
-                "cycle_first_seen": r.cycle_first_seen,
-                "cycle_last_seen": r.cycle_last_seen,
-                "file": r.file,
-                "line": r.line,
-                "severity": r.severity,
-                "description": r.description,
-                "reporter": r.reporter,
-                "disposition": r.disposition,
-            }
-            for r in state.finding_registry
-        ],
-        "cycle_results": [
-            (
-                reviewer_name,
-                {
-                    "verdict": rr.verdict,
-                    "summary": rr.summary,
-                    "findings": [
-                        {
-                            "severity": f.severity,
-                            "file": f.file,
-                            "line": f.line,
-                            "description": f.description,
-                            "suggestion": f.suggestion,
-                        }
-                        for f in rr.findings
-                    ],
-                    "story_matches": rr.story_matches,
-                    "story_mismatches": rr.story_mismatches,
-                    "test_adequate": rr.test_adequate,
-                    "test_gaps": rr.test_gaps,
-                    "parse_errors": rr.parse_errors,
-                    "raw_yaml": rr.raw_yaml,
-                },
-            )
-            for reviewer_name, rr in state.last_cycle_reviewer_results
-        ],
-        "workspace_path": str(workspace_path),
-        "cycle_num": state.review_cycle,
-        "prev_commit": state.last_dev_start_commit
+    # ── Finding classification (in-process) ───────────────────────────────
+    # update_finding_registry operates on coordinator-internal dataclasses
+    # (FindingRecord, ReviewFinding) and exists to drive coordinator decisions.
+    # It must run against the launched (installed) version's schema, not the
+    # worktree's — running it in a subprocess with PYTHONPATH=worktree/src
+    # silently swaps the dataclass shape across the parent/child boundary and
+    # crashes on any internal refactor (see #1386). Run in-process: there is
+    # no per-worktree state mutation to isolate, and no project-owned code is
+    # imported.
+    from theforge.finding_classifier import update_finding_registry as _update_finding_registry
+
+    _classified = _update_finding_registry(
+        state=state,
+        cycle_results=list(state.last_cycle_reviewer_results),
+        workspace_path=workspace_path,
+        cycle_num=state.review_cycle,
+        prev_commit=state.last_dev_start_commit
         if isinstance(state.last_dev_start_commit, str)
         else None,
-    }
-    _fr_result = _run_worktree_eval(workspace_path, "update_finding_registry", _fr_payload)
-    # Reconstruct state.finding_registry as FindingRecord objects with shared
-    # references so that AC-blocking disposition mutations below propagate
-    # correctly to the audit trail.
-    state.finding_registry = [FindingRecord(**r) for r in _fr_result["finding_registry"]]
-    _classified = [state.finding_registry[i] for i in _fr_result["classified_indices"]]
+    )
 
     _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
     _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
@@ -830,10 +791,12 @@ def _run_review_phase(
             _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
 
-    # ── Trajectory classification via worktree subprocess ─────────────────
+    # ── Trajectory classification (in-process) ─────────────────────────────
     # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
     # Uses a dedicated monotonic counter (trajectory_cycle) that is never reset
     # or decremented by extend/reject/exhausted-gate paths — unlike review_cycle.
+    # classify_families is orchestrator-internal: see the in-process rationale
+    # at the update_finding_registry call site above (#1386).
     state.trajectory_cycle += 1
 
     # Snapshot this cycle's findings as plain dicts for cross-cycle matching
@@ -850,27 +813,28 @@ def _run_review_phase(
 
     # Classify families on cycle 2+ (need at least one prior cycle to match against)
     if state.trajectory_cycle >= 2:
-        _cf_payload: dict = {
-            "current_findings": [
-                {
-                    "severity": f.severity,
-                    "file": f.file,
-                    "line": f.line,
-                    "description": f.description,
-                    "suggestion": f.suggestion,
-                }
-                for f in parsed_review.findings
+        from theforge.review_finding_classifier import classify_families as _classify_families
+
+        def _rf_from_snapshot(d: dict) -> ReviewFinding:
+            return ReviewFinding(
+                severity=d.get("severity", "P1"),
+                file=d.get("file", ""),
+                line=d.get("line"),
+                description=d.get("description", ""),
+                suggestion=d.get("suggestion"),
+            )
+
+        _updated_store, _surviving = _classify_families(
+            current_findings=list(parsed_review.findings),
+            current_cycle=state.trajectory_cycle,
+            trajectory_store=state.finding_trajectory,
+            prior_cycle_findings=[
+                (cycle_num, [_rf_from_snapshot(f) for f in findings])
+                for cycle_num, findings in state.review_cycle_findings[:-1]
             ],
-            "current_cycle": state.trajectory_cycle,
-            "trajectory_store": state.finding_trajectory,
-            # Pass stored dicts directly; subprocess eval handles missing suggestion
-            "prior_cycle_findings": [
-                (cycle_num, findings) for cycle_num, findings in state.review_cycle_findings[:-1]
-            ],
-        }
-        _cf_result = _run_worktree_eval(workspace_path, "classify_families", _cf_payload)
-        state.finding_trajectory = _cf_result["trajectory_store"]
-        state.surviving_families = _cf_result["surviving_families"]
+        )
+        state.finding_trajectory = _updated_store
+        state.surviving_families = _surviving
     else:
         state.surviving_families = []
 
