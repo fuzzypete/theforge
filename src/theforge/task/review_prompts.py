@@ -270,6 +270,42 @@ def build_review_prompt(
         You MUST output ONLY a YAML block. No prose before or after.
         Start your response with ```yaml and end with ```.
 
+        Each finding has four prose fields. Write them with care: the post_run
+        hook files one GitHub issue per finding, and the body is rendered
+        directly from these fields without manual editing. They must read as a
+        bug story, not as code-review feedback on a merged PR.
+
+        - `observed`: ONE sentence in past/present tense, behaviour-only. No
+          fix theory, no verdict ("APPROVE"/"REJECT"), no "the developer should…".
+        - `expected`: a CATEGORY-LEVEL rule in flowing prose that generalises
+          beyond this single trigger. Not a checklist, not a test plan, not the
+          specific symptom restated. State the contract that this code path is
+          violating, in language that would make sense even if a different
+          input later triggered the same class of bug.
+        - `evidence`: file path plus line/anchor; one short clause is enough.
+        - `suggestion`: OPTIONAL non-binding fix sketch, or empty string. The
+          dev agent is not bound by it; do not phrase it as a directive.
+
+        Worked example for a sprint-summary/audit consistency bug:
+
+        ```yaml
+        - severity: P1
+          file: "src/theforge/sprint/runner.py"
+          line: 1912
+          observed: >-
+            When a dep's queued PR fails dependency-poll, sprint-summary.yaml
+            records the dep's outcome as DONE while audit.yaml records
+            MERGE_FAILED, so `forge status` and the audit disagree about the
+            dep's final state.
+          expected: >-
+            When a dep enters a terminal MERGE_FAILED state through any code
+            path, audit.yaml and sprint-summary.yaml must agree on that
+            terminal state, so operator-facing status and the audit record
+            never disagree about a dep's final outcome.
+          evidence: "src/theforge/sprint/runner.py near line 1912 (dep-poll-failure branch)"
+          suggestion: ""
+        ```
+
         ```yaml
         verdict: APPROVE | REQUEST_CHANGES
         summary: "<one-line summary of your review>"
@@ -277,8 +313,12 @@ def build_review_prompt(
           - severity: P1 | P2
             file: "<file path>"
             line: <line number or null>
-            description: "<what is wrong>"
-            suggestion: "<how to fix it>"
+            observed: "<one sentence describing the observed behaviour>"
+            expected: >-
+              <category-level rule in flowing prose that generalises beyond
+              this trigger>
+            evidence: "<file path + line/anchor>"
+            suggestion: "<optional non-binding fix sketch, or empty string>"
         story_compliance:
           matches_spec: true | false
           mismatches:
@@ -304,6 +344,36 @@ def build_review_prompt(
             You MUST call the `submit_review` tool to deliver your verdict.
             Do NOT return your review as plain text — it will be ignored.
             Use the submit_review tool with your structured review data.
+
+            Each finding takes four prose fields. They are rendered directly
+            into a GitHub bug story by the post_run hook, so write them as a
+            bug report rather than as code-review feedback on a merged PR:
+
+            - `observed`: ONE sentence, behaviour-only — no fix theory, no
+              verdict, no "the developer should…".
+            - `expected`: a CATEGORY-LEVEL rule in flowing prose that
+              generalises beyond this trigger. Not a checklist, not the
+              symptom restated. State the contract this code path violates.
+            - `evidence`: file path + line/anchor; one short clause.
+            - `suggestion`: OPTIONAL non-binding sketch, or empty string. The
+              dev agent is not bound by it; do not phrase it as a directive.
+
+            Worked example values for a sprint-summary/audit consistency bug:
+
+              observed: "When a dep's queued PR fails dependency-poll,
+              sprint-summary.yaml records the dep's outcome as DONE while
+              audit.yaml records MERGE_FAILED, so `forge status` and the audit
+              disagree about the dep's final state."
+
+              expected: "When a dep enters a terminal MERGE_FAILED state
+              through any code path, audit.yaml and sprint-summary.yaml must
+              agree on that terminal state, so operator-facing status and the
+              audit record never disagree about a dep's final outcome."
+
+              evidence: "src/theforge/sprint/runner.py near line 1912
+              (queued-PR dep-poll-failure branch)"
+
+              suggestion: ""
         """)
 
     sandbox_label = "enabled" if sandboxed else "DISABLED (unsandboxed — effects ran unconfined)"

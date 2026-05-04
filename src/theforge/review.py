@@ -50,14 +50,39 @@ class ACVerification:
 
 @dataclass(frozen=True)
 class ReviewFinding:
-    """A single review finding with severity and location."""
+    """A single review finding with severity, location, and structured prose.
+
+    Findings carry three required prose fields so the post_run hook can render
+    a shape-gate-clean bug body without manual grooming:
+
+    * ``observed`` — one sentence, behaviour-only.
+    * ``expected`` — a category-level rule in flowing prose that generalises
+      beyond the trigger.
+    * ``evidence`` — file/line/anchor pointing at the offending code.
+
+    ``suggestion`` is optional and rendered separately as non-binding guidance
+    so it never counts as HOW-leakage when the finding becomes a bug story.
+    """
 
     severity: str  # "P1" or "P2"
     file: str
     line: int | None
-    description: str
+    observed: str
     suggestion: str | None
+    expected: str = ""
+    evidence: str = ""
     reviewers: tuple[str, ...] = ()  # reviewers who raised this finding (audit attribution)
+
+    @property
+    def description(self) -> str:
+        """Backwards-compatible alias for ``observed``.
+
+        Older internal callers (audit serialisation, classifier tokenisation,
+        fix prompts) read ``description`` to mean "the issue text"; observed is
+        the natural successor. Construction sites must use the structured
+        fields directly.
+        """
+        return self.observed
 
 
 @dataclass(frozen=True)
@@ -143,20 +168,32 @@ def _extract_review_payload(
     for index, finding_data in enumerate(data.get("findings", [])):
         if not isinstance(finding_data, dict):
             continue
-        description, description_audit = sanitize_llm_text(
-            finding_data.get("description", ""),
-            field_name=f"findings[{index}].description",
+        observed, observed_audit = sanitize_llm_text(
+            finding_data.get("observed", ""),
+            field_name=f"findings[{index}].observed",
+        )
+        expected, expected_audit = sanitize_llm_text(
+            finding_data.get("expected", ""),
+            field_name=f"findings[{index}].expected",
+        )
+        evidence, evidence_audit = sanitize_llm_text(
+            finding_data.get("evidence", ""),
+            field_name=f"findings[{index}].evidence",
         )
         findings.append(
             ReviewFinding(
                 severity=finding_data.get("severity", "P2"),
                 file=finding_data.get("file", "unknown"),
                 line=_coerce_line(finding_data.get("line")),
-                description=description,
+                observed=observed,
+                expected=expected,
+                evidence=evidence,
                 suggestion=finding_data.get("suggestion"),
             )
         )
-        sanitization_audit = _merge_sanitization_audits(sanitization_audit, description_audit)
+        sanitization_audit = _merge_sanitization_audits(
+            sanitization_audit, observed_audit, expected_audit, evidence_audit
+        )
     return summary, findings, sanitization_audit
 
 
@@ -708,7 +745,13 @@ def convention_violations_to_review_findings(violations: list[dict] | None) -> l
                 severity="P1",
                 file=file,
                 line=None,
-                description=f"Hard convention violation [{rule}] in {file}: {detail}",
+                observed=f"Hard convention violation [{rule}] in {file}: {detail}",
+                expected=(
+                    "Code merged to main must conform to the project's hard conventions; "
+                    "any violation flagged as blocking must be resolved before approval, "
+                    "regardless of the originating rule."
+                ),
+                evidence=f"{file} (rule: {rule})",
                 suggestion=f"Resolve the [{rule}] convention violation in {file}.",
             )
         )
@@ -764,7 +807,9 @@ def _dedup_findings(reviewer_findings: list[tuple[str, ReviewFinding]]) -> list[
                 severity=finding.severity,
                 file=finding.file,
                 line=finding.line,
-                description=finding.description,
+                observed=finding.observed,
+                expected=finding.expected,
+                evidence=finding.evidence,
                 suggestion=finding.suggestion,
                 reviewers=tuple(seen_reviewers[key]),
             )

@@ -213,7 +213,15 @@ class TestFinalization:
         review_data = {
             "verdict": "REQUEST_CHANGES",
             "summary": "Needs work",
-            "findings": [{"severity": "P1", "file": "x.py", "description": "bug"}],
+            "findings": [
+                {
+                    "severity": "P1",
+                    "file": "x.py",
+                    "observed": "bug",
+                    "expected": "project-contract category rule (test fixture)",
+                    "evidence": "(test fixture evidence)",
+                }
+            ],
         }
 
         def adapter(messages, tools):

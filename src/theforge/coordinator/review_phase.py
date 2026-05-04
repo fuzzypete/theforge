@@ -320,9 +320,15 @@ def _apply_review_parse_fallback(
                 severity="P1",
                 file="",
                 line=None,
-                description=(
+                observed=(
                     "All reviewers failed to produce parseable output. Manual review required."
                 ),
+                expected=(
+                    "The review pool must produce a parseable verdict from at least one "
+                    "reviewer so the pipeline can make an automated decision; a fully "
+                    "unparseable cycle stalls the run regardless of the underlying issue."
+                ),
+                evidence="review pool aggregation (no reviewer produced parseable output)",
                 suggestion="Check reviewer logs for details.",
             )
         ],
@@ -680,7 +686,9 @@ def _run_review_phase(
                             "severity": f.severity,
                             "file": f.file,
                             "line": f.line,
-                            "description": f.description,
+                            "observed": f.observed,
+                            "expected": f.expected,
+                            "evidence": f.evidence,
                             "suggestion": f.suggestion,
                         }
                         for f in rr.findings

@@ -526,7 +526,7 @@ class TestCreatePR:
                     severity="P2",
                     file="foo.py",
                     line=10,
-                    description="Minor style issue",
+                    observed="Minor style issue",
                     suggestion="Rename var",
                 )
             ],

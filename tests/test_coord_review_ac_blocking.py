@@ -38,7 +38,9 @@ findings:
   - severity: P1
     file: src/changed.py
     line: 10
-    description: "Missing validation in handler"
+    observed: "Missing validation in handler"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Add validation"
 story_compliance:
   matches_spec: true
@@ -57,7 +59,9 @@ findings:
   - severity: P1
     file: src/unchanged.py
     line: 5
-    description: "Merge strategy validates for all modes breaking on_approve pr behavior"
+    observed: "Merge strategy validates for all modes breaking on_approve pr behavior"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Gate validation on mode"
 story_compliance:
   matches_spec: false
@@ -77,7 +81,9 @@ findings:
   - severity: P1
     file: src/unchanged.py
     line: 5
-    description: "Merge strategy validates for all modes breaking on_approve pr behavior"
+    observed: "Merge strategy validates for all modes breaking on_approve pr behavior"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Gate validation on mode"
 story_compliance:
   matches_spec: true

@@ -289,7 +289,7 @@ class TestBuildPostRunPayload:
                     severity="P2",
                     file="src/foo.py",
                     line=10,
-                    description="minor issue",
+                    observed="minor issue",
                     suggestion="fix it",
                 )
             ],
@@ -387,7 +387,7 @@ class TestBuildPostRunPayloadReviewers:
                         severity="P2",
                         file="src/foo.py",
                         line=10,
-                        description="minor issue",
+                        observed="minor issue",
                         suggestion="fix it",
                     )
                 ],

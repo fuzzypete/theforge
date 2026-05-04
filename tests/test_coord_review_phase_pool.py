@@ -154,7 +154,9 @@ summary: "Needs work"
 findings:
   - severity: P1
     file: src/foo.py
-    description: "Bug"
+    observed: "Bug"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Fix"
 test_coverage:
   adequate: false

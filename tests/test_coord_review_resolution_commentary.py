@@ -31,7 +31,9 @@ findings:
   - severity: P1
     file: src/changed.py
     line: 10
-    description: "Missing null handling in runtime path"
+    observed: "Missing null handling in runtime path"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Add null guard"
 story_compliance:
   matches_spec: true
@@ -50,7 +52,9 @@ findings:
   - severity: P1
     file: src/changed.py
     line: 10
-    description: "Previous finding fixed: missing null handling in runtime path"
+    observed: "Previous finding fixed: missing null handling in runtime path"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "None"
 story_compliance:
   matches_spec: true
@@ -69,7 +73,9 @@ findings:
   - severity: P1
     file: src/changed.py
     line: 10
-    description: "The prior finding is unresolved: missing null handling in runtime path"
+    observed: "The prior finding is unresolved: missing null handling in runtime path"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Still needs a null guard"
 story_compliance:
   matches_spec: true

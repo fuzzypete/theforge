@@ -158,7 +158,14 @@ class TestAgentLoopLifecycle:
         plan_review_data = {
             "verdict": "REQUEST_CHANGES",
             "summary": "Missing tests",
-            "findings": [{"severity": "P1", "description": "No tests for X"}],
+            "findings": [
+                {
+                    "severity": "P1",
+                    "observed": "No tests for X",
+                    "expected": "project-contract category rule (test fixture)",
+                    "evidence": "(test fixture evidence)",
+                }
+            ],
         }
 
         def adapter(messages, tools):

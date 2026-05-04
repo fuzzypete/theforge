@@ -90,7 +90,7 @@ def _make_review_finding(
     description: str = "cli.py never wires gate_override into TaskStory",
 ) -> ReviewFinding:
     return ReviewFinding(
-        severity=severity, file=file, line=line, description=description, suggestion=None
+        severity=severity, file=file, line=line, observed=description, suggestion=None
     )
 
 
@@ -102,7 +102,9 @@ findings:
   - severity: P1
     file: src/cli.py
     line: 42
-    description: "cli.py never wires gate_override into TaskStory"
+    observed: "cli.py never wires gate_override into TaskStory"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
     suggestion: "Wire it"
 story_compliance:
   matches_spec: false
@@ -666,7 +668,7 @@ class TestCycleHistoryAccumulation:
                     severity="P1",
                     file="src/foo.py",
                     line=None,
-                    description="Null check missing",
+                    observed="Null check missing",
                     suggestion=None,
                 )
             ],
@@ -783,7 +785,7 @@ class TestCycleHistoryAccumulation:
                     severity="P1",
                     file="src/foo.py",
                     line=None,
-                    description=long_desc,
+                    observed=long_desc,
                     suggestion=None,
                 )
             ],

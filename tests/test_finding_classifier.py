@@ -34,7 +34,7 @@ def _make_finding(
         severity=severity,
         file=file,
         line=line,
-        description=description,
+        observed=description,
         suggestion=suggestion,
     )
 
@@ -848,7 +848,7 @@ class TestShouldMergeLineProximity:
                     severity="P1",
                     file="src/foo.py",
                     line=line,
-                    description="some bug",
+                    observed="some bug",
                     suggestion="fix it",
                 ),
             )

@@ -29,7 +29,7 @@ from theforge.task.story import TaskStory
 
 def _rf(description: str, file: str = "src/foo.py", severity: str = "P1") -> ReviewFinding:
     return ReviewFinding(
-        severity=severity, file=file, line=1, description=description, suggestion=None
+        severity=severity, file=file, line=1, observed=description, suggestion=None
     )
 
 
@@ -61,7 +61,7 @@ class TestExtractReviewFindingAnchors:
             severity="P1",
             file="src/foo.py",
             line=1,
-            description="Missing parse_input call",
+            observed="Missing parse_input call",
             suggestion="Add validate_schema to fix this completely_unique_anchor_xyz",
         )
         anchors = extract_review_finding_anchors(f)
@@ -79,7 +79,7 @@ class TestExtractReviewFindingAnchors:
         assert "load_config" in values
 
     def test_empty_file_excluded(self):
-        f = ReviewFinding(severity="P1", file="", line=None, description="issue", suggestion=None)
+        f = ReviewFinding(severity="P1", file="", line=None, observed="issue", suggestion=None)
         anchors = extract_review_finding_anchors(f)
         file_anchors = [a for a in anchors if a.kind == "file_path"]
         # empty file should not produce a file anchor
@@ -380,7 +380,7 @@ class TestClassifyFamilies:
                 severity="P1",
                 file="src/a.py",
                 line=10,
-                description=f"load_config {prefix} still broken",
+                observed=f"load_config {prefix} still broken",
                 suggestion=None,
             )
         ]
@@ -391,7 +391,7 @@ class TestClassifyFamilies:
                 severity="P1",
                 file="src/b.py",
                 line=20,
-                description=f"parse_input {prefix} still broken",
+                observed=f"parse_input {prefix} still broken",
                 suggestion=None,
             )
         ]
@@ -732,7 +732,7 @@ class TestTrajectoryRunsOnAllOutcomes:
                         severity="P1",
                         file="src/foo.py",
                         line=1,
-                        description="load_config is broken",
+                        observed="load_config is broken",
                         suggestion=None,
                     )
                 ],

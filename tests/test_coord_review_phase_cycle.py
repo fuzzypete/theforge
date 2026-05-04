@@ -397,7 +397,7 @@ class TestHasPersistentP1:
             severity=severity,
             file=file,
             line=None,
-            description=description,
+            observed=description,
             suggestion="fix it",
         )
 

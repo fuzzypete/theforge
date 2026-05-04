@@ -111,11 +111,13 @@ def test_request_changes_with_partial_ac_is_valid() -> None:
                 "severity": "P1",
                 "file": "tests/test_cli.py",
                 "line": 1,
-                "description": (
+                "observed": (
                     "Missing test that exercises 'usage limit' string — "
                     "production failure mode is not covered"
                 ),
                 "suggestion": "Add a test fixture replaying the Codex usage limit error",
+                "expected": "project-contract category rule (test fixture)",
+                "evidence": "(test fixture evidence)",
             },
         ],
         "story_compliance": {"matches_spec": False, "mismatches": ["test gap"]},
@@ -277,7 +279,7 @@ def test_build_reviews_emits_empty_ac_verification_when_absent() -> None:
                     severity="P1",
                     file="src/foo.py",
                     line=10,
-                    description="bug",
+                    observed="bug",
                     suggestion="fix",
                 )
             ],

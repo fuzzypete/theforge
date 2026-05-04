@@ -131,9 +131,17 @@ def _build_convention_blocking_review(state: CoordinatorState) -> ReviewResult:
             severity="P1",
             file=str(violation.get("file", "")),
             line=None,
-            description=(
+            observed=(
                 f"Hard convention violation [{violation.get('rule', 'unknown')}] in "
                 f"{violation.get('file', 'unknown')}: {violation.get('detail', '')}"
+            ),
+            expected=(
+                "Code merged to main must conform to the project's hard conventions; "
+                "any blocking violation flagged by validate-phase must be resolved "
+                "before approval, regardless of which rule was tripped."
+            ),
+            evidence=(
+                f"{violation.get('file', 'unknown')} (rule: {violation.get('rule', 'unknown')})"
             ),
             suggestion="Resolve the hard convention violation before approval.",
         )
@@ -145,10 +153,16 @@ def _build_convention_blocking_review(state: CoordinatorState) -> ReviewResult:
                 severity="P1",
                 file="",
                 line=None,
-                description=(
+                observed=(
                     "Hard convention violations detected after gate PASS, but no violation "
                     "details were recorded. Manual investigation required."
                 ),
+                expected=(
+                    "When validate-phase reports any blocking convention violation, the "
+                    "coordinator must surface enough detail for an operator to identify "
+                    "the offending file and rule; opaque violation reports block triage."
+                ),
+                evidence="validate-phase convention check (no detail recorded)",
                 suggestion=(
                     "Inspect validate-phase convention logs and fix the blocking violation."
                 ),
