@@ -92,6 +92,67 @@ def cmd_sprint(args: object) -> int:
         load_config(config_path), getattr(args, "base_branch", None)
     )
 
+    # ── Detach BEFORE any subprocess/gh work ─────────────────────────────
+    # macOS aborts the child of a fork() when Foundation has been initialized
+    # in the parent (e.g., by `gh` subprocess calls during shape-gate /
+    # intake remediation). The new daemonize_run is a clean Popen re-exec
+    # rather than a fork, but we still hoist it above the subprocess work so
+    # neither the parent nor the child lands in a tainted-then-fork state.
+    # The detached child re-executes the full CLI; this branch detects that
+    # re-entry and skips daemonize while still installing the PID/cleanup.
+    import os as _os
+
+    fg = bool(getattr(args, "fg", False))
+    submit_to_daemon = bool(getattr(args, "detach", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    detach_to_background = not fg and not submit_to_daemon and not dry_run
+
+    if detach_to_background:
+        from theforge import detach as _detach_mod
+
+        # Compute slug from args alone — no subprocess work in the parent.
+        manifest_arg_local: str | None = getattr(args, "manifest", None)
+        milestone_local: str | None = getattr(args, "milestone", None)
+        label_local: str | None = getattr(args, "label", None)
+        issues_arg_local: str | None = getattr(args, "issues", None)
+        query_mode_local = bool(milestone_local or label_local or issues_arg_local)
+        if query_mode_local:
+            sprint_name_local = (
+                getattr(args, "name", None)
+                or milestone_local
+                or label_local
+                or f"issues-{issues_arg_local}"
+            )
+            launch_slug = sprint_name_local.replace(" ", "-").replace("/", "-").lower()[:50]
+        else:
+            launch_slug = Path(manifest_arg_local).stem if manifest_arg_local else "sprint"
+
+        if _detach_mod.is_detached_child():
+            launch_run_id = _os.environ.get("FORGE_DETACHED_RUN_ID") or _generate_run_id()
+            _detach_mod.setup_detached_child(launch_run_id, launch_slug, config.project_root)
+            _detach_mod.install_cleanup_handler(launch_run_id, config.project_root)
+            print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
+            args.__dict__["_detached_run_id"] = launch_run_id
+            args.__dict__["_detached_slug"] = launch_slug
+
+            # Backstop cleanup for early-return paths (all-skipped, no
+            # stories, --detach-not-supported guard) that bypass the
+            # try/finally in run_sprint blocks. Idempotent — write_run_ended
+            # is a no-op if the .ended marker already exists.
+            import atexit as _atexit
+
+            _atexit.register(
+                _detach_mod.write_run_ended,
+                launch_run_id,
+                config.project_root,
+                "completed",
+            )
+            _atexit.register(_detach_mod.remove_pid, launch_run_id, config.project_root)
+        else:
+            launch_run_id = _generate_run_id()
+            _detach_mod.daemonize_run(launch_run_id, launch_slug, config.project_root)
+            # daemonize_run never returns in the parent.
+
     if getattr(args, "verbose", False):
         coordinator_set_log_level(LogLevel.VERBOSE)
         runner_set_log_level(LogLevel.VERBOSE)
@@ -141,17 +202,21 @@ def cmd_sprint(args: object) -> int:
         return launch_error
 
     live_slugs = [s for s in slugs if s not in dropped_slugs]
-    if not getattr(args, "fg", False) and not getattr(args, "detach", False):
-        run_id = _generate_run_id()
-        slug = manifest_path.stem
-        _detach.daemonize_run(run_id, slug, config.project_root)
+    # Detach already happened at top of cmd_sprint (Popen re-exec model). If
+    # we are in the detached child, the run_id/slug were resolved there and
+    # cached on args; otherwise (--fg / --detach daemon submit) generate now.
+    cached_run_id = args.__dict__.get("_detached_run_id")
+    cached_slug = args.__dict__.get("_detached_slug")
+    if cached_run_id is not None:
+        run_id = cached_run_id
+        slug = cached_slug or manifest_path.stem
+        # Locks were acquired in this same process; metadata rewrite is a
+        # no-op idempotent call but we keep it for parity with prior behavior.
         locked_fds = reacquire_story_locks_in_daemon(
             live_slugs,
             config.project_root,
             locked_fds,
         )
-        _detach.install_cleanup_handler(run_id, config.project_root)
-        print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
     else:
         run_id = _generate_run_id()
         slug = manifest_path.stem
@@ -539,19 +604,20 @@ def _run_query_mode(
 
     live_slugs = [s for s in slugs if s not in dropped_slugs]
 
-    # ── Daemonization: slug from sprint name, not manifest filename ───────
-    run_id = _generate_run_id()
-    sprint_slug = sprint_name.replace(" ", "-").replace("/", "-").lower()[:50]
-
-    if not getattr(args, "fg", False) and not getattr(args, "detach", False):
-        _detach.daemonize_run(run_id, sprint_slug, config.project_root)
+    # ── run_id / slug ─────────────────────────────────────────────────────
+    # Detach (Popen re-exec) already happened at top of cmd_sprint. If we
+    # are in the detached child, run_id/slug were resolved there and cached
+    # on args. Otherwise (--fg) generate fresh.
+    cached_run_id = args.__dict__.get("_detached_run_id")
+    if cached_run_id is not None:
+        run_id = cached_run_id
         locked_fds = reacquire_story_locks_in_daemon(
             live_slugs,
             config.project_root,
             locked_fds,
         )
-        _detach.install_cleanup_handler(run_id, config.project_root)
-        print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
+    else:
+        run_id = _generate_run_id()
 
     # Query mode does not support daemon submission (no manifest file to pass)
     if getattr(args, "detach", False) and _daemon.is_daemon_running(config.project_root):

@@ -104,14 +104,21 @@ def cmd_run(args: "argparse.Namespace") -> int:
 
     task = _build_task(story_path, slug=args.slug)
 
-    # ── Daemonization (default) ────────────────────────────────────────
+    # ── Detach (Popen re-exec) ─────────────────────────────────────────
+    # Replaces the previous os.fork-based double-fork to avoid macOS
+    # Objective-C fork-safety crashes once Foundation has been touched
+    # (e.g., by `gh` subprocess calls earlier in the pipeline).
     if not getattr(args, "dry_run", False) and not getattr(args, "fg", False):
-        run_id = _generate_run_id()
-        _detach.daemonize_run(run_id, task.slug, config.project_root)
-        # Grandchild continues here; parent has already exited above
-        # NOTE: suppress_app_nap() intentionally skipped — PyObjC crashes
-        # in forked processes. setsid() provides sufficient protection.
-        _detach.install_cleanup_handler(run_id, config.project_root)
+        if _detach.is_detached_child():
+            import os as _os
+
+            run_id = _os.environ.get("FORGE_DETACHED_RUN_ID") or _generate_run_id()
+            _detach.setup_detached_child(run_id, task.slug, config.project_root)
+            _detach.install_cleanup_handler(run_id, config.project_root)
+        else:
+            run_id = _generate_run_id()
+            _detach.daemonize_run(run_id, task.slug, config.project_root)
+            # daemonize_run never returns in the parent.
     else:
         run_id = _generate_run_id()
 
