@@ -487,6 +487,20 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
 }
 
 
+def model_info_view(
+    registry: dict[str, AgentSpec] | None = None,
+) -> dict[str, ModelInfo]:
+    """Return a {model_key: ModelInfo} view of an AgentSpec registry.
+
+    With ``registry=None`` returns the built-in MODEL_REGISTRY. Pass
+    ``ForgeConfig.model_registry`` (the merged built-in + forge.yaml overlay)
+    so consumers see user-declared custom models as first-class entries.
+    """
+    if registry is None:
+        return MODEL_REGISTRY
+    return {k: _spec_to_model_info(k, v) for k, v in registry.items()}
+
+
 @overload
 def apply_model_info(profile: ModelProfile, info: ModelInfo) -> ModelProfile: ...
 

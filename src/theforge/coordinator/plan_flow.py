@@ -901,11 +901,16 @@ def _run_plan_agent_review(
             state.plan_regen_count >= config.retry.plan_escalation_threshold
             and not state.plan_escalated
         ):
-            _curr_key = _find_registry_key_for_profile(plan_profile)
+            _registry = config.model_registry or None
+            _curr_key = _find_registry_key_for_profile(plan_profile, registry=_registry)
             if _curr_key is not None and config.models is not None:
-                _next_key = _escalate_dev_model(_curr_key, config.models)
+                _next_key = _escalate_dev_model(_curr_key, config.models, registry=_registry)
                 if _next_key is not None:
-                    _next_info = MODEL_REGISTRY[_next_key]
+                    from theforge.config.models import (  # noqa: PLC0415
+                        _resolve_model_info,
+                    )
+
+                    _next_info = _resolve_model_info(_next_key, registry=_registry)
                     _old_model = plan_profile.model
                     _new_model = _next_info.model
                     plan_profile = apply_model_info(plan_profile, _next_info)

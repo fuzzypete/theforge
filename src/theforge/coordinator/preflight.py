@@ -10,7 +10,14 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelInfo, ModelProfile, apply_model_info
+from theforge.config import (
+    AgentSpec,
+    ForgeConfig,
+    ModelInfo,
+    ModelProfile,
+    apply_model_info,
+    model_info_view,
+)
 from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 
@@ -216,13 +223,25 @@ def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
     return list(dict.fromkeys(matched))
 
 
-def _build_pool_entries(model_keys: list[str]) -> list[tuple[int, str, ModelInfo]]:
-    """Build sorted (cost_rank, registry_key, ModelInfo) list from models."""
+def _build_pool_entries(
+    model_keys: list[str],
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> list[tuple[int, str, ModelInfo]]:
+    """Build sorted (cost_rank, registry_key, ModelInfo) list from models.
+
+    ``registry`` is the merged AgentSpec view (built-in + forge.yaml overlay)
+    from ``ForgeConfig.model_registry``. When None, only built-ins are visible
+    and custom-overlay model keys raise ValueError.
+    """
     from theforge.config.models import _resolve_model_info  # noqa: PLC0415
 
+    info_view = model_info_view(registry)
     entries: list[tuple[int, str, ModelInfo]] = []
     for key in model_keys:
-        info: ModelInfo = MODEL_REGISTRY.get(key) or _resolve_model_info(key)
+        info = info_view.get(key)
+        if info is None:
+            info = _resolve_model_info(key, registry=registry)
         entries.append((info.cost_rank, key, info))
     entries.sort(key=lambda x: (x[0], -x[2].capability))
     return entries
@@ -542,7 +561,11 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
         return []
 
 
-def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
+def _find_registry_info_for_profile(
+    profile: ModelProfile,
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> tuple[int, int]:
     """Return (cost_rank, capability) for a profile using the model registry.
 
     CLI profiles match by cli+model. API profiles match by provider+model against
@@ -551,22 +574,26 @@ def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
 
     Falls back to (2, 5) for unknown models.
     """
-    registry_key = _find_registry_key_for_profile(profile)
+    registry_key = _find_registry_key_for_profile(profile, registry=registry)
     if registry_key is None:
         return 2, 5
-    info = MODEL_REGISTRY[registry_key]
+    info = model_info_view(registry)[registry_key]
     return info.cost_rank, info.capability
 
 
-def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
-    """Return the MODEL_REGISTRY key for a profile, or None if unknown.
+def _find_registry_key_for_profile(
+    profile: ModelProfile,
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> str | None:
+    """Return the model registry key for a profile, or None if unknown.
 
     Matches by TransportSpec (single source of dispatch truth) plus model name.
     Falls back to cli/provider matching for profiles without an explicit
     transport.
     """
     profile_transport = profile.transport
-    for key, info in MODEL_REGISTRY.items():
+    for key, info in model_info_view(registry).items():
         if info.model != profile.model:
             continue
         if profile_transport is not None and info.transport is not None:
@@ -683,22 +710,25 @@ def _p1_findings_match(current: ReviewFinding, previous: ReviewFinding) -> bool:
 def _escalate_dev_model(
     current_model: str,
     available_models: list[str],
+    *,
+    registry: dict[str, AgentSpec] | None = None,
 ) -> str | None:
     """Return the next higher-capability dev-capable model, or None.
 
     Selects the lowest-capability model that is still higher than current
-    and has dev_capable=True in MODEL_REGISTRY.
+    and has ``dev_capable=True`` in the merged registry view.
     """
-    current_info = MODEL_REGISTRY.get(current_model)
+    info_view = model_info_view(registry)
+    current_info = info_view.get(current_model)
     if current_info is None:
         return None
 
     candidates = [
-        (key, MODEL_REGISTRY[key])
+        (key, info_view[key])
         for key in available_models
-        if key in MODEL_REGISTRY
-        and MODEL_REGISTRY[key].dev_capable
-        and MODEL_REGISTRY[key].capability > current_info.capability
+        if key in info_view
+        and info_view[key].dev_capable
+        and info_view[key].capability > current_info.capability
     ]
 
     if not candidates:
@@ -735,7 +765,8 @@ def _apply_complexity_adaptation(
     if norm is None:
         return config
 
-    pool_entries = _build_pool_entries(config.models)
+    _registry = config.model_registry or None
+    pool_entries = _build_pool_entries(config.models, registry=_registry)
     if not pool_entries:
         return config
 
@@ -775,7 +806,11 @@ def _apply_complexity_adaptation(
         non_dev_reviewers = [p for p in config.review_pool if p.model != new_dev_model]
         review_candidates = non_dev_reviewers if non_dev_reviewers else list(config.review_pool)
 
-        mid_strong = [p for p in review_candidates if _find_registry_info_for_profile(p)[0] >= 2]
+        mid_strong = [
+            p
+            for p in review_candidates
+            if _find_registry_info_for_profile(p, registry=_registry)[0] >= 2
+        ]
 
         if norm == "LOW":
             # Single mid/strong reviewer, no synthesis
@@ -788,8 +823,8 @@ def _apply_complexity_adaptation(
             single = min(
                 candidate_pool,
                 key=lambda p: (
-                    _find_registry_info_for_profile(p)[0],
-                    -_find_registry_info_for_profile(p)[1],
+                    _find_registry_info_for_profile(p, registry=_registry)[0],
+                    -_find_registry_info_for_profile(p, registry=_registry)[1],
                 ),
             )
             new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
@@ -800,7 +835,8 @@ def _apply_complexity_adaptation(
             if synthesis is None:
                 synth_candidates = review_broader or [new_config.dev_profile]
                 strongest = max(
-                    synth_candidates, key=lambda p: _find_registry_info_for_profile(p)[1]
+                    synth_candidates,
+                    key=lambda p: _find_registry_info_for_profile(p, registry=_registry)[1],
                 )
                 synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
                 synthesis = _dc_replace(strongest, name="synthesis", budget_usd=synth_budget)

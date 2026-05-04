@@ -10,7 +10,7 @@ from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
+from theforge.config import ForgeConfig, apply_model_info
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
     ReviewFinding,
@@ -79,13 +79,16 @@ def _perform_dev_model_escalation(
     model is available. Callers are responsible for updating state flags and emitting
     audit records appropriate to their escalation reason.
     """
-    curr_key = _find_registry_key_for_profile(config.dev_profile)
+    registry = config.model_registry or None
+    curr_key = _find_registry_key_for_profile(config.dev_profile, registry=registry)
     if curr_key is None:
         return None
-    next_key = _escalate_dev_model(curr_key, config.models)
+    next_key = _escalate_dev_model(curr_key, config.models, registry=registry)
     if next_key is None:
         return None
-    next_info = MODEL_REGISTRY[next_key]
+    from theforge.config.models import _resolve_model_info  # noqa: PLC0415
+
+    next_info = _resolve_model_info(next_key, registry=registry)
     old_model = config.dev_profile.model
     new_dev = apply_model_info(config.dev_profile, next_info)
     return old_model, next_info.model, _dc_replace(config, dev_profile=new_dev)
