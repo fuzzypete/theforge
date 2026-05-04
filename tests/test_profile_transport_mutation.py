@@ -203,9 +203,12 @@ def test_review_phase_dev_escalation_cli_to_api_updates_transport(
 
     monkeypatch.setattr(review_phase, "_run_review_pool", fake_review_pool)
     monkeypatch.setattr(
-        review_phase,
-        "_run_worktree_eval",
-        lambda *_args, **_kwargs: {"finding_registry": [], "classified_indices": []},
+        "theforge.finding_classifier.update_finding_registry",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "theforge.review_finding_classifier.classify_families",
+        lambda **_kwargs: ([], []),
     )
 
     outcome, result, updated = review_phase._run_review_phase(
