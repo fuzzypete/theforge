@@ -986,6 +986,8 @@ def _make_worker_phase_fn(
                     update_kwargs["phase"] = phase
                 if "complexity" in updates:
                     update_kwargs["complexity"] = updates["complexity"]
+                if "complexity_score" in updates:
+                    update_kwargs["complexity_score"] = updates["complexity_score"]
                 if "cost_usd" in updates:
                     update_kwargs["cost_usd"] = updates["cost_usd"]
                 if "current_model" in updates:
