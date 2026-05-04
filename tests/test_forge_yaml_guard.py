@@ -67,6 +67,7 @@ def test_evaluate_forge_yaml_guard_passes_for_allowed_keys(tmp_path: Path) -> No
 
     with patch("subprocess.run") as mock_run:
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
             MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
             MagicMock(returncode=0, stdout="models:\n  - claude/sonnet\n", stderr=""),
             MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
@@ -88,6 +89,7 @@ def test_evaluate_forge_yaml_guard_fails_for_non_allowlisted_keys(tmp_path: Path
 
     with patch("subprocess.run") as mock_run:
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
             MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
             MagicMock(returncode=0, stdout="models:\n  - claude/sonnet\n", stderr=""),
             MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
@@ -106,6 +108,7 @@ def test_evaluate_forge_yaml_guard_honors_issue_override(tmp_path: Path) -> None
 
     with patch("subprocess.run") as mock_run:
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
             MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
             MagicMock(returncode=0, stdout="workspace:\n  auto_push: true\n", stderr=""),
             MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
@@ -134,6 +137,7 @@ def test_evaluate_forge_yaml_guard_honors_local_story_override(tmp_path: Path) -
 
     with patch("subprocess.run") as mock_run:
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
             MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
             MagicMock(returncode=0, stdout="workspace:\n  auto_push: true\n", stderr=""),
             MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
@@ -159,6 +163,7 @@ def test_evaluate_forge_yaml_guard_honors_slug_matched_local_story_override(
 
     with patch("subprocess.run") as mock_run:
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="feat/config-story\n", stderr=""),
             MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
             MagicMock(returncode=0, stdout="workspace:\n  auto_push: true\n", stderr=""),
             MagicMock(returncode=0, stdout="feat/config-story\n", stderr=""),
@@ -182,6 +187,7 @@ def test_evaluate_forge_yaml_guard_passes_for_v010_optin_keys(tmp_path: Path) ->
 
     with patch("subprocess.run") as mock_run:
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
             MagicMock(returncode=0, stdout="forge.yaml\n", stderr=""),
             MagicMock(returncode=0, stdout="", stderr=""),  # base has no forge.yaml content
             MagicMock(returncode=0, stdout="feat/issue-1001\n", stderr=""),
@@ -193,6 +199,50 @@ def test_evaluate_forge_yaml_guard_passes_for_v010_optin_keys(tmp_path: Path) ->
     assert result.ok is True
     assert result.violating_keys == ()
     assert set(result.changed_keys) == {"intake", "conventions_advisory", "diagnose"}
+
+
+def test_evaluate_forge_yaml_guard_skips_in_detached_head_worktree(tmp_path: Path) -> None:
+    """Baseline gate runs in a detached worktree at the merge-base SHA — there is
+    no story branch in scope and the per-story mutation guard must not apply.
+    Regression test for #1375."""
+    (tmp_path / "forge.yaml").write_text(
+        "conventions:\n  one: a\nretry:\n  attempts: 2\n", encoding="utf-8"
+    )
+
+    with patch("subprocess.run") as mock_run:
+        # `git rev-parse --abbrev-ref HEAD` returns the literal "HEAD" when
+        # detached. The guard must short-circuit before any diff happens.
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="HEAD\n", stderr=""),
+        ]
+
+        result = evaluate_forge_yaml_guard(tmp_path, base_branch="main")
+
+    assert result.ok is True
+    assert result.changed_keys == ()
+    assert result.violating_keys == ()
+    # Only the branch-detection call should have run; no diff was attempted.
+    assert mock_run.call_count == 1
+
+
+def test_evaluate_forge_yaml_guard_skips_when_current_branch_is_base(tmp_path: Path) -> None:
+    """Running `make gate` directly on a release branch (current branch ==
+    configured base) is not a story-mutation context. Regression test for #1375."""
+    (tmp_path / "forge.yaml").write_text(
+        "conventions:\n  one: a\nretry:\n  attempts: 2\n", encoding="utf-8"
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="release/v0.10\n", stderr=""),
+        ]
+
+        result = evaluate_forge_yaml_guard(tmp_path, base_branch="release/v0.10")
+
+    assert result.ok is True
+    assert result.changed_keys == ()
+    assert result.violating_keys == ()
+    assert mock_run.call_count == 1
 
 
 def test_cmd_check_story_config_prints_violating_keys(capsys, tmp_path: Path) -> None:
