@@ -30,6 +30,7 @@ pythonpath = ["src", "tests"]
 addopts = "-n auto --dist worksteal"
 markers = [
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
+    "cli_contract: marks tests that invoke real provider CLIs to validate argv contracts (requires THEFORGE_RUN_CLI_CONTRACT=1)",
 ]
 
 [tool.ruff]

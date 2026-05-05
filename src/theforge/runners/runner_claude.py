@@ -35,6 +35,35 @@ def _log_verbose(msg: str) -> None:
         _log_line("[forge]", msg)
 
 
+# ── Argv builder ──────────────────────────────────────────────────────
+
+
+def build_argv(
+    *,
+    profile: ModelProfile,
+    session_id: str | None = None,
+) -> list[str]:
+    """Construct argv for `claude` invocation (initial run or resume)."""
+    cmd: list[str] = [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        profile.model,
+    ]
+    if profile.allowed_tools:
+        cmd.extend(["--allowedTools", " ".join(profile.allowed_tools)])
+    if session_id:
+        cmd.extend(["--resume", session_id])
+    if profile.sandbox_mode != "none":
+        cmd.extend(["--permission-mode", "default"])
+    return cmd
+
+
 # ── Claude-specific helpers ───────────────────────────────────────────
 
 
@@ -317,38 +346,17 @@ def _run_claude(
     stop_event: "threading.Event | None" = None,
 ) -> AgentResult:
     """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
-    cmd: list[str] = [
-        "claude",
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "stream-json",
-        "--verbose",
-        "--model",
-        profile.model,
-    ]
-
-    if profile.allowed_tools:
-        cmd.extend(["--allowedTools", " ".join(profile.allowed_tools)])
-
-    if session_id:
-        cmd.extend(["--resume", session_id])
-
-    # Engage Claude's native permission mode when sandboxing is requested.
-    # "default" prompts before writes outside cwd; in automated runs where there is
-    # no human to approve, out-of-worktree writes are effectively blocked.
     # NOTE: Claude CLI has no mechanically-enforced read-only mode. When
-    # sandbox_mode == "read-only" we apply the same --permission-mode default and
-    # log a warning so operators know the read-only constraint is not syscall-enforced.
+    # sandbox_mode == "read-only" we apply --permission-mode default (set by
+    # build_argv) and log a warning so operators know the read-only constraint
+    # is not syscall-enforced.
     if profile.sandbox_mode == "read-only":
         _log(
             "  WARNING: sandbox_mode=read-only is not mechanically enforced by Claude CLI; "
             "applying --permission-mode default (writes require permission approval). "
             "Use a provider/API profile for true read-only enforcement."
         )
-    if profile.sandbox_mode != "none":
-        cmd.extend(["--permission-mode", "default"])
+    cmd: list[str] = build_argv(profile=profile, session_id=session_id)
 
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
     env = build_workspace_env(working_dir, extra=secrets)

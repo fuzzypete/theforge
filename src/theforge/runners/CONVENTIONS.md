@@ -35,3 +35,14 @@ results.
   review failures.
 - `tool_runtime.py` is the place to look when agent tool execution semantics or
   environment wiring are involved.
+
+## CLI argv contract layer
+
+Each CLI-backed runner exposes a pure `build_argv` (and any `build_resume_argv`
+or variant) function. `tests/contract/test_<name>_cli_contract.py` invokes the
+real installed CLI with that argv to catch contract drift the mocks cannot see.
+The layer is gated behind the `cli_contract` pytest marker and the
+`THEFORGE_RUN_CLI_CONTRACT=1` env var, so the default gate stays fast and
+contributors without every CLI installed are not blocked. A new CLI runner
+without a matching contract test fails `tests/test_conventions.py::test_runner_contract_coverage`.
+See `tests/contract/README.md`.
