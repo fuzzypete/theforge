@@ -6,9 +6,11 @@
 #   RC_NUM    The RC number, default 0 (so first RC is 0.10.0rc0)
 #
 # Cuts release/vX.Y from current main (or fast-forwards if it exists),
-# bumps pyproject.toml to X.Y.ZrcN, runs gate, tags vX.Y.ZrcN, pushes
-# branch and tag. Then installs the RC into the active Python environment
-# so dogfood sprints exercise the candidate (use --no-install to skip).
+# bumps pyproject.toml to X.Y.ZrcN, installs the working copy (`pip install -e .`),
+# runs gate (which now exercises the candidate source, not the previously-installed
+# binary), tags vX.Y.ZrcN, pushes branch and tag. Then installs the tagged RC
+# into the active Python environment so dogfood sprints exercise the candidate
+# (use --no-install to skip the post-tag install).
 #
 # Does NOT block on open milestone issues — that's a promote-rc requirement.
 # Prints them informationally so the operator can see what is or isn't in
@@ -144,11 +146,15 @@ if [[ "$DRY_RUN" == false ]]; then
     fi
 fi
 
-# --- 7. Gate ---
+# --- 7. Install working copy so gate exercises candidate source ---
+echo "==> Installing working copy into active environment (gate must exercise candidate source, not previously-installed binary)..."
+run pip install -e .
+
+# --- 8. Gate ---
 echo "==> Running gate..."
 run make gate
 
-# --- 8. Commit, tag, push ---
+# --- 9. Commit, tag, push ---
 echo "==> Committing, tagging, pushing..."
 run git add pyproject.toml
 run git commit -m "chore: cut $RC_TAG"
