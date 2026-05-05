@@ -32,10 +32,10 @@ def _write_fake_gh(bin_dir: Path, *, get_exit: int, put_exit: int) -> Path:
     fake.write_text(
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{log}"\n'
-        'is_put=false\n'
+        "is_put=false\n"
         'for a in "$@"; do\n'
         '    if [[ "$a" == "PUT" ]]; then is_put=true; fi\n'
-        'done\n'
+        "done\n"
         f'if [[ "$is_put" == true ]]; then exit {put_exit}; else exit {get_exit}; fi\n'
     )
     fake.chmod(0o755)
