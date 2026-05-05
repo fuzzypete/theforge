@@ -145,7 +145,10 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     )
     if artifact.hypotheses:
         for h in artifact.hypotheses:
-            lines.append(f"- **[{h.status}]** {h.statement.strip()}")
+            # Underscore→space so the rendered section contains the literal
+            # tokens the sprint shape gate scans for ("ruled out" etc.).
+            display_status = h.status.replace("_", " ")
+            lines.append(f"- **[{display_status}]** {h.statement.strip()}")
             if h.evidence.strip():
                 lines.append(f"  - Evidence: {h.evidence.strip()}")
     else:

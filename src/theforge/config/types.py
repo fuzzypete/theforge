@@ -481,13 +481,16 @@ class DiagnoseConfig:
     cannot consume sprint budget — and a sprint cannot starve diagnosis.
 
     ``output_destination`` controls where the diagnosis artifact lands:
-      - ``comment``      — post the artifact as a new GitHub issue comment
       - ``body_section`` — upsert a ``## Diagnosis`` section in the issue body
+                           (default: the sprint shape gate reads the issue body
+                           for the diagnosis artifact, so this is the destination
+                           that leaves the issue fix-ready after diagnose)
+      - ``comment``      — post the artifact as a new GitHub issue comment
       - ``pr_to_body``   — write the artifact to ``.forge/diagnoses/issue-N.md``
                            so the operator can open a body-edit PR manually
     """
 
-    output_destination: str = "comment"
+    output_destination: str = "body_section"
     budget_usd: float = 1.50
     timeout_seconds: int = 600
     autonomous_default: bool = True  # default mode when --interactive is not passed
