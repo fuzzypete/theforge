@@ -31,6 +31,48 @@ from .mechanical import apply_mechanical_fixes
 _log = logging.getLogger("theforge.intake")
 
 
+# Shape-gate skip reasons whose remediation is a body edit. The shape gate's
+# own failure-message hint must literally describe a body change for inclusion
+# here — declining a body-fixable reason would defeat the purpose of body-only
+# intake automation. Keep this set in sync with new shape-gate skip codes.
+BODY_FIXABLE_SKIP_REASONS: frozenset[str] = frozenset(
+    {
+        "reopened_stale_contract",
+    }
+)
+
+
+class ShapeGateSkipRemediationKind(str, Enum):
+    """Per-issue outcome of remediating a shape-gate skip reason."""
+
+    REMEDIATED = "remediated"  # body edited; gate rerun passes
+    DROPPED_AFTER_FIX = "dropped_after_fix"  # body edit attempted; gate still fails
+    DROPPED_NOT_COVERED = "dropped_not_covered"  # skip reason not body-fixable
+    DROPPED_DISABLED = "dropped_disabled"  # auto_fix disabled or wrong mode
+    DROPPED_FETCH = "dropped_fetch"  # could not refetch issue detail
+    DROPPED_EDIT = "dropped_edit"  # gh edit call failed
+
+
+@dataclass(frozen=True)
+class ShapeGateSkipRemediation:
+    """Result of attempting body-only remediation for a shape-gate skip."""
+
+    issue_number: int
+    reason_codes: tuple[str, ...]
+    kind: ShapeGateSkipRemediationKind
+    detail: str = ""
+    new_body: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "issue_number": self.issue_number,
+            "reason_codes": list(self.reason_codes),
+            "kind": self.kind.value,
+            "detail": self.detail,
+            "new_body": self.new_body,
+        }
+
+
 class IntakeOutcomeKind(str, Enum):
     """Per-story outcome of the intake remediation pass."""
 
@@ -469,6 +511,111 @@ def _remediate_one(
             remediation_source=("agent" if agent_result is not None else "mechanical"),
             comment_posted=posted,
         ),
+    )
+
+
+def remediate_shape_gate_skip(
+    *,
+    issue_number: int,
+    reason_codes: tuple[str, ...],
+    project_root: Path | None,
+    auto_fix_enabled: bool,
+    auto_fix_mode: str,
+    fetch_detail: Callable[[int, Path | None], dict | None] | None = None,
+    edit_body: EditIssueBody = _default_edit_body,
+) -> ShapeGateSkipRemediation:
+    """Attempt body-only remediation for a shape-gate-skipped issue.
+
+    Today this covers ``reopened_stale_contract``: the body-fixable repair
+    is to fold the reopen-context comment into the issue body. The shape
+    gate's clearance signal — body's ``lastEditedAt`` newer than the
+    triggering reopen-comment timestamp — naturally clears once
+    ``gh issue edit`` runs.
+
+    Returns a :class:`ShapeGateSkipRemediation` describing the outcome. The
+    caller is responsible for moving REMEDIATED issues back into the
+    runnable set and surfacing the others in the sprint warning output.
+    """
+    # The shape gate emits one skip reason per issue today, but accept
+    # multiple for forward-compat. Pick the first body-fixable code.
+    body_fixable = [c for c in reason_codes if c in BODY_FIXABLE_SKIP_REASONS]
+    if not body_fixable:
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_NOT_COVERED,
+            detail=(f"shape-gate skip reason {reason_codes!r} is not in the body-fixable set"),
+        )
+    if not auto_fix_enabled or auto_fix_mode != "edit":
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_DISABLED,
+            detail=(
+                "intake auto_fix disabled or not in 'edit' mode "
+                f"(enabled={auto_fix_enabled}, mode={auto_fix_mode!r})"
+            ),
+        )
+
+    # Lazy import to keep this module importable from contexts that don't
+    # need the shape-gate machinery.
+    from ..sprint.reopen_context import analyze_reopen_contract, append_reopen_context
+    from ..sprint.shape_gate import _fetch_issue_detail
+
+    fetch = fetch_detail if fetch_detail is not None else _fetch_issue_detail
+    detail = fetch(issue_number, project_root)
+    if detail is None:
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_FETCH,
+            detail="could not fetch issue detail",
+        )
+
+    primary_code = body_fixable[0]
+    if primary_code != "reopened_stale_contract":
+        # Future body-fixable codes: dispatch by code here.
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_NOT_COVERED,
+            detail=f"body-fixable code {primary_code!r} has no remediator wired yet",
+        )
+
+    state = analyze_reopen_contract(detail, detail.get("timeline") or [])
+    if not state.has_reopen_context:
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_AFTER_FIX,
+            detail="no reopen context found on refetch — race or stale skip record",
+        )
+
+    new_body = append_reopen_context(detail.get("body", "") or "", state)
+    if new_body == (detail.get("body", "") or ""):
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_AFTER_FIX,
+            detail="reopen-context block already present; body edit would be a no-op",
+            new_body=new_body,
+        )
+
+    if not edit_body(issue_number, new_body, project_root):
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_EDIT,
+            detail="gh issue edit failed",
+            new_body=new_body,
+        )
+
+    return ShapeGateSkipRemediation(
+        issue_number=issue_number,
+        reason_codes=reason_codes,
+        kind=ShapeGateSkipRemediationKind.REMEDIATED,
+        detail="reopen-context comment folded into body; gate clearance signal updated",
+        new_body=new_body,
     )
 
 
