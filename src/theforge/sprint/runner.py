@@ -112,7 +112,7 @@ def _build_intake_agent_caller(
     *,
     config: ForgeConfig,
     log: Callable[[str], None],
-) -> tuple[Callable[[str, list], AgentRewriteResult] | None, str]:
+) -> tuple[Callable[[str, list, list[str]], AgentRewriteResult] | None, str]:
     """Build the configured intake remediation caller or return an explicit reason."""
     _ensure_intake_runner()
     try:
@@ -132,8 +132,8 @@ def _build_intake_agent_caller(
         log(f"Intake remediation agent unavailable: {reason}")
         return None, detail
 
-    def _call(body: str, findings: list) -> AgentRewriteResult:
-        prompt = build_agent_rewrite_prompt(body, findings)
+    def _call(body: str, findings: list, comments: list[str]) -> AgentRewriteResult:
+        prompt = build_agent_rewrite_prompt(body, findings, comments)
         result = run_agent(
             prompt=prompt,
             profile=profile,
@@ -1513,6 +1513,21 @@ def run_sprint(
         for slug, outcome in intake_outcomes.items():
             if outcome.kind is IntakeOutcomeKind.PASSED:
                 continue
+            if (
+                outcome.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+                and outcome.proposed_replacement
+            ):
+                if outcome.audit.get("comment_posted"):
+                    _log(
+                        f"  Intake candidate for {slug} posted as issue comment "
+                        "(rerun gate still failing — operator review required)"
+                    )
+                elif outcome.audit.get("candidate_artifact_path"):
+                    _log(
+                        f"  Intake candidate for {slug} persisted to "
+                        f"{outcome.audit['candidate_artifact_path']} "
+                        "(comment post failed — rerun gate still failing)"
+                    )
             outcome_value = (
                 StoryOutcome.REMEDIATED
                 if outcome.kind is IntakeOutcomeKind.REMEDIATED

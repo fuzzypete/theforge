@@ -12,6 +12,7 @@ remains testable without network. Production wires real ``gh`` invocations.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import subprocess
@@ -65,7 +66,7 @@ class IntakeOutcome:
 FetchIssueDetail = Callable[[int, Path | None], dict | None]
 PostIssueComment = Callable[[int, str, Path | None], bool]
 EditIssueBody = Callable[[int, str, Path | None], bool]
-AgentRewriteCaller = Callable[[str, list[IntakeFinding]], AgentRewriteResult]
+AgentRewriteCaller = Callable[[str, list[IntakeFinding], list[str]], AgentRewriteResult]
 
 
 def _default_fetch_detail(number: int, project_root: Path | None) -> dict | None:
@@ -75,7 +76,7 @@ def _default_fetch_detail(number: int, project_root: Path | None) -> dict | None
     """
     try:
         proc = subprocess.run(
-            ["gh", "issue", "view", str(number), "--json", "title,body,labels"],
+            ["gh", "issue", "view", str(number), "--json", "title,body,labels,comments"],
             capture_output=True,
             text=True,
             cwd=str(project_root) if project_root else None,
@@ -94,10 +95,16 @@ def _default_fetch_detail(number: int, project_root: Path | None) -> dict | None
         for lbl in (data.get("labels") or [])
         if isinstance(lbl, dict) and lbl.get("name")
     ]
+    comment_bodies = [
+        (c.get("body") or "")
+        for c in (data.get("comments") or [])
+        if isinstance(c, dict) and (c.get("body") or "").strip()
+    ]
     return {
         "title": data.get("title", "") or "",
         "body": data.get("body", "") or "",
         "labels": label_names,
+        "comments": comment_bodies,
     }
 
 
@@ -151,14 +158,21 @@ def _blocking(findings: list[IntakeFinding]) -> list[IntakeFinding]:
     return [f for f in findings if f.severity is IntakeSeverity.BLOCK]
 
 
-def _format_remediation_comment(findings: list[IntakeFinding], replacement: str | None) -> str:
-    lines = ["**TheForge intake remediation — proposed replacement**", ""]
-    lines.append("Findings:")
+def _format_remediation_comment(
+    findings: list[IntakeFinding],
+    replacement: str | None,
+    *,
+    header: str = "**TheForge intake remediation — proposed replacement**",
+    findings_label: str = "Findings:",
+    replacement_label: str = "Proposed replacement issue body:",
+) -> str:
+    lines = [header, ""]
+    lines.append(findings_label)
     for f in findings:
         lines.append(f"- `{f.code}` ({f.location}): {f.problem}")
     if replacement:
         lines.append("")
-        lines.append("Proposed replacement issue body:")
+        lines.append(replacement_label)
         lines.append("")
         lines.append("```markdown")
         lines.append(replacement)
@@ -189,6 +203,7 @@ def _build_audit(
     remediation_source: str = "none",
     issue_updated: bool = False,
     comment_posted: bool = False,
+    candidate_artifact_path: str | None = None,
 ) -> dict[str, object]:
     return {
         "remediation_source": remediation_source,
@@ -204,7 +219,49 @@ def _build_audit(
         },
         "issue_updated": issue_updated,
         "comment_posted": comment_posted,
+        "candidate_artifact_path": candidate_artifact_path,
     }
+
+
+def _write_candidate_artifact(
+    *,
+    issue_number: int,
+    candidate_body: str,
+    findings: list[IntakeFinding],
+    project_root: Path | None,
+) -> str | None:
+    """Persist the failed-rerun candidate to a durable artifact file.
+
+    Used as a fallback when the issue-comment post fails. Returns the
+    written path (as a string) on success, or ``None`` if the artifact
+    could not be written. The artifact lives under
+    ``.forge/intake/candidates/`` so the operator can discover it without
+    grepping logs.
+    """
+    root = project_root if project_root is not None else Path.cwd()
+    artifact_dir = root / ".forge" / "intake" / "candidates"
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    artifact_path = artifact_dir / f"issue-{issue_number}-{timestamp}.md"
+    rendered = _format_remediation_comment(
+        findings,
+        candidate_body,
+        header="**TheForge intake remediation — candidate failed rerun gate**",
+        findings_label="Remaining blocking findings against the candidate body:",
+        replacement_label=(
+            "Candidate replacement body (rerun gate still failing — operator review required):"
+        ),
+    )
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(rendered, encoding="utf-8")
+    except OSError as exc:
+        _log.warning(
+            "failed to write intake candidate artifact for issue #%s: %s",
+            issue_number,
+            exc,
+        )
+        return None
+    return str(artifact_path)
 
 
 def _remediate_one(
@@ -214,6 +271,7 @@ def _remediate_one(
     title: str,
     body: str,
     labels: list[str],
+    comments: list[str],
     grooming_enabled: bool,
     auto_fix_enabled: bool,
     auto_fix_mode: str,
@@ -267,7 +325,7 @@ def _remediate_one(
                     remediation_source="missing_agent",
                 ),
             )
-        agent_result = agent_caller(patched_body, semantic_remaining)
+        agent_result = agent_caller(patched_body, semantic_remaining, comments)
         if not agent_result.replacement:
             return IntakeOutcome(
                 slug=slug,
@@ -292,18 +350,61 @@ def _remediate_one(
 
     if auto_fix_mode == "edit":
         if rerun_blocking:
-            # Don't edit a body that still fails — surface for human triage.
+            # Don't edit a body that still fails — but do not silently discard
+            # the candidate either. Post the proposed replacement plus the
+            # remaining blocking findings as a comment so the operator can
+            # continue from the candidate instead of redoing the rewrite.
+            salvage_comment = _format_remediation_comment(
+                rerun_blocking,
+                proposed_body,
+                header=("**TheForge intake remediation — candidate failed rerun gate**"),
+                findings_label=("Remaining blocking findings against the candidate body:"),
+                replacement_label=(
+                    "Candidate replacement body "
+                    "(rerun gate still failing — operator review required):"
+                ),
+            )
+            posted = post_comment(issue_number, salvage_comment, project_root)
+            artifact_path: str | None = None
+            if not posted:
+                # Fallback persistence: comment post failed, so the operator
+                # cannot find the candidate on the issue thread. Write a
+                # durable artifact instead so proposed_replacement is never
+                # silently lost.
+                artifact_path = _write_candidate_artifact(
+                    issue_number=issue_number,
+                    candidate_body=proposed_body,
+                    findings=rerun_blocking,
+                    project_root=project_root,
+                )
+            if posted:
+                detail = (
+                    "rerun gate still failing; candidate posted as issue comment "
+                    "for operator review"
+                )
+            elif artifact_path is not None:
+                detail = (
+                    "rerun gate still failing; comment post failed — candidate "
+                    f"persisted to {artifact_path}"
+                )
+            else:
+                detail = (
+                    "rerun gate still failing; comment post failed and candidate "
+                    "artifact write failed"
+                )
             return IntakeOutcome(
                 slug=slug,
                 kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
                 findings=tuple(rerun_blocking),
                 proposed_replacement=proposed_body,
-                detail="rerun gate still failing; did not edit issue",
+                detail=detail,
                 audit=_build_audit(
                     consumed=_consumed,
                     semantic_remaining=semantic_remaining,
                     agent=agent_result,
                     remediation_source=("agent" if agent_result is not None else "mechanical"),
+                    comment_posted=posted,
+                    candidate_artifact_path=artifact_path,
                 ),
             )
         if not edit_body(issue_number, proposed_body, project_root):
@@ -426,6 +527,7 @@ def run_intake_remediation(
             title=detail.get("title", "") or "",
             body=detail.get("body", "") or "",
             labels=list(detail.get("labels", []) or []),
+            comments=list(detail.get("comments", []) or []),
             grooming_enabled=grooming_enabled,
             auto_fix_enabled=auto_fix_enabled,
             auto_fix_mode=auto_fix_mode,
