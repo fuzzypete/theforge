@@ -177,15 +177,23 @@ if [[ "$NO_INSTALL" == false ]]; then
     echo "==> Installing $RC_TAG into active Python environment..."
     run pip install --force-reinstall "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
     if [[ "$DRY_RUN" == false ]]; then
-        INSTALLED_VERSION=$(forge --version 2>/dev/null || echo "")
         FORGE_PATH=$(command -v forge 2>/dev/null || echo "<not found>")
         PIP_PATH=$(command -v pip 2>/dev/null || echo "<not found>")
         PYTHON_PATH=$(command -v python 2>/dev/null || echo "<not found>")
-        echo "    forge --version  : $INSTALLED_VERSION"
+        PROBE_OUTPUT=$(forge version 2>&1)
+        PROBE_EXIT=$?
+        INSTALLED_VERSION=$(echo "$PROBE_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1)
+        echo "    forge version    : $PROBE_OUTPUT"
         echo "    forge on PATH    : $FORGE_PATH"
         echo "    pip on PATH      : $PIP_PATH"
         echo "    python on PATH   : $PYTHON_PATH"
-        if [[ "$INSTALLED_VERSION" != *"$RC_VERSION"* ]]; then
+        if [[ $PROBE_EXIT -ne 0 ]]; then
+            echo "" >&2
+            echo "Error: 'forge version' failed (exit $PROBE_EXIT)." >&2
+            echo "       forge on PATH: $FORGE_PATH" >&2
+            echo "       Probe output: $PROBE_OUTPUT" >&2
+            exit 1
+        elif [[ "$INSTALLED_VERSION" != *"$RC_VERSION"* ]]; then
             echo "" >&2
             echo "Error: installed forge version does not match RC ($RC_VERSION)." >&2
             echo "       'pip install' may have targeted a different environment than the 'forge' on PATH." >&2
