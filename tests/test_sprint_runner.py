@@ -108,7 +108,7 @@ def test_build_intake_agent_caller_uses_configured_runner(tmp_path: Path) -> Non
         caller, detail = _build_intake_agent_caller(config=config, log=lambda *_: None)
         assert detail == ""
         assert caller is not None
-        result = caller("old body", [])
+        result = caller("old body", [], [])
 
     assert result.replacement == "## What\n\nRewritten."
     assert result.model_used == "sonnet"

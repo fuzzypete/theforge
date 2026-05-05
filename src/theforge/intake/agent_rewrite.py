@@ -27,12 +27,24 @@ class AgentRewriteResult:
     transport_used: str | None = None
 
 
-def build_agent_rewrite_prompt(body: str, findings: list[IntakeFinding]) -> str:
-    """Build the one-shot intake remediation prompt."""
+def build_agent_rewrite_prompt(
+    body: str,
+    findings: list[IntakeFinding],
+    comments: list[str] | None = None,
+) -> str:
+    """Build the one-shot intake remediation prompt.
+
+    ``comments`` is the issue's existing comment thread in chronological
+    order. When the body lacks a structural section (e.g. ``## Diagnosis``)
+    that is present in raw form in a comment, the agent should synthesize
+    the section into the replacement body from that comment material.
+    """
     lines = [
         "You are remediating a GitHub issue body for TheForge sprint intake.",
         "Rewrite the issue body so it resolves the blocking findings below.",
         "Preserve the issue's intent. Do not add implementation steps, file paths, or test plans.",
+        "If a required structural section is missing from the body but the material exists",
+        "in the comment thread below, synthesize that section into the replacement body.",
         "",
         "Output rules:",
         "1. If you can fix the issue, return only the full replacement Markdown body.",
@@ -53,6 +65,18 @@ def build_agent_rewrite_prompt(body: str, findings: list[IntakeFinding]) -> str:
             "```",
         ]
     )
+    if comments:
+        lines.extend(["", "Existing issue comments (chronological):"])
+        for idx, comment in enumerate(comments, start=1):
+            lines.extend(
+                [
+                    "",
+                    f"Comment {idx}:",
+                    "```markdown",
+                    comment,
+                    "```",
+                ]
+            )
     return "\n".join(lines)
 
 

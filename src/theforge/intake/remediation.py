@@ -65,7 +65,7 @@ class IntakeOutcome:
 FetchIssueDetail = Callable[[int, Path | None], dict | None]
 PostIssueComment = Callable[[int, str, Path | None], bool]
 EditIssueBody = Callable[[int, str, Path | None], bool]
-AgentRewriteCaller = Callable[[str, list[IntakeFinding]], AgentRewriteResult]
+AgentRewriteCaller = Callable[[str, list[IntakeFinding], list[str]], AgentRewriteResult]
 
 
 def _default_fetch_detail(number: int, project_root: Path | None) -> dict | None:
@@ -75,7 +75,7 @@ def _default_fetch_detail(number: int, project_root: Path | None) -> dict | None
     """
     try:
         proc = subprocess.run(
-            ["gh", "issue", "view", str(number), "--json", "title,body,labels"],
+            ["gh", "issue", "view", str(number), "--json", "title,body,labels,comments"],
             capture_output=True,
             text=True,
             cwd=str(project_root) if project_root else None,
@@ -94,10 +94,16 @@ def _default_fetch_detail(number: int, project_root: Path | None) -> dict | None
         for lbl in (data.get("labels") or [])
         if isinstance(lbl, dict) and lbl.get("name")
     ]
+    comment_bodies = [
+        (c.get("body") or "")
+        for c in (data.get("comments") or [])
+        if isinstance(c, dict) and (c.get("body") or "").strip()
+    ]
     return {
         "title": data.get("title", "") or "",
         "body": data.get("body", "") or "",
         "labels": label_names,
+        "comments": comment_bodies,
     }
 
 
@@ -151,14 +157,21 @@ def _blocking(findings: list[IntakeFinding]) -> list[IntakeFinding]:
     return [f for f in findings if f.severity is IntakeSeverity.BLOCK]
 
 
-def _format_remediation_comment(findings: list[IntakeFinding], replacement: str | None) -> str:
-    lines = ["**TheForge intake remediation — proposed replacement**", ""]
-    lines.append("Findings:")
+def _format_remediation_comment(
+    findings: list[IntakeFinding],
+    replacement: str | None,
+    *,
+    header: str = "**TheForge intake remediation — proposed replacement**",
+    findings_label: str = "Findings:",
+    replacement_label: str = "Proposed replacement issue body:",
+) -> str:
+    lines = [header, ""]
+    lines.append(findings_label)
     for f in findings:
         lines.append(f"- `{f.code}` ({f.location}): {f.problem}")
     if replacement:
         lines.append("")
-        lines.append("Proposed replacement issue body:")
+        lines.append(replacement_label)
         lines.append("")
         lines.append("```markdown")
         lines.append(replacement)
@@ -214,6 +227,7 @@ def _remediate_one(
     title: str,
     body: str,
     labels: list[str],
+    comments: list[str],
     grooming_enabled: bool,
     auto_fix_enabled: bool,
     auto_fix_mode: str,
@@ -267,7 +281,7 @@ def _remediate_one(
                     remediation_source="missing_agent",
                 ),
             )
-        agent_result = agent_caller(patched_body, semantic_remaining)
+        agent_result = agent_caller(patched_body, semantic_remaining, comments)
         if not agent_result.replacement:
             return IntakeOutcome(
                 slug=slug,
@@ -292,18 +306,38 @@ def _remediate_one(
 
     if auto_fix_mode == "edit":
         if rerun_blocking:
-            # Don't edit a body that still fails — surface for human triage.
+            # Don't edit a body that still fails — but do not silently discard
+            # the candidate either. Post the proposed replacement plus the
+            # remaining blocking findings as a comment so the operator can
+            # continue from the candidate instead of redoing the rewrite.
+            salvage_comment = _format_remediation_comment(
+                rerun_blocking,
+                proposed_body,
+                header=("**TheForge intake remediation — candidate failed rerun gate**"),
+                findings_label=("Remaining blocking findings against the candidate body:"),
+                replacement_label=(
+                    "Candidate replacement body "
+                    "(rerun gate still failing — operator review required):"
+                ),
+            )
+            posted = post_comment(issue_number, salvage_comment, project_root)
+            detail = (
+                "rerun gate still failing; candidate posted as issue comment for operator review"
+                if posted
+                else "rerun gate still failing; failed to post candidate comment"
+            )
             return IntakeOutcome(
                 slug=slug,
                 kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
                 findings=tuple(rerun_blocking),
                 proposed_replacement=proposed_body,
-                detail="rerun gate still failing; did not edit issue",
+                detail=detail,
                 audit=_build_audit(
                     consumed=_consumed,
                     semantic_remaining=semantic_remaining,
                     agent=agent_result,
                     remediation_source=("agent" if agent_result is not None else "mechanical"),
+                    comment_posted=posted,
                 ),
             )
         if not edit_body(issue_number, proposed_body, project_root):
@@ -426,6 +460,7 @@ def run_intake_remediation(
             title=detail.get("title", "") or "",
             body=detail.get("body", "") or "",
             labels=list(detail.get("labels", []) or []),
+            comments=list(detail.get("comments", []) or []),
             grooming_enabled=grooming_enabled,
             auto_fix_enabled=auto_fix_enabled,
             auto_fix_mode=auto_fix_mode,
