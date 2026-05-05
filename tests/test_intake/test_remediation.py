@@ -294,6 +294,51 @@ def test_edit_mode_rerun_failure_persists_candidate_as_comment():
     assert "candidate posted" in out.detail
 
 
+def test_edit_mode_rerun_failure_falls_back_to_artifact_when_post_fails(tmp_path):
+    """If post_comment returns False on edit-mode rerun-gate failure, the
+    candidate body and remaining findings must still be persisted somewhere
+    operator-visible — written to a durable artifact under
+    ``.forge/intake/candidates/`` and surfaced in the outcome detail/audit.
+    """
+    task = _make_task()
+    edit_body, edit_calls = _record_calls()
+
+    def failing_post(_n, _body, _root):
+        return False
+
+    candidate = "## What\n\nstill not enough\n"
+
+    def agent(body, findings, comments=()):
+        return AgentRewriteResult(replacement=candidate, detail="agent produced replacement")
+
+    outcomes = run_intake_remediation(
+        [task],
+        tmp_path,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch({"title": "T", "body": _FAILING_BODY, "labels": ["enhancement"]}),
+        post_comment=failing_post,
+        edit_body=edit_body,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.proposed_replacement == candidate
+    assert edit_calls == []
+    assert out.audit["comment_posted"] is False
+    artifact_path = out.audit["candidate_artifact_path"]
+    assert artifact_path is not None
+    artifact = __import__("pathlib").Path(artifact_path)
+    assert artifact.exists()
+    contents = artifact.read_text(encoding="utf-8")
+    assert candidate in contents
+    assert "Remaining blocking findings" in contents
+    # Detail must surface the artifact path so the operator can find it
+    # without grepping logs.
+    assert artifact_path in out.detail
+
+
 def test_agent_receives_issue_comments_as_input():
     """The remediator must receive the issue's comment thread as agent input
     so it can synthesize required structural sections (e.g. ``## Diagnosis``)

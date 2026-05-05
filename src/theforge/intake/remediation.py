@@ -12,6 +12,7 @@ remains testable without network. Production wires real ``gh`` invocations.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import subprocess
@@ -202,6 +203,7 @@ def _build_audit(
     remediation_source: str = "none",
     issue_updated: bool = False,
     comment_posted: bool = False,
+    candidate_artifact_path: str | None = None,
 ) -> dict[str, object]:
     return {
         "remediation_source": remediation_source,
@@ -217,7 +219,49 @@ def _build_audit(
         },
         "issue_updated": issue_updated,
         "comment_posted": comment_posted,
+        "candidate_artifact_path": candidate_artifact_path,
     }
+
+
+def _write_candidate_artifact(
+    *,
+    issue_number: int,
+    candidate_body: str,
+    findings: list[IntakeFinding],
+    project_root: Path | None,
+) -> str | None:
+    """Persist the failed-rerun candidate to a durable artifact file.
+
+    Used as a fallback when the issue-comment post fails. Returns the
+    written path (as a string) on success, or ``None`` if the artifact
+    could not be written. The artifact lives under
+    ``.forge/intake/candidates/`` so the operator can discover it without
+    grepping logs.
+    """
+    root = project_root if project_root is not None else Path.cwd()
+    artifact_dir = root / ".forge" / "intake" / "candidates"
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    artifact_path = artifact_dir / f"issue-{issue_number}-{timestamp}.md"
+    rendered = _format_remediation_comment(
+        findings,
+        candidate_body,
+        header="**TheForge intake remediation — candidate failed rerun gate**",
+        findings_label="Remaining blocking findings against the candidate body:",
+        replacement_label=(
+            "Candidate replacement body (rerun gate still failing — operator review required):"
+        ),
+    )
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(rendered, encoding="utf-8")
+    except OSError as exc:
+        _log.warning(
+            "failed to write intake candidate artifact for issue #%s: %s",
+            issue_number,
+            exc,
+        )
+        return None
+    return str(artifact_path)
 
 
 def _remediate_one(
@@ -321,11 +365,33 @@ def _remediate_one(
                 ),
             )
             posted = post_comment(issue_number, salvage_comment, project_root)
-            detail = (
-                "rerun gate still failing; candidate posted as issue comment for operator review"
-                if posted
-                else "rerun gate still failing; failed to post candidate comment"
-            )
+            artifact_path: str | None = None
+            if not posted:
+                # Fallback persistence: comment post failed, so the operator
+                # cannot find the candidate on the issue thread. Write a
+                # durable artifact instead so proposed_replacement is never
+                # silently lost.
+                artifact_path = _write_candidate_artifact(
+                    issue_number=issue_number,
+                    candidate_body=proposed_body,
+                    findings=rerun_blocking,
+                    project_root=project_root,
+                )
+            if posted:
+                detail = (
+                    "rerun gate still failing; candidate posted as issue comment "
+                    "for operator review"
+                )
+            elif artifact_path is not None:
+                detail = (
+                    "rerun gate still failing; comment post failed — candidate "
+                    f"persisted to {artifact_path}"
+                )
+            else:
+                detail = (
+                    "rerun gate still failing; comment post failed and candidate "
+                    "artifact write failed"
+                )
             return IntakeOutcome(
                 slug=slug,
                 kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
@@ -338,6 +404,7 @@ def _remediate_one(
                     agent=agent_result,
                     remediation_source=("agent" if agent_result is not None else "mechanical"),
                     comment_posted=posted,
+                    candidate_artifact_path=artifact_path,
                 ),
             )
         if not edit_body(issue_number, proposed_body, project_root):

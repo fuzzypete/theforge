@@ -1516,12 +1516,18 @@ def run_sprint(
             if (
                 outcome.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
                 and outcome.proposed_replacement
-                and outcome.audit.get("comment_posted")
             ):
-                _log(
-                    f"  Intake candidate for {slug} posted as issue comment "
-                    "(rerun gate still failing — operator review required)"
-                )
+                if outcome.audit.get("comment_posted"):
+                    _log(
+                        f"  Intake candidate for {slug} posted as issue comment "
+                        "(rerun gate still failing — operator review required)"
+                    )
+                elif outcome.audit.get("candidate_artifact_path"):
+                    _log(
+                        f"  Intake candidate for {slug} persisted to "
+                        f"{outcome.audit['candidate_artifact_path']} "
+                        "(comment post failed — rerun gate still failing)"
+                    )
             outcome_value = (
                 StoryOutcome.REMEDIATED
                 if outcome.kind is IntakeOutcomeKind.REMEDIATED
