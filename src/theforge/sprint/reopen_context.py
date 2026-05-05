@@ -44,7 +44,7 @@ def analyze_reopen_contract(
     if reopened_at is None:
         return ReopenContractState()
 
-    comment = _first_reopen_comment(issue.get("comments") or [], reopened_at)
+    comment = _latest_reopen_comment(issue.get("comments") or [], reopened_at)
     reopen_comment_at = _coerce_timestamp(comment.get("createdAt")) if comment else None
 
     # Clearance signal precedence:
@@ -138,10 +138,18 @@ def _latest_reopened_event(
     return max(reopened_events, key=lambda event: _coerce_timestamp(event.get("created_at")) or "")
 
 
-def _first_reopen_comment(
+def _latest_reopen_comment(
     comments: Sequence[Any],
     reopened_at: str,
 ) -> Mapping[str, Any] | None:
+    """Return the newest non-bot post-reopen comment.
+
+    The stale-contract trigger is the *most recent* reopen-context comment,
+    not the first one. If a body edit reconciles an earlier comment but
+    predates a later one, the contract is still stale — the gate must keep
+    firing until the body's lastEditedAt is newer than every post-reopen
+    operator comment.
+    """
     candidates: list[Mapping[str, Any]] = []
     for comment in comments:
         if not isinstance(comment, Mapping):
@@ -158,7 +166,7 @@ def _first_reopen_comment(
 
     non_bot = [comment for comment in candidates if not _is_bot_actor(comment.get("author"))]
     pool = non_bot or candidates
-    return min(pool, key=lambda comment: _coerce_timestamp(comment.get("createdAt")) or "")
+    return max(pool, key=lambda comment: _coerce_timestamp(comment.get("createdAt")) or "")
 
 
 def _has_body_edit_after_reopen(
