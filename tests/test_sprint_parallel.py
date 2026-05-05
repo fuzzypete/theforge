@@ -1536,6 +1536,90 @@ class TestQueuedMergePolling:
                 "status": "timeout"
             }
 
+    def test_poll_queued_pr_waits_for_origin_main_when_base_branch_set(
+        self, tmp_path: Path
+    ) -> None:
+        """Issue #1402: GitHub MERGED alone is not enough — origin/<base> must
+        carry the merge commit before a collision-serialized dependent is
+        released. The poll keeps spinning while origin lags."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        # Sequence of subprocess calls per polling iteration when state==MERGED:
+        #   1. gh pr view --json state           → "MERGED"
+        #   2. gh pr view --json mergeCommit     → "abc1234"
+        #   3. git fetch origin <base>           → returncode 0
+        #   4. git merge-base --is-ancestor ...  → returncode 1 (not yet) / 0 (yes)
+        # First iteration: not-an-ancestor → keep polling.
+        # Second iteration: ancestor → return merged.
+        responses = [
+            MagicMock(returncode=0, stdout="MERGED", stderr=""),
+            MagicMock(returncode=0, stdout="abc1234", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="MERGED", stderr=""),
+            MagicMock(returncode=0, stdout="abc1234", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        with (
+            patch("theforge.sprint.runner.subprocess.run", side_effect=responses),
+            patch("theforge.sprint.runner.time.sleep"),
+        ):
+            assert _poll_queued_pr(
+                "https://github.com/x/y/pull/1",
+                tmp_path,
+                90,
+                base_branch="main",
+            ) == {"status": "merged"}
+
+    def test_poll_queued_pr_no_base_branch_keeps_legacy_behavior(self, tmp_path: Path) -> None:
+        """Without base_branch (e.g. callers that don't care about origin
+        propagation), MERGED is sufficient — preserves legacy semantics."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        with (
+            patch(
+                "theforge.sprint.runner.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="MERGED", stderr=""),
+            ),
+            patch("theforge.sprint.runner.time.sleep"),
+        ):
+            assert _poll_queued_pr("https://github.com/x/y/pull/1", tmp_path, 90) == {
+                "status": "merged"
+            }
+
+    def test_poll_queued_pr_treats_empty_merge_sha_as_unreachable(self, tmp_path: Path) -> None:
+        """If `gh pr view --json mergeCommit` comes back empty (race window
+        between MERGED state and mergeCommit population), we must keep polling
+        rather than release the dependent."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        # Iteration 1: state=MERGED, mergeCommit empty → no fetch/ancestor; loop.
+        # Iteration 2: state=MERGED, mergeCommit=sha, fetch ok, ancestor ok.
+        responses = [
+            MagicMock(returncode=0, stdout="MERGED", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="MERGED", stderr=""),
+            MagicMock(returncode=0, stdout="abc1234", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        with (
+            patch("theforge.sprint.runner.subprocess.run", side_effect=responses),
+            patch("theforge.sprint.runner.time.sleep"),
+        ):
+            assert _poll_queued_pr(
+                "https://github.com/x/y/pull/1",
+                tmp_path,
+                90,
+                base_branch="main",
+            ) == {"status": "merged"}
+
     def test_merge_queued_timeout_escalates_during_wrap_up(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
         manifest_path = _make_manifest_parallel(
