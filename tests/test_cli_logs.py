@@ -224,6 +224,52 @@ class TestCmdLogs:
         captured = capsys.readouterr()
         assert "Timed out waiting for new log" in captured.err
 
+    def test_same_log_reexec_no_duplicate_lines(self, tmp_path, capsys):
+        """Re-exec that redirects to the same log file must not replay prior lines."""
+        import json
+
+        from theforge.cli import cmd_logs
+        from theforge.cli.status import _SENTINEL_EOF
+
+        old_run_id = "aabbccddee11"
+        new_run_id = "ff99887766aa"
+        slug = "my-slug"
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{old_run_id}.pid").write_text(f"12345\n{slug}\n")
+
+        log_dir = tmp_path / ".forge" / "logs" / slug
+        log_dir.mkdir(parents=True)
+
+        # Single log file used by both the old and new run (same path, new run ID).
+        log_file = log_dir / f"run-{old_run_id}.log"
+        log_file.write_text(f"before reexec\nafter reexec\n{_SENTINEL_EOF}\n")
+
+        # Redirect sidecar points back to the SAME log file.
+        (runs_dir / f"{old_run_id}.redirect").write_text(
+            json.dumps({"new_run_id": new_run_id, "new_log": str(log_file)}),
+            encoding="utf-8",
+        )
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=old_run_id)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+        # Each log line must appear exactly once — no replay on re-exec.
+        assert lines.count("before reexec") == 1, f"duplicated 'before reexec': {lines}"
+        assert lines.count("after reexec") == 1, f"duplicated 'after reexec': {lines}"
+
     def test_spoof_log_lines_do_not_trigger_redirect(self, tmp_path, capsys):
         """Log lines that look like re-exec trailers must NOT trigger a redirect.
 
