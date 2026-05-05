@@ -410,3 +410,134 @@ def test_cli_query_mode_force_runs_every_issue_but_warns(tmp_path: Path, capsys)
     assert "--force in effect" in err
     assert "#2" in err
     assert "missing_ac" in err
+
+
+def test_cli_remediated_issues_continue_to_run_sprint(tmp_path: Path) -> None:
+    """When all issues are skipped at the entry gate but intake remediation
+    successfully fixes them (REMEDIATED outcome), the sprint must continue and
+    pass those issues to run_sprint — the operator must not re-invoke forge."""
+    from theforge.config.types import IntakeConfig
+    from theforge.intake import IntakeOutcome, IntakeOutcomeKind
+
+    config = _make_config(tmp_path)
+    object.__setattr__(
+        config,
+        "intake",
+        IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+    args = _query_args(tmp_path)
+
+    fetched = [{"number": 42, "title": "fixable"}]
+    gated = ShapeGateResult(
+        runnable=[],
+        skipped=[
+            SkippedIssue(
+                issue_number=42,
+                reason_codes=("missing_ac",),
+                source="local_check",
+                title="fixable",
+            )
+        ],
+    )
+
+    def fake_remediate(skipped, **_kw):
+        return {
+            sk.issue_number: IntakeOutcome(
+                slug=f"issue-{sk.issue_number}",
+                kind=IntakeOutcomeKind.REMEDIATED,
+                detail="edit mode: issue body updated, gate rerun passed",
+                audit={"remediation_source": "agent"},
+            )
+            for sk in skipped
+        }
+
+    run_sprint_calls: list[dict] = []
+
+    def fake_run_sprint(*_a, **kw):
+        run_sprint_calls.append(kw)
+        return _ok_result()
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.shape_gate.apply_shape_gate", return_value=gated),
+        patch(
+            "theforge.sprint.entry_intake.remediate_entry_skipped_issues",
+            side_effect=fake_remediate,
+        ),
+        patch("theforge.sprint.query.build_resolved_sprint", return_value=_resolved([42])),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", side_effect=fake_run_sprint),
+    ):
+        rc = cmd_sprint(args)
+
+    assert rc == 0
+    # run_sprint must have been called — remediation is not a terminal condition.
+    assert run_sprint_calls, "run_sprint was never called; sprint exited after remediation"
+
+
+def test_cli_remediated_issues_not_in_nothing_to_run_message(tmp_path: Path, capsys) -> None:
+    """The 'nothing to run' message must not appear when at least one issue was
+    successfully REMEDIATED."""
+    from theforge.config.types import IntakeConfig
+    from theforge.intake import IntakeOutcome, IntakeOutcomeKind
+
+    config = _make_config(tmp_path)
+    object.__setattr__(
+        config,
+        "intake",
+        IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+    args = _query_args(tmp_path)
+
+    fetched = [{"number": 99, "title": "autofix-me"}]
+    gated = ShapeGateResult(
+        runnable=[],
+        skipped=[
+            SkippedIssue(
+                issue_number=99,
+                reason_codes=("missing_ac",),
+                source="local_check",
+                title="autofix-me",
+            )
+        ],
+    )
+
+    def fake_remediate(skipped, **_kw):
+        return {
+            sk.issue_number: IntakeOutcome(
+                slug=f"issue-{sk.issue_number}",
+                kind=IntakeOutcomeKind.REMEDIATED,
+                detail="edit mode: issue body updated, gate rerun passed",
+                audit={"remediation_source": "agent"},
+            )
+            for sk in skipped
+        }
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.shape_gate.apply_shape_gate", return_value=gated),
+        patch(
+            "theforge.sprint.entry_intake.remediate_entry_skipped_issues",
+            side_effect=fake_remediate,
+        ),
+        patch("theforge.sprint.query.build_resolved_sprint", return_value=_resolved([99])),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", return_value=_ok_result()),
+    ):
+        rc = cmd_sprint(args)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "nothing to run" not in err
