@@ -156,7 +156,38 @@ run git tag "$RC_TAG"
 run git push -u origin "$RELEASE_BRANCH"
 run git push origin "$RC_TAG"
 
-# --- 9. Install the RC into the active env, then assert the right binary is on PATH ---
+# --- 9. Configure branch protection on release branch so auto-merge works ---
+#
+# GitHub's enablePullRequestAutoMerge mutation (which Forge calls after APPROVE
+# via `gh pr merge --auto`) requires the target branch to have a branch
+# protection rule. Without protection, every RC-ladder fix lands in
+# MERGE_FAILED and the operator click-merges by hand. We apply a minimal
+# protection ruleset (no required reviews, no required checks, no
+# restrictions) — just enough to make GitHub treat the branch as protected.
+# Specific rule selection is intentionally minimal; tightening is a follow-on.
+echo "==> Configuring branch protection on $RELEASE_BRANCH..."
+REPO="fuzzypete/theforge"
+PROTECTION_BODY='{"required_status_checks":null,"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo "+ (dry-run) gh api --method PUT repos/$REPO/branches/$RELEASE_BRANCH/protection --input -"
+    echo "    body: $PROTECTION_BODY"
+    echo "[forge] dry-run: would apply branch protection to $RELEASE_BRANCH (allow_auto_merge=true)"
+else
+    if gh api "repos/$REPO/branches/$RELEASE_BRANCH/protection" >/dev/null 2>&1; then
+        echo "[forge] branch protection already exists on $RELEASE_BRANCH; preserving it"
+    else
+        echo "[forge] applying branch protection to $RELEASE_BRANCH: allow_auto_merge=true"
+        if echo "$PROTECTION_BODY" | gh api --method PUT "repos/$REPO/branches/$RELEASE_BRANCH/protection" --input - >/dev/null 2>&1; then
+            echo "[forge] ✓ branch protected; auto-merge enabled"
+        else
+            echo "[forge] ⚠ failed to apply branch protection on $RELEASE_BRANCH (continuing)" >&2
+            echo "[forge]   apply manually: echo '$PROTECTION_BODY' | gh api --method PUT repos/$REPO/branches/$RELEASE_BRANCH/protection --input -" >&2
+        fi
+    fi
+fi
+
+# --- 10. Install the RC into the active env, then assert the right binary is on PATH ---
 if [[ "$NO_INSTALL" == false ]]; then
     echo "==> Installing $RC_TAG into active Python environment..."
     run pip install --force-reinstall "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
@@ -184,7 +215,7 @@ else
     echo "      pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
 fi
 
-# --- 10. Print test ladder ---
+# --- 11. Print test ladder ---
 echo ""
 echo "==> $RC_TAG cut on $RELEASE_BRANCH."
 echo ""
