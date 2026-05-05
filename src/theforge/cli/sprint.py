@@ -238,6 +238,108 @@ def _is_reexec() -> bool:
     return bool(os.environ.get("FORGE_PREV_RUN_ID"))
 
 
+def _remediate_shape_gate_skips(
+    *,
+    issues: list,
+    skipped_issues: list,
+    config: object,
+) -> tuple[list, list]:
+    """Attempt body-only remediation for shape-gate-skipped issues.
+
+    For each skipped issue whose reason code is body-fixable (e.g.
+    ``reopened_stale_contract``), call into the intake remediator. On
+    success, move the issue back into the runnable list. On failure,
+    leave it in ``skipped_issues`` so the existing audit + warning paths
+    keep treating it as dropped.
+
+    Skip reasons not body-fixable are reported as
+    ``no remediation attempted`` so the operator can distinguish them from
+    failed remediation attempts (per #1385's audit-trail requirement).
+    """
+    intake_cfg = getattr(config, "intake", None)
+    auto_fix_enabled = bool(getattr(intake_cfg, "auto_fix", False))
+    auto_fix_mode = str(getattr(intake_cfg, "auto_fix_mode", "comment") or "comment")
+
+    if not auto_fix_enabled or auto_fix_mode != "edit":
+        # Surface the no-attempt signal so the operator doesn't conflate
+        # this with a failed remediation. Keep the skipped list intact.
+        from theforge.intake import BODY_FIXABLE_SKIP_REASONS
+
+        no_attempt_codes: set[str] = set()
+        for sk in skipped_issues:
+            sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
+            for code in sk_dict.get("reason_codes") or []:
+                if code in BODY_FIXABLE_SKIP_REASONS:
+                    no_attempt_codes.add(code)
+        if no_attempt_codes:
+            print(
+                "[forge] Entry shape-gate skip remediation: no remediation attempted "
+                f"(intake.auto_fix={auto_fix_enabled}, mode={auto_fix_mode!r}); "
+                "body-fixable skip reasons present: " + ", ".join(sorted(no_attempt_codes)),
+                file=sys.stderr,
+            )
+        return issues, skipped_issues
+
+    # Lazy import to avoid pulling intake on every CLI invocation.
+    from theforge.intake import (
+        ShapeGateSkipRemediationKind,
+        remediate_shape_gate_skip,
+    )
+
+    issue_lookup: dict[int, dict] = {}
+    for sk in skipped_issues:
+        sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
+        sk_num = sk_dict.get("issue_number")
+        if sk_num is None:
+            continue
+        # Synthesize a runnable-issue entry from the skip record so it can
+        # be re-added to ``issues`` on remediation success. ``issues`` is a
+        # list of ``{"number": ..., "title": ...}`` dicts at this stage.
+        issue_lookup[int(sk_num)] = {
+            "number": int(sk_num),
+            "title": sk_dict.get("title", "") or "",
+        }
+
+    new_runnable = list(issues)
+    new_skipped: list = []
+    for sk in skipped_issues:
+        sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
+        sk_num = sk_dict.get("issue_number")
+        if sk_num is None:
+            new_skipped.append(sk)
+            continue
+        reason_codes = tuple(sk_dict.get("reason_codes") or ())
+        outcome = remediate_shape_gate_skip(
+            issue_number=int(sk_num),
+            reason_codes=reason_codes,
+            project_root=config.project_root,
+            auto_fix_enabled=auto_fix_enabled,
+            auto_fix_mode=auto_fix_mode,
+        )
+        if outcome.kind is ShapeGateSkipRemediationKind.REMEDIATED:
+            print(
+                f"[forge] Entry shape-gate skip remediation: issue #{sk_num} -> "
+                f"remediated ({outcome.detail})",
+                file=sys.stderr,
+            )
+            new_runnable.append(issue_lookup[int(sk_num)])
+            continue
+        if outcome.kind is ShapeGateSkipRemediationKind.DROPPED_NOT_COVERED:
+            print(
+                f"[forge] Entry shape-gate skip remediation: issue #{sk_num} -> "
+                f"no remediation attempted ({outcome.detail})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[forge] Entry shape-gate skip remediation: issue #{sk_num} -> "
+                f"{outcome.kind.value} ({outcome.detail})",
+                file=sys.stderr,
+            )
+        new_skipped.append(sk)
+    return new_runnable, new_skipped
+
+
 def _emit_all_skipped_audit(
     *,
     config: object,
@@ -437,6 +539,18 @@ def _run_query_mode(
                 print(warning, file=sys.stderr)
         issues = gate_result.runnable
         skipped_issues = gate_result.skipped
+
+        # Body-only remediation for shape-gate skips. When intake auto_fix
+        # is enabled in edit mode, attempt to repair body-fixable skip
+        # reasons (e.g. ``reopened_stale_contract``) by editing the issue
+        # body in place. Successfully remediated issues move back to the
+        # runnable list so the operator no longer needs ``--force``.
+        if not force and skipped_issues:
+            issues, skipped_issues = _remediate_shape_gate_skips(
+                issues=issues,
+                skipped_issues=skipped_issues,
+                config=config,
+            )
 
         if not issues:
             print(

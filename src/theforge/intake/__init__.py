@@ -25,22 +25,30 @@ from .findings import (
 from .groom import groom_check
 from .mechanical import apply_mechanical_fixes
 from .remediation import (
+    BODY_FIXABLE_SKIP_REASONS,
     IntakeOutcome,
     IntakeOutcomeKind,
+    ShapeGateSkipRemediation,
+    ShapeGateSkipRemediationKind,
+    remediate_shape_gate_skip,
     run_intake_remediation,
 )
 
 __all__ = [
+    "BODY_FIXABLE_SKIP_REASONS",
     "FixType",
     "AgentRewriteResult",
     "IntakeFinding",
     "IntakeOutcome",
     "IntakeOutcomeKind",
     "IntakeSeverity",
+    "ShapeGateSkipRemediation",
+    "ShapeGateSkipRemediationKind",
     "apply_mechanical_fixes",
     "build_agent_rewrite_prompt",
     "findings_from_shape_result",
     "groom_check",
     "parse_agent_rewrite_output",
+    "remediate_shape_gate_skip",
     "run_intake_remediation",
 ]

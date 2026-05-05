@@ -76,7 +76,7 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
                 "view",
                 str(number),
                 "--json",
-                "title,body,labels,state,closedAt,stateReason,updatedAt,comments",
+                "title,body,labels,state,closedAt,stateReason,updatedAt,lastEditedAt,comments",
             ],
             capture_output=True,
             text=True,
@@ -104,6 +104,7 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
         "closedAt": data.get("closedAt"),
         "stateReason": data.get("stateReason"),
         "updatedAt": data.get("updatedAt"),
+        "lastEditedAt": data.get("lastEditedAt"),
         "comments": data.get("comments") or [],
         "timeline": _fetch_issue_timeline(number, project_root),
     }

@@ -164,7 +164,146 @@ def test_reopened_issue_with_stale_body_is_skipped(tmp_path: Path) -> None:
     assert len(result.skipped) == 1
     entry = result.skipped[0]
     assert entry.reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
-    assert "reconcile the body before sprinting or pass --force" in entry.detail
+    # Detail must surface the clearance signal: edit the body so its
+    # lastEditedAt is newer than the reopen-comment timestamp.
+    assert "lastEditedAt" in entry.detail
+    assert "or pass --force" in entry.detail
+
+
+def test_reopened_issue_with_lastEditedAt_after_reopen_comment_is_runnable(
+    tmp_path: Path,
+) -> None:
+    """Body's lastEditedAt > reopen-comment timestamp must clear the gate.
+
+    Repro for #1135: operator edits body via ``gh issue edit`` (or web UI)
+    after a reopen-context comment is posted. ``gh issue edit`` updates
+    ``lastEditedAt`` reliably even when the timeline doesn't include an
+    ``edited`` event with ``changes.body``.
+    """
+    issues = [{"number": 1135, "title": "Reconciled body"}]
+
+    def fetch(_number, _project_root):
+        return {
+            "title": "Reconciled body",
+            "body": _RUNNABLE_BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "comments": [
+                {
+                    "author": {"login": "operator"},
+                    "body": "Reopen with new context.",
+                    "createdAt": "2026-05-02T14:35:00Z",
+                }
+            ],
+            # lastEditedAt set by `gh issue edit` after operator reconciled body.
+            "lastEditedAt": "2026-05-03T10:00:00Z",
+            "timeline": [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T14:00:00Z",
+                    "actor": {"login": "operator"},
+                }
+                # No timeline ``edited`` event — gh issue edit doesn't always
+                # produce one. The lastEditedAt field is the reliable signal.
+            ],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
+
+    assert result.runnable == issues
+    assert result.skipped == []
+
+
+def test_reopened_issue_lastEditedAt_between_two_comments_still_skipped(
+    tmp_path: Path,
+) -> None:
+    """Two post-reopen comments + body edit between them must still skip.
+
+    The contract is defined against the *most recent* reopen-context
+    comment. If the body edit reconciles an earlier comment but predates a
+    later operator comment, the body is still stale relative to the newest
+    context, and the gate must keep firing until the body's lastEditedAt
+    is newer than the latest comment.
+    """
+    issues = [{"number": 61, "title": "Stale vs. latest comment"}]
+
+    def fetch(_number, _project_root):
+        return {
+            "title": "Stale vs. latest comment",
+            "body": _RUNNABLE_BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "comments": [
+                {
+                    "author": {"login": "operator"},
+                    "body": "First reopen-context comment.",
+                    "createdAt": "2026-05-02T12:30:00Z",
+                },
+                {
+                    "author": {"login": "operator"},
+                    "body": "Second reopen-context comment with new context.",
+                    "createdAt": "2026-05-04T09:00:00Z",
+                },
+            ],
+            # Body edit lands between the two comments — newer than the
+            # first, older than the second. Contract is still stale.
+            "lastEditedAt": "2026-05-03T10:00:00Z",
+            "timeline": [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T12:00:00Z",
+                    "actor": {"login": "operator"},
+                }
+            ],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
+    # The detail must reference the *latest* comment's timestamp, not the
+    # earlier one — otherwise an operator might think editing past the
+    # earlier comment was sufficient.
+    assert "2026-05-04T09:00:00Z" in entry.detail
+
+
+def test_reopened_issue_lastEditedAt_before_comment_still_skipped(
+    tmp_path: Path,
+) -> None:
+    """A body edit that predates the reopen comment does not clear the gate."""
+    issues = [{"number": 60, "title": "Stale despite older edit"}]
+
+    def fetch(_number, _project_root):
+        return {
+            "title": "Stale despite older edit",
+            "body": _RUNNABLE_BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "comments": [
+                {
+                    "author": {"login": "operator"},
+                    "body": "Reopen with new context.",
+                    "createdAt": "2026-05-02T14:35:00Z",
+                }
+            ],
+            # Body edit is older than the reopen-context comment.
+            "lastEditedAt": "2026-05-01T09:00:00Z",
+            "timeline": [
+                {
+                    "event": "reopened",
+                    "created_at": "2026-05-02T14:00:00Z",
+                    "actor": {"login": "operator"},
+                }
+            ],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
 
 
 def test_reopened_issue_with_body_edit_after_reopen_is_runnable(tmp_path: Path) -> None:

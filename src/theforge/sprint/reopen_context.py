@@ -17,6 +17,7 @@ class ReopenContractState:
     reopen_comment_author: str | None = None
     reopen_comment_body: str | None = None
     body_edited_after_reopen: bool = False
+    body_last_edited_at: str | None = None
 
     @property
     def has_reopen_context(self) -> bool:
@@ -43,15 +44,52 @@ def analyze_reopen_contract(
     if reopened_at is None:
         return ReopenContractState()
 
-    comment = _first_reopen_comment(issue.get("comments") or [], reopened_at)
+    comment = _latest_reopen_comment(issue.get("comments") or [], reopened_at)
+    reopen_comment_at = _coerce_timestamp(comment.get("createdAt")) if comment else None
+
+    # Clearance signal precedence:
+    # 1. Issue body's ``lastEditedAt`` (from gh API) compared against the
+    #    newest reopen-comment timestamp — the natural artifact when an
+    #    operator reconciles the body. ``gh issue edit`` updates this field
+    #    reliably, while timeline ``edited`` events are inconsistent.
+    # 2. Timeline ``edited`` event with ``changes.body`` after the reopen.
+    body_last_edited_at = _coerce_timestamp(issue.get("lastEditedAt"))
+    body_edited_after_reopen = _body_edit_clears_contract(
+        body_last_edited_at=body_last_edited_at,
+        reopen_comment_at=reopen_comment_at,
+        reopened_at=reopened_at,
+        timeline=timeline,
+    )
+
     return ReopenContractState(
         reopened_at=reopened_at,
         reopened_by=_actor_login(reopened_event.get("actor")),
-        reopen_comment_at=_coerce_timestamp(comment.get("createdAt")) if comment else None,
+        reopen_comment_at=reopen_comment_at,
         reopen_comment_author=_actor_login(comment.get("author")) if comment else None,
         reopen_comment_body=_comment_body(comment) if comment else None,
-        body_edited_after_reopen=_has_body_edit_after_reopen(timeline, reopened_at),
+        body_edited_after_reopen=body_edited_after_reopen,
+        body_last_edited_at=body_last_edited_at,
     )
+
+
+def _body_edit_clears_contract(
+    *,
+    body_last_edited_at: str | None,
+    reopen_comment_at: str | None,
+    reopened_at: str,
+    timeline: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Return True when a body edit recognized as reconciliation has occurred.
+
+    Compares the body's ``lastEditedAt`` (if present) against the newest
+    reopen-comment timestamp first — this is the cheapest, most reliable
+    signal available from ``gh issue view --json lastEditedAt``. Falls back
+    to scanning the timeline for an ``edited`` event after the reopen.
+    """
+    threshold = reopen_comment_at or reopened_at
+    if body_last_edited_at is not None and body_last_edited_at > threshold:
+        return True
+    return _has_body_edit_after_reopen(timeline, reopened_at)
 
 
 def append_reopen_context(story_text: str, state: ReopenContractState) -> str:
@@ -80,7 +118,8 @@ def format_reopen_stale_detail(state: ReopenContractState) -> str:
     author = state.reopen_comment_author or state.reopened_by or "unknown author"
     return (
         f"issue reopened with new context in the comment from {when} by {author}; "
-        "reconcile the body before sprinting or pass --force"
+        f"edit the issue body (its lastEditedAt must be newer than {when}) "
+        "or pass --force"
     )
 
 
@@ -99,10 +138,18 @@ def _latest_reopened_event(
     return max(reopened_events, key=lambda event: _coerce_timestamp(event.get("created_at")) or "")
 
 
-def _first_reopen_comment(
+def _latest_reopen_comment(
     comments: Sequence[Any],
     reopened_at: str,
 ) -> Mapping[str, Any] | None:
+    """Return the newest non-bot post-reopen comment.
+
+    The stale-contract trigger is the *most recent* reopen-context comment,
+    not the first one. If a body edit reconciles an earlier comment but
+    predates a later one, the contract is still stale — the gate must keep
+    firing until the body's lastEditedAt is newer than every post-reopen
+    operator comment.
+    """
     candidates: list[Mapping[str, Any]] = []
     for comment in comments:
         if not isinstance(comment, Mapping):
@@ -119,7 +166,7 @@ def _first_reopen_comment(
 
     non_bot = [comment for comment in candidates if not _is_bot_actor(comment.get("author"))]
     pool = non_bot or candidates
-    return min(pool, key=lambda comment: _coerce_timestamp(comment.get("createdAt")) or "")
+    return max(pool, key=lambda comment: _coerce_timestamp(comment.get("createdAt")) or "")
 
 
 def _has_body_edit_after_reopen(
