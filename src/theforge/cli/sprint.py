@@ -429,6 +429,7 @@ def _run_query_mode(
     _generate_run_id: object,
 ) -> int:
     """Handle --milestone / --label / --issues query mode."""
+    from theforge.intake import IntakeOutcomeKind
     from theforge.sprint.dag import resolve_satisfied_dependencies
     from theforge.sprint.entry_intake import remediate_entry_skipped_issues
     from theforge.sprint.query import (
@@ -525,6 +526,23 @@ def _run_query_mode(
                 config=config,
                 log=lambda m: print(f"[forge] {m}", file=sys.stderr),
             )
+
+        # Re-add successfully remediated issues so the sprint continues without
+        # requiring the operator to re-invoke forge sprint.
+        if entry_intake_outcomes:
+            remediated_numbers = {
+                num
+                for num, outcome in entry_intake_outcomes.items()
+                if outcome.kind is IntakeOutcomeKind.REMEDIATED
+            }
+            if remediated_numbers:
+                skip_by_number = {sk.issue_number: sk for sk in skipped_issues}
+                for num in sorted(remediated_numbers):
+                    sk = skip_by_number[num]
+                    issues.append({"number": sk.issue_number, "title": sk.title})
+                skipped_issues = [
+                    sk for sk in skipped_issues if sk.issue_number not in remediated_numbers
+                ]
 
         if not issues:
             print(
