@@ -5,24 +5,14 @@ project: theforge
 # and synthesis roles automatically from this list and the story complexity.
 # See docs/guides/inputs-reference.md for the full schema reference.
 models:
-  enabled:
-    - claude/sonnet
-    - claude/opus
-    - openai/gpt-5.4
-    - openai/gpt-5.5  
-    - deepseek/deepseek-reasoner
-    - google/gemini-3.1-pro-preview
-  custom:
-    # GPT-5.5 — added via the user-declared registry overlay shipped in #1184
-    # (v0.10.0). Disabled pending #1355: AGENT_REGISTRY direct-readers in
-    # model_profiles.py bypass the overlay and crash worker dispatch with
-    # 'Unknown model'. Re-enable when #1355 ships.
-    openai/gpt-5.5:
-      provider: openai            # routes via Codex CLI; use 'openai-api' for the API adapter
-      model: gpt-5.5
-      tier: strong
-      input_cost_per_mtok: 5.00
-      output_cost_per_mtok: 30.00
+  - claude/sonnet
+  - claude/opus
+  - openai/gpt-5.4
+  - deepseek/deepseek-reasoner
+  - google/gemini-3.1-pro-preview
+
+plan_agent_review:
+  enabled: true
 
 provider_fallbacks:
   openai:
@@ -30,11 +20,6 @@ provider_fallbacks:
     timeout_seconds: 600
 
 budget_usd: 50.0
-
-intake:
-  grooming: true
-  auto_fix: true
-  auto_fix_mode: edit
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"
@@ -73,13 +58,6 @@ conventions:
     - "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail — diagnosing sprint failures requires tracing real data, not reconstructing it"
     - "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing."
     - "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
-  advisory:
-    artifact_path: ".forge/conventions/advisory.yaml"
-    summary_top_n: 10
-    noteworthy_threshold_percent: 10.0
-    commit_shared_artifact: false
-    issue_filing:
-      enabled: false
 
 assignment:
   enabled: true
@@ -95,20 +73,10 @@ stuck_detection:
 
 retry:
   max_dev_iterations: 3
-  max_dev_transport_retries: 2
   max_review_cycles: 3
-  adaptive_iterations: true
-  max_dev_iterations_cap: 5
-  max_review_cycles_cap: 5
 
 plan:
   enabled: true
-
-diagnose:
-  output_destination: comment
-  budget_usd: 1.50
-  timeout_seconds: 600
-  autonomous_default: true
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh
