@@ -156,7 +156,23 @@ run git tag "$RC_TAG"
 run git push -u origin "$RELEASE_BRANCH"
 run git push origin "$RC_TAG"
 
-# --- 9. Install the RC into the active env, then assert the right binary is on PATH ---
+# --- 9. Configure branch protection on release branch so auto-merge works ---
+#
+# GitHub's enablePullRequestAutoMerge mutation (which Forge calls after APPROVE
+# via `gh pr merge --auto`) requires the target branch to have a branch
+# protection rule. Without protection, every RC-ladder fix lands in
+# MERGE_FAILED and the operator click-merges by hand. The helper applies a
+# minimal protection ruleset — just enough to make GitHub treat the branch
+# as protected. Specific rule selection is intentionally minimal; tightening
+# is a follow-on.
+echo "==> Configuring branch protection on $RELEASE_BRANCH..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROTECT_ARGS=()
+[[ "$DRY_RUN" == true ]] && PROTECT_ARGS+=("--dry-run")
+PROTECT_ARGS+=("fuzzypete/theforge" "$RELEASE_BRANCH")
+"$SCRIPT_DIR/apply-branch-protection.sh" "${PROTECT_ARGS[@]}" || true
+
+# --- 10. Install the RC into the active env, then assert the right binary is on PATH ---
 if [[ "$NO_INSTALL" == false ]]; then
     echo "==> Installing $RC_TAG into active Python environment..."
     run pip install --force-reinstall "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
@@ -184,7 +200,7 @@ else
     echo "      pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
 fi
 
-# --- 10. Print test ladder ---
+# --- 11. Print test ladder ---
 echo ""
 echo "==> $RC_TAG cut on $RELEASE_BRANCH."
 echo ""
