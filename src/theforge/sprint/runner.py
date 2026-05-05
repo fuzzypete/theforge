@@ -1027,8 +1027,21 @@ def _terminal_story_model(result: CoordinatorResult) -> str | None:
     return None
 
 
-def _poll_queued_pr(pr_url: str, project_root: Path, timeout_seconds: int) -> dict[str, str]:
-    """Poll GitHub until a queued PR is merged, closed, or times out."""
+def _poll_queued_pr(
+    pr_url: str,
+    project_root: Path,
+    timeout_seconds: int,
+    base_branch: str | None = None,
+) -> dict[str, str]:
+    """Poll GitHub until a queued PR is merged, closed, or times out.
+
+    When ``base_branch`` is supplied, "merged" is only reported once GitHub
+    reports MERGED *and* the PR's merge commit is reachable on
+    ``origin/<base_branch>``. GitHub's auto-merge queue flips a PR to MERGED
+    several seconds before the merge commit propagates to the base ref;
+    releasing a collision-serialized dependent on the GitHub state alone
+    re-creates the race the collision DAG existed to prevent (issue #1402).
+    """
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
@@ -1045,13 +1058,81 @@ def _poll_queued_pr(pr_url: str, project_root: Path, timeout_seconds: int) -> di
         if proc.returncode == 0:
             state = proc.stdout.strip()
             if state == "MERGED":
-                return {"status": "merged"}
-            if state == "CLOSED":
+                if base_branch is None or _merge_visible_on_base(
+                    pr_url, project_root, base_branch
+                ):
+                    return {"status": "merged"}
+            elif state == "CLOSED":
                 return {"status": "closed"}
 
         if time.monotonic() >= deadline:
             return {"status": "timeout"}
         time.sleep(30)
+
+
+def _merge_visible_on_base(pr_url: str, project_root: Path, base_branch: str) -> bool:
+    """Return True when the PR's merge commit is reachable on origin/<base_branch>.
+
+    The collision detector serializes overlapping stories with `depends_on`
+    edges; the gating predicate that unblocks a dependent must match the
+    edge's purpose, which is to make the parent's diff visible to the
+    dependent's dev iteration. "PR auto-merge queued" or even GitHub's
+    `state == MERGED` happens before the merge commit reaches origin/<base>;
+    a dependent worktree created in that window is stale relative to the
+    parent's edits and rebases conflict on the shared file. Confirm origin
+    actually carries the merge commit before treating the parent as landed.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                pr_url,
+                "--json",
+                "mergeCommit",
+                "-q",
+                '.mergeCommit.oid? // ""',
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    merge_sha = proc.stdout.strip()
+    if not merge_sha:
+        return False
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", base_branch],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception:
+        return False
+    try:
+        ancestor = subprocess.run(
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                merge_sha,
+                f"origin/{base_branch}",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception:
+        return False
+    return ancestor.returncode == 0
 
 
 def _classify_and_record(
@@ -2007,6 +2088,7 @@ def run_sprint(
                             dep_pr_url,
                             config.project_root,
                             config.workspace.merge_wait_timeout_seconds,
+                            base_branch=config.workspace.base_branch,
                         )
                         if poll_result["status"] == "merged":
                             merged_slugs.add(dep)
@@ -2182,6 +2264,7 @@ def run_sprint(
                         _qp_pr_url,
                         config.project_root,
                         config.workspace.merge_wait_timeout_seconds,
+                        base_branch=config.workspace.base_branch,
                     )
                     if _qp_poll["status"] == "merged":
                         merged_slugs.add(_qp_slug)
@@ -2458,6 +2541,7 @@ def run_sprint(
                 pr_url,
                 config.project_root,
                 config.workspace.merge_wait_timeout_seconds,
+                base_branch=config.workspace.base_branch,
             )
             if poll_result["status"] == "merged":
                 merged_slugs.add(slug)
