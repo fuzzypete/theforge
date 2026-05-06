@@ -473,6 +473,118 @@ class TestDiagnoseFlow:
         assert loaded["artifact"]["partial"] is True
 
 
+# ── dry-run stdout tests ──────────────────────────────────────────────
+
+
+class TestDryRunPrintsArtifact:
+    def _setup(self, tmp_path: Path):
+        from coord_test_helpers import _make_config
+
+        return _make_config(tmp_path)
+
+    def _issue_fetch(self):
+        return {
+            "number": 42,
+            "title": "broken sprint",
+            "body": "story 3 never starts",
+            "state": "OPEN",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_dry_run_comment_prints_artifact_to_stdout(
+        self, mock_agent, mock_fetch, tmp_path, capsys
+    ):
+        config = self._setup(tmp_path)
+        mock_fetch.return_value = self._issue_fetch()
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=42,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+            dry_run=True,
+        )
+
+        assert result.state.landed_location == "<dry-run: comment>"
+        captured = capsys.readouterr()
+        assert "## Diagnosis" in captured.out
+        assert "Worker pool" in captured.out
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_dry_run_body_section_prints_artifact_to_stdout(
+        self, mock_agent, mock_fetch, tmp_path, capsys
+    ):
+        config = self._setup(tmp_path)
+        mock_fetch.return_value = self._issue_fetch()
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=42,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+            dry_run=True,
+        )
+
+        assert result.state.landed_location == "<dry-run: body_section>"
+        captured = capsys.readouterr()
+        assert "## Diagnosis" in captured.out
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_dry_run_pr_to_body_prints_artifact_to_stdout_without_writing_file(
+        self, mock_agent, mock_fetch, tmp_path, capsys
+    ):
+        config = self._setup(tmp_path)
+        mock_fetch.return_value = self._issue_fetch()
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        run_diagnose_flow(
+            issue_number=42,
+            config=config,
+            project_root=tmp_path,
+            output_destination="pr_to_body",
+            dry_run=True,
+        )
+
+        captured = capsys.readouterr()
+        assert "## Diagnosis" in captured.out
+        # File must NOT be written in dry-run mode
+        assert not (tmp_path / ".forge" / "diagnoses" / "issue-42.md").exists()
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_dry_run_does_not_post_to_github(self, mock_agent, mock_fetch, tmp_path):
+        config = self._setup(tmp_path)
+        mock_fetch.return_value = self._issue_fetch()
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        with (
+            patch("theforge.coordinator.diagnose_flow._gh_post_comment") as mock_post,
+            patch("theforge.coordinator.diagnose_flow._gh_edit_body") as mock_edit,
+        ):
+            run_diagnose_flow(
+                issue_number=42,
+                config=config,
+                project_root=tmp_path,
+                output_destination="comment",
+                dry_run=True,
+            )
+            assert not mock_post.called
+            assert not mock_edit.called
+
+
 # ── DiagnoseState / phase transitions ─────────────────────────────────
 
 
