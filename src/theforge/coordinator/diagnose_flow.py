@@ -260,11 +260,13 @@ def _land_artifact(
 
     if destination == "comment":
         if dry_run:
+            print(section)
             return "<dry-run: comment>"
         return _gh_post_comment(state.issue_number, section, project_root)
 
     if destination == "body_section":
         if dry_run:
+            print(section)
             return "<dry-run: body_section>"
         new_body = upsert_diagnosis_section(state.issue_body, section)
         _gh_edit_body(state.issue_number, new_body, project_root)
@@ -276,6 +278,7 @@ def _land_artifact(
     out_dir = project_root / ".forge" / "diagnoses"
     out_path = out_dir / f"issue-{state.issue_number}.md"
     if dry_run:
+        print(section)
         return str(out_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     full = (
