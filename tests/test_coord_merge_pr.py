@@ -253,6 +253,8 @@ class TestMergePrFunction:
 
     def test_already_merged_branch_skips_push_and_pr_recreation(self, tmp_path: Path) -> None:
         config = _make_merge_pr_config(tmp_path)
+        # Create the worktree so `git rev-parse HEAD` is callable on it.
+        (tmp_path / "test-task").mkdir(parents=True, exist_ok=True)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = MagicMock()
@@ -261,6 +263,7 @@ class TestMergePrFunction:
         state.dev_iteration = 1
 
         calls: list[list[str]] = []
+        head_sha = "abc1234abc1234abc1234abc1234abc1234abc1"
 
         def _fake_run(cmd, **kwargs):
             if isinstance(cmd, list):
@@ -269,9 +272,16 @@ class TestMergePrFunction:
                     return _make_subprocess_result(
                         0,
                         stdout=(
-                            '[{"url": "https://github.com/fuzzypete/theforge/pull/42", '
+                            '[{"number": 42, '
+                            '"url": "https://github.com/fuzzypete/theforge/pull/42", '
                             '"mergedAt": "2025-01-01T00:00:00Z"}]'
                         ),
+                    )
+                if cmd[:2] == ["git", "rev-parse"]:
+                    return _make_subprocess_result(0, stdout=f"{head_sha}\n")
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return _make_subprocess_result(
+                        0, stdout=f'{{"commits": [{{"oid": "{head_sha}"}}]}}'
                     )
             return _make_subprocess_result(0)
 
@@ -292,8 +302,74 @@ class TestMergePrFunction:
         }
         mock_create_pr.assert_not_called()
         assert calls[0][:3] == ["gh", "pr", "list"]
+        assert any(cmd[:3] == ["gh", "pr", "view"] for cmd in calls)
         assert not any(cmd[:3] == ["git", "push", "-f"] for cmd in calls)
         assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls)
+
+    def test_reused_branch_with_unrelated_merged_pr_proceeds_with_merge(
+        self, tmp_path: Path
+    ) -> None:
+        """A merged PR sharing the branch name but not the current HEAD must NOT
+        short-circuit landing — that's the bug from issue 1420 where a reused
+        branch caused the new commit to be silently discarded."""
+        config = _make_merge_pr_config(tmp_path)
+        (tmp_path / "test-task").mkdir(parents=True, exist_ok=True)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        current_head = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
+        old_pr_commit = "oldoldoldoldoldoldoldoldoldoldoldoldoldo"
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                calls.append(cmd)
+                if cmd[:3] == ["gh", "pr", "list"] and "--state" in cmd:
+                    return _make_subprocess_result(
+                        0,
+                        stdout=(
+                            '[{"number": 42, '
+                            '"url": "https://github.com/fuzzypete/theforge/pull/42", '
+                            '"mergedAt": "2025-01-01T00:00:00Z"}]'
+                        ),
+                    )
+                if cmd[:2] == ["git", "rev-parse"]:
+                    return _make_subprocess_result(0, stdout=f"{current_head}\n")
+                if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd and "commits" in cmd:
+                    return _make_subprocess_result(
+                        0, stdout=f'{{"commits": [{{"oid": "{old_pr_commit}"}}]}}'
+                    )
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return _make_subprocess_result(0, stdout="MERGED")
+                if cmd[:3] == ["gh", "pr", "merge"]:
+                    return _make_subprocess_result(0)
+            return _make_subprocess_result(0)
+
+        new_pr_url = "https://github.com/fuzzypete/theforge/pull/99"
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": new_pr_url,
+                    "success": True,
+                    "error": None,
+                },
+            ) as mock_create_pr,
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        # Guard must NOT have fired: PR creation and merge must have run.
+        mock_create_pr.assert_called_once()
+        assert result["pr_url"] == new_pr_url
+        assert result["success"] is True
+        assert result["merged"] is True
+        assert any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls)
 
     def test_pr_creation_failure_no_merge(self, tmp_path: Path) -> None:
         failed_pr = {"action": "pr", "pr_url": None, "success": False, "error": "gh auth failed"}

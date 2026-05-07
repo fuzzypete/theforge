@@ -720,6 +720,117 @@ def _step_cleanup(
         _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
 
 
+def _worktree_head_sha(worktree_path: Path) -> str | None:
+    """Return the current HEAD commit SHA in ``worktree_path``, or None if unknown.
+
+    The "already merged" guard in _merge_pr uses this to verify the merged PR
+    actually contains the work currently sitting in the worktree — branch names
+    are reused across sprint attempts, so matching by branch alone can mistake a
+    prior PR for the current one and silently discard the new commit.
+    """
+    if not worktree_path.is_dir():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),
+            timeout=15,
+        )
+    except Exception as exc:
+        _pr_log.warning("HEAD lookup failed in %s: %s", worktree_path, exc)
+        return None
+    if proc.returncode != 0:
+        _pr_log.warning(
+            "HEAD lookup in %s failed (git exited %d): %s",
+            worktree_path,
+            proc.returncode,
+            (proc.stderr or proc.stdout).strip(),
+        )
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def _pr_contains_commit(pr_number: int | str, head_sha: str, *, project_root: Path) -> bool | None:
+    """Return True/False if the PR's commits contain ``head_sha``, or None if unknown.
+
+    Works for squash- and rebase-merged PRs because ``gh pr view --json commits``
+    returns the original commits of the PR branch even after merge.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--json", "commits"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("gh pr view #%s failed: %s", pr_number, exc)
+        return None
+    if proc.returncode != 0:
+        _pr_log.warning(
+            "gh pr view #%s failed (exit %d): %s",
+            pr_number,
+            proc.returncode,
+            (proc.stderr or proc.stdout).strip(),
+        )
+        return None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        _pr_log.warning("gh pr view #%s returned invalid JSON: %s", pr_number, exc)
+        return None
+    commits = payload.get("commits") or []
+    return any(c.get("oid") == head_sha for c in commits)
+
+
+def _find_pr_containing_head(
+    merged_prs: list[dict],
+    *,
+    worktree_path: Path,
+    project_root: Path,
+    branch_name: str,
+) -> dict | None:
+    """Return the merged PR that contains the worktree's current HEAD, else None.
+
+    Filters ``merged_prs`` to those with a ``mergedAt`` timestamp, then verifies
+    each candidate's commit list against the worktree HEAD. If HEAD cannot be
+    determined, no candidate fires the guard — the safer default is to fall
+    through to the normal push/PR/merge sequence rather than silently skip
+    landing on a false positive.
+    """
+    candidates = [pr for pr in merged_prs if pr.get("mergedAt")]
+    if not candidates:
+        return None
+
+    head_sha = _worktree_head_sha(worktree_path)
+    if head_sha is None:
+        _pr_log.warning(
+            "cannot verify merged PR for branch %s contains current HEAD; "
+            "falling through to normal merge sequence",
+            branch_name,
+        )
+        return None
+
+    for pr in candidates:
+        pr_number = pr.get("number")
+        if pr_number is None:
+            continue
+        contains = _pr_contains_commit(pr_number, head_sha, project_root=project_root)
+        if contains is True:
+            return pr
+        if contains is None:
+            _pr_log.warning(
+                "could not confirm PR #%s contains HEAD %s; skipping guard",
+                pr_number,
+                head_sha,
+            )
+    return None
+
+
 def _merge_pr(
     config: ForgeConfig,
     task: TaskStory,
@@ -809,11 +920,17 @@ def _merge_pr(
         )
         if merged_pr_proc.returncode == 0:
             merged_prs = json.loads(merged_pr_proc.stdout or "[]")
-            merged_pr = next((pr for pr in merged_prs if pr.get("mergedAt")), None)
+            merged_pr = _find_pr_containing_head(
+                merged_prs,
+                worktree_path=worktree_path,
+                project_root=config.project_root,
+                branch_name=branch_name,
+            )
             if merged_pr is not None:
                 pr_url = merged_pr.get("url")
                 _pr_log.info(
-                    "PR already merged for branch %s; skipping PR recreation and merge retry: %s",
+                    "PR already merged for branch %s contains current HEAD; "
+                    "skipping PR recreation and merge retry: %s",
                     branch_name,
                     pr_url,
                 )
