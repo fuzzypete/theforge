@@ -1076,6 +1076,7 @@ def _record_run_memory(
             outcome=_esc_outcome,
             reason=state.escalation_note or "",
             timestamp=datetime.datetime.utcnow().isoformat() + "Z",
+            complexity_score=state.preflight_complexity_score,
         )
         _append_esc(_esc_path, _esc_record)
         _log_verbose(

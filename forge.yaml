@@ -105,7 +105,7 @@ plan:
   enabled: true
 
 diagnose:
-  output_destination: comment
+  output_destination: body_section
   budget_usd: 1.50
   timeout_seconds: 600
   autonomous_default: true

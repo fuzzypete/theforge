@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-SUBSTRATE_SCHEMA_VERSION = 1
+SUBSTRATE_SCHEMA_VERSION = 2
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS audit_records (
     provenance TEXT NOT NULL,
     source_path TEXT,
     source_mtime REAL,
+    complexity_score INTEGER,
     raw_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_records_slug ON audit_records(slug);
@@ -104,8 +105,16 @@ CREATE TABLE IF NOT EXISTS meta (
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    # Idempotent column adds for substrates created under an older schema.
+    # SQLite < 3.35 lacks ADD COLUMN IF NOT EXISTS, so swallow the duplicate
+    # error from re-runs.
+    try:
+        conn.execute("ALTER TABLE audit_records ADD COLUMN complexity_score INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        "INSERT INTO meta(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         ("schema_version", str(SUBSTRATE_SCHEMA_VERSION)),
     )
     conn.commit()
@@ -391,8 +400,20 @@ def _flat_fields(record: dict) -> dict:
     workspace = record.get("workspace") or {}
     cost = record.get("cost") or {}
     totals = record.get("totals") or {}
+    preflight = record.get("preflight") if isinstance(record.get("preflight"), dict) else {}
     raw_landing = record.get("landing_event")
     landing_event = raw_landing if isinstance(raw_landing, dict) else {}
+
+    raw_score = preflight.get("complexity_score") if isinstance(preflight, dict) else None
+    complexity_score: int | None
+    if isinstance(raw_score, bool):
+        complexity_score = None
+    elif isinstance(raw_score, int):
+        complexity_score = raw_score
+    elif isinstance(raw_score, float):
+        complexity_score = int(raw_score)
+    else:
+        complexity_score = None
 
     final_phase = outcome.get("final_phase")
     success = outcome.get("success")
@@ -422,6 +443,7 @@ def _flat_fields(record: dict) -> dict:
         "outcome_success": outcome_success,
         "branch": workspace.get("branch"),
         "landing_status": landing_status,
+        "complexity_score": complexity_score,
     }
 
 
@@ -499,21 +521,23 @@ def upsert_run_record(
         provenance,
         source_path,
         source_mtime,
+        flat["complexity_score"],
         raw_json,
     )
     conn.execute(
         "INSERT INTO audit_records "
         "(run_id, slug, started_at, finished_at, total_cost_usd, final_phase, "
         "outcome_success, branch, landing_status, provenance, source_path, "
-        "source_mtime, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "source_mtime, complexity_score, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(run_id) DO UPDATE SET "
         "slug=excluded.slug, started_at=excluded.started_at, "
         "finished_at=excluded.finished_at, total_cost_usd=excluded.total_cost_usd, "
         "final_phase=excluded.final_phase, outcome_success=excluded.outcome_success, "
         "branch=excluded.branch, landing_status=excluded.landing_status, "
         "provenance=excluded.provenance, source_path=excluded.source_path, "
-        "source_mtime=excluded.source_mtime, raw_json=excluded.raw_json",
+        "source_mtime=excluded.source_mtime, "
+        "complexity_score=excluded.complexity_score, raw_json=excluded.raw_json",
         params,
     )
     # Rewrite reviews for this run_id.
