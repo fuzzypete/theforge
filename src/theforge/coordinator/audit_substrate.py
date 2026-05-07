@@ -543,9 +543,50 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     and upserts each into a freshly recreated substrate with
     ``provenance='native'``. Records lacking a ``run_id`` are counted as
     failures (they cannot key the substrate deterministically).
+
+    Legacy rows imported from ``history.jsonl`` (provenance =
+    ``legacy_history_jsonl``) are snapshotted before the destructive
+    rebuild and re-applied afterward. Without this preservation, a
+    runtime stale-rebuild triggered by a deleted/mtime-mismatched
+    per-run file would silently drop historical upgrade data, breaking
+    the contract that imported legacy rows stay visible to migrated
+    readers across normal runtime operations. The legacy import flag
+    is also carried forward so a subsequent operator-driven import is
+    still considered already-done.
     """
     path = substrate_path(project_root)
+    legacy_snapshot: list[tuple[str, str, str | None, float | None]] = []
+    legacy_import_done: str | None = None
     if path.exists():
+        try:
+            existing_conn = sqlite3.connect(str(path))
+            try:
+                existing_conn.row_factory = sqlite3.Row
+                # Best-effort schema apply so the SELECT below works on
+                # older substrates that pre-date columns we touch.
+                _apply_schema(existing_conn)
+                rows = existing_conn.execute(
+                    "SELECT raw_json, provenance, source_path, source_mtime "
+                    "FROM audit_records WHERE provenance = 'legacy_history_jsonl'"
+                ).fetchall()
+                for row in rows:
+                    legacy_snapshot.append(
+                        (
+                            row["raw_json"],
+                            row["provenance"],
+                            row["source_path"],
+                            row["source_mtime"],
+                        )
+                    )
+                legacy_import_done = _meta_get(existing_conn, "legacy_import_done")
+            finally:
+                existing_conn.close()
+        except sqlite3.DatabaseError:
+            # Corrupt substrate — nothing usable to preserve. Operator
+            # must run `forge audits rebuild --include-legacy-history`
+            # explicitly to recover legacy data.
+            legacy_snapshot = []
+            legacy_import_done = None
         path.unlink()
     conn = create_or_open(project_root)
     summary = RebuildSummary()
@@ -577,6 +618,30 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
             except sqlite3.DatabaseError as exc:
                 summary.failed += 1
                 summary.failures.append(f"{run_file.name}: {exc}")
+    # Re-apply preserved legacy rows so a runtime rebuild does not silently
+    # drop history.jsonl-imported records. ``upsert_run_record`` with
+    # provenance=legacy_history_jsonl respects the native-row protection
+    # rule, so any identity collision with a freshly-rebuilt native row
+    # leaves the native row in place.
+    for raw_json, provenance, source_path, source_mtime in legacy_snapshot:
+        try:
+            record = json.loads(raw_json)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        try:
+            upsert_run_record(
+                conn,
+                record,
+                provenance=provenance,
+                source_path=source_path,
+                source_mtime=source_mtime,
+            )
+        except sqlite3.DatabaseError:
+            continue
+    if legacy_import_done is not None:
+        _meta_set(conn, "legacy_import_done", legacy_import_done)
     _meta_set(conn, "last_rebuild_at", _now_iso())
     conn.commit()
     conn.close()
@@ -824,6 +889,28 @@ def iter_escalation_records(conn: sqlite3.Connection) -> Iterable[dict]:
             yield derived
 
 
+_COMPLEXITY_BAND_NORMALIZE = {
+    "small": "LOW",
+    "medium": "MEDIUM",
+    "large": "HIGH",
+    "low": "LOW",
+    "high": "HIGH",
+}
+
+
+def _normalize_complexity_band(value: str) -> str:
+    """Map small/medium/large (and other casing) to LOW/MEDIUM/HIGH.
+
+    Mirrors ``theforge.assignment._normalize_complexity`` so substrate-derived
+    escalation history uses the same key the promotion logic compares against.
+    Empty input returns "" so callers can distinguish "no band recorded" from
+    a normalized band.
+    """
+    if not value:
+        return ""
+    return _COMPLEXITY_BAND_NORMALIZE.get(value.lower(), value.upper())
+
+
 def _derive_escalation(record: dict) -> dict | None:
     """Project an audit record to its escalation-shape projection."""
     task = record.get("task") or {}
@@ -833,7 +920,11 @@ def _derive_escalation(record: dict) -> dict | None:
     if not isinstance(success, bool):
         return None
     preflight = record.get("preflight") if isinstance(record.get("preflight"), dict) else {}
-    complexity = str(preflight.get("complexity") or "").strip()
+    raw_complexity = str(preflight.get("complexity") or "").strip()
+    # Promotion checks compare against LOW/MEDIUM/HIGH (see assignment._normalize_complexity).
+    # Audit records persist the lower-case band (small/medium/large), so normalize on the
+    # projection boundary so two ESCALATE rows for the same model actually match.
+    complexity = _normalize_complexity_band(raw_complexity)
 
     # Canonical dev model identity, derived from the cost.agents block when
     # present (carries provider/model/cli identity per phase).

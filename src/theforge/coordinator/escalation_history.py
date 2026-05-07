@@ -10,38 +10,37 @@ records, not a separate file.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from theforge.assignment import EscalationRecord
 from theforge.coordinator import audit_substrate
 
-log = logging.getLogger(__name__)
-
 
 def load_escalation_history_from_substrate(project_root: Path) -> list[EscalationRecord]:
     """Return escalation records derived from substrate audit rows.
 
-    Returns an empty list when the substrate is missing or unreadable —
-    adaptive routing degrades to its no-history defaults rather than
-    failing the run. (Operator surface: ``forge check-config`` reports a
-    missing/corrupt substrate; runtime simply behaves as a fresh repo.)
+    Behavior:
+      - Truly fresh repo (no substrate file *and* no legacy/per-run audit
+        inputs) → return ``[]``. Adaptive routing has no history to consume
+        and proceeds with its tier-only defaults.
+      - Substrate present and valid → project escalation rows from the
+        audit table.
+      - Substrate missing or corrupt while audit inputs exist → propagate
+        ``SubstrateMissingError`` / ``SubstrateCorruptError``. The spec
+        requires a clear operator-facing error, not silent no-history
+        routing, when historical data is supposed to be readable.
+
+    The "audit inputs exist" branch is the load-bearing one: if the
+    operator already has runs/*.json or a legacy history.jsonl on disk,
+    routing without that data is a wrong answer, not a degraded-but-OK
+    answer. Surfacing the substrate exception lets the caller (preflight)
+    abort the run rather than make a model-routing decision against a
+    silently-empty history.
     """
     sub_path = audit_substrate.substrate_path(project_root)
-    if not sub_path.exists():
-        if not audit_substrate.has_audit_inputs(project_root):
-            return []
-        log.warning(
-            "[adaptive] audit substrate missing at %s; routing without history. "
-            "Run `forge audits rebuild [--include-legacy-history]` to backfill.",
-            sub_path,
-        )
+    if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
         return []
-    try:
-        conn = audit_substrate.require_substrate(project_root)
-    except (audit_substrate.SubstrateMissingError, audit_substrate.SubstrateCorruptError) as exc:
-        log.warning("[adaptive] could not open audit substrate (%s); routing without history", exc)
-        return []
+    conn = audit_substrate.require_substrate(project_root)
     try:
         out: list[EscalationRecord] = []
         for entry in audit_substrate.iter_escalation_records(conn):

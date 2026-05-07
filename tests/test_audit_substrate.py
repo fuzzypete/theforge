@@ -351,3 +351,184 @@ class TestQueryHelpers:
         assert len(with_landed) == 1
         assert with_landed[0]["run_id"] == "r1"
         assert len(without) == 2
+
+
+class TestEscalationProjection:
+    """The substrate→escalation projection feeds adaptive routing's promotion logic."""
+
+    def _make_run(
+        self,
+        *,
+        run_id: str,
+        slug: str,
+        complexity_band: str,
+        success: bool,
+        provider: str = "anthropic",
+        model: str = "sonnet",
+        cli: str = "claude",
+        started_at: str = "2026-03-01T10:00:00+00:00",
+    ) -> dict:
+        return {
+            "run_id": run_id,
+            "task": {"slug": slug},
+            "outcome": {"success": success, "final_phase": "DONE" if success else "ESCALATE"},
+            "timing": {"started_at": started_at, "duration_seconds": 1.0},
+            "preflight": {"complexity": complexity_band, "complexity_score": 5},
+            "cost": {
+                "total_usd": 1.0,
+                "agents": [
+                    {
+                        "phase": "dev",
+                        "provider": provider,
+                        "model": model,
+                        "cli": cli,
+                        "name": "dev",
+                    }
+                ],
+            },
+        }
+
+    def test_complexity_normalized_to_promotion_keys(self, tmp_path: Path) -> None:
+        """Lower-case audit bands (small/medium/large) project to LOW/MEDIUM/HIGH."""
+        conn = sub.create_or_open(tmp_path)
+        try:
+            for i, band in enumerate(("small", "medium", "large")):
+                sub.upsert_run_record(
+                    conn,
+                    self._make_run(
+                        run_id=f"r{i}",
+                        slug=f"s{i}",
+                        complexity_band=band,
+                        success=False,
+                        started_at=f"2026-03-0{i + 1}T10:00:00+00:00",
+                    ),
+                    provenance="native",
+                )
+            conn.commit()
+            projected = list(sub.iter_escalation_records(conn))
+        finally:
+            conn.close()
+        complexities = [p["complexity"] for p in projected]
+        assert complexities == ["LOW", "MEDIUM", "HIGH"]
+
+    def test_promotion_fires_from_two_substrate_escalations(self, tmp_path: Path) -> None:
+        """Two substrate ESCALATE rows for the same model trigger _check_promotion.
+
+        Regression guard: pre-fix the projection emitted ``medium`` while the
+        promotion comparator used ``MEDIUM``, so the rows never matched.
+        """
+        from theforge.assignment import _check_promotion
+        from theforge.coordinator.escalation_history import (
+            load_escalation_history_from_substrate,
+        )
+
+        conn = sub.create_or_open(tmp_path)
+        try:
+            for i in range(2):
+                sub.upsert_run_record(
+                    conn,
+                    self._make_run(
+                        run_id=f"esc-{i}",
+                        slug=f"story-{i}",
+                        complexity_band="medium",
+                        success=False,
+                        started_at=f"2026-03-0{i + 1}T10:00:00+00:00",
+                    ),
+                    provenance="native",
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        history = load_escalation_history_from_substrate(tmp_path)
+        # All projected rows agree on the canonical dev model identity.
+        assert all(r.dev_model == "anthropic/sonnet/cli" for r in history)
+        result = _check_promotion(
+            "MEDIUM",
+            "anthropic/sonnet/cli",
+            history,
+            sprint_promotions=None,
+            dev_canonical_id="anthropic/sonnet/cli",
+        )
+        assert result == "promoted"
+
+
+class TestLoaderFailsLoudWhenAuditInputsExist:
+    """Adaptive routing must not silently degrade when audit inputs say history exists."""
+
+    def test_loader_raises_when_substrate_missing_with_legacy_history(
+        self, tmp_path: Path
+    ) -> None:
+        """Legacy history.jsonl on disk + missing substrate → operator-facing error."""
+        from theforge.coordinator.escalation_history import (
+            load_escalation_history_from_substrate,
+        )
+
+        _write_history(tmp_path, [_make_record(run_id="r1")])
+        with pytest.raises(sub.SubstrateMissingError):
+            load_escalation_history_from_substrate(tmp_path)
+
+    def test_loader_raises_on_corrupt_substrate(self, tmp_path: Path) -> None:
+        """Corrupt substrate must not silently route without history."""
+        from theforge.coordinator.escalation_history import (
+            load_escalation_history_from_substrate,
+        )
+
+        path = sub.substrate_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not a sqlite file" * 50)
+        with pytest.raises(sub.SubstrateCorruptError):
+            load_escalation_history_from_substrate(tmp_path)
+
+    def test_loader_returns_empty_for_truly_fresh_repo(self, tmp_path: Path) -> None:
+        """No substrate, no audit inputs → empty list (legitimate fresh-repo path)."""
+        from theforge.coordinator.escalation_history import (
+            load_escalation_history_from_substrate,
+        )
+
+        assert load_escalation_history_from_substrate(tmp_path) == []
+
+
+class TestRebuildPreservesLegacyRows:
+    """Runtime stale-rebuild must not silently drop history.jsonl-imported records."""
+
+    def test_legacy_rows_survive_runtime_rebuild(self, tmp_path: Path) -> None:
+        # Bootstrap: import legacy history once via the operator path.
+        legacy = _make_record(run_id="legacy-r1", slug="legacy-slug")
+        _write_history(tmp_path, [legacy])
+        sub.import_history_jsonl(tmp_path)
+        # Confirm the row is present with legacy provenance.
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            count_before = conn.execute(
+                "SELECT COUNT(*) FROM audit_records WHERE provenance = 'legacy_history_jsonl'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert count_before == 1
+
+        # Now write a native run and trigger a stale-rebuild by mutating the
+        # native source file's mtime so require_substrate's stale check fires.
+        _write_runs(tmp_path, [_make_record(run_id="native-r1", slug="native-slug")])
+        # First require_substrate: rebuilds, indexes the native row.
+        sub.require_substrate(tmp_path).close()
+        # Bump mtime to force a stale check on the next call.
+        run_file = sub.runs_dir(tmp_path) / "native-r1.json"
+        new_mtime = run_file.stat().st_mtime + 10.0
+        import os
+
+        os.utime(run_file, (new_mtime, new_mtime))
+        # Second require_substrate: detects mtime mismatch, rebuilds. Legacy
+        # rows must survive.
+        conn = sub.require_substrate(tmp_path)
+        try:
+            legacy_after = conn.execute(
+                "SELECT raw_json FROM audit_records WHERE provenance = 'legacy_history_jsonl'"
+            ).fetchall()
+            native_after = conn.execute(
+                "SELECT COUNT(*) FROM audit_records WHERE provenance = 'native'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert len(legacy_after) == 1, "legacy row was dropped by runtime rebuild"
+        assert native_after == 1
