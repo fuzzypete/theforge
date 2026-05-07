@@ -74,20 +74,18 @@ class TestPerRunFileWrite:
         if runs_dir.exists():
             assert list(runs_dir.iterdir()) == []
 
-    def test_history_jsonl_still_appended(self, tmp_path: Path) -> None:
-        """Dual-write: history.jsonl must also be appended."""
+    def test_history_jsonl_no_longer_written(self, tmp_path: Path) -> None:
+        """Substrate is the canonical write path; legacy history.jsonl is gone."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
-        result = _make_result(tmp_path, run_id="run-dual-write")
+        result = _make_result(tmp_path, run_id="run-substrate-only")
 
         _write_audit(result, config, task)
 
         history_path = tmp_path / ".forge" / "audits" / "history.jsonl"
-        assert history_path.exists(), "history.jsonl should still be appended"
-        lines = history_path.read_text().strip().splitlines()
-        assert len(lines) == 1
-        record = json.loads(lines[0])
-        assert isinstance(record, dict)
+        assert not history_path.exists(), (
+            "history.jsonl must NOT be written — substrate is the canonical write path"
+        )
 
     def test_two_separate_run_ids_produce_distinct_files(self, tmp_path: Path) -> None:
         """Two runs with different run_ids must produce two distinct files."""

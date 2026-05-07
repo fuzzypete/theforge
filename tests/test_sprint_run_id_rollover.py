@@ -449,9 +449,9 @@ class TestRunIdRolloverReporting:
 
         assert sprint_id_first == sprint_id_second
 
-    def test_history_jsonl_includes_sprint_id(self, tmp_path: Path) -> None:
-        """history.jsonl entries include sprint_id when it is set."""
-        import json
+    def test_substrate_audit_record_includes_sprint_id(self, tmp_path: Path) -> None:
+        """Audit substrate rows carry sprint_id alongside the audit record."""
+        from theforge.coordinator import audit_substrate
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
@@ -464,16 +464,20 @@ class TestRunIdRolloverReporting:
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
             run_sprint(config, manifest_path, run_id="run-a-test")
 
-        history_path = tmp_path / ".forge" / "audits" / "history.jsonl"
-        assert history_path.exists()
-        lines = [
-            json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()
-        ]
-
-        # Sprint-level audit entry should have sprint_id
-        sprint_entries = [ln for ln in lines if "sprint" in ln and "specs" in ln]
-        assert sprint_entries, "No sprint-level history entry found"
-        assert sprint_entries[0]["sprint"].get("sprint_id") == sprint_id
+        # The substrate must contain at least one row referencing this sprint_id.
+        sub_path = audit_substrate.substrate_path(tmp_path)
+        assert sub_path.exists()
+        conn = audit_substrate.require_substrate(tmp_path)
+        try:
+            sprint_carrying = [
+                rec
+                for rec in audit_substrate.iter_records(conn)
+                if isinstance(rec.get("sprint"), dict)
+                and rec["sprint"].get("sprint_id") == sprint_id
+            ]
+        finally:
+            conn.close()
+        assert sprint_carrying, "No substrate row carries the sprint_id"
 
     def test_resume_persists_already_done_story_before_reexec_handoff(
         self, tmp_path: Path

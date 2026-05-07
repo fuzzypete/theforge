@@ -212,17 +212,18 @@ class TestRequireSubstrate:
         with pytest.raises(sub.SubstrateMissingError):
             sub.require_substrate(tmp_path)
 
-    def test_legacy_history_present_auto_imports(self, tmp_path: Path) -> None:
+    def test_legacy_history_alone_raises_no_silent_import(self, tmp_path: Path) -> None:
+        """Substrate missing + only legacy history.jsonl → operator-facing error.
+
+        Runtime readers must never silently fall back to history.jsonl.
+        Recovery requires `forge audits rebuild --include-legacy-history`.
+        """
         _write_history(tmp_path, [_make_record(run_id="r1")])
-        conn = sub.require_substrate(tmp_path)
-        try:
-            count = sub.count_records(conn)
-            row = conn.execute("SELECT value FROM meta WHERE key='legacy_import_done'").fetchone()
-        finally:
-            conn.close()
-        assert count == 1
-        assert row is not None
-        assert (row[0] if not isinstance(row, sqlite3.Row) else row["value"]) == "1"
+        with pytest.raises(sub.SubstrateMissingError) as exc_info:
+            sub.require_substrate(tmp_path)
+        msg = str(exc_info.value)
+        assert "history.jsonl" in msg
+        assert "include-legacy-history" in msg
 
     def test_corrupt_substrate_raises(self, tmp_path: Path) -> None:
         path = sub.substrate_path(tmp_path)

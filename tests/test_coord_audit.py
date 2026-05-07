@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -18,11 +17,28 @@ from coord_test_helpers import (
     _shell_with_gate,
 )
 
+from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit import generate_audit_log, has_review_approve
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.runners import AgentResult
 from theforge.task import TaskStory
+
+
+def _seed_substrate(project_root: Path, records: list[dict]) -> None:
+    """Stamp a run_id on each record (when missing) and write it to the substrate.
+
+    The runtime substrate read path does not auto-import history.jsonl any
+    more; tests bootstrap by writing native rows directly.
+    """
+    stamped = []
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict):
+            continue
+        copy = dict(rec)
+        copy.setdefault("run_id", f"test-run-{i:04d}")
+        stamped.append(copy)
+    audit_substrate.seed_records(project_root, stamped)
 
 
 def _make_result(state: CoordinatorState) -> CoordinatorResult:
@@ -120,53 +136,45 @@ class TestDurationAndCostNoneChecks:
 
 class TestHasReviewApprove:
     def test_no_history_file(self, tmp_path: Path) -> None:
-        """Missing history.jsonl returns False (safe default)."""
+        """Fresh repo (no audit inputs) returns False (safe default)."""
         assert has_review_approve(tmp_path, "my-spec") is False
 
-    def test_empty_history_file(self, tmp_path: Path) -> None:
-        """Empty history.jsonl returns False."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
-        (audits / "history.jsonl").write_text("", encoding="utf-8")
+    def test_empty_substrate(self, tmp_path: Path) -> None:
+        """Substrate exists but has no rows: returns False."""
+        _seed_substrate(tmp_path, [])
+        # Nothing seeded — touch the audits dir so has_audit_inputs evaluates the substrate path
+        audit_substrate.create_or_open(tmp_path).close()
         assert has_review_approve(tmp_path, "my-spec") is False
 
     def test_approve_present(self, tmp_path: Path) -> None:
         """Returns True when a matching slug has an APPROVE review."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec", "name": "My Spec"},
             "reviews": [{"cycle": 1, "verdict": "APPROVE", "summary": "Good"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec") is True
 
     def test_no_approve_request_changes(self, tmp_path: Path) -> None:
         """Returns False when reviews exist but none are APPROVE."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec", "name": "My Spec"},
             "reviews": [{"cycle": 1, "verdict": "REQUEST_CHANGES", "summary": "Fix this"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec") is False
 
     def test_approve_for_different_slug(self, tmp_path: Path) -> None:
         """Returns False when APPROVE exists but for a different slug."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "other-spec", "name": "Other Spec"},
             "reviews": [{"cycle": 1, "verdict": "APPROVE", "summary": "Good"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec") is False
 
     def test_approve_in_second_record(self, tmp_path: Path) -> None:
         """Returns True when APPROVE is in second record, first has REQUEST_CHANGES."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         rec1 = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "REQUEST_CHANGES"}],
@@ -175,73 +183,50 @@ class TestHasReviewApprove:
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        content = json.dumps(rec1) + "\n" + json.dumps(rec2) + "\n"
-        (audits / "history.jsonl").write_text(content, encoding="utf-8")
+        _seed_substrate(tmp_path, [rec1, rec2])
         assert has_review_approve(tmp_path, "my-spec") is True
 
     def test_no_reviews_key(self, tmp_path: Path) -> None:
         """Returns False when record has no 'reviews' key (e.g. ALREADY_DONE run)."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {"task": {"slug": "my-spec"}, "outcome": {"final_phase": "DONE"}}
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec") is False
-
-    def test_malformed_json_line_skipped(self, tmp_path: Path) -> None:
-        """Malformed JSON lines are skipped; valid lines still checked."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
-        record = {
-            "task": {"slug": "my-spec"},
-            "reviews": [{"verdict": "APPROVE"}],
-        }
-        content = "not-valid-json\n" + json.dumps(record) + "\n"
-        (audits / "history.jsonl").write_text(content, encoding="utf-8")
-        assert has_review_approve(tmp_path, "my-spec") is True
 
     def test_empty_reviews_list(self, tmp_path: Path) -> None:
         """Returns False when reviews list is empty."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {"task": {"slug": "my-spec"}, "reviews": []}
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec") is False
 
     def test_stale_approve_branch_ahead(self, tmp_path: Path) -> None:
         """Returns False when APPROVE exists but branch has unmerged commits (abandoned run)."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"3\n", stderr=b"")
         with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             assert has_review_approve(tmp_path, "my-spec", "main") is False
 
     def test_valid_approve_branch_merged(self, tmp_path: Path) -> None:
         """Returns True when APPROVE exists and branch is merged (0 commits ahead)."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"0\n", stderr=b"")
         with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
     def test_valid_approve_branch_absent(self, tmp_path: Path) -> None:
         """Returns True when APPROVE exists and branch is absent (non-zero git exit)."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         mock_result = subprocess.CompletedProcess(
             args=[], returncode=128, stdout=b"", stderr=b"unknown revision"
         )
@@ -250,87 +235,72 @@ class TestHasReviewApprove:
 
     def test_require_landed_rejects_failed_landing(self, tmp_path: Path) -> None:
         """Landed-only mode ignores APPROVE records whose landing failed."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "landing_status": "failed",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec", require_landed=True) is False
 
     def test_require_landed_accepts_landed_approve(self, tmp_path: Path) -> None:
         """Landed-only mode keeps working for APPROVE records that actually landed."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec", require_landed=True) is True
 
     def test_no_approve_record_with_base_branch(self, tmp_path: Path) -> None:
         """Returns False when no APPROVE record exists (baseline for new signature)."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "REQUEST_CHANGES"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         assert has_review_approve(tmp_path, "my-spec", "main") is False
 
     def test_stale_approve_subprocess_timeout(self, tmp_path: Path) -> None:
         """Returns True (treat as valid) when git subprocess times out."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         with patch(
             "theforge.coordinator.audit.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="git", timeout=30),
         ):
-            # Timeout → helper returns False → APPROVE is not stale → True
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
     def test_stale_approve_non_integer_output(self, tmp_path: Path) -> None:
         """Returns True (treat as valid) when git outputs non-integer."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         mock_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=b"not-a-number\n", stderr=b""
         )
         with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
-            # ValueError from int() → helper returns False → APPROVE is not stale → True
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
     def test_custom_branch_pattern_passed_to_helper(self, tmp_path: Path) -> None:
         """Branch name is forwarded to git — verifies non-default branch patterns work."""
-        audits = tmp_path / ".forge" / "audits"
-        audits.mkdir(parents=True)
         record = {
             "task": {"slug": "my-spec"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        _seed_substrate(tmp_path, [record])
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"0\n", stderr=b"")
         with patch(
             "theforge.coordinator.audit.subprocess.run", return_value=mock_result
         ) as mock_run:
             result = has_review_approve(tmp_path, "my-spec", "main", branch="forge/my-spec")
         assert result is True
-        # Verify the custom branch pattern was used in the git command
         call_args = mock_run.call_args[0][0]
         assert any("forge/my-spec" in arg for arg in call_args)
 
@@ -742,7 +712,8 @@ class TestAuditStartStopPhase:
 
 
 class TestSprintStoryAuditHistory:
-    def test_write_story_audit_appends_history_jsonl(self, tmp_path: Path) -> None:
+    def test_write_story_audit_persists_to_substrate(self, tmp_path: Path) -> None:
+        """Story audit goes into the SQLite substrate; legacy history.jsonl is gone."""
         from theforge.sprint.audit import _write_story_audit
 
         config = _make_config(tmp_path)
@@ -752,19 +723,17 @@ class TestSprintStoryAuditHistory:
         state.workspace_path = tmp_path / task.slug
         state.workspace_path.mkdir(parents=True)
         state.branch_name = f"forge/{task.slug}"
+        state.run_id = "test-run-001"
         result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
 
         _write_story_audit(config, task, result)
 
+        # Substrate is the canonical write path — substrate file must exist.
+        sub_path = audit_substrate.substrate_path(tmp_path)
+        assert sub_path.exists()
+        # Legacy jsonl path must NOT be written.
         history_path = tmp_path / ".forge" / "audits" / "history.jsonl"
-        assert history_path.exists()
-        records = [
-            json.loads(line)
-            for line in history_path.read_text(encoding="utf-8").splitlines()
-            if line
-        ]
-        assert len(records) == 1
-        assert records[0]["task"]["slug"] == task.slug
+        assert not history_path.exists()
 
     def test_write_story_audit_logs_generate_failure(self, tmp_path: Path, capsys) -> None:
         from theforge.sprint.audit import _write_story_audit

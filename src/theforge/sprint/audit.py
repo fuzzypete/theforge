@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -561,14 +560,6 @@ def _write_sprint_audit(
     audit_path = audits_dir / "sprint-audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-    # Append to history log (JSONL, never overwritten). Deletion of this
-    # writer is deferred to the v0.12 cycle (#797); the substrate is the
-    # canonical read path now.
-    try:
-        with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(audit, default=str) + "\n")
-    except OSError:
-        pass
     _upsert_into_substrate(project_root, audit)
     _log(f"Audit written: {audit_path}")
 
@@ -965,11 +956,6 @@ def _write_story_audit(
 
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(audit_data, default=str) + "\n")
-    except OSError:
-        pass
     _upsert_into_substrate(config.project_root, audit_data)
 
     log_dir = result.state.log_dir
