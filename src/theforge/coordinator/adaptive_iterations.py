@@ -20,7 +20,6 @@ Design:
 
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,13 +28,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from theforge.config.types import RetryPolicy
 
-# Cap on how many recent history records we scan; prevents unbounded I/O on
+# Cap on how many recent records we scan; prevents unbounded I/O on
 # long-lived projects while still giving ~a sprint's worth of signal.
 _HISTORY_TAIL = 50
-
-# Skip adaptive history read entirely for unusually large history files;
-# fall back to complexity-only scaling with a warning annotation.
-_HISTORY_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 _BAND_TO_SCORE = {"small": 2, "medium": 5, "large": 9}
 _HEADROOM_FACTOR = 1.5
@@ -83,41 +78,48 @@ def _ceil_int(value: float) -> int:
     return max(1, int(math.ceil(value)))
 
 
-def _read_history_tail(history_path: Path) -> list[dict]:
-    """Return the last _HISTORY_TAIL parseable JSON records.
+def _read_history_tail(project_root: Path) -> list[dict]:
+    """Return up to ``_HISTORY_TAIL`` recent story-level audit records.
 
-    Only story-level audit records are useful. Records missing both a
-    complexity score and iteration totals are skipped. Malformed lines are
-    tolerated (JSONL gracefully degrades).
+    Reads the SQLite audit substrate ordered by ``started_at`` DESC. Only
+    story-level records (those carrying an ``iterations`` block) are
+    relevant for adaptive iteration learning, so sprint-level records
+    are filtered out.
+
+    A truly fresh repo (no audit inputs at all) yields an empty list —
+    adaptive iteration falls back to complexity-only scaling. A
+    *missing* substrate when audit inputs exist is auto-rebuilt by
+    :func:`require_substrate`; a *corrupt* substrate is propagated so
+    the run fails loudly with the recovery command, per spec.
     """
-    if not history_path.exists():
+    from theforge.coordinator import audit_substrate
+
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
         return []
     try:
-        size = history_path.stat().st_size
-    except OSError:
+        conn = audit_substrate.require_substrate(project_root)
+    except audit_substrate.SubstrateMissingError:
+        # No audit inputs at all and no substrate — fresh repo.
         return []
-    if size > _HISTORY_MAX_BYTES:
-        return []
+    # SubstrateCorruptError intentionally NOT caught: a corrupt index
+    # must surface as an operator-facing run failure rather than silent
+    # complexity-only fallback.
     try:
-        with open(history_path, encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except OSError:
-        return []
+        # Pull extra so sprint-level rows (no iterations block) can be filtered.
+        candidates = audit_substrate.tail_records(conn, _HISTORY_TAIL * 3)
+    finally:
+        conn.close()
     records: list[dict] = []
-    for raw in lines[-_HISTORY_TAIL * 3 :]:  # grab extra so sprint-level lines can be filtered
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            rec = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+    for rec in candidates:
         if not isinstance(rec, dict):
             continue
-        # Only keep story-level audit records (they have an 'iterations' block).
         if "iterations" not in rec:
             continue
         records.append(rec)
+    # tail_records is DESC; preserve previous semantics (callers expect
+    # the last N items in chronological order).
+    records.reverse()
     return records[-_HISTORY_TAIL:]
 
 
@@ -180,7 +182,7 @@ def derive_limits(
     base_timeout_seconds: int,
     base_budget_usd: float,
     static_dev_max: int,
-    review_history_path: Path | None,
+    review_history_path: Path | None,  # repurposed: project_root (None disables history)
     model_profiles: dict | None,
 ) -> AdaptiveLimits:
     """Compute per-story adaptive limits.

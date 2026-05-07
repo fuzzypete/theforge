@@ -35,6 +35,25 @@ def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
 
 
+def _upsert_into_substrate(project_root: Path, record: dict) -> None:
+    """Best-effort mirror of a sprint/story audit dict into the SQLite substrate.
+
+    Failure is logged but not fatal — the per-run JSON / sprint-audit.yaml
+    is canonical and `forge audits rebuild` can recover.
+    """
+    try:
+        from ..coordinator import audit_substrate
+
+        conn = audit_substrate.create_or_open(project_root)
+        try:
+            audit_substrate.upsert_run_record(conn, record, provenance="native")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        _log(f"warning: failed to update audit substrate: {exc}")
+
+
 def _build_advisory_summary(config: ForgeConfig | None) -> dict | None:
     """Return a sprint-summary section for current advisory convention debt."""
     if config is None:
@@ -542,12 +561,15 @@ def _write_sprint_audit(
     audit_path = audits_dir / "sprint-audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-    # Append to history log (JSONL, never overwritten).
+    # Append to history log (JSONL, never overwritten). Deletion of this
+    # writer is deferred to the v0.12 cycle (#797); the substrate is the
+    # canonical read path now.
     try:
         with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(audit, default=str) + "\n")
     except OSError:
         pass
+    _upsert_into_substrate(project_root, audit)
     _log(f"Audit written: {audit_path}")
 
 
@@ -948,6 +970,7 @@ def _write_story_audit(
             f.write(json.dumps(audit_data, default=str) + "\n")
     except OSError:
         pass
+    _upsert_into_substrate(config.project_root, audit_data)
 
     log_dir = result.state.log_dir
     if log_dir is None:

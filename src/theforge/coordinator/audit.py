@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import subprocess
 from pathlib import Path
 
@@ -65,45 +64,33 @@ def has_review_approve(
         require_landed: When True, only count APPROVE records whose landing
             status shows story-specific work actually landed on the base branch.
     """
-    history_path = project_root / ".forge" / "audits" / "history.jsonl"
-    if not history_path.exists():
+    from theforge.coordinator import audit_substrate
+
+    # A truly fresh repo (no per-run files, no legacy history.jsonl, no
+    # substrate) has no prior APPROVE — that is a safe default. When
+    # audit inputs do exist or the substrate file is present (including
+    # corrupt), the substrate path surfaces the problem; we do NOT
+    # silently mask it as "no APPROVE".
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
         return False
+    conn = audit_substrate.require_substrate(project_root)
     feature_branch = branch if branch is not None else f"feat/{slug}"
-    # Cache the branch state check — it does not change mid-loop.
     branch_is_stale: bool | None = None
     try:
-        with open(history_path, encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    record = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                task_info = record.get("task", {})
-                if task_info.get("slug") != slug:
-                    continue
-                if require_landed:
-                    landing_status = record.get("landing_status")
-                    if landing_status is None:
-                        landing_event = record.get("landing_event")
-                        if isinstance(landing_event, dict) and landing_event.get("landed") is True:
-                            landing_status = "landed"
-                    if landing_status != "landed":
-                        continue
-                for review in record.get("reviews", []):
-                    if review.get("verdict") == "APPROVE":
-                        if not allow_unmerged_commits:
-                            if branch_is_stale is None:
-                                branch_is_stale = _branch_has_unmerged_commits(
-                                    project_root, feature_branch, base_branch
-                                )
-                            if branch_is_stale:
-                                continue  # stale APPROVE from abandoned run
-                        return True
-    except OSError:
-        pass
+        for record in audit_substrate.has_review_approve_in_substrate(
+            conn, slug, require_landed=require_landed
+        ):
+            if not allow_unmerged_commits:
+                if branch_is_stale is None:
+                    branch_is_stale = _branch_has_unmerged_commits(
+                        project_root, feature_branch, base_branch
+                    )
+                if branch_is_stale:
+                    continue  # stale APPROVE from abandoned run
+            return True
+    finally:
+        conn.close()
     return False
 
 

@@ -213,38 +213,50 @@ def test_out_of_range_score_falls_back_to_band(tmp_path: Path):
     assert result.dev_max == 3
 
 
-def test_oversized_history_skipped(tmp_path: Path, monkeypatch):
-    history = tmp_path / "h.jsonl"
-    history.write_text(
-        '{"preflight":{"complexity_score":5},"iterations":{"review_cycles_total":3}}\n'
-    )
-    monkeypatch.setattr("theforge.coordinator.adaptive_iterations._HISTORY_MAX_BYTES", 1)
-    result = derive_limits(
-        5,
-        "medium",
-        _policy(),
-        model_name="dev",
-        base_timeout_seconds=900,
-        base_budget_usd=10.0,
-        static_dev_max=3,
-        review_history_path=history,
-        model_profiles=_profiles(),
-    )
-    assert result.audit["review_history_sample_size"] == 0
+def test_corrupt_substrate_propagates_error(tmp_path: Path):
+    """A corrupt substrate must surface, not silently mask the problem."""
+    import pytest
+
+    from theforge.coordinator import audit_substrate
+
+    sub_path = audit_substrate.substrate_path(tmp_path)
+    sub_path.parent.mkdir(parents=True, exist_ok=True)
+    sub_path.write_bytes(b"not a sqlite database" * 50)
+    with pytest.raises(audit_substrate.SubstrateCorruptError):
+        derive_limits(
+            5,
+            "medium",
+            _policy(),
+            model_name="dev",
+            base_timeout_seconds=900,
+            base_budget_usd=10.0,
+            static_dev_max=3,
+            review_history_path=tmp_path,
+            model_profiles=_profiles(),
+        )
 
 
 def test_insufficient_profile_history_still_uses_review_history_signal(tmp_path: Path):
-    history = tmp_path / "audit.jsonl"
-    history.write_text(
-        "\n".join(
-            [
-                '{"preflight":{"complexity_score":5},"iterations":{"review_cycles_total":3}}',
-                '{"preflight":{"complexity_score":6},"iterations":{"review_cycles_total":4}}',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    """The review-cycle uplift signal flows from the SQLite substrate."""
+    from theforge.coordinator import audit_substrate
+
+    conn = audit_substrate.create_or_open(tmp_path)
+    try:
+        for run_id, score, cycles in (("r1", 5, 3), ("r2", 6, 4)):
+            audit_substrate.upsert_run_record(
+                conn,
+                {
+                    "run_id": run_id,
+                    "task": {"slug": run_id},
+                    "timing": {"started_at": f"2026-03-0{int(run_id[-1])}T00:00:00+00:00"},
+                    "preflight": {"complexity_score": score},
+                    "iterations": {"review_cycles_total": cycles},
+                },
+                provenance="native",
+            )
+        conn.commit()
+    finally:
+        conn.close()
     result = derive_limits(
         5,
         "medium",
@@ -253,7 +265,7 @@ def test_insufficient_profile_history_still_uses_review_history_signal(tmp_path:
         base_timeout_seconds=900,
         base_budget_usd=10.0,
         static_dev_max=3,
-        review_history_path=history,
+        review_history_path=tmp_path,
         model_profiles=_profiles(runs=2, avg_iterations=9.0, avg_cost=9.0),
     )
     assert result.dev_max == 3

@@ -169,6 +169,34 @@ def _write_per_run_record(
             json.dump(redacted, f, default=str, indent=2)
     except Exception:
         pass  # best-effort — never block a run on audit write failure
+        return
+
+    # Mirror the per-run record into the SQLite audit substrate. The
+    # per-run JSON is canonical; substrate write failure is a logged
+    # warning, not a hard fail — `forge audits rebuild` recovers.
+    try:
+        from theforge.coordinator import audit_substrate
+
+        conn = audit_substrate.create_or_open(config.project_root)
+        try:
+            stat = run_file.stat()
+            audit_substrate.upsert_run_record(
+                conn,
+                redacted,
+                provenance="native",
+                source_path=str(run_file.relative_to(config.project_root)),
+                source_mtime=stat.st_mtime,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        import sys as _sys
+
+        print(
+            f"[forge] warning: failed to update audit substrate: {exc}",
+            file=_sys.stderr,
+        )
 
 
 def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:

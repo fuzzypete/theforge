@@ -262,6 +262,8 @@ class TestTelemetryAggregation:
         """Phase breakdown shows average cost across multiple records."""
         _, history_path = _setup_project(tmp_path)
         rec1 = _make_record(
+            slug="run-a",
+            started_at="2026-03-01T10:00:00+00:00",
             phases={
                 "preflight": None,
                 "plan": None,
@@ -278,6 +280,8 @@ class TestTelemetryAggregation:
             total_cost=2.0,
         )
         rec2 = _make_record(
+            slug="run-b",
+            started_at="2026-03-02T10:00:00+00:00",
             phases={
                 "preflight": None,
                 "plan": None,
