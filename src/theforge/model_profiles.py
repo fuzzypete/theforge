@@ -63,6 +63,7 @@ class RunOutcome:
     dev_success: bool
     dev_iterations: int
     dev_cost_usd: float
+    complexity_score: int | None = None
     preflight_model: str | None = None
     dev_actual_model: str | None = None
     dev_provider: str | None = None
@@ -227,6 +228,7 @@ def _update_dev(
     success: bool,
     iterations: int,
     cost_usd: float,
+    complexity_score: int | None = None,
 ) -> None:
     dev = entry.setdefault("dev", {})
     runs = int(dev.get("runs", 0)) + 1
@@ -254,6 +256,22 @@ def _update_dev(
     bc["success_rate"] = round(bc_successes / bc_runs, 4)
     bc["avg_iterations"] = round(bc_iter_sum / bc_runs, 4)
     bc["avg_cost_usd"] = round(bc_cost_sum / bc_runs, 6)
+
+    if complexity_score is not None:
+        score_key = str(int(complexity_score))
+        by_score = dev.setdefault("by_complexity_score", {})
+        sc = by_score.setdefault(score_key, {})
+        sc_runs = int(sc.get("runs", 0)) + 1
+        sc_successes = int(sc.get("_successes", 0)) + (1 if success else 0)
+        sc_iter_sum = float(sc.get("_iterations_sum", 0.0)) + float(iterations)
+        sc_cost_sum = float(sc.get("_cost_sum", 0.0)) + float(cost_usd)
+        sc["runs"] = sc_runs
+        sc["_successes"] = sc_successes
+        sc["_iterations_sum"] = sc_iter_sum
+        sc["_cost_sum"] = sc_cost_sum
+        sc["success_rate"] = round(sc_successes / sc_runs, 4)
+        sc["avg_iterations"] = round(sc_iter_sum / sc_runs, 4)
+        sc["avg_cost_usd"] = round(sc_cost_sum / sc_runs, 6)
 
 
 def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float) -> None:
@@ -340,6 +358,7 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         outcome.dev_success,
         outcome.dev_iterations,
         outcome.dev_cost_usd,
+        complexity_score=outcome.complexity_score,
     )
     if outcome.preflight_model:
         pf_entry = _ensure_model(
@@ -1000,6 +1019,41 @@ def _merge_dev(target: dict, src: dict) -> None:
                 bc_target["success_rate"] = round(bc_succ / bc_runs, 4)
                 bc_target["avg_iterations"] = round(bc_iter / bc_runs, 4)
                 bc_target["avg_cost_usd"] = round(bc_cost / bc_runs, 6)
+
+    src_by_score = src.get("by_complexity_score") or {}
+    if src_by_score:
+        target_by_score = target.setdefault("by_complexity_score", {})
+        for score_key, sc_src in src_by_score.items():
+            if not isinstance(sc_src, dict):
+                continue
+            sc_target = target_by_score.setdefault(score_key, {})
+            sc_runs = int(sc_target.get("runs", 0)) + int(sc_src.get("runs", 0))
+            sc_succ = int(sc_target.get("_successes", 0)) + int(
+                sc_src.get(
+                    "_successes",
+                    round(float(sc_src.get("success_rate", 0.0)) * int(sc_src.get("runs", 0))),
+                )
+            )
+            sc_iter = float(sc_target.get("_iterations_sum", 0.0)) + float(
+                sc_src.get(
+                    "_iterations_sum",
+                    float(sc_src.get("avg_iterations", 0.0)) * int(sc_src.get("runs", 0)),
+                )
+            )
+            sc_cost = float(sc_target.get("_cost_sum", 0.0)) + float(
+                sc_src.get(
+                    "_cost_sum",
+                    float(sc_src.get("avg_cost_usd", 0.0)) * int(sc_src.get("runs", 0)),
+                )
+            )
+            sc_target["runs"] = sc_runs
+            sc_target["_successes"] = sc_succ
+            sc_target["_iterations_sum"] = sc_iter
+            sc_target["_cost_sum"] = sc_cost
+            if sc_runs > 0:
+                sc_target["success_rate"] = round(sc_succ / sc_runs, 4)
+                sc_target["avg_iterations"] = round(sc_iter / sc_runs, 4)
+                sc_target["avg_cost_usd"] = round(sc_cost / sc_runs, 6)
 
 
 def _merge_review(target: dict, src: dict) -> None:

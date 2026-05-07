@@ -51,6 +51,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     dev_iterations = max(int(state.dev_trace_count or 0), 1)
     return RunOutcome(
         complexity=complexity,
+        complexity_score=state.preflight_complexity_score,
         dev_model=config.dev_profile.name,
         dev_actual_model=getattr(config.dev_profile, "model", None),
         dev_provider=getattr(config.dev_profile, "provider", None),

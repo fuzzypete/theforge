@@ -67,6 +67,7 @@ class EscalationRecord:
     outcome: str  # "DONE" | "ESCALATE"
     reason: str = ""
     timestamp: str = ""
+    complexity_score: int | None = None
 
 
 @dataclass
@@ -1021,6 +1022,15 @@ def load_escalation_history(path: Path) -> list[EscalationRecord]:
         for r in records:
             if not isinstance(r, dict):
                 continue
+            raw_score = r.get("complexity_score")
+            if isinstance(raw_score, bool):
+                score: int | None = None
+            elif isinstance(raw_score, int):
+                score = raw_score
+            elif isinstance(raw_score, float):
+                score = int(raw_score)
+            else:
+                score = None
             result.append(
                 EscalationRecord(
                     story=str(r.get("story", "")),
@@ -1029,6 +1039,7 @@ def load_escalation_history(path: Path) -> list[EscalationRecord]:
                     outcome=str(r.get("outcome", "")),
                     reason=str(r.get("reason", "")),
                     timestamp=str(r.get("timestamp", "")),
+                    complexity_score=score,
                 )
             )
         return result
@@ -1059,6 +1070,8 @@ def append_escalation_record(path: Path, record: EscalationRecord) -> None:
         new_entry["reason"] = record.reason
     if record.timestamp:
         new_entry["timestamp"] = record.timestamp
+    if record.complexity_score is not None:
+        new_entry["complexity_score"] = int(record.complexity_score)
 
     existing.append(new_entry)
     path.parent.mkdir(parents=True, exist_ok=True)
