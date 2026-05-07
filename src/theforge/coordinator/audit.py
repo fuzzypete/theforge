@@ -66,15 +66,15 @@ def has_review_approve(
     """
     from theforge.coordinator import audit_substrate
 
-    history_path = audit_substrate.history_jsonl_path(project_root)
-    substrate_present = audit_substrate.substrate_path(project_root).exists()
-    if not substrate_present and not history_path.exists():
-        # Fresh repo with no audit history — safe default.
+    # A truly fresh repo (no per-run files, no legacy history.jsonl, no
+    # substrate) has no prior APPROVE — that is a safe default. When
+    # audit inputs do exist or the substrate file is present (including
+    # corrupt), the substrate path surfaces the problem; we do NOT
+    # silently mask it as "no APPROVE".
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
         return False
-    try:
-        conn = audit_substrate.require_substrate(project_root)
-    except audit_substrate.SubstrateMissingError:
-        return False
+    conn = audit_substrate.require_substrate(project_root)
     feature_branch = branch if branch is not None else f"feat/{slug}"
     branch_is_stale: bool | None = None
     try:

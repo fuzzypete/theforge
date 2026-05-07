@@ -37,9 +37,26 @@ def _check_audit_substrate(project_root: Path) -> list[str]:
         return []
     sub_path = audit_substrate.substrate_path(project_root)
     history_path = audit_substrate.history_jsonl_path(project_root)
+    runs_path = audit_substrate.runs_dir(project_root)
+    has_runs = runs_path.exists() and any(runs_path.glob("*.json"))
+    has_history = history_path.exists()
     warnings: list[str] = []
     if not sub_path.exists():
-        if history_path.exists():
+        # Any canonical audit input present means the substrate is
+        # required for runtime readers — surface the absence explicitly.
+        if has_runs and has_history:
+            warnings.append(
+                f"audit substrate missing at {sub_path}; per-run files "
+                f"and legacy history.jsonl present. Run "
+                f"`forge audits rebuild --include-legacy-history` to backfill."
+            )
+        elif has_runs:
+            warnings.append(
+                f"audit substrate missing at {sub_path}; per-run audit "
+                f"files exist under {runs_path}. Run "
+                f"`forge audits rebuild` to recreate the index."
+            )
+        elif has_history:
             warnings.append(
                 f"audit substrate missing at {sub_path}; legacy "
                 f"history.jsonl present. Run "

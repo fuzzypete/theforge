@@ -213,25 +213,27 @@ def test_out_of_range_score_falls_back_to_band(tmp_path: Path):
     assert result.dev_max == 3
 
 
-def test_corrupt_substrate_yields_empty_history(tmp_path: Path):
-    """A corrupt substrate falls back to complexity-only review scaling."""
+def test_corrupt_substrate_propagates_error(tmp_path: Path):
+    """A corrupt substrate must surface, not silently mask the problem."""
+    import pytest
+
     from theforge.coordinator import audit_substrate
 
     sub_path = audit_substrate.substrate_path(tmp_path)
     sub_path.parent.mkdir(parents=True, exist_ok=True)
     sub_path.write_bytes(b"not a sqlite database" * 50)
-    result = derive_limits(
-        5,
-        "medium",
-        _policy(),
-        model_name="dev",
-        base_timeout_seconds=900,
-        base_budget_usd=10.0,
-        static_dev_max=3,
-        review_history_path=tmp_path,
-        model_profiles=_profiles(),
-    )
-    assert result.audit["review_history_sample_size"] == 0
+    with pytest.raises(audit_substrate.SubstrateCorruptError):
+        derive_limits(
+            5,
+            "medium",
+            _policy(),
+            model_name="dev",
+            base_timeout_seconds=900,
+            base_budget_usd=10.0,
+            static_dev_max=3,
+            review_history_path=tmp_path,
+            model_profiles=_profiles(),
+        )
 
 
 def test_insufficient_profile_history_still_uses_review_history_signal(tmp_path: Path):

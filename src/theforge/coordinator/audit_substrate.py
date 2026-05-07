@@ -129,47 +129,138 @@ def create_or_open(project_root: Path) -> sqlite3.Connection:
     return conn
 
 
-def require_substrate(project_root: Path) -> sqlite3.Connection:
-    """Open a substrate that must already exist and be valid.
+def has_audit_inputs(project_root: Path) -> bool:
+    """Return True when any canonical audit input source exists on disk.
 
-    Triggers the one-shot legacy import on first call when an existing
-    ``history.jsonl`` is present and the substrate has not yet imported it.
-    Raises :class:`SubstrateMissingError` when neither the substrate nor a
-    legacy ``history.jsonl`` is present (fresh repo) — well, fresh-repo
-    handling is left to the caller; here we treat that as missing.
-    Raises :class:`SubstrateCorruptError` when the file exists but cannot
-    be opened or fails ``PRAGMA integrity_check``.
+    Audit inputs that require a substrate to read:
+      - any per-run JSON file under ``.forge/audits/runs/``
+      - the legacy ``.forge/audits/history.jsonl``
+
+    A repo with neither is treated as "fresh" — readers are allowed to
+    return empty/safe defaults without failing.
+    """
+    runs = runs_dir(project_root)
+    if runs.exists() and any(runs.glob("*.json")):
+        return True
+    return history_jsonl_path(project_root).exists()
+
+
+def require_substrate(project_root: Path) -> sqlite3.Connection:
+    """Open a substrate that must exist and be valid for runtime readers.
+
+    Behavior:
+      - Substrate missing + per-run files exist → rebuild from runs/*.json
+        (and auto-import legacy history.jsonl if also present).
+      - Substrate missing + only legacy history.jsonl exists → create
+        empty substrate and run the one-shot legacy import.
+      - Substrate missing + no audit inputs at all → SubstrateMissingError.
+        Callers that should treat fresh repos as "no history" must check
+        :func:`has_audit_inputs` first.
+      - Substrate present but stale (native source files removed or
+        mtime-mismatched) → rebuild from runs/*.json before returning.
+      - Substrate present but corrupt → SubstrateCorruptError.
     """
     path = substrate_path(project_root)
-    history = history_jsonl_path(project_root)
     if not path.exists():
-        # Auto-bootstrap on legacy upgrade: create + import.
-        if history.exists():
-            conn = create_or_open(project_root)
-            _maybe_run_one_shot_legacy_import(project_root, conn)
-            return conn
-        raise SubstrateMissingError(
-            f"audit substrate not found at {path}. Run `forge audits rebuild` to create it."
-        )
+        if not has_audit_inputs(project_root):
+            raise SubstrateMissingError(
+                f"audit substrate not found at {path}. Run `forge audits rebuild` to create it."
+            )
+        # Audit inputs exist — bootstrap from canonical per-run files
+        # first, then layer in legacy history if present.
+        if runs_dir(project_root).exists() and any(runs_dir(project_root).glob("*.json")):
+            rebuild_from_runs(project_root)
+        else:
+            create_or_open(project_root).close()
+        conn = _open_validated(path)
+        _maybe_run_one_shot_legacy_import(project_root, conn)
+        return conn
+    conn = _open_validated(path)
+    # Validate native rows against the canonical per-run files. Stale
+    # state (deleted file or mtime mismatch) triggers a rebuild.
+    if _native_rows_are_stale(conn, project_root):
+        conn.close()
+        rebuild_from_runs(project_root)
+        conn = _open_validated(path)
+    _maybe_run_one_shot_legacy_import(project_root, conn)
+    return conn
+
+
+def _open_validated(path: Path) -> sqlite3.Connection:
+    """Connect, run integrity_check, apply schema (idempotent)."""
     try:
         conn = sqlite3.connect(str(path))
         conn.row_factory = sqlite3.Row
-        # Cheap integrity check.
         row = conn.execute("PRAGMA integrity_check").fetchone()
         if not row or (row[0] != "ok"):
             detail = row[0] if row else "no result"
             raise SubstrateCorruptError(
-                f"audit substrate at {path} failed integrity check: {detail}"
+                f"audit substrate at {path} failed integrity check: {detail}. "
+                "Run `forge audits rebuild [--include-legacy-history]` to recover."
             )
-        # Make sure schema is present (idempotent).
         _apply_schema(conn)
     except sqlite3.DatabaseError as exc:
         raise SubstrateCorruptError(
             f"audit substrate at {path} could not be opened: {exc}. "
             "Run `forge audits rebuild [--include-legacy-history]` to recover."
         ) from exc
-    _maybe_run_one_shot_legacy_import(project_root, conn)
     return conn
+
+
+def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool:
+    """Return True when indexed native rows diverge from on-disk run files.
+
+    Triggers a rebuild when:
+      - any native row that records a source_path now references a file
+        that has been deleted, or whose mtime has changed since indexing;
+        or
+      - per-run JSON files exist on disk for which there is no native row
+        with that source_path (a new run was emitted while this process
+        was not the writer, or the index was hand-edited).
+
+    Native rows without a source_path (e.g. programmatic inserts from
+    sprint rollup) are intentionally NOT validated here — they have no
+    canonical file to compare against.
+    """
+    runs = runs_dir(project_root)
+    on_disk = list(runs.glob("*.json")) if runs.exists() else []
+    cur = conn.execute(
+        "SELECT source_path, source_mtime FROM audit_records "
+        "WHERE provenance = 'native' AND source_path IS NOT NULL"
+    )
+    indexed: dict[str, float | None] = {}
+    for row in cur:
+        rel = row[0] if not isinstance(row, sqlite3.Row) else row["source_path"]
+        mtime = row[1] if not isinstance(row, sqlite3.Row) else row["source_mtime"]
+        indexed[str(rel)] = mtime
+    # File-on-disk → row-in-index check.
+    for path in on_disk:
+        try:
+            rel = str(path.relative_to(project_root))
+        except ValueError:
+            continue
+        if rel not in indexed:
+            return True
+        recorded = indexed[rel]
+        if recorded is None:
+            return True
+        try:
+            current_mtime = path.stat().st_mtime
+        except OSError:
+            return True
+        if abs(current_mtime - float(recorded)) > 1e-6:
+            return True
+    # Row-in-index → file-on-disk check (deletions).
+    on_disk_rels = set()
+    for path in on_disk:
+        try:
+            on_disk_rels.add(str(path.relative_to(project_root)))
+        except ValueError:
+            continue
+    for rel in indexed:
+        if rel not in on_disk_rels:
+            return True
+    return False
 
 
 def _maybe_run_one_shot_legacy_import(project_root: Path, conn: sqlite3.Connection) -> None:
@@ -246,17 +337,46 @@ def derive_run_id(record: dict) -> str:
     """Return a stable identifier for an audit record.
 
     Uses the embedded ``run_id`` when present; otherwise synthesises a
-    deterministic ``legacy:<sha1[:16]>`` identifier from slug, started_at
-    and the canonical JSON.
+    deterministic ``legacy:<sha1[:16]>`` identifier from durable identity
+    fields only — slug, started_at, finished_at, and final_phase. The
+    full canonical JSON is *not* included so that re-importing a record
+    whose body was repaired (e.g. a cost or message correction) maps to
+    the same row instead of inserting a duplicate.
+
+    Records without slug/started_at fall back to a hash that includes
+    raw content as a last-resort identifier (these are extremely old or
+    malformed records — duplication risk is preferable to dropping them).
     """
     rid = record.get("run_id")
     if isinstance(rid, str) and rid:
         return rid
-    slug = ((record.get("task") or {}).get("slug")) or record.get("sprint", {}).get("slug") or ""
-    started = ((record.get("timing") or {}).get("started_at")) or record.get("started_at") or ""
-    digest = hashlib.sha1(
-        f"{slug}|{started}|{_canonical_json(record)}".encode("utf-8")
-    ).hexdigest()
+    sprint_block = record.get("sprint") if isinstance(record.get("sprint"), dict) else {}
+    slug = (
+        ((record.get("task") or {}).get("slug"))
+        or sprint_block.get("slug")
+        or sprint_block.get("name")
+        or ""
+    )
+    timing = record.get("timing") or {}
+    started = (
+        timing.get("started_at")
+        or sprint_block.get("started_at")
+        or record.get("started_at")
+        or ""
+    )
+    finished = (
+        timing.get("finished_at")
+        or sprint_block.get("finished_at")
+        or record.get("finished_at")
+        or ""
+    )
+    final_phase = (record.get("outcome") or {}).get("final_phase") or ""
+    if slug or started:
+        identity = f"{slug}|{started}|{finished}|{final_phase}"
+    else:
+        # Last-resort: no stable fields present at all.
+        identity = _canonical_json(record)
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()
     return f"legacy:{digest[:16]}"
 
 
@@ -333,6 +453,7 @@ class UpsertResult:
     inserted: bool = False
     updated: bool = False
     unchanged: bool = False
+    skipped_protected: bool = False  # legacy attempted to overwrite a native row
     run_id: str = ""
 
 
@@ -353,8 +474,17 @@ def upsert_run_record(
     run_id = derive_run_id(record)
     raw_json = _canonical_json(record)
     existing = conn.execute(
-        "SELECT raw_json FROM audit_records WHERE run_id = ?", (run_id,)
+        "SELECT raw_json, provenance FROM audit_records WHERE run_id = ?",
+        (run_id,),
     ).fetchone()
+    # Native per-run files are canonical. Refuse to let a legacy import
+    # downgrade an existing native row's provenance / content.
+    if existing is not None and provenance == "legacy_history_jsonl":
+        prev_provenance = (
+            existing[1] if not isinstance(existing, sqlite3.Row) else existing["provenance"]
+        )
+        if prev_provenance == "native":
+            return UpsertResult(skipped_protected=True, run_id=run_id)
     flat = _flat_fields(record)
     params = (
         run_id,
@@ -401,6 +531,19 @@ def upsert_run_record(
     if prev_raw == raw_json:
         return UpsertResult(unchanged=True, run_id=run_id)
     return UpsertResult(updated=True, run_id=run_id)
+
+
+def _import_history_classify(result: UpsertResult, summary: "ImportSummary") -> None:
+    """Update an ImportSummary based on a single upsert outcome."""
+    if result.inserted:
+        summary.imported += 1
+    elif result.updated:
+        summary.updated_repaired += 1
+    elif result.skipped_protected:
+        # Native row already covers this identity — count as skipped.
+        summary.skipped_existing += 1
+    else:
+        summary.skipped_existing += 1
 
 
 # ── Rebuild ──────────────────────────────────────────────────────────────
@@ -511,12 +654,7 @@ def _import_history_jsonl_into(conn: sqlite3.Connection, history_path: Path) -> 
                     summary.failed += 1
                     summary.failures.append(f"line {lineno}: {exc}")
                     continue
-                if result.inserted:
-                    summary.imported += 1
-                elif result.updated:
-                    summary.updated_repaired += 1
-                else:
-                    summary.skipped_existing += 1
+                _import_history_classify(result, summary)
     except OSError as exc:
         summary.failed += 1
         summary.failures.append(f"open: {exc}")

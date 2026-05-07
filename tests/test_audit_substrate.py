@@ -231,6 +231,80 @@ class TestRequireSubstrate:
         with pytest.raises(sub.SubstrateCorruptError):
             sub.require_substrate(tmp_path)
 
+    def test_missing_substrate_with_runs_rebuilds(self, tmp_path: Path) -> None:
+        """When the substrate is absent but runs/*.json exists, require_substrate
+        rebuilds from the canonical per-run files rather than raising."""
+        _write_runs(tmp_path, [_make_record(run_id="r1"), _make_record(run_id="r2", slug="b")])
+        conn = sub.require_substrate(tmp_path)
+        try:
+            assert sub.count_records(conn) == 2
+            row = conn.execute("SELECT provenance FROM audit_records WHERE run_id='r1'").fetchone()
+        finally:
+            conn.close()
+        assert (row[0] if not isinstance(row, sqlite3.Row) else row["provenance"]) == "native"
+
+    def test_stale_native_source_triggers_rebuild(self, tmp_path: Path) -> None:
+        """A native row whose source per-run file no longer exists is purged
+        on the next require_substrate call."""
+        _write_runs(tmp_path, [_make_record(run_id="r1"), _make_record(run_id="r2", slug="b")])
+        # Initial build.
+        sub.require_substrate(tmp_path).close()
+        # Delete one source file.
+        (sub.runs_dir(tmp_path) / "r1.json").unlink()
+        conn = sub.require_substrate(tmp_path)
+        try:
+            count = sub.count_records(conn)
+        finally:
+            conn.close()
+        assert count == 1
+
+
+class TestNativeProvenanceProtection:
+    def test_legacy_import_does_not_overwrite_native(self, tmp_path: Path) -> None:
+        """Once a native per-run row exists for a run_id, a legacy import
+        with the same run_id must not downgrade provenance/content."""
+        native = _make_record(run_id="r1", cost=1.0)
+        legacy = _make_record(run_id="r1", cost=999.0)
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, native, provenance="native")
+            r = sub.upsert_run_record(conn, legacy, provenance="legacy_history_jsonl")
+            conn.commit()
+            row = conn.execute(
+                "SELECT provenance, raw_json FROM audit_records WHERE run_id='r1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert r.skipped_protected
+        prov = row[0] if not isinstance(row, sqlite3.Row) else row["provenance"]
+        raw = row[1] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        assert prov == "native"
+        assert "1.0" in raw  # canonical native record content was preserved
+
+
+class TestLegacyStableIdentity:
+    def test_repaired_no_run_id_record_is_not_duplicated(self, tmp_path: Path) -> None:
+        """Importing a legacy record without run_id, then re-importing a
+        repaired version of the same logical run, must update in place."""
+        rec = _make_record(run_id=None, cost=1.0)
+        rec.pop("run_id", None)
+        _write_history(tmp_path, [rec])
+        s1 = sub.import_history_jsonl(tmp_path)
+        assert s1.imported == 1
+        rec2 = _make_record(run_id=None, cost=2.0)  # same slug + started_at
+        rec2.pop("run_id", None)
+        _write_history(tmp_path, [rec2])
+        s2 = sub.import_history_jsonl(tmp_path)
+        assert s2.imported == 0
+        assert s2.updated_repaired == 1
+        # Substrate now contains exactly one row for that logical record.
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM audit_records").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 1
+
 
 class TestQueryHelpers:
     def test_tail_records_orders_desc(self, tmp_path: Path) -> None:

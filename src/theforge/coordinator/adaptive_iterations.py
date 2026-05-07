@@ -83,16 +83,28 @@ def _read_history_tail(project_root: Path) -> list[dict]:
 
     Reads the SQLite audit substrate ordered by ``started_at`` DESC. Only
     story-level records (those carrying an ``iterations`` block) are
-    relevant for adaptive iteration learning, so sprint-level records are
-    filtered out. A missing or corrupt substrate yields an empty list —
-    adaptive iteration falls back to complexity-only scaling.
+    relevant for adaptive iteration learning, so sprint-level records
+    are filtered out.
+
+    A truly fresh repo (no audit inputs at all) yields an empty list —
+    adaptive iteration falls back to complexity-only scaling. A
+    *missing* substrate when audit inputs exist is auto-rebuilt by
+    :func:`require_substrate`; a *corrupt* substrate is propagated so
+    the run fails loudly with the recovery command, per spec.
     """
     from theforge.coordinator import audit_substrate
 
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
+        return []
     try:
         conn = audit_substrate.require_substrate(project_root)
-    except (audit_substrate.SubstrateMissingError, audit_substrate.SubstrateCorruptError):
+    except audit_substrate.SubstrateMissingError:
+        # No audit inputs at all and no substrate — fresh repo.
         return []
+    # SubstrateCorruptError intentionally NOT caught: a corrupt index
+    # must surface as an operator-facing run failure rather than silent
+    # complexity-only fallback.
     try:
         # Pull extra so sprint-level rows (no iterations block) can be filtered.
         candidates = audit_substrate.tail_records(conn, _HISTORY_TAIL * 3)

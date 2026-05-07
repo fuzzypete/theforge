@@ -136,13 +136,17 @@ def _import_with_snapshot(
                     run_id = derive_run_id(record)
                     new_raw = _canonical_json(record)
                     prev_raw = snapshot.get(run_id)
-                    upsert_run_record(
+                    result = upsert_run_record(
                         conn,
                         record,
                         provenance="legacy_history_jsonl",
                         source_path=history_path.name,
                     )
-                    if prev_raw is None:
+                    # A native row with the same identity is canonical and
+                    # protected; count those as skipped-existing.
+                    if result.skipped_protected:
+                        summary.skipped_existing += 1
+                    elif prev_raw is None:
                         summary.imported += 1
                     elif prev_raw == new_raw:
                         summary.skipped_existing += 1

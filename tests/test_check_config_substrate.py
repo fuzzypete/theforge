@@ -13,6 +13,17 @@ def test_no_audits_dir_is_clean(tmp_path: Path) -> None:
     assert _check_audit_substrate(tmp_path) == []
 
 
+def test_runs_without_substrate_warns(tmp_path: Path) -> None:
+    """Per-run JSON files present without index.sqlite triggers a warning."""
+    runs = sub.runs_dir(tmp_path)
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "r1.json").write_text("{}", encoding="utf-8")
+    warnings = _check_audit_substrate(tmp_path)
+    assert len(warnings) == 1
+    assert "per-run audit files exist" in warnings[0]
+    assert "forge audits rebuild" in warnings[0]
+
+
 def test_legacy_history_without_substrate_warns(tmp_path: Path) -> None:
     audits = sub.audits_dir(tmp_path)
     audits.mkdir(parents=True, exist_ok=True)
