@@ -1,13 +1,13 @@
-"""forge telemetry subcommand — per-phase cost/duration from history.jsonl."""
+"""forge telemetry subcommand — per-phase cost/duration from the substrate."""
 
 from __future__ import annotations
 
 import datetime
-import json
 import sys
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
+from theforge.coordinator import audit_substrate
 
 _PHASE_NAMES = ["preflight", "plan", "plan_review", "dev", "validate", "review"]
 _PHASE_LABELS = {
@@ -28,10 +28,6 @@ def cmd_telemetry(args: object) -> int:
         print("Error: forge.yaml not found. Run from a forge project root.", file=sys.stderr)
         return 1
     project_root = config_path.parent
-    history_path = project_root / ".forge" / "audits" / "history.jsonl"
-    if not history_path.exists():
-        print(f"No history found at {history_path}", file=sys.stderr)
-        return 1
 
     # Parse --since date filter
     since_dt: datetime.datetime | None = None
@@ -46,33 +42,32 @@ def cmd_telemetry(args: object) -> int:
 
     phase_filter: str | None = getattr(args, "phase", None)
 
-    # Read records
+    try:
+        conn = audit_substrate.require_substrate(project_root)
+    except audit_substrate.SubstrateMissingError as exc:
+        print(f"No audit history found: {exc}", file=sys.stderr)
+        return 1
+    except audit_substrate.SubstrateCorruptError as exc:
+        print(f"Audit substrate is corrupt: {exc}", file=sys.stderr)
+        return 1
+
     records: list[dict] = []
     try:
-        with open(history_path, encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    record = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if since_dt is not None:
-                    started = (record.get("timing") or {}).get("started_at")
-                    if started:
-                        try:
-                            ts = datetime.datetime.fromisoformat(started)
-                            if ts.tzinfo is None:
-                                ts = ts.replace(tzinfo=datetime.timezone.utc)
-                            if ts < since_dt:
-                                continue
-                        except ValueError:
-                            pass
-                records.append(record)
-    except OSError as e:
-        print(f"Error reading history: {e}", file=sys.stderr)
-        return 1
+        for record in audit_substrate.iter_records(conn, order_by_started=True):
+            if since_dt is not None:
+                started = (record.get("timing") or {}).get("started_at")
+                if started:
+                    try:
+                        ts = datetime.datetime.fromisoformat(started)
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=datetime.timezone.utc)
+                        if ts < since_dt:
+                            continue
+                    except ValueError:
+                        pass
+            records.append(record)
+    finally:
+        conn.close()
 
     if not records:
         print("No records found (try relaxing --since filter).")

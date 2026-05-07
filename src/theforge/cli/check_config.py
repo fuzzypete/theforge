@@ -21,6 +21,55 @@ from theforge.config.role_derivation import derive_roles
 from theforge.config.types import PlanConfig
 
 
+def _check_audit_substrate(project_root: Path) -> list[str]:
+    """Return warning strings describing substrate health problems, if any.
+
+    A missing substrate when ``.forge/audits/`` does not exist is a fresh
+    repo and is OK. A substrate that fails to open or its
+    ``PRAGMA integrity_check`` is reported with the recovery command. An
+    existing legacy ``history.jsonl`` without a substrate is also a
+    warning so operators know to rebuild before runtime readers fire.
+    """
+    from theforge.coordinator import audit_substrate
+
+    audits_root = audit_substrate.audits_dir(project_root)
+    if not audits_root.exists():
+        return []
+    sub_path = audit_substrate.substrate_path(project_root)
+    history_path = audit_substrate.history_jsonl_path(project_root)
+    warnings: list[str] = []
+    if not sub_path.exists():
+        if history_path.exists():
+            warnings.append(
+                f"audit substrate missing at {sub_path}; legacy "
+                f"history.jsonl present. Run "
+                f"`forge audits rebuild --include-legacy-history` to backfill."
+            )
+        return warnings
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(str(sub_path))
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            if not row or row[0] != "ok":
+                warnings.append(
+                    f"audit substrate at {sub_path} failed integrity check: "
+                    f"{row[0] if row else 'no result'}. "
+                    f"Run `forge audits rebuild [--include-legacy-history]` to recover."
+                )
+                return warnings
+            conn.execute("SELECT count(*) FROM audit_records").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        warnings.append(
+            f"audit substrate at {sub_path} could not be read: {exc}. "
+            f"Run `forge audits rebuild [--include-legacy-history]` to recover."
+        )
+    return warnings
+
+
 class _CapturingHandler(logging.Handler):
     """Logging handler that captures WARNING+ records into a list."""
 
@@ -514,6 +563,8 @@ def cmd_check_config(args: object) -> int:
             config.hooks.post_run if config.hooks else None,
         )
     )
+
+    captured_warnings.extend(_check_audit_substrate(config.project_root))
 
     output, exit_code = _format_config(config, auth_results)
 

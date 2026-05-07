@@ -311,7 +311,9 @@ def _coordinator_loop(
         _static_dev_max = config.dev_profile.max_iterations or config.retry.max_dev_iterations
         _static_dev_budget = config.dev_profile.budget_usd
         _explicit_dev_override = "dev" in getattr(state, "_explicit_roles", set())
-        _history_path = config.project_root / ".forge" / "audits" / "history.jsonl"
+        # Adaptive iterations now reads the SQLite audit substrate; we pass
+        # project_root and let the helper resolve substrate access internally.
+        _history_path = config.project_root
         _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
         _adaptive_resource_enabled = (
             config.assignment.enabled

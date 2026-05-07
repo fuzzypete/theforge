@@ -25,6 +25,9 @@ from theforge.cli import (
     telemetry,
     todo,
 )
+from theforge.cli import (
+    audits as audits_cmd,
+)
 from theforge.cli.init_commands import cmd_init, cmd_secrets_init, cmd_version
 
 
@@ -58,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_config.register_parser(subparsers)
     forge_yaml_guard.register_parser(subparsers)
     audit.register_parser(subparsers)
+    audits_cmd.register_parser(subparsers)
     telemetry.register_parser(subparsers)
     daemon.register_parser(subparsers)
     eval_cmd.register_parser(subparsers)
@@ -95,6 +99,7 @@ def main() -> None:
         "check-config": check_config.cmd_check_config,
         "check-story-config": forge_yaml_guard.cmd_check_story_config,
         "audit": audit.cmd_audit,
+        "audits": audits_cmd.cmd_audits,
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,
         "eval-preflight": eval_cmd.cmd_eval_preflight,
