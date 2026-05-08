@@ -44,7 +44,9 @@ def _follow_log_with_redirect(
                 if redirect_file is not None and redirect_file.exists():
                     try:
                         d = json.loads(redirect_file.read_text(encoding="utf-8"))
-                        return d["new_run_id"], Path(d["new_log"]), fh.tell()
+                        new_run_id = d["new_run_id"]
+                        if new_run_id != current_run_id:
+                            return new_run_id, Path(d["new_log"]), fh.tell()
                     except (OSError, KeyError, ValueError, json.JSONDecodeError):
                         pass
                 time.sleep(0.1)

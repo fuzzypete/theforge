@@ -321,3 +321,34 @@ class TestCmdLogs:
         captured = capsys.readouterr()
         assert "legitimate output" in captured.out
         assert "Run re-exec'd" not in captured.err
+
+    def test_reflexive_redirect_does_not_emit_reexec_notice(self, tmp_path, capsys):
+        """A redirect file pointing to the current run id must not trigger a re-exec notice.
+
+        This is the bug from issue #1447: when the redirect file's new_run_id equals
+        the currently-followed run id, _follow_log_with_redirect must ignore it and
+        continue tailing rather than returning a tuple that causes the outer loop to
+        emit the notice repeatedly.
+        """
+        import json
+
+        from theforge.cli.status import _SENTINEL_EOF, _follow_log_with_redirect
+
+        run_id = "fea6776bee4a"
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+
+        log_file = tmp_path / f"run-{run_id}.log"
+        log_file.write_text(f"sprint output line\n{_SENTINEL_EOF}\n")
+
+        # Redirect file points reflexively back to the same run id.
+        (runs_dir / f"{run_id}.redirect").write_text(
+            json.dumps({"new_run_id": run_id, "new_log": str(log_file)}),
+            encoding="utf-8",
+        )
+
+        result = _follow_log_with_redirect(log_file, run_id, runs_dir=runs_dir)
+
+        assert result is None, "reflexive redirect must not be treated as a re-exec"
+        captured = capsys.readouterr()
+        assert "sprint output line" in captured.out
