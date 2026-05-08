@@ -218,7 +218,8 @@ class GitHubIssueSource:
               - issue-123
             ---
 
-        Free-form prose is intentionally excluded from this parser.
+        Free-form prose is handled by ``_find_prose_dependency_phrases`` and
+        merged into the blockers set by ``fetch`` when no timeline edges exist.
         """
         metadata = metadata if metadata is not None else self._parse_issue_metadata(body, 0).data
         if not metadata:
@@ -252,7 +253,11 @@ class GitHubIssueSource:
         return _strip_illustrative_markdown(self._body_without_issue_metadata(body))
 
     def _find_prose_dependency_phrases(self, body: str) -> list[tuple[str, list[int]]]:
-        """Return non-authoritative dependency-shaped prose phrases and refs."""
+        """Return dependency-shaped prose phrases and the issue refs they declare.
+
+        Refs returned here are honored as scheduler blockers when no native
+        ``blocked_by`` timeline relationship is present; see ``fetch``.
+        """
         scan_body = self._body_without_illustrative_markdown(body)
         matches: list[tuple[str, list[int]]] = []
         for match in _BLOCKED_BY_BODY_RE.finditer(scan_body):
@@ -275,7 +280,14 @@ class GitHubIssueSource:
     def _dependency_authoring_warnings(
         self, body: str, structured_blockers: list[int]
     ) -> list[str]:
-        """Warn when prose looks like a dependency but is not structured metadata."""
+        """Return prose phrases whose refs are not honored as scheduler edges.
+
+        When a prose ref appears in ``structured_blockers`` (because either the
+        timeline, frontmatter, or prose itself promoted it to a blocker), the
+        phrase is silent. Phrases left over here typically indicate prose that
+        could not be promoted (e.g. a timeline-only blocker set that excludes a
+        prose-mentioned issue).
+        """
         declared = set(structured_blockers)
         warnings: list[str] = []
         for phrase, refs in self._find_prose_dependency_phrases(body):
@@ -329,7 +341,12 @@ class GitHubIssueSource:
         reopen_state = analyze_reopen_contract(data, timeline)
         blockers = sorted(self._fetch_issue_blockers_from_timeline(timeline))
         if not blockers:
-            blockers = self._parse_issue_blockers_from_body_metadata(body, metadata)
+            body_blockers: set[int] = set(
+                self._parse_issue_blockers_from_body_metadata(body, metadata)
+            )
+            for _phrase, refs in self._find_prose_dependency_phrases(body):
+                body_blockers.update(refs)
+            blockers = sorted(body_blockers)
         blocker_slugs = [f"issue-{blocker}" for blocker in blockers]
         dependency_warnings = self._dependency_authoring_warnings(body, blockers)
         if metadata_result.warning is not None:
