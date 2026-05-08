@@ -1027,6 +1027,45 @@ def _terminal_story_model(result: CoordinatorResult) -> str | None:
     return None
 
 
+def _snapshot_last_known(
+    slug: str,
+    state_writer: "SprintStateWriter | None",
+) -> dict:
+    """Snapshot last-known telemetry for a slug from the canonical SprintStoryState.
+
+    The runner builds this snapshot at the moment a worker times out or raises
+    so failure rows can render the real phase/model/cost/elapsed instead of the
+    hollow defaults of a synthetic timeout CoordinatorState.
+    """
+    snapshot: dict = {
+        "last_phase": None,
+        "last_model": None,
+        "last_cost": None,
+        "last_started_at": None,
+    }
+    if state_writer is None:
+        return snapshot
+    entry = state_writer.story_state.get(slug)
+    if entry is None:
+        return snapshot
+    snapshot["last_phase"] = entry.phase
+    extras = entry.extras or {}
+    model = extras.get("current_model")
+    if isinstance(model, str) and model:
+        snapshot["last_model"] = model
+    if entry.cost_usd:
+        snapshot["last_cost"] = float(entry.cost_usd)
+    started_raw = extras.get("started_at")
+    if isinstance(started_raw, str) and started_raw:
+        try:
+            snapshot["last_started_at"] = datetime.datetime.fromisoformat(
+                started_raw.replace("Z", "+00:00")
+            )
+        except ValueError:
+            snapshot["last_started_at"] = None
+    return snapshot
+
+
 def _poll_queued_pr(
     pr_url: str,
     project_root: Path,
@@ -1956,6 +1995,7 @@ def run_sprint(
     story_wait_started: set[str] = set()
     cost_lock = threading.Lock()
     story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
+    live_telemetry_snapshots: dict[str, dict] = {}
     batch_assignments: dict[str, int] = {}
     batch_number = 0
     worker_phases: dict[str, str] = {}
@@ -2359,7 +2399,15 @@ def run_sprint(
                     )
                     spec_str = slug_to_spec[slug]
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
-                    story_started_at = story_times.get(slug, (timed_out_at, timed_out_at))[0]
+                    snapshot = _snapshot_last_known(slug, _state_writer)
+                    last_phase = snapshot["last_phase"]
+                    if slug in story_times:
+                        story_started_at = story_times[slug][0]
+                    elif snapshot["last_started_at"] is not None:
+                        story_started_at = snapshot["last_started_at"]
+                    else:
+                        story_started_at = timed_out_at
+                    _phase_label = f" during phase {last_phase}" if last_phase else ""
                     _timeout_state = CoordinatorState(
                         phase=Phase.ESCALATE,
                         started_at=story_started_at.isoformat(),
@@ -2367,7 +2415,7 @@ def run_sprint(
                             config.project_root / config.workspace.path_pattern.format(slug=slug)
                         ),
                         log_dir=_make_story_log_dir(config, slug, resolved.name),
-                        error=f"Worker timeout (>{story_worker_timeouts[slug]}s)",
+                        error=(f"Worker timeout (>{story_worker_timeouts[slug]}s){_phase_label}"),
                         error_type="TimeoutError",
                     )
                     _timeout_result = CoordinatorResult(
@@ -2377,11 +2425,21 @@ def run_sprint(
                         message=f"Worker thread timed out after {story_worker_timeouts[slug]}s",
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
+                    live_telemetry_snapshots[slug] = snapshot
                     results.append((spec_str, _timeout_result))
                     _write_story_audit(
-                        config, slug_to_context[slug][0], _timeout_result, sprint_id=_sprint_id
+                        config,
+                        slug_to_context[slug][0],
+                        _timeout_result,
+                        sprint_id=_sprint_id,
+                        telemetry_snapshot=snapshot,
                     )
-                    _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
+                    _set_outcome(
+                        slug,
+                        StoryOutcome.FAILED,
+                        phase="ESCALATE",
+                        last_phase=last_phase,
+                    )
                     dag.mark_skipped(slug)
                 continue
 
@@ -2398,7 +2456,15 @@ def run_sprint(
                     stop_events.pop(slug, None)
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
-                    story_started_at = story_times.get(slug, (failed_at, failed_at))[0]
+                    snapshot = _snapshot_last_known(slug, _state_writer)
+                    last_phase = snapshot["last_phase"]
+                    if slug in story_times:
+                        story_started_at = story_times[slug][0]
+                    elif snapshot["last_started_at"] is not None:
+                        story_started_at = snapshot["last_started_at"]
+                    else:
+                        story_started_at = failed_at
+                    _phase_label = f" during phase {last_phase}" if last_phase else ""
                     _exc_state = CoordinatorState(
                         phase=Phase.ESCALATE,
                         started_at=story_started_at.isoformat(),
@@ -2406,7 +2472,7 @@ def run_sprint(
                             config.project_root / config.workspace.path_pattern.format(slug=slug)
                         ),
                         log_dir=_make_story_log_dir(config, slug, resolved.name),
-                        error=f"Worker exception: {exc}",
+                        error=f"Worker exception{_phase_label}: {exc}",
                         error_type=type(exc).__name__,
                     )
                     _exc_result = CoordinatorResult(
@@ -2416,11 +2482,21 @@ def run_sprint(
                         message=f"Worker thread raised {type(exc).__name__}: {exc}",
                     )
                     story_times[slug] = (story_started_at, failed_at)
+                    live_telemetry_snapshots[slug] = snapshot
                     results.append((spec_str, _exc_result))
                     _write_story_audit(
-                        config, slug_to_context[slug][0], _exc_result, sprint_id=_sprint_id
+                        config,
+                        slug_to_context[slug][0],
+                        _exc_result,
+                        sprint_id=_sprint_id,
+                        telemetry_snapshot=snapshot,
                     )
-                    _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
+                    _set_outcome(
+                        slug,
+                        StoryOutcome.FAILED,
+                        phase="ESCALATE",
+                        last_phase=last_phase,
+                    )
                     dag.mark_skipped(slug)
                     continue
                 del active[slug]
@@ -2671,6 +2747,7 @@ def run_sprint(
         dropped_slugs=_dropped_slugs,
         skipped_issues=skipped_issues,
         current_story_entries_by_ref=current_story_entries_by_ref,
+        live_telemetry_snapshots=live_telemetry_snapshots,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -2699,6 +2776,7 @@ def run_sprint(
             current_story_entries_by_ref=current_story_entries_by_ref,
             story_state=_story_state,
             config=config,
+            live_telemetry_snapshots=live_telemetry_snapshots,
         )
 
     if _state_writer is not None:
