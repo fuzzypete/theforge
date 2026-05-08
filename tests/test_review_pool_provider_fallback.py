@@ -45,6 +45,11 @@ def _make_config_with_provider_fallbacks(
         timeout_seconds=300,
         allowed_tools=(),
     )
+    # Intentionally do NOT preload api_fallback on these reviewers. The bug under
+    # test (#1435) is that a CLI reviewer reaching the runner without api_fallback
+    # silently skips the configured API fallback. The fix re-applies
+    # provider_fallbacks inside _apply_complexity_adaptation, so a reviewer that
+    # arrives at preflight without api_fallback must acquire it through that path.
     gpt_reviewer = ModelProfile(
         name="openai-gpt-5.4",
         cli="codex",
@@ -52,7 +57,6 @@ def _make_config_with_provider_fallbacks(
         budget_usd=1.0,
         timeout_seconds=300,
         allowed_tools=(),
-        api_fallback=provider_fallbacks.get("openai"),
     )
     opus_reviewer = ModelProfile(
         name="claude-opus",
@@ -61,7 +65,6 @@ def _make_config_with_provider_fallbacks(
         budget_usd=1.0,
         timeout_seconds=300,
         allowed_tools=(),
-        api_fallback=provider_fallbacks.get("anthropic"),
     )
     plan = PlanConfig(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
 
