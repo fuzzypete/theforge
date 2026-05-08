@@ -18,6 +18,7 @@ from theforge.config import (
     apply_model_info,
     model_info_view,
 )
+from theforge.config.profiles import _apply_provider_fallback
 from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 
@@ -793,6 +794,7 @@ def _apply_complexity_adaptation(
         target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
         if target_dev_info.model != config.dev_profile.model:
             new_dev = apply_model_info(config.dev_profile, target_dev_info)
+            new_dev = _apply_provider_fallback(new_dev, config.provider_fallbacks)
             new_config = _dc_replace(new_config, dev_profile=new_dev)
 
     # ── review_pool ────────────────────────────────────────────────
@@ -827,10 +829,14 @@ def _apply_complexity_adaptation(
                     -_find_registry_info_for_profile(p, registry=_registry)[1],
                 ),
             )
+            single = _apply_provider_fallback(single, config.provider_fallbacks)
             new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
         else:
             # MEDIUM/HIGH → all mid/strong reviewers + synthesis
             review_broader = mid_strong if mid_strong else review_candidates
+            review_broader = [
+                _apply_provider_fallback(p, config.provider_fallbacks) for p in review_broader
+            ]
             synthesis = config.synthesis_profile
             if synthesis is None:
                 synth_candidates = review_broader or [new_config.dev_profile]
@@ -840,6 +846,7 @@ def _apply_complexity_adaptation(
                 )
                 synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
                 synthesis = _dc_replace(strongest, name="synthesis", budget_usd=synth_budget)
+                synthesis = _apply_provider_fallback(synthesis, config.provider_fallbacks)
             new_config = _dc_replace(
                 new_config, review_pool=review_broader, synthesis_profile=synthesis
             )
