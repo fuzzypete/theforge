@@ -247,9 +247,26 @@ def _waiting_detail(blocked_by: list[str]) -> str:
     return "; ".join(blocked_by)
 
 
-def _terminal_phase(outcome: str, depends_on: list[str]) -> str | None:
+_FAILURE_OUTCOMES = {
+    "FAILED",
+    "MERGE_FAILED",
+    "ESCALATE",
+    "ESCALATED",
+    "DROPPED",
+    "DROPPED_SHAPE",
+    "DROPPED_AFTER_FIX",
+}
+
+
+def _terminal_phase(
+    outcome: str,
+    depends_on: list[str],
+    last_phase: str | None = None,
+) -> str | None:
     if outcome == "SKIPPED" and depends_on:
         return "waiting"
+    if outcome in _FAILURE_OUTCOMES and last_phase:
+        return last_phase
     return outcome or None
 
 
@@ -497,7 +514,11 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         cost_usd = float(story.get("cost_usd", 0.0))
 
         status = _outcome_to_status(outcome)
-        phase = _terminal_phase(outcome, list(story.get("depends_on") or []))
+        phase = _terminal_phase(
+            outcome,
+            list(story.get("depends_on") or []),
+            _nonempty_str(story.get("last_phase")),
+        )
 
         bundle_candidate = False
         complexity = None
@@ -585,6 +606,10 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
         phase_display = phase_val
         if status_val in {"waiting", "blocked"} and blocked_by_val:
             phase_display = "waiting"
+        if status_val == "failed":
+            last_phase_str = _nonempty_str(story.get("last_phase"))
+            if last_phase_str:
+                phase_display = last_phase_str
         stage, detail, complexity = _stage_and_detail_from_live_story(story)
 
         if status_val in {"skipped", "blocked"}:
@@ -630,7 +655,11 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                     slug=slug,
                     path=story.get("path", slug),
                     status=_outcome_to_status(outcome),
-                    phase=_terminal_phase(outcome, depends_on),
+                    phase=_terminal_phase(
+                        outcome,
+                        depends_on,
+                        _nonempty_str(story.get("last_phase")),
+                    ),
                     cost_usd=float(story.get("cost_usd", 0.0)),
                     blocked_by=depends_on,
                     bundle_candidate=False,
