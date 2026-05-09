@@ -439,7 +439,11 @@ def _run_query_mode(
         fetch_issues_for_label,
         fetch_issues_for_milestone,
     )
-    from theforge.sprint.shape_gate import apply_shape_gate, format_skipped_warning
+    from theforge.sprint.shape_gate import (
+        apply_shape_gate,
+        format_advisory_warning,
+        format_skipped_warning,
+    )
 
     try:
         budget_usd = float(budget_str)
@@ -512,6 +516,8 @@ def _run_query_mode(
                 )
             else:
                 print(warning, file=sys.stderr)
+        if gate_result.advisories:
+            print(format_advisory_warning(gate_result.advisories), file=sys.stderr)
         issues = gate_result.runnable
         skipped_issues = gate_result.skipped
 
