@@ -43,7 +43,7 @@ def load_escalation_history_from_substrate(project_root: Path) -> list[Escalatio
     conn = audit_substrate.require_substrate(project_root)
     try:
         out: list[EscalationRecord] = []
-        for entry in audit_substrate.iter_escalation_records(conn):
+        for entry in audit_substrate.derive_assignment_history(conn):
             out.append(
                 EscalationRecord(
                     story=str(entry.get("story") or ""),

@@ -840,6 +840,29 @@ def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
         dev_raw = assignments.get("dev")
         dev = dev_raw if isinstance(dev_raw, dict) else {}
         dev_model = dev.get("canonical_id") or dev.get("model")
+        # Fallback: when the audit record lacks the preflight.complexity_routing
+        # block (older audits, or audits seeded by tests that bypass routing),
+        # derive the canonical dev model from cost.agents — the model that
+        # actually ran. provider/model/transport gives the same canonical_id
+        # shape the routing block would have provided.
+        if not (isinstance(dev_model, str) and dev_model):
+            cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+            agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
+            for entry in agents:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("phase") != "dev" and entry.get("role") != "dev":
+                    continue
+                provider = (entry.get("provider") or "").strip()
+                model = (entry.get("model") or "").strip()
+                cli = (entry.get("cli") or "").strip()
+                if model and provider:
+                    transport = "cli" if cli else "api"
+                    dev_model = f"{provider}/{model}/{transport}"
+                    break
+                if entry.get("name"):
+                    dev_model = str(entry["name"])
+                    break
         if not isinstance(dev_model, str) or not dev_model:
             continue
         timing = record.get("timing") or {}
