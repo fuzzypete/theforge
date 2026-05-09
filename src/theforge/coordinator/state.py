@@ -442,6 +442,13 @@ class CoordinatorState:
     # Per-phase hygiene gate audit entries. Each dict carries a "phase" key
     # ("PRE_DEV" / "PLAN" / "PLAN_REVIEW" / "REVIEW") plus phase-specific fields
     # (snapshot, modified, quarantined, quarantine_dir, offending_paths).
+    # Set by VALIDATE when the dev cycle determined no commits were needed and the
+    # handoff YAML documents this with all acceptance criteria MET and at least one
+    # cited commit present in base-branch history. Distinguishes the deliberate
+    # "work already complete" outcome from genuine missing-work failures.
+    validate_already_complete: bool = False
+    validate_already_complete_commits: list[dict] = field(default_factory=list)
+    validate_already_complete_reason: str | None = None
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.

@@ -459,6 +459,12 @@ def _coordinator_loop(
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
+            if _val_outcome == _ValidateOutcome.ALREADY_COMPLETE:
+                # Dev cycle determined no work was needed and the handoff
+                # documents this with verifiable cited commits. Short-circuit
+                # to DONE (skip REVIEW and merge) — the cited commits are
+                # already on the base branch.
+                return _val_result  # type: ignore[return-value]
             if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
                 state.review_cycle += 1
                 state.review_results.append(_build_convention_blocking_review(state))
