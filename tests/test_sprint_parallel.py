@@ -609,6 +609,35 @@ class TestClassifyAndRecord:
         assert "a" in merged_slugs
         assert {t.slug for t in dag.ready()} == {"b"}
 
+    def test_validate_already_complete_classifies_as_already_done(self) -> None:
+        """state.validate_already_complete=True with success → ALREADY_DONE outcome.
+
+        Regression test: when VALIDATE recognizes that the dev cycle correctly
+        determined no work was needed (handoff documents existing commits as
+        satisfying all ACs), sprint must classify the story as a successful
+        ALREADY_DONE rather than FAILED, even though preflight returned PROCEED.
+        """
+        from theforge.sprint.story_state import StoryOutcome
+
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(
+            success=True, cost=0.5, preflight_verdict="PROCEED", phase=Phase.DONE
+        )
+        result.state.validate_already_complete = True
+        result.state.validate_already_complete_commits = [
+            {"sha": "a0a1319" + "0" * 33, "message": "fix: already-landed"}
+        ]
+        outcome = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert outcome is StoryOutcome.ALREADY_DONE
+        assert outcome.is_succeeded
+        assert "a" in merged_slugs
+        assert {t.slug for t in dag.ready()} == {"b"}
+
     def test_failed_result_does_not_get_promoted_to_already_done(self) -> None:
         """An ALREADY_DONE preflight verdict must not mask a later failed result."""
         from theforge.sprint.story_state import StoryOutcome

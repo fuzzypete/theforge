@@ -22,7 +22,12 @@ from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
 from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
-from .review_context import _get_handoff_content, _get_raw_dev_notes, _latest_forge_handoff_path
+from .review_context import (
+    _get_handoff_content,
+    _get_raw_dev_notes,
+    _latest_forge_handoff_path,
+    _parse_dev_handoff,
+)
 from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
 from .util import _log, _log_phase, _log_verbose
 from .workspace import _deindex_forge_artifacts
@@ -33,6 +38,72 @@ class _ValidateOutcome(Enum):
     RETRY_DEV = auto()
     REVIEW_CONVENTION_BLOCK = auto()
     ESCALATE = auto()
+    ALREADY_COMPLETE = auto()
+
+
+def _verified_handoff_commit_shas(workspace_path: Path, shas: list[str]) -> list[str]:
+    """Return the subset of ``shas`` that exist in this worktree's git history.
+
+    A commit SHA is "verified" when ``git cat-file -e <sha>`` resolves it in the
+    worktree. Without this check, a handoff could cite an arbitrary string and
+    the empty-worktree-as-success path would accept it.
+    """
+    verified: list[str] = []
+    for sha in shas:
+        sha = sha.strip()
+        if not sha:
+            continue
+        try:
+            proc = subprocess.run(
+                ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if proc.returncode == 0:
+            verified.append(sha)
+    return verified
+
+
+def _handoff_documents_already_complete(
+    workspace_path: Path,
+    forge_handoff_path: Path | None,
+) -> tuple[bool, list[dict], str | None]:
+    """Decide whether the dev handoff explicitly documents 'work already complete'.
+
+    Returns ``(is_already_complete, verified_commits, reason)``. The first
+    element is True only when:
+    - the handoff parsed cleanly (no schema or parse errors),
+    - it lists at least one acceptance criterion,
+    - every acceptance criterion has status normalized to ``MET``,
+    - at least one commit SHA cited in the handoff resolves in the worktree's
+      git history (citation verification — protects against fabricated SHAs).
+    """
+    handoff = _parse_dev_handoff(forge_handoff_path=forge_handoff_path)
+    if handoff is None:
+        return False, [], "no handoff artifact"
+    if handoff.parse_errors:
+        return False, [], f"handoff parse errors: {handoff.parse_errors[0]}"
+    if not handoff.acceptance_criteria:
+        return False, [], "handoff has no acceptance_criteria"
+    for ac in handoff.acceptance_criteria:
+        status = (ac.get("status") or "").strip().upper()
+        if status != "MET":
+            return False, [], f"acceptance criterion status is {status!r}, not MET"
+    cited_shas = [c.get("sha", "") for c in handoff.commits]
+    verified = _verified_handoff_commit_shas(workspace_path, cited_shas)
+    if not verified:
+        return False, [], "handoff cites no commit SHA verifiable on this branch"
+    verified_set = set(verified)
+    verified_commits = [
+        {"sha": c.get("sha", "").strip(), "message": c.get("message", "")}
+        for c in handoff.commits
+        if c.get("sha", "").strip() in verified_set
+    ]
+    return True, verified_commits, None
 
 
 def _is_identical_failure(telemetry: list[DevIterationTelemetry]) -> bool:
@@ -462,13 +533,50 @@ def _run_validate_phase(
                     )
 
         # ── Zero-commits guard ──────────────────────────────────────
-        # A trivially passing gate over an empty worktree is not a real PASS;
-        # treat it as a missing-work failure rather than letting it advance to
-        # REVIEW where the empty diff would silently approve.
+        # A trivially passing gate over an empty worktree is *usually* not a real
+        # PASS; the default routing treats it as a missing-work failure rather
+        # than letting it advance to REVIEW where the empty diff would silently
+        # approve. The exception is the deliberate "work already complete"
+        # outcome: when the dev cycle inspected the issue and produced a handoff
+        # YAML where every acceptance criterion is MET and at least one cited
+        # commit SHA resolves in the worktree's git history, the empty diff is
+        # the dev cycle's documented contract output and must be classified as a
+        # successful ALREADY_DONE-shaped result, not a failure.
         if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+            handoff_path = _latest_forge_handoff_path(state)
+            already_complete, verified_commits, reject_reason = (
+                _handoff_documents_already_complete(workspace_path, handoff_path)
+            )
+            if already_complete:
+                state.validate_already_complete = True
+                state.validate_already_complete_commits = verified_commits
+                state.validate_already_complete_reason = (
+                    "Dev cycle determined no work needed; handoff cites commit"
+                    f"(s) {', '.join(c['sha'][:7] for c in verified_commits)}"
+                    " already on this branch satisfying all acceptance criteria."
+                )
+                state.phase = Phase.DONE
+                _log(f"  ✓ ALREADY_COMPLETE   {state.validate_already_complete_reason}")
+                if logger:
+                    logger._safe_emit(
+                        "phase_end",
+                        phase="VALIDATE",
+                        outcome="already_complete",
+                        commits=[c["sha"] for c in verified_commits],
+                    )
+                return _ValidateOutcome.ALREADY_COMPLETE, CoordinatorResult(
+                    success=True,
+                    phase=state.phase,
+                    state=state,
+                    message=state.validate_already_complete_reason,
+                )
             state.phase = Phase.ESCALATE
             state.error = (
                 "Gate exited PASS but branch has no commits ahead of base — "
+                "treating empty worktree as missing-work failure"
+                f" ({reject_reason})"
+                if reject_reason
+                else "Gate exited PASS but branch has no commits ahead of base — "
                 "treating empty worktree as missing-work failure"
             )
             _log(f"✗ ESCALATE   {state.error}")

@@ -1189,8 +1189,16 @@ def _classify_and_record(
     """
     preflight_verdict = result.state.preflight_verdict
     landing_status = getattr(result, "landing_status", None)
+    validate_already_complete = getattr(result.state, "validate_already_complete", False)
 
     if preflight_verdict == "ALREADY_DONE" and result.success:
+        outcome = StoryOutcome.ALREADY_DONE
+        merged_slugs.add(task.slug)
+        dag.mark_complete(task.slug)
+    elif validate_already_complete and result.success:
+        # VALIDATE determined the dev cycle correctly produced no commits
+        # because the work was already on the base branch. Treat this as a
+        # successful ALREADY_DONE-shaped outcome rather than FAILED.
         outcome = StoryOutcome.ALREADY_DONE
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
