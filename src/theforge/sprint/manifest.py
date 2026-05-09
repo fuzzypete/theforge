@@ -213,7 +213,7 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         _logging.getLogger(__name__).warning(warning)
 
     body = story_path.read_text(encoding="utf-8")
-    fix_ready, readiness_warnings = derive_fix_ready(story_type, body)
+    fix_ready, investigation_ready, readiness_warnings = derive_fix_ready(story_type, body)
     fm_override = fm.get("fix_ready")
     if isinstance(fm_override, bool):
         if fm_override is True and fix_ready is False:
@@ -242,6 +242,7 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         type=story_type,
         type_warnings=type_warnings,
         fix_ready=fix_ready,
+        investigation_ready=investigation_ready,
         readiness_warnings=readiness_warnings,
     )
 
