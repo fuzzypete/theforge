@@ -233,6 +233,7 @@ def cmd_sprint(args: object) -> int:
             "resume": resume,
             "config": str(config_path),
             "no_pull": no_pull,
+            "force": force,
         }
         response = _daemon.submit_sprint(config.project_root, str(manifest_path), sprint_args)
         if response.get("ok"):
