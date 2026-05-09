@@ -129,7 +129,9 @@ def cmd_sprint(args: object) -> int:
 
         if _detach_mod.is_detached_child():
             launch_run_id = _os.environ.get("FORGE_DETACHED_RUN_ID") or _generate_run_id()
-            _detach_mod.setup_detached_child(launch_run_id, launch_slug, config.project_root)
+            _detach_mod.setup_detached_child(
+                launch_run_id, launch_slug, config.project_root, is_sprint=True
+            )
             _detach_mod.install_cleanup_handler(launch_run_id, config.project_root)
             print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
             args.__dict__["_detached_run_id"] = launch_run_id
@@ -150,7 +152,9 @@ def cmd_sprint(args: object) -> int:
             _atexit.register(_detach_mod.remove_pid, launch_run_id, config.project_root)
         else:
             launch_run_id = _generate_run_id()
-            _detach_mod.daemonize_run(launch_run_id, launch_slug, config.project_root)
+            _detach_mod.daemonize_run(
+                launch_run_id, launch_slug, config.project_root, is_sprint=True
+            )
             # daemonize_run never returns in the parent.
 
     if getattr(args, "verbose", False):
