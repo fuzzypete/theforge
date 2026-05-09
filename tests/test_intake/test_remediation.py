@@ -278,3 +278,38 @@ def test_agent_no_output_is_distinguished_in_audit():
     assert out.detail == "model refused rewrite"
     assert out.audit["remediation_source"] == "agent_no_output"
     assert out.audit["agent"]["attempted"] is True
+
+
+def test_force_bypass_skips_fetch_and_agent_for_every_task():
+    task_a = _make_task(slug="a", issue=11)
+    task_b = _make_task(slug="b", issue=12)
+    task_c = _make_task(slug="c", issue=None)
+
+    fetch_calls: list = []
+
+    def fetch(n, root):
+        fetch_calls.append((n, root))
+        return {"title": "T", "body": _FAILING_BODY, "labels": ["enhancement"]}
+
+    def agent(*_a, **_kw):
+        raise AssertionError("agent must not run under --force")
+
+    outcomes = run_intake_remediation(
+        [task_a, task_b, task_c],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=fetch,
+        post_comment=lambda *_: True,
+        edit_body=lambda *_: True,
+        force=True,
+    )
+
+    assert fetch_calls == []
+    for slug in ("a", "b", "c"):
+        out = outcomes[slug]
+        assert out.kind is IntakeOutcomeKind.PASSED
+        assert out.audit.get("force_bypass") is True
+        assert out.detail == "intake remediation bypassed by --force"

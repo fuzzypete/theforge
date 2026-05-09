@@ -171,6 +171,7 @@ def _run_intake_remediation_pass(
     config: ForgeConfig,
     tasks: list[TaskStory],
     log: Callable[[str], None],
+    force: bool = False,
 ) -> dict[str, IntakeOutcome]:
     """Run the intake remediation pass on the normalized task list.
 
@@ -186,15 +187,21 @@ def _run_intake_remediation_pass(
     auto_fix_enabled = auto_fix_raw if isinstance(auto_fix_raw, bool) else False
     auto_fix_mode = auto_fix_mode_raw if isinstance(auto_fix_mode_raw, str) else "comment"
     auto_fix_mode = auto_fix_mode or "comment"
-    if not grooming_enabled and not auto_fix_enabled:
+    if not grooming_enabled and not auto_fix_enabled and not force:
         return {}
-    log(
-        "Intake remediation gate: grooming="
-        f"{grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode}"
-    )
+    if force:
+        log(
+            "Intake remediation gate bypassed by --force "
+            f"(grooming={grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode})"
+        )
+    else:
+        log(
+            "Intake remediation gate: grooming="
+            f"{grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode}"
+        )
     agent_caller = None
     missing_agent_detail = "auto-fix enabled but no agent caller wired"
-    if auto_fix_enabled:
+    if auto_fix_enabled and not force:
         agent_caller, missing_agent_detail = _build_intake_agent_caller(
             config=config,
             log=log,
@@ -207,6 +214,7 @@ def _run_intake_remediation_pass(
         auto_fix_mode=auto_fix_mode,
         agent_caller=agent_caller,
         missing_agent_detail=missing_agent_detail,
+        force=force,
     )
 
 
@@ -1283,6 +1291,7 @@ def run_sprint(
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
+    force: bool = False,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1564,6 +1573,7 @@ def run_sprint(
         config=config,
         tasks=normalized.tasks,
         log=_log,
+        force=force,
     )
     if intake_outcomes:
         terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
