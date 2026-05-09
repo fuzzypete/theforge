@@ -27,6 +27,11 @@ def is_sprint_run(run_id: str, project_root: Path) -> bool:
         return True
 
     runs_dir = project_root / ".forge" / "runs"
+    # Sprint marker is written at detach time, before any sprint state exists.
+    # Without this check, watch mode falls back to a one-shot snapshot during
+    # the preflight/DAG-build window when only the PID file is present.
+    if (runs_dir / f"{run_id}.sprint").exists():
+        return True
     for redirect_file in runs_dir.glob("*.redirect"):
         try:
             data = json.loads(redirect_file.read_text(encoding="utf-8"))

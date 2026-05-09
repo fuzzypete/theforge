@@ -806,6 +806,42 @@ class TestCmdStatusWatchRouting:
         assert rc == 0
         loop.assert_called_once()
 
+    def test_tty_watch_enters_loop_for_pid_only_sprint_marker(self, tmp_path: Path) -> None:
+        """Regression for #1405: a sprint with only PID + sprint marker (no .state, no
+        summary, no redirect) must still enter watch mode.
+
+        Exercises the real ``_resolve_watch_run_ids`` path — does NOT patch the
+        resolver — so the gate logic that previously returned [] for PID-only sprint
+        runs is genuinely covered.
+        """
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = self._config(tmp_path)
+        args = argparse.Namespace(run_id=None, recent=False, last=False, watch=3, no_color=True)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-1.pid").write_text("99999\nissues-1430,1435,1438\n")
+        (runs_dir / "run-1.sprint").write_text("sprint\n")
+        # No .state, no sprint-summary.yaml, no .redirect — early-lifecycle window.
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
+            patch("theforge.cli.status_watch.is_tty", return_value=True),
+            patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            rc = cmd_status(args)
+
+        assert rc == 0
+        loop.assert_called_once()
+        assert loop.call_args.kwargs["follow_active_runs"] is True
+
     def test_tty_single_run_falls_back(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

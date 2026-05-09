@@ -48,12 +48,41 @@ def write_pid(run_id: str, slug: str, project_root: Path) -> Path:
 
 
 def remove_pid(run_id: str, project_root: Path) -> None:
-    """Remove .forge/runs/<run-id>.pid, ignoring missing files."""
+    """Remove .forge/runs/<run-id>.pid (and the sprint marker), ignoring missing files."""
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
     try:
         pid_file.unlink()
     except FileNotFoundError:
         pass
+    remove_sprint_marker(run_id, project_root)
+
+
+def write_sprint_marker(run_id: str, project_root: Path) -> Path:
+    """Mark <run_id> as a sprint run before any sprint state is written.
+
+    Without this marker, ``forge status --watch`` cannot recognise a freshly
+    detached sprint as watchable during preflight/DAG-build (only a PID file
+    exists at that point), and silently falls back to a one-shot snapshot.
+    """
+    runs_dir = project_root / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    marker = runs_dir / f"{run_id}.sprint"
+    marker.write_text("sprint\n", encoding="utf-8")
+    return marker
+
+
+def remove_sprint_marker(run_id: str, project_root: Path) -> None:
+    """Remove .forge/runs/<run_id>.sprint, ignoring missing files."""
+    marker = project_root / ".forge" / "runs" / f"{run_id}.sprint"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def has_sprint_marker(run_id: str, project_root: Path) -> bool:
+    """Return True when <run_id>.sprint marker exists."""
+    return (project_root / ".forge" / "runs" / f"{run_id}.sprint").exists()
 
 
 def write_run_ended(
@@ -335,7 +364,9 @@ def is_detached_child() -> bool:
     return os.environ.get(_DETACHED_ENV) == "1"
 
 
-def setup_detached_child(run_id: str, slug: str, project_root: Path) -> None:
+def setup_detached_child(
+    run_id: str, slug: str, project_root: Path, *, is_sprint: bool = False
+) -> None:
     """Initialize a re-exec'd detached child: write PID file and redirect file.
 
     The parent already redirected stdin/stdout/stderr via ``subprocess.Popen``
@@ -347,6 +378,8 @@ def setup_detached_child(run_id: str, slug: str, project_root: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     write_pid(run_id, slug, project_root)
+    if is_sprint:
+        write_sprint_marker(run_id, project_root)
 
     # Coordinator post-pull execv inherits FORGE_DETACHED + FORGE_PREV_RUN_ID
     # in env. Write the redirect sidecar so the log follower can switch.
@@ -355,7 +388,7 @@ def setup_detached_child(run_id: str, slug: str, project_root: Path) -> None:
         write_reexec_redirect(prev_run_id, run_id, log_file, project_root)
 
 
-def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
+def daemonize_run(run_id: str, slug: str, project_root: Path, *, is_sprint: bool = False) -> None:
     """Spawn a fresh interpreter as a detached child and exit the parent.
 
     Replaces the previous ``os.fork()``-based double-fork daemonization to
@@ -400,6 +433,8 @@ def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
     runs_dir.mkdir(parents=True, exist_ok=True)
     pid_file = runs_dir / f"{run_id}.pid"
     pid_file.write_text(f"{proc.pid}\n{slug}\n", encoding="utf-8")
+    if is_sprint:
+        write_sprint_marker(run_id, project_root)
 
     print("[forge] Run started in background")
     print(f"[forge] Run ID:  {run_id}")
