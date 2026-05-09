@@ -445,9 +445,7 @@ def apply_shape_gate(
         # guard --force can override. CLI still renders the
         # operator_action banner and the skipped warning.
         force_runnable = [
-            issue
-            for issue in issues
-            if int(issue["number"]) not in operator_action_label_numbers
+            issue for issue in issues if int(issue["number"]) not in operator_action_label_numbers
         ]
         return ShapeGateResult(
             runnable=force_runnable,
