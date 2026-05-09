@@ -338,16 +338,24 @@ def _emit_all_skipped_audit(
             continue
         sk_slug = f"issue-{sk_num}"
         sk_codes = sk_dict.get("reason_codes") or []
+        is_operator_action = "operator_action" in sk_codes
         sk_reason = (
-            ", ".join(sk_codes)
-            if sk_codes
-            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
+            "operator-action — operator deliverable"
+            if is_operator_action
+            else (
+                ", ".join(sk_codes)
+                if sk_codes
+                else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
+            )
         )
+        sk_outcome = StoryOutcome.OPERATOR_ACTION if is_operator_action else StoryOutcome.SKIPPED
         sk_detail: dict = {
             "shape_gate_source": sk_dict.get("source"),
             "shape_gate_codes": list(sk_codes),
-            "final_outcome": "SKIPPED",
+            "final_outcome": sk_outcome.name,
         }
+        if is_operator_action:
+            sk_detail["operator_action"] = True
         outcome = intake_outcomes.get(sk_num)
         if outcome is not None:
             sk_detail["intake_kind"] = outcome.kind.value
@@ -358,7 +366,7 @@ def _emit_all_skipped_audit(
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
-            outcome=StoryOutcome.SKIPPED,
+            outcome=sk_outcome,
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",
             detail=sk_detail,
@@ -446,6 +454,7 @@ def _run_query_mode(
     from theforge.sprint.shape_gate import (
         apply_shape_gate,
         format_advisory_warning,
+        format_operator_action_notice,
         format_skipped_warning,
     )
 
@@ -522,17 +531,27 @@ def _run_query_mode(
                 print(warning, file=sys.stderr)
         if gate_result.advisories:
             print(format_advisory_warning(gate_result.advisories), file=sys.stderr)
+        if gate_result.operator_action:
+            # Operator-facing banner — deliberate non-dispatch, distinct from
+            # the malformed-shape skip warning above. The label cannot be
+            # bypassed by --force; the banner prints in both modes.
+            print(format_operator_action_notice(gate_result.operator_action), file=sys.stderr)
         issues = gate_result.runnable
-        skipped_issues = gate_result.skipped
+        # Operator-action issues are persisted alongside shape-gate skips so
+        # the audit/summary surfaces them; the runner inspects reason_codes to
+        # apply the StoryOutcome.OPERATOR_ACTION classification.
+        skipped_issues = list(gate_result.skipped) + list(gate_result.operator_action)
 
         # Bridge to intake remediation: entry-skipped issues bypass the
         # in-runner remediation pass, so route them through here. Suppress
         # remediation under --force, which is the operator's explicit
-        # escape hatch.
+        # escape hatch. Operator-action entries are excluded — the label is
+        # the operator's deliberate signal, not a defect to remediate.
         entry_intake_outcomes: dict[int, object] = {}
-        if skipped_issues and not force:
+        remediation_targets = [sk for sk in gate_result.skipped]
+        if remediation_targets and not force:
             entry_intake_outcomes = remediate_entry_skipped_issues(
-                skipped_issues,
+                remediation_targets,
                 config=config,
                 log=lambda m: print(f"[forge] {m}", file=sys.stderr),
             )
