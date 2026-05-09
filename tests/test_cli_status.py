@@ -332,56 +332,135 @@ class TestStopWritesTerminalMarker:
 # ── Race window: run starts between scans ────────────────────────────────────
 
 
-class TestShowRecentRunsRaceWindow:
-    """_show_recent_runs must not label a live run as orphaned.
+class TestShowRecentRunsFromSubstrate:
+    """_show_recent_runs sources its historical run list from the SQLite substrate.
 
-    Regression for: a run that starts between list_active_runs and the log
-    file scan would have a .pid file but no .ended file and should be shown
-    as 'active', not 'orphaned'.
+    Pre-migration, the recent-list scanned ``.forge/logs/*.log`` and inferred
+    status from PID/.ended markers. Post-migration the substrate is canonical:
+    runs only show up here when they have a substrate audit row, and legacy
+    rows imported via ``forge audits rebuild --include-legacy-history`` are
+    visible alongside native rows.
     """
 
-    def test_run_with_pid_file_but_no_ended_shows_active(
-        self, tmp_path: Path, capsys: object
-    ) -> None:
+    def test_substrate_completed_run_shown(self, tmp_path: Path, capsys: object) -> None:
         from theforge.cli.status import _show_recent_runs
+        from theforge.coordinator import audit_substrate
 
-        # Create a log file so the run appears in the historical scan.
-        log_dir = tmp_path / ".forge" / "logs" / "issues-test"
-        log_dir.mkdir(parents=True)
-        (log_dir / "run-abcd1234.log").write_text("starting\n")
-
-        # Simulate a PID file present (run started after initial active scan).
-        runs_dir = tmp_path / ".forge" / "runs"
-        runs_dir.mkdir(parents=True)
-        (runs_dir / "abcd1234.pid").write_text("99999\nissues-test\n")
-
-        # No .ended file — process is alive but appeared after list_active_runs.
-        with patch("theforge.detach.list_active_runs", return_value=[]):
-            _show_recent_runs(tmp_path)
-
-        out = capsys.readouterr().out
-        assert "active" in out, f"Expected 'active' in output, got:\n{out}"
-        assert "orphaned" not in out, f"Unexpected 'orphaned' in output:\n{out}"
-
-    def test_run_without_pid_file_and_no_ended_shows_orphaned(
-        self, tmp_path: Path, capsys: object
-    ) -> None:
-        from theforge.cli.status import _show_recent_runs
-
-        # Create a log file so the run appears in the historical scan.
-        log_dir = tmp_path / ".forge" / "logs" / "issues-test"
-        log_dir.mkdir(parents=True)
-        (log_dir / "run-dead1234.log").write_text("starting\n")
-
-        # No PID file, no .ended file — truly orphaned.
-        runs_dir = tmp_path / ".forge" / "runs"
-        runs_dir.mkdir(parents=True)
+        audit_substrate.seed_records(
+            tmp_path,
+            [
+                {
+                    "run_id": "abcd1234",
+                    "task": {"slug": "issues-test"},
+                    "outcome": {"success": True, "final_phase": "DONE"},
+                    "timing": {
+                        "started_at": "2026-04-01T10:00:00+00:00",
+                        "finished_at": "2026-04-01T10:01:00+00:00",
+                        "duration_seconds": 60.0,
+                    },
+                    "totals": {"cost_usd": 1.50, "duration_s": 60.0},
+                }
+            ],
+        )
 
         with patch("theforge.detach.list_active_runs", return_value=[]):
             _show_recent_runs(tmp_path)
 
         out = capsys.readouterr().out
-        assert "orphaned" in out, f"Expected 'orphaned' in output, got:\n{out}"
+        assert "abcd1234" in out, f"Substrate row missing from output:\n{out}"
+        assert "completed" in out
+        assert "single" in out
+
+    def test_substrate_sprint_row_shown(self, tmp_path: Path, capsys: object) -> None:
+        from theforge.cli.status import _show_recent_runs
+        from theforge.coordinator import audit_substrate
+
+        audit_substrate.seed_records(
+            tmp_path,
+            [
+                {
+                    "run_id": "sprint-001",
+                    "sprint": {
+                        "sprint_id": "sprint-001",
+                        "total_cost_usd": 7.42,
+                        "duration_seconds": 360.0,
+                    },
+                    "outcome": {"success": True, "final_phase": "DONE"},
+                    "timing": {"started_at": "2026-04-02T10:00:00+00:00"},
+                }
+            ],
+        )
+
+        with patch("theforge.detach.list_active_runs", return_value=[]):
+            _show_recent_runs(tmp_path)
+
+        out = capsys.readouterr().out
+        assert "sprint-001" in out
+        assert "sprint" in out
+        assert "completed" in out
+
+    def test_active_run_overlays_substrate(self, tmp_path: Path, capsys: object) -> None:
+        """Active runs (PID-file-backed) take precedence over the substrate row for the same id."""
+        from theforge.cli.status import _show_recent_runs
+        from theforge.coordinator import audit_substrate
+
+        audit_substrate.seed_records(
+            tmp_path,
+            [
+                {
+                    "run_id": "live01",
+                    "task": {"slug": "issues-test"},
+                    "outcome": {"success": True, "final_phase": "DONE"},
+                    "timing": {"started_at": "2026-04-01T09:00:00+00:00"},
+                    "totals": {"cost_usd": 1.0, "duration_s": 60.0},
+                }
+            ],
+        )
+
+        active = [{"run_id": "live01", "slug": "issues-test"}]
+        status = {"cost_usd": 0.25, "elapsed_seconds": 30.0}
+        with (
+            patch("theforge.detach.list_active_runs", return_value=active),
+            patch("theforge.detach.read_run_status", return_value=status),
+            patch("theforge.cli.status._is_sprint_run", return_value=False),
+        ):
+            _show_recent_runs(tmp_path)
+
+        out = capsys.readouterr().out
+        assert "live01" in out
+        # The active overlay's status string is the one that surfaces.
+        assert "active" in out
+        # And the substrate's "completed" string for the same id is suppressed.
+        assert out.count("live01") == 1
+
+    def test_no_substrate_no_audit_inputs_prints_no_runs(
+        self, tmp_path: Path, capsys: object
+    ) -> None:
+        from theforge.cli.status import _show_recent_runs
+
+        with patch("theforge.detach.list_active_runs", return_value=[]):
+            rc = _show_recent_runs(tmp_path)
+        assert rc == 0
+        assert "No recent runs found." in capsys.readouterr().out
+
+    def test_substrate_missing_with_legacy_inputs_warns(
+        self, tmp_path: Path, capsys: object
+    ) -> None:
+        """Legacy history.jsonl present, substrate absent: show warning, not silent fallback."""
+        from theforge.cli.status import _show_recent_runs
+
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        (audits / "history.jsonl").write_text(
+            '{"run_id": "leg01", "task": {"slug": "x"}}\n', encoding="utf-8"
+        )
+
+        with patch("theforge.detach.list_active_runs", return_value=[]):
+            _show_recent_runs(tmp_path)
+
+        captured = capsys.readouterr()
+        assert "historical runs unavailable" in captured.err
+        assert "include-legacy-history" in captured.err
 
 
 # ── Parser-level coverage ─────────────────────────────────────────────────────

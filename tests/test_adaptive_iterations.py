@@ -365,3 +365,54 @@ def test_budget_headroom_concrete_large_scenario(tmp_path: Path):
     assert result.dev_budget_usd >= 8.44, (
         f"Budget {result.dev_budget_usd:.4f} would have escalated the $8.44 run from issue #1148"
     )
+
+
+def test_read_history_tail_raises_when_substrate_missing_with_legacy(tmp_path: Path):
+    """Legacy history.jsonl present, substrate absent → operator-facing error.
+
+    Adaptive iteration must not silently fall back to no-history routing
+    when audit inputs exist on disk; the spec mandates a clear
+    SubstrateMissingError so the operator runs `forge audits rebuild
+    --include-legacy-history`.
+    """
+    import pytest
+
+    from theforge.coordinator import audit_substrate
+    from theforge.coordinator.adaptive_iterations import _read_history_tail
+
+    audits = tmp_path / ".forge" / "audits"
+    audits.mkdir(parents=True)
+    (audits / "history.jsonl").write_text('{"run_id": "x"}\n', encoding="utf-8")
+
+    with pytest.raises(audit_substrate.SubstrateMissingError):
+        _read_history_tail(tmp_path)
+
+
+def test_read_history_tail_returns_empty_for_truly_fresh_repo(tmp_path: Path):
+    """No substrate, no audit inputs → empty list (the legitimate fresh-repo path)."""
+    from theforge.coordinator.adaptive_iterations import _read_history_tail
+
+    assert _read_history_tail(tmp_path) == []
+
+
+def test_read_history_tail_reads_native_substrate_rows(tmp_path: Path):
+    """Substrate-only fixture: native rows surface as story-level history records."""
+    from theforge.coordinator import audit_substrate
+    from theforge.coordinator.adaptive_iterations import _read_history_tail
+
+    audit_substrate.seed_records(
+        tmp_path,
+        [
+            {
+                "run_id": "rec-1",
+                "task": {"slug": "story-a"},
+                "outcome": {"success": True, "final_phase": "DONE"},
+                "timing": {"started_at": "2026-04-01T10:00:00+00:00"},
+                "preflight": {"complexity": "medium", "complexity_score": 5},
+                "iterations": {"dev_iterations_productive": 2, "review_cycles_total": 1},
+            }
+        ],
+    )
+    records = _read_history_tail(tmp_path)
+    assert len(records) == 1
+    assert records[0]["run_id"] == "rec-1"

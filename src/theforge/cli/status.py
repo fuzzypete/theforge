@@ -171,11 +171,83 @@ def _resolve_run_id(run_id: str, project_root: Path) -> bool:
     return False
 
 
-def _show_recent_runs(project_root: Path) -> int:
-    """Print a compact table of recent runs sorted by time (newest first)."""
-    import yaml
+def _historical_row_from_substrate(record: dict) -> tuple[float, str, str, str, str, str] | None:
+    """Project a substrate audit record into a recent-runs table row.
 
+    Returns ``(sort_key, run_id, type, status, cost_str, elapsed_str)`` or
+    ``None`` when the record lacks a usable identity. Sprint-level rollups
+    (records carrying a ``sprint`` block) and single-run records are both
+    handled — the substrate is the single source of truth for both shapes.
+    """
+    if not isinstance(record, dict):
+        return None
+    run_id = str(record.get("run_id") or "")
+    if not run_id:
+        return None
+    timing = record.get("timing") or {}
+    started_at = timing.get("started_at") if isinstance(timing, dict) else None
+    finished_at = timing.get("finished_at") if isinstance(timing, dict) else None
+    sort_key = 0.0
+    for ts in (finished_at, started_at):
+        if isinstance(ts, str) and ts:
+            try:
+                sort_key = datetime.datetime.fromisoformat(ts).timestamp()
+                break
+            except ValueError:
+                continue
+
+    sprint_block = record.get("sprint") if isinstance(record.get("sprint"), dict) else None
+    if sprint_block is not None:
+        run_type = "sprint"
+        stopped = sprint_block.get("stopped_reason")
+        status_str = "stopped" if stopped else "completed"
+        cost_usd = sprint_block.get("total_cost_usd")
+        if cost_usd is None:
+            cost_usd = (record.get("totals") or {}).get("cost_usd")
+        dur_s = sprint_block.get("duration_seconds")
+        if dur_s is None:
+            dur_s = (record.get("totals") or {}).get("duration_s")
+            if dur_s is None:
+                dur_s = timing.get("duration_seconds") if isinstance(timing, dict) else None
+    else:
+        run_type = "single"
+        outcome = record.get("outcome") if isinstance(record.get("outcome"), dict) else {}
+        success = outcome.get("success")
+        final_phase = (outcome.get("final_phase") or "").lower() if outcome else ""
+        if success is True:
+            status_str = "completed"
+        elif success is False:
+            status_str = final_phase or "failed"
+        else:
+            status_str = final_phase or "unknown"
+        totals = record.get("totals") if isinstance(record.get("totals"), dict) else {}
+        cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+        cost_usd = totals.get("cost_usd") if totals else None
+        if cost_usd is None:
+            cost_usd = cost_block.get("total_usd") if cost_block else None
+        dur_s = totals.get("duration_s") if totals else None
+        if dur_s is None and isinstance(timing, dict):
+            dur_s = timing.get("duration_seconds")
+
+    cost_str = f"${cost_usd:.2f}" if isinstance(cost_usd, (int, float)) else "—"
+    if isinstance(dur_s, (int, float)) and dur_s > 0:
+        elapsed_str = f"{int(dur_s // 60)}m"
+    else:
+        elapsed_str = "—"
+    return (sort_key, run_id, run_type, status_str, cost_str, elapsed_str)
+
+
+def _show_recent_runs(project_root: Path) -> int:
+    """Print a compact table of recent runs sorted by time (newest first).
+
+    Active runs come from ``detach.list_active_runs`` (PID-file-backed,
+    includes in-flight cost/elapsed). Historical runs come from the SQLite
+    audit substrate — both sprint-level and single-run records live there
+    after the migration, so legacy backfilled rows imported via
+    ``forge audits rebuild --include-legacy-history`` also appear.
+    """
     from theforge import detach as _detach
+    from theforge.coordinator import audit_substrate
 
     # Rows: (mtime_float, run_id, type, status, cost_str, elapsed_str)
     rows: list[tuple[float, str, str, str, str, str]] = []
@@ -195,52 +267,37 @@ def _show_recent_runs(project_root: Path) -> int:
         rows.append((now, run_id, run_type, "active", cost_str, elapsed_str))
         seen_ids.add(run_id)
 
-    logs_dir = project_root / ".forge" / "logs"
+    # Historical runs — substrate is canonical. A truly fresh repo (no
+    # substrate, no audit inputs) yields no rows. A missing substrate
+    # alongside legacy audit inputs is operator-visible: print the
+    # rebuild command and skip historical rows rather than silently
+    # falling back to logs/.
+    sub_path = audit_substrate.substrate_path(project_root)
+    historical_unavailable_msg: str | None = None
+    if sub_path.exists() or audit_substrate.has_audit_inputs(project_root):
+        try:
+            conn = audit_substrate.require_substrate(project_root)
+        except audit_substrate.SubstrateMissingError as exc:
+            historical_unavailable_msg = f"[forge] historical runs unavailable: {exc}"
+            conn = None
+        except audit_substrate.SubstrateCorruptError as exc:
+            historical_unavailable_msg = f"[forge] historical runs unavailable: {exc}"
+            conn = None
+        if conn is not None:
+            try:
+                for record in audit_substrate.tail_records(conn, 200):
+                    row = _historical_row_from_substrate(record)
+                    if row is None:
+                        continue
+                    if row[1] in seen_ids:
+                        continue
+                    rows.append(row)
+                    seen_ids.add(row[1])
+            finally:
+                conn.close()
 
-    if logs_dir.exists():
-        # Completed sprints — collect with their summary file mtime.
-        for summary in logs_dir.rglob("sprint-summary.yaml"):
-            try:
-                mtime = summary.stat().st_mtime
-            except OSError:
-                continue
-            try:
-                with open(summary, encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-            except Exception:
-                continue
-            sp = data.get("sprint", {})
-            run_id = sp.get("run_id", "")
-            if not run_id or run_id in seen_ids:
-                continue
-            cost_usd = sp.get("total_cost_usd")
-            dur_s = sp.get("duration_seconds")
-            cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "—"
-            dur_str = f"{int(dur_s // 60)}m" if dur_s is not None else "—"
-            stopped = sp.get("stopped_reason")
-            status_str = "stopped" if stopped else "completed"
-            rows.append((mtime, run_id, "sprint", status_str, cost_str, dur_str))
-            seen_ids.add(run_id)
-
-        # Historical single runs — collect with log file mtime.
-        for log_file in logs_dir.rglob("run-*.log"):
-            run_id = log_file.stem[4:]
-            if run_id in seen_ids:
-                continue
-            try:
-                mtime = log_file.stat().st_mtime
-            except OSError:
-                continue
-            outcome = _detach.read_run_ended(run_id, project_root)
-            if outcome is not None:
-                status_str = outcome
-            else:
-                # Cross-check: a PID file means a run started after the
-                # initial list_active_runs scan — label it active, not orphaned.
-                pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
-                status_str = "active" if pid_file.exists() else "orphaned"
-            rows.append((mtime, run_id, "single", status_str, "—", "—"))
-            seen_ids.add(run_id)
+    if historical_unavailable_msg is not None:
+        print(historical_unavailable_msg, file=sys.stderr)
 
     if not rows:
         print("No recent runs found.")
