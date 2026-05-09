@@ -649,39 +649,109 @@ class TestCreatePR:
         assert "Closes" not in body
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
-    def test_merged_pr_lookup_skips_duplicate_pr_creation(self, mock_run, tmp_path):
-        """If a merged PR already exists for the branch, _create_pr returns early."""
+    def test_prior_merged_pr_containing_head_short_circuits_with_success(self, mock_run, tmp_path):
+        """When prior merged PR contains current HEAD, skip PR creation as success.
+
+        This is the already-landed case: the work is already in the merged PR, so
+        recreating a PR would be a no-op. Returning success-skipped lets the merge
+        machinery treat the branch as landed.
+        """
         from theforge.coordinator.completion import _create_pr
 
         config = self._make_pr_config(tmp_path)
+        worktree = tmp_path / "test-task"
+        worktree.mkdir(parents=True, exist_ok=True)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test\n", encoding="utf-8")
         task = TaskStory(name="Test Task", slug="test-task", story_path=spec)
         state = CoordinatorState()
 
-        mock_run.return_value = type(
-            "Proc",
-            (),
-            {
-                "returncode": 0,
-                "stdout": (
-                    '[{"number": 222, "url": "https://github.com/test/pr/222", '
-                    '"mergedAt": "2024-01-02T03:04:05Z"}]'
-                ),
-                "stderr": "",
-            },
-        )()
+        head_sha = "abc1234abc1234abc1234abc1234abc1234abc1"
+
+        def _proc(stdout: str = "", returncode: int = 0):
+            return type(
+                "Proc",
+                (),
+                {"returncode": returncode, "stdout": stdout, "stderr": ""},
+            )()
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    return _proc(
+                        '[{"number": 222, "url": "https://github.com/test/pr/222", '
+                        '"mergedAt": "2024-01-02T03:04:05Z"}]'
+                    )
+                if cmd[:2] == ["git", "rev-parse"]:
+                    return _proc(f"{head_sha}\n")
+                if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd:
+                    return _proc(f'{{"commits": [{{"oid": "{head_sha}"}}]}}')
+            return _proc()
+
+        mock_run.side_effect = _fake_run
 
         result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
-        assert result["success"] is False
+        assert result["success"] is True
         assert result["pr_url"] == "https://github.com/test/pr/222"
-        assert "already merged" in result["error"]
-        assert mock_run.call_count == 1
-        lookup_call = mock_run.call_args_list[0]
-        assert lookup_call[0][0][:3] == ["gh", "pr", "list"]
-        json_idx = lookup_call[0][0].index("--json") + 1
-        assert lookup_call[0][0][json_idx] == "number,url,mergedAt"
+        assert result.get("skipped") is True
+        # Must not have attempted push or create.
+        all_cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert not any(c[:2] == ["git", "push"] for c in all_cmds)
+        assert not any(c[:3] == ["gh", "pr", "create"] for c in all_cmds)
+
+    @patch("theforge.coordinator.validate_phase.subprocess.run")
+    def test_prior_merged_pr_without_head_falls_through_to_create(self, mock_run, tmp_path):
+        """A reopened-issue case: prior merged PR exists for the branch name but
+        its commits don't contain current HEAD. _create_pr must publish a fresh
+        PR rather than fail with 'already merged' (issue #1461)."""
+        from theforge.coordinator.completion import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        worktree = tmp_path / "test-task"
+        worktree.mkdir(parents=True, exist_ok=True)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec)
+        state = CoordinatorState()
+
+        current_head = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
+        old_pr_commit = "oldoldoldoldoldoldoldoldoldoldoldoldoldo"
+        new_pr_url = "https://github.com/test/pr/999"
+
+        def _proc(stdout: str = "", returncode: int = 0):
+            return type(
+                "Proc",
+                (),
+                {"returncode": returncode, "stdout": stdout, "stderr": ""},
+            )()
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    return _proc(
+                        '[{"number": 222, "url": "https://github.com/test/pr/222", '
+                        '"mergedAt": "2024-01-02T03:04:05Z"}]'
+                    )
+                if cmd[:2] == ["git", "rev-parse"]:
+                    return _proc(f"{current_head}\n")
+                if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd:
+                    return _proc(f'{{"commits": [{{"oid": "{old_pr_commit}"}}]}}')
+                if cmd[:3] == ["git", "rev-list", "--count"]:
+                    return _proc("3\n")
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    return _proc(f"{new_pr_url}\n")
+            return _proc()
+
+        mock_run.side_effect = _fake_run
+
+        result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        assert result["success"] is True
+        assert result["pr_url"] == new_pr_url
+        assert result.get("error") is None
+        all_cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert any(c[:3] == ["gh", "pr", "create"] for c in all_cmds)
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):

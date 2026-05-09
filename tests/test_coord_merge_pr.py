@@ -1399,6 +1399,116 @@ class TestPrBodyContent:
         }
 
 
+# ── Reopened-issue with prior merged PR on same branch name ──────
+
+
+class TestCreatePrReopenedBranch:
+    """_create_pr opens a fresh PR when prior merged PR's commits don't contain HEAD.
+
+    Exercises the failure mode from issue #1461: a reopened issue whose prior fix
+    PR is already merged on the same deterministic branch name. The dev cycle has
+    produced new commits distinct from the prior PR; integration must publish a
+    fresh PR rather than fail with MERGE_FAILED.
+    """
+
+    def test_prior_merged_pr_without_head_falls_through_to_create(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        (tmp_path / "test-task").mkdir(parents=True, exist_ok=True)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        current_head = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
+        old_pr_commit = "oldoldoldoldoldoldoldoldoldoldoldoldoldo"
+        new_pr_url = "https://github.com/fuzzypete/theforge/pull/99"
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                calls.append(cmd)
+                if cmd[:3] == ["gh", "pr", "list"] and "--state" in cmd and "closed" in cmd:
+                    return _make_subprocess_result(
+                        0,
+                        stdout=(
+                            '[{"number": 1419, '
+                            '"url": "https://github.com/fuzzypete/theforge/pull/1419", '
+                            '"mergedAt": "2026-05-06T00:00:00Z"}]'
+                        ),
+                    )
+                if cmd[:2] == ["git", "rev-parse"]:
+                    return _make_subprocess_result(0, stdout=f"{current_head}\n")
+                if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd:
+                    return _make_subprocess_result(
+                        0, stdout=f'{{"commits": [{{"oid": "{old_pr_commit}"}}]}}'
+                    )
+                if cmd[:3] == ["git", "rev-list", "--count"]:
+                    return _make_subprocess_result(0, stdout="3\n")
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    return _make_subprocess_result(0, stdout=new_pr_url)
+                if cmd[:2] == ["git", "push"]:
+                    return _make_subprocess_result(0)
+            return _make_subprocess_result(0)
+
+        with patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run):
+            result = _create_pr(config, task, "feat/issue-1405", review, state)
+
+        assert result["success"] is True, result
+        assert result["pr_url"] == new_pr_url
+        assert result.get("error") is None
+        assert any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls), (
+            "Expected gh pr create to be invoked when prior merged PR doesn't contain HEAD"
+        )
+
+    def test_prior_merged_pr_containing_head_short_circuits_with_success(
+        self, tmp_path: Path
+    ) -> None:
+        """When the prior merged PR already contains current HEAD, skip with success.
+
+        Avoids a redundant push/PR-create when the work has already landed.
+        """
+        config = _make_merge_pr_config(tmp_path)
+        (tmp_path / "test-task").mkdir(parents=True, exist_ok=True)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        head_sha = "abc1234abc1234abc1234abc1234abc1234abc1"
+        prior_pr_url = "https://github.com/fuzzypete/theforge/pull/1419"
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                calls.append(cmd)
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    return _make_subprocess_result(
+                        0,
+                        stdout=(
+                            f'[{{"number": 1419, "url": "{prior_pr_url}", '
+                            '"mergedAt": "2026-05-06T00:00:00Z"}]'
+                        ),
+                    )
+                if cmd[:2] == ["git", "rev-parse"]:
+                    return _make_subprocess_result(0, stdout=f"{head_sha}\n")
+                if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd:
+                    return _make_subprocess_result(
+                        0, stdout=f'{{"commits": [{{"oid": "{head_sha}"}}]}}'
+                    )
+            return _make_subprocess_result(0)
+
+        with patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run):
+            result = _create_pr(config, task, "feat/issue-1405", review, state)
+
+        assert result["success"] is True
+        assert result["pr_url"] == prior_pr_url
+        assert result.get("skipped") is True
+        assert not any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls)
+        assert not any(cmd[:2] == ["git", "push"] for cmd in calls)
+
+
 # ── Escalate on merge-pr failure ─────────────────────────────────
 
 
