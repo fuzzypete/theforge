@@ -233,6 +233,7 @@ def cmd_sprint(args: object) -> int:
             "resume": resume,
             "config": str(config_path),
             "no_pull": no_pull,
+            "force": force,
         }
         response = _daemon.submit_sprint(config.project_root, str(manifest_path), sprint_args)
         if response.get("ok"):
@@ -258,6 +259,7 @@ def cmd_sprint(args: object) -> int:
             no_pull=no_pull,
             run_id=run_id,
             dropped_slugs=dropped_slugs,
+            force=force,
         )
     except Exception as exc:
         import traceback
@@ -689,6 +691,7 @@ def _run_query_mode(
             dropped_slugs=dropped_slugs,
             skipped_issues=skipped_issues,
             entry_intake_outcomes=entry_intake_outcomes,
+            force=force,
         )
     except Exception as exc:
         import traceback
