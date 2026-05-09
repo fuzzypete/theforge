@@ -60,6 +60,7 @@ class SkippedIssue:
 class ShapeGateResult:
     runnable: list[dict] = field(default_factory=list)
     skipped: list[SkippedIssue] = field(default_factory=list)
+    advisories: list[SkippedIssue] = field(default_factory=list)
 
 
 def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
@@ -267,6 +268,7 @@ def apply_shape_gate(
     effective_mode = _resolve_classifier(classifier_mode, llm_caller=llm_caller)
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
+    advisories: list[SkippedIssue] = []
 
     for issue in issues:
         number = int(issue["number"])
@@ -306,7 +308,12 @@ def apply_shape_gate(
             continue
 
         if reopen_state.has_stale_body:
-            skipped.append(
+            # Advisory only: the underlying check verifies timeline-event
+            # ordering, not body content, so blocking sprint entry on it
+            # would demand ceremonial work the gate cannot validate. The
+            # reopen comment itself flows to dev/review via
+            # ``append_reopen_context`` in ``sources.py`` regardless.
+            advisories.append(
                 SkippedIssue(
                     issue_number=number,
                     reason_codes=(REOPENED_STALE_CONTRACT_CODE,),
@@ -315,7 +322,6 @@ def apply_shape_gate(
                     detail=format_reopen_stale_detail(reopen_state),
                 )
             )
-            continue
 
         if local.shape is not Shape.RUNNABLE:
             codes = _blocking_codes(local) or [r.code for r in local.reasons]
@@ -339,9 +345,9 @@ def apply_shape_gate(
     if force:
         # Escape hatch: caller wants to run every input issue. Skip list is
         # preserved so CLI can render a prominent warning.
-        return ShapeGateResult(runnable=list(issues), skipped=skipped)
+        return ShapeGateResult(runnable=list(issues), skipped=skipped, advisories=advisories)
 
-    return ShapeGateResult(runnable=runnable, skipped=skipped)
+    return ShapeGateResult(runnable=runnable, skipped=skipped, advisories=advisories)
 
 
 def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
@@ -350,6 +356,19 @@ def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
         return ""
     lines = [f"[forge] {len(skipped)} issue(s) flagged by shape gate:"]
     for entry in skipped:
+        codes = ", ".join(entry.reason_codes) or "<no codes>"
+        title = f" — {entry.title}" if entry.title else ""
+        detail = f" [{entry.detail}]" if entry.detail else ""
+        lines.append(f"  - #{entry.issue_number} ({entry.source}): {codes}{title}{detail}")
+    return "\n".join(lines)
+
+
+def format_advisory_warning(advisories: list[SkippedIssue]) -> str:
+    """Render a human-readable advisory note for non-blocking findings."""
+    if not advisories:
+        return ""
+    lines = [f"[forge] {len(advisories)} issue(s) carry shape-gate advisories (not blocking):"]
+    for entry in advisories:
         codes = ", ".join(entry.reason_codes) or "<no codes>"
         title = f" — {entry.title}" if entry.title else ""
         detail = f" [{entry.detail}]" if entry.detail else ""

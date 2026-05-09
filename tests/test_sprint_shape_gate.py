@@ -133,14 +133,18 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
     assert result.skipped == []
 
 
-def test_reopened_issue_with_stale_body_is_skipped(tmp_path: Path) -> None:
+def test_reopened_issue_with_stale_body_is_advisory_not_blocking(tmp_path: Path) -> None:
+    """A reopened bug whose body predates the reopen event is no longer
+    refused at sprint entry; the rule is downgraded to a non-blocking
+    advisory because the underlying check verifies only timeline-event
+    ordering, not body content."""
     issues = [{"number": 55, "title": "Reopened"}]
 
     def fetch(_number, _project_root):
         return {
             "title": "Reopened",
             "body": _RUNNABLE_BODY,
-            "labels": ["bug"],
+            "labels": ["enhancement"],
             "state": "OPEN",
             "comments": [
                 {
@@ -160,11 +164,14 @@ def test_reopened_issue_with_stale_body_is_skipped(tmp_path: Path) -> None:
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
 
-    assert result.runnable == []
-    assert len(result.skipped) == 1
-    entry = result.skipped[0]
+    assert result.runnable == issues
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    entry = result.advisories[0]
     assert entry.reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
-    assert "reconcile the body before sprinting or pass --force" in entry.detail
+    # Honest framing: no instruction to "reconcile the body before sprinting".
+    assert "reconcile the body before sprinting" not in entry.detail
+    assert "postdates the last body edit" in entry.detail
 
 
 def test_reopened_issue_with_body_edit_after_reopen_is_runnable(tmp_path: Path) -> None:
@@ -234,7 +241,10 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
     assert result.skipped[0].source == "label"
 
 
-def test_force_override_keeps_reopened_stale_contract_warning(tmp_path: Path) -> None:
+def test_force_override_preserves_reopened_stale_contract_advisory(tmp_path: Path) -> None:
+    """Under --force the reopen advisory remains visible (advisory channel),
+    matching the prior force-mode behavior of preserving the warning while
+    still running every issue."""
     issues = [{"number": 57, "title": "Reopened"}]
 
     def fetch(_number, _project_root):
@@ -262,8 +272,8 @@ def test_force_override_keeps_reopened_stale_contract_warning(tmp_path: Path) ->
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch, force=True)
 
     assert result.runnable == issues
-    assert len(result.skipped) == 1
-    assert result.skipped[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
+    assert len(result.advisories) == 1
+    assert result.advisories[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
 
 
 # ── Mixed sprint ───────────────────────────────────────────────────────────
