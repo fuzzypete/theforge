@@ -299,6 +299,9 @@ def _create_pr(
 
     pr_title = f"{task.name}"
 
+    worktree_dir = config.workspace.path_pattern.format(slug=task.slug)
+    worktree_path = config.project_root / worktree_dir
+
     try:
         merged_pr_proc = subprocess.run(
             [
@@ -319,12 +322,31 @@ def _create_pr(
         )
         if merged_pr_proc.returncode == 0:
             merged_prs = json.loads(merged_pr_proc.stdout or "[]")
-            merged_pr = next((pr for pr in merged_prs if pr.get("mergedAt")), None)
+            merged_pr = _find_pr_containing_head(
+                merged_prs,
+                worktree_path=worktree_path,
+                project_root=config.project_root,
+                branch_name=branch_name,
+            )
             if merged_pr is not None:
                 pr_url = merged_pr.get("url")
-                message = f"PR already merged for branch {branch_name}: {pr_url}"
-                _pr_log.warning(message)
-                return {"action": "pr", "pr_url": pr_url, "success": False, "error": message}
+                _pr_log.info(
+                    "PR already merged for branch %s contains current HEAD; "
+                    "skipping PR recreation: %s",
+                    branch_name,
+                    pr_url,
+                )
+                return {
+                    "action": "pr",
+                    "pr_url": pr_url,
+                    "success": True,
+                    "error": None,
+                    "skipped": True,
+                    "skip_reason": "prior PR already contains current HEAD",
+                }
+            # No matching merged PR for current HEAD: fall through and open a fresh
+            # PR for the new commits — even if a prior PR for this branch name was
+            # merged with different commits (reopened-issue-with-prior-merged-fix).
         else:
             err = merged_pr_proc.stderr.strip() or merged_pr_proc.stdout.strip()
             _pr_log.warning(
@@ -356,8 +378,6 @@ def _create_pr(
 
     # Archive spec from backlog/ to done/ in the feature branch so the
     # merge carries the move into main.
-    worktree_dir = config.workspace.path_pattern.format(slug=task.slug)
-    worktree_path = config.project_root / worktree_dir
     push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
     if task.story_path:
         _archive_story_to_done(task.story_path, push_cwd, commit=True)
