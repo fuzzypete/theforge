@@ -317,6 +317,13 @@ class CoordinatorState:
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None
     preflight_criteria_checked: list[dict] = field(default_factory=list)
+    # Structured symptom-verification record for bug ALREADY_DONE verdicts.
+    # Keys: status ("verified_resolved" | "not_reproduced" | "not_feasible" |
+    # "not_attempted" | "" when absent), evidence (str), reproduces_now (bool|None).
+    # An empty dict means the preflight output did not contain the field — for
+    # bug-typed stories this is treated as missing symptom verification and
+    # downgrades ALREADY_DONE to PROCEED.
+    preflight_symptom_verification: dict = field(default_factory=dict)
     # Risk signals consulted when preflight agent failed and the coordinator
     # had to choose between conservative PROCEED and explicit escalation.
     # Empty list means no signals were detected (or preflight succeeded so
