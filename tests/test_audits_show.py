@@ -15,7 +15,7 @@ def _make_record(run_id: str, slug: str, *, cost: float = 1.0, score: int | None
         "run_id": run_id,
         "task": {"slug": slug, "name": slug},
         "outcome": {"success": True, "final_phase": "DONE"},
-        "timing": {"started_at": f"2026-03-01T10:00:00+00:00"},
+        "timing": {"started_at": "2026-03-01T10:00:00+00:00"},
         "totals": {"cost_usd": cost},
         "iterations": {"dev_iterations": 1, "review_cycles": 1},
         "reviews": [{"cycle": 1, "verdict": "APPROVE"}],

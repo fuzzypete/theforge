@@ -101,7 +101,8 @@ def _cmd_audits_show(args: object) -> int:
         print("  ".join(cell.ljust(widths[c]) for c, cell in enumerate(row)))
         if i == 0:
             print("  ".join("-" * w for w in widths))
-    print(f"\n{len(rows)} record(s) shown (limit={limit}" + (f", slug={slug}" if slug else "") + ")")
+    suffix = f", slug={slug}" if slug else ""
+    print(f"\n{len(rows)} record(s) shown (limit={limit}{suffix})")
     return 0
 
 
