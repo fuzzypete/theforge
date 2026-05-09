@@ -935,3 +935,74 @@ class TestValidationTestCommand:
         )
         with pytest.raises(ValueError, match="v0.8"):
             load_config(config_path)
+
+
+class TestCliPoolCrossProviderRotation:
+    """Issue #1468 — a CLI-only models: pool (claude/codex/gemini) loaded via
+    forge.yaml must, when fed through assign_models with prefer_cross_provider,
+    yield reviewers across all three CLI binaries. Before the fix, every CLI
+    agent collapsed to provider=None and only the first was selected as
+    cross-provider, with the rest excluded by the diversity check."""
+
+    def test_cli_only_pool_yields_distinct_effective_providers(self, tmp_path):
+        from theforge.assignment import assign_models
+
+        config_path = _write_config(
+            {
+                "models": [
+                    "claude/sonnet",
+                    "claude/opus",
+                    "openai/gpt-5.4-pro",
+                    "gemini-cli/gemini-2.5-pro",
+                ],
+                "budget_usd": 30.0,
+                "assignment": {
+                    "enabled": True,
+                    "min_reviewers": 3,
+                    "max_reviewers": 3,
+                    "prefer_cross_provider": True,
+                    "max_cost_per_story_usd": 1000.0,
+                },
+            },
+            tmp_path,
+        )
+        # The conftest scrub blocks `shutil.which("claude" | "codex" | "gemini")`
+        # so load_config's reviewer-auth cross-check would otherwise reject the
+        # whole pool. Pretend each CLI binary is installed for this test.
+        # codex/gemini route through `npx` per theforge.config.auth._NPX_CLIS,
+        # so the auth check is `shutil.which('npx')` for those — list npx too.
+        cli_bins = {
+            "claude": "/usr/bin/claude",
+            "codex": "/usr/bin/codex",
+            "gemini": "/usr/bin/gemini",
+            "npx": "/usr/bin/npx",
+        }
+        with patch(
+            "theforge.config.auth.shutil.which",
+            side_effect=lambda cmd, *a, **kw: cli_bins.get(Path(cmd).name),
+        ):
+            config = load_config(config_path)
+            decision = assign_models(config.agents, config.assignment, complexity="small")
+
+        # Sanity: the pool truly contains four CLI agents whose raw provider
+        # field is None (the bug condition).
+        assert len(config.agents) == 4
+        assert {a.cli for a in config.agents} == {"claude", "codex", "gemini"}
+        assert all(a.provider is None for a in config.agents)
+        # …but their effective providers are derived from the cli binary.
+        assert {a.effective_provider for a in config.agents} == {
+            "anthropic",
+            "openai",
+            "google",
+        }
+
+        assert len(decision.code_reviewers) == 3
+        # Each reviewer must come from a distinct CLI binary — i.e., a distinct
+        # effective provider — even though every agent's raw provider is None.
+        assert {r.cli for r in decision.code_reviewers} == {"claude", "codex", "gemini"}
+        # Rationale must surface the derived provider names, never the literal
+        # `None` that leaked through before the fix.
+        rationale = decision.rationale.get("code_review", "")
+        assert "None" not in rationale, rationale
+        for derived in ("anthropic", "openai", "google"):
+            assert derived in rationale, f"expected {derived!r} in rationale: {rationale}"

@@ -153,6 +153,13 @@ class ModelInfo:
     transport: TransportSpec | None = None  # the canonical TransportSpec this view was built from
 
 
+_CLI_TO_PROVIDER: dict[str, str] = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "gemini": "google",
+}
+
+
 @dataclass(frozen=True)
 class AgentDef:
     """An agent available in the pool for adaptive model assignment."""
@@ -168,6 +175,23 @@ class AgentDef:
     strengths: tuple[str, ...] = ()
     registry_id: str | None = None
     registry_source: str = "builtin"
+
+    @property
+    def effective_provider(self) -> str | None:
+        """Return the agent's provider for routing/display purposes.
+
+        For API agents this is the explicit ``provider`` field. For CLI-only
+        agents (where ``provider`` is None), this derives the provider from the
+        ``cli`` binary: ``claude`` → ``anthropic``, ``codex`` → ``openai``,
+        ``gemini`` → ``google``. The raw ``provider`` field stays None for CLI
+        agents so dispatch (which reads ``ModelProfile.provider`` to choose
+        between CLI and API runners) is unaffected.
+        """
+        if self.provider is not None:
+            return self.provider
+        if self.cli is not None:
+            return _CLI_TO_PROVIDER.get(self.cli)
+        return None
 
     def to_model_profile(self, *, allowed_tools: tuple[str, ...] = ()) -> ModelProfile:
         """Convert to a ModelProfile for use in coordinator config."""
