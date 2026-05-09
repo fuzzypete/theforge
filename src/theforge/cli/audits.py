@@ -16,8 +16,100 @@ def cmd_audits(args: object) -> int:
         return _cmd_audits_rebuild(args)
     if sub == "export-assignment-history":
         return _cmd_audits_export_assignment_history(args)
+    if sub == "show":
+        return _cmd_audits_show(args)
     print(f"forge audits: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
+
+
+def _cmd_audits_show(args: object) -> int:
+    """Render rows from the SQLite audit substrate.
+
+    Provides an operator-visible surface for substrate rows that have no
+    corresponding per-run YAML — in particular legacy rows imported from
+    ``history.jsonl`` (provenance ``legacy_history_jsonl``), which
+    ``forge audit <file>`` cannot address.
+    """
+    config_path = _find_config(Path(args.config).resolve() if args.config else None)
+    if config_path is None:
+        print(
+            "[forge] forge.yaml not found. Run from a forge project root.",
+            file=sys.stderr,
+        )
+        return 1
+    project_root = config_path.parent
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists():
+        print(
+            f"[forge] audit substrate not found at {sub_path}. "
+            f"Run `forge audits rebuild` to create it.",
+            file=sys.stderr,
+        )
+        return 1
+
+    slug = getattr(args, "slug", None)
+    raw_limit = getattr(args, "limit", None)
+    limit = int(raw_limit) if raw_limit is not None else 20
+    if limit <= 0:
+        print("[forge] --limit must be a positive integer.", file=sys.stderr)
+        return 2
+
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(str(sub_path))
+    try:
+        sql = (
+            "SELECT slug, started_at, final_phase, complexity_score, "
+            "provenance, landing_status, total_cost_usd "
+            "FROM audit_records"
+        )
+        params: tuple
+        if slug:
+            sql += " WHERE slug = ?"
+            params = (slug,)
+        else:
+            params = ()
+        sql += " ORDER BY COALESCE(started_at, '') DESC LIMIT ?"
+        params = params + (limit,)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        if slug:
+            print(f"[forge] no audit records found for slug {slug!r}.")
+        else:
+            print("[forge] no audit records found.")
+        return 0
+
+    header = ("slug", "started_at", "final_phase", "score", "provenance", "landing", "cost_usd")
+    fmt_rows: list[tuple[str, ...]] = [header]
+    for slug_, started, phase, score, prov, landing, cost in rows:
+        fmt_rows.append(
+            (
+                _fmt(slug_),
+                _fmt(started),
+                _fmt(phase),
+                _fmt(score),
+                _fmt(prov),
+                _fmt(landing),
+                f"{cost:.4f}" if isinstance(cost, (int, float)) else _fmt(cost),
+            )
+        )
+    widths = [max(len(r[i]) for r in fmt_rows) for i in range(len(header))]
+    for i, row in enumerate(fmt_rows):
+        print("  ".join(cell.ljust(widths[c]) for c, cell in enumerate(row)))
+        if i == 0:
+            print("  ".join("-" * w for w in widths))
+    suffix = f", slug={slug}" if slug else ""
+    print(f"\n{len(rows)} record(s) shown (limit={limit}{suffix})")
+    return 0
+
+
+def _fmt(value: object) -> str:
+    if value is None:
+        return "-"
+    return str(value)
 
 
 def _cmd_audits_export_assignment_history(args: object) -> int:
@@ -252,6 +344,25 @@ def register_parser(subparsers: object) -> None:
         help="Output path (default: .forge/assignment_history.yaml)",
     )
     export_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+
+    show_parser = audits_sub.add_parser(
+        "show",
+        help="Render rows from the SQLite audit substrate (incl. imported legacy rows)",
+    )
+    show_parser.add_argument(
+        "--slug",
+        help="Filter to a single slug (e.g. issue-1325)",
+    )
+    show_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum rows to render (default: 20)",
+    )
+    show_parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
     )
