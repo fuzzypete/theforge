@@ -45,6 +45,7 @@ from .preflight import (
     _parse_preflight_criteria_checked,
     _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
+    _parse_preflight_symptom_verification,
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _parse_preflight_work_type,
@@ -429,6 +430,8 @@ def _run_preflight_phase(
         # The sprint scheduler writes this field after compute_bundle_assignments.
         criteria_checked = _parse_preflight_criteria_checked(preflight_result.output)
         state.preflight_criteria_checked = criteria_checked
+        symptom_verification = _parse_preflight_symptom_verification(preflight_result.output)
+        state.preflight_symptom_verification = symptom_verification
 
         # ── Deterministic contract-change policy ───────────────────────
         # A contract change touches a shared interface field, prompt template
@@ -573,6 +576,48 @@ def _run_preflight_phase(
                             f"AC '{criterion}' evidence too thin for ALREADY_DONE "
                             f"(len={len(evidence)})"
                         )
+            # ── Symptom-verification gate for bug stories ─────────────────
+            # AC-evidence checks above prove that named acceptance criteria
+            # are observable in the live code. For bug stories the verdict
+            # ALREADY_DONE additionally requires that the originally observed
+            # symptom no longer reproduces — refuting a hypothesized cause in
+            # the body's Diagnosis section is not equivalent to confirming the
+            # defect is fixed. Require an explicit symptom_verification block
+            # asserting status=verified_resolved with non-thin evidence;
+            # otherwise demote to PROCEED so the dev cycle exercises the
+            # symptom against the current baseline.
+            if work_type == "bug":
+                sv_status = str(symptom_verification.get("status") or "").strip()
+                sv_evidence = str(symptom_verification.get("evidence") or "").strip()
+                reproduces_now = symptom_verification.get("reproduces_now")
+                if not symptom_verification or not sv_status:
+                    downgrade_reasons.append(
+                        "symptom_verification absent — bug ALREADY_DONE requires "
+                        "evidence the originally observed symptom does not "
+                        "reproduce against the current baseline; refuting a "
+                        "diagnosis hypothesis is not symptom verification"
+                    )
+                elif sv_status != "verified_resolved":
+                    downgrade_reasons.append(
+                        f"symptom_verification.status={sv_status!r} — only "
+                        "'verified_resolved' justifies bug ALREADY_DONE; "
+                        "demoting to PROCEED so the dev cycle reproduces and "
+                        "verifies symptom resolution"
+                    )
+                elif reproduces_now is True:
+                    downgrade_reasons.append(
+                        "symptom_verification.reproduces_now=true — symptom "
+                        "still reproduces against the current baseline; "
+                        "ALREADY_DONE is not justified"
+                    )
+                elif not sv_evidence or _evidence_is_too_thin(sv_evidence):
+                    downgrade_reasons.append(
+                        "symptom_verification.evidence missing or too thin "
+                        f"(len={len(sv_evidence)}) — bug ALREADY_DONE requires "
+                        "concrete evidence the symptom was exercised and did "
+                        "not reproduce"
+                    )
+
             if downgrade_reasons:
                 verdict = "PROCEED"
                 state.preflight_verdict = verdict
@@ -670,6 +715,7 @@ def _run_preflight_phase(
             workspace_path=workspace_path,
         ),
         "criteria_checked": state.preflight_criteria_checked,
+        "symptom_verification": dict(state.preflight_symptom_verification or {}),
         "degraded": state.preflight_degraded,
         "degraded_reason": state.preflight_degraded_reason,
         "risk_signals": list(state.preflight_risk_signals),

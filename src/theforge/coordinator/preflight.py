@@ -562,6 +562,60 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
         return []
 
 
+_VALID_SYMPTOM_VERIFICATION_STATUSES = frozenset(
+    {"verified_resolved", "not_reproduced", "not_feasible", "not_attempted"}
+)
+
+
+def _parse_preflight_symptom_verification(output: str) -> dict:
+    """Extract symptom_verification from preflight agent output.
+
+    Returns a normalized dict with keys:
+      - status: one of the valid status enum values, or "" when absent/invalid
+      - evidence: stripped string, "" when absent
+      - reproduces_now: bool | None — explicit signal that the symptom was
+        exercised against the current baseline (False = not reproduced =
+        symptom resolved); None when not asserted
+
+    Returns {} when the field is absent so the caller can distinguish "agent
+    did not address symptom" from "agent addressed and gave a status".
+    """
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    raw = parsed.get("symptom_verification")
+    if not isinstance(raw, dict):
+        return {}
+
+    status = str(raw.get("status", "")).strip().lower()
+    if status not in _VALID_SYMPTOM_VERIFICATION_STATUSES:
+        status = ""
+    evidence = str(raw.get("evidence") or "").strip()
+    reproduces_raw = raw.get("reproduces_now")
+    if isinstance(reproduces_raw, bool):
+        reproduces_now: bool | None = reproduces_raw
+    else:
+        reproduces_now = None
+    return {
+        "status": status,
+        "evidence": evidence,
+        "reproduces_now": reproduces_now,
+    }
+
+
 def _find_registry_info_for_profile(
     profile: ModelProfile,
     *,
