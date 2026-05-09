@@ -43,6 +43,7 @@ class TaskStory:
     type: str | None = None  # structured story type from frontmatter or GH label
     type_warnings: list[str] = field(default_factory=list)  # missing-type migration warnings
     fix_ready: bool | None = None  # True iff bug has full Diagnosis section or non-bug type
+    investigation_ready: bool = False  # True when bug passes gate but cause is not yet asserted
     readiness_warnings: list[str] = field(default_factory=list)  # why fix_ready is False/None
 
 

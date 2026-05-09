@@ -358,7 +358,7 @@ class GitHubIssueSource:
             if isinstance(lbl, dict) and lbl.get("name")
         ]
         story_type, type_warnings = _derive_type_from_labels(label_names, number)
-        fix_ready, readiness_warnings = derive_fix_ready(story_type, body)
+        fix_ready, investigation_ready, readiness_warnings = derive_fix_ready(story_type, body)
         status_labels = sorted(set(label_names) & RECOGNIZED_STATUS_LABELS)
         # Surface label/body disagreement for operator awareness — body is authoritative.
         if (
@@ -395,6 +395,7 @@ class GitHubIssueSource:
             type=story_type,
             type_warnings=type_warnings,
             fix_ready=fix_ready,
+            investigation_ready=investigation_ready,
             readiness_warnings=readiness_warnings,
         )
 
