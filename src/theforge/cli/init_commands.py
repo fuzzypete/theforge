@@ -12,6 +12,13 @@ from pathlib import Path
 from theforge.config import PROVIDER_API_KEY_MAP, generate_default_config
 
 _GITIGNORE_ENTRY = ".forge/.env"
+_GITIGNORE_ENTRIES: tuple[str, ...] = (
+    ".forge/.env",
+    # Derived assignment-history snapshot — reconstructable from the audit
+    # substrate via `forge audits export-assignment-history`. Tracking it
+    # creates spurious cross-branch merge conflicts (#793).
+    ".forge/assignment_history.yaml",
+)
 
 _STORY_TEMPLATE = """\
 ---
@@ -48,16 +55,19 @@ read this as context, not as requirements.
 
 
 def _ensure_gitignored(project_root: Path) -> None:
-    """Append .forge/.env to .gitignore if not already present."""
+    """Append the TheForge gitignore entries that aren't already present."""
     gitignore = project_root / ".gitignore"
     if gitignore.exists():
         content = gitignore.read_text(encoding="utf-8")
-        if _GITIGNORE_ENTRY in content.splitlines():
+        existing = set(content.splitlines())
+        missing = [entry for entry in _GITIGNORE_ENTRIES if entry not in existing]
+        if not missing:
             return
         separator = "" if content.endswith("\n") else "\n"
-        gitignore.write_text(content + separator + _GITIGNORE_ENTRY + "\n", encoding="utf-8")
+        appended = separator + "\n".join(missing) + "\n"
+        gitignore.write_text(content + appended, encoding="utf-8")
     else:
-        gitignore.write_text(_GITIGNORE_ENTRY + "\n", encoding="utf-8")
+        gitignore.write_text("\n".join(_GITIGNORE_ENTRIES) + "\n", encoding="utf-8")
 
 
 def _generate_secrets_skeleton() -> str:
@@ -100,7 +110,7 @@ def cmd_secrets_init(args: "argparse.Namespace") -> int:
     print(f"Created {env_path}")
 
     _ensure_gitignored(project_root)
-    print(f"Updated .gitignore to exclude {_GITIGNORE_ENTRY}")
+    print(f"Updated .gitignore to exclude {', '.join(_GITIGNORE_ENTRIES)}")
     return 0
 
 

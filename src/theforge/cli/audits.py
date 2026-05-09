@@ -14,8 +14,65 @@ def cmd_audits(args: object) -> int:
     sub = getattr(args, "audits_command", None)
     if sub == "rebuild":
         return _cmd_audits_rebuild(args)
+    if sub == "export-assignment-history":
+        return _cmd_audits_export_assignment_history(args)
     print(f"forge audits: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
+
+
+def _cmd_audits_export_assignment_history(args: object) -> int:
+    """Write a human-readable assignment_history.yaml from the audit substrate.
+
+    The on-disk snapshot is purely an inspection convenience; the
+    coordinator reads adaptive history straight from the substrate, so
+    operators may delete the file at any time.
+    """
+    config_path = _find_config(Path(args.config).resolve() if args.config else None)
+    if config_path is None:
+        print(
+            "[forge] forge.yaml not found. Run from a forge project root.",
+            file=sys.stderr,
+        )
+        return 1
+    project_root = config_path.parent
+    if not audit_substrate.has_audit_inputs(project_root):
+        print(
+            "[forge] no audit records found — nothing to export.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        conn = audit_substrate.require_substrate(project_root)
+    except audit_substrate.SubstrateError as exc:
+        print(f"[forge] {exc}", file=sys.stderr)
+        return 1
+    try:
+        dicts = audit_substrate.derive_assignment_history(conn)
+    finally:
+        conn.close()
+
+    output = (
+        Path(args.output).resolve()
+        if getattr(args, "output", None)
+        else (project_root / ".forge" / "assignment_history.yaml")
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    import yaml as _yaml
+
+    payload = {"escalations": [_strip_none_score(d) for d in dicts]}
+    with open(output, "w", encoding="utf-8") as fh:
+        _yaml.dump(payload, fh, default_flow_style=False, allow_unicode=True, sort_keys=True)
+    print(f"[forge] wrote {len(dicts)} records to {output}")
+    return 0
+
+
+def _strip_none_score(record: dict) -> dict:
+    """Drop ``complexity_score`` when null so the YAML matches legacy shape."""
+    out = dict(record)
+    if out.get("complexity_score") is None:
+        out.pop("complexity_score", None)
+    return out
 
 
 def _cmd_audits_rebuild(args: object) -> int:
@@ -182,6 +239,19 @@ def register_parser(subparsers: object) -> None:
         help="Also backfill from .forge/audits/history.jsonl",
     )
     rebuild_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+
+    export_parser = audits_sub.add_parser(
+        "export-assignment-history",
+        help="Write a human-readable assignment_history.yaml from the substrate",
+    )
+    export_parser.add_argument(
+        "--output",
+        help="Output path (default: .forge/assignment_history.yaml)",
+    )
+    export_parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
     )

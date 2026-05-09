@@ -133,6 +133,32 @@ COMPLEXITY_SCORE_MIN = 1
 COMPLEXITY_SCORE_MAX = 10
 
 
+def _load_esc_history_from_substrate(project_root):  # type: ignore[no-untyped-def]
+    """Derive escalation history from the audit substrate.
+
+    Replaces the legacy ``.forge/assignment_history.yaml`` read with a
+    read-on-demand projection over per-run audit records (#793). Returns
+    ``[]`` for fresh repos with no audit inputs at all, or when the
+    substrate cannot be opened — adaptive routing degrades to the same
+    "no prior history" behavior as a missing YAML.
+    """
+    from theforge.assignment import escalation_records_from_dicts  # noqa: PLC0415
+    from theforge.coordinator import audit_substrate  # noqa: PLC0415
+
+    if not audit_substrate.has_audit_inputs(project_root):
+        return []
+    try:
+        conn = audit_substrate.require_substrate(project_root)
+    except audit_substrate.SubstrateError as exc:
+        _log.warning("[adaptive] Could not open audit substrate: %s", exc)
+        return []
+    try:
+        dicts = audit_substrate.derive_assignment_history(conn)
+    finally:
+        conn.close()
+    return escalation_records_from_dicts(dicts)
+
+
 def score_to_band(score: int) -> str:
     """Map a 1-10 complexity score to the legacy small/medium/large enum.
 
@@ -898,15 +924,13 @@ def _apply_preflight_config(
         _pick_agent as _pick_agt,
         _promote_tier as _prom_tier,
         assign_models as _assign_models,
-        load_escalation_history as _load_esc_history,
     )
     from theforge.config import (  # noqa: I001, PLC0415
         DEFAULT_DEV_PROFILE as _DEF_DEV,
         DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
     )
 
-    _history_path = config.project_root / ".forge" / "assignment_history.yaml"
-    _esc_history = _load_esc_history(_history_path)
+    _esc_history = _load_esc_history_from_substrate(config.project_root)
 
     from theforge.model_profiles import load_profiles as _load_profiles  # noqa: PLC0415
 

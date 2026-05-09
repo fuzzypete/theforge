@@ -1006,6 +1006,41 @@ def assign_models(
 # ── I/O helpers (used only by coordinator) ────────────────────────────
 
 
+def escalation_records_from_dicts(dicts: list[dict]) -> list[EscalationRecord]:
+    """Coerce derived assignment-history dicts into :class:`EscalationRecord`s.
+
+    The dicts follow the same shape produced by
+    :func:`theforge.coordinator.audit_substrate.derive_assignment_history`:
+    a chronologically-ordered list with story, complexity, dev_model,
+    outcome, reason, timestamp, and complexity_score fields.
+    """
+    result: list[EscalationRecord] = []
+    for r in dicts:
+        if not isinstance(r, dict):
+            continue
+        raw_score = r.get("complexity_score")
+        if isinstance(raw_score, bool):
+            score: int | None = None
+        elif isinstance(raw_score, int):
+            score = raw_score
+        elif isinstance(raw_score, float):
+            score = int(raw_score)
+        else:
+            score = None
+        result.append(
+            EscalationRecord(
+                story=str(r.get("story", "")),
+                complexity=str(r.get("complexity", "")),
+                dev_model=str(r.get("dev_model", "")),
+                outcome=str(r.get("outcome", "")),
+                reason=str(r.get("reason", "")),
+                timestamp=str(r.get("timestamp", "")),
+                complexity_score=score,
+            )
+        )
+    return result
+
+
 def load_escalation_history(path: Path) -> list[EscalationRecord]:
     """Read .forge/assignment_history.yaml; return [] if missing or malformed."""
     if not path.exists():

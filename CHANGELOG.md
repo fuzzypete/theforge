@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Assignment history is now a derived view (#793):** completed stories no
+  longer rewrite `.forge/assignment_history.yaml`. Adaptive routing reads
+  escalation history straight from the SQLite audit substrate, so unrelated
+  parallel branches no longer collide on that snapshot. Any checked-in
+  `.forge/assignment_history.yaml` can be deleted post-upgrade — the audit
+  substrate already contains the same facts. Run
+  `forge audits export-assignment-history` to rebuild a local human-readable
+  snapshot on demand. `forge init`/`forge secrets-init` now ignore the file
+  in fresh repositories by default.
+
 ### Fixed
 
 - **Stale generated post-run hooks:** `forge check-config` now warns and exits

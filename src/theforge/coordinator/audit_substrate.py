@@ -763,3 +763,73 @@ def count_records(conn: sqlite3.Connection) -> int:
     if row is None:
         return 0
     return int(row[0])
+
+
+# ── Derived assignment-history view ──────────────────────────────────────
+
+
+_COMPLEXITY_TO_BAND = {"small": "LOW", "medium": "MEDIUM", "large": "HIGH"}
+
+
+def _coerce_complexity_score(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
+def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
+    """Return assignment-history records derived from per-run audit records.
+
+    Replaces the YAML snapshot at ``.forge/assignment_history.yaml`` as the
+    source of truth: each emitted dict has the same shape consumed by
+    :func:`theforge.assignment.load_escalation_history` (story, complexity,
+    dev_model, outcome, reason, timestamp, complexity_score). Records are
+    ordered chronologically by ``timing.started_at``.
+
+    Audit records that lack the routing/complexity fields needed to
+    reconstruct an :class:`EscalationRecord` are skipped — they predate
+    adaptive routing and were never represented in the legacy YAML either.
+    """
+    out: list[dict] = []
+    for record in iter_records(conn, order_by_started=True):
+        slug = (record.get("task") or {}).get("slug")
+        if not slug:
+            continue
+        outcome_block = record.get("outcome") or {}
+        success = outcome_block.get("success")
+        if not isinstance(success, bool):
+            continue
+        pre = record.get("preflight") if isinstance(record.get("preflight"), dict) else {}
+        complexity_raw = pre.get("complexity")
+        if not isinstance(complexity_raw, str) or not complexity_raw:
+            continue
+        complexity = _COMPLEXITY_TO_BAND.get(complexity_raw.lower(), complexity_raw.upper())
+        routing_raw = pre.get("complexity_routing")
+        routing = routing_raw if isinstance(routing_raw, dict) else {}
+        assignments_raw = routing.get("assignments")
+        assignments = assignments_raw if isinstance(assignments_raw, dict) else {}
+        dev_raw = assignments.get("dev")
+        dev = dev_raw if isinstance(dev_raw, dict) else {}
+        dev_model = dev.get("canonical_id") or dev.get("model")
+        if not isinstance(dev_model, str) or not dev_model:
+            continue
+        timing = record.get("timing") or {}
+        timestamp = timing.get("started_at") or timing.get("finished_at") or ""
+        escalation = record.get("escalation") if isinstance(record.get("escalation"), dict) else {}
+        reason = escalation.get("reason") if isinstance(escalation.get("reason"), str) else ""
+        out.append(
+            {
+                "story": str(slug),
+                "complexity": complexity,
+                "dev_model": str(dev_model),
+                "outcome": "DONE" if success else "ESCALATE",
+                "reason": reason or "",
+                "timestamp": str(timestamp),
+                "complexity_score": _coerce_complexity_score(pre.get("complexity_score")),
+            }
+        )
+    return out
