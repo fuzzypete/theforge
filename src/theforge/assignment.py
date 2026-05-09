@@ -313,13 +313,17 @@ def _select_reviewers(
     selected: list[AgentDef] = []
     used_providers: set[str] = set()
 
-    # First pass: pick from different providers
+    # First pass: pick from different providers (using effective provider so
+    # CLI-only agents are distinguished by their underlying CLI binary —
+    # claude/codex/gemini map to anthropic/openai/google rather than collapsing
+    # to a shared `None`).
     for a in candidates:
         if len(selected) >= n:
             break
-        if a.provider not in used_providers:
+        eff = a.effective_provider
+        if eff not in used_providers:
             selected.append(a)
-            used_providers.add(a.provider)
+            used_providers.add(eff)
 
     # Second pass: fill remaining from any provider
     for a in candidates:
@@ -898,7 +902,7 @@ def assign_models(
             secrets=secrets,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
-        providers = [a.provider for a in selected]
+        providers = [a.effective_provider for a in selected]
         score_note = f", complexity score {score}" if score is not None else ""
         rationale["plan_review"] = (
             f"{len(plan_reviewers)} reviewer(s), tier {tier}, providers {providers}{score_note}"
@@ -938,7 +942,7 @@ def assign_models(
             secrets=secrets,
         )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
-        providers = [a.provider for a in selected]
+        providers = [a.effective_provider for a in selected]
         score_note = f", complexity score {score}" if score is not None else ""
         rationale["code_review"] = (
             f"{len(code_reviewers)} reviewer(s), tier {tier}, providers {providers}{score_note}"
