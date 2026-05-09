@@ -41,29 +41,41 @@ class _ValidateOutcome(Enum):
     ALREADY_COMPLETE = auto()
 
 
-def _verified_handoff_commit_shas(workspace_path: Path, shas: list[str]) -> list[str]:
-    """Return the subset of ``shas`` that exist in this worktree's git history.
+def _verified_handoff_commit_shas(
+    workspace_path: Path, shas: list[str], base_branch: str
+) -> list[str]:
+    """Return the subset of ``shas`` reachable from HEAD or the base branch.
 
-    A commit SHA is "verified" when ``git cat-file -e <sha>`` resolves it in the
-    worktree. Without this check, a handoff could cite an arbitrary string and
-    the empty-worktree-as-success path would accept it.
+    A commit SHA is "verified" only when ``git merge-base --is-ancestor`` shows
+    it is reachable from this worktree's HEAD or from the configured base
+    branch (preferring ``origin/<base>``, falling back to the local ref). This
+    is a stronger check than object existence: a handoff that cites a SHA from
+    another local branch or a fetched-but-unreachable ref must not unlock the
+    ALREADY_COMPLETE success path, because the cited work is not actually on
+    the target branch.
     """
+    refs_to_check = ["HEAD", f"origin/{base_branch}", base_branch]
     verified: list[str] = []
     for sha in shas:
         sha = sha.strip()
         if not sha:
             continue
-        try:
-            proc = subprocess.run(
-                ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-                cwd=str(workspace_path),
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-        except Exception:  # noqa: BLE001
-            continue
-        if proc.returncode == 0:
+        reachable = False
+        for ref in refs_to_check:
+            try:
+                proc = subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", sha, ref],
+                    cwd=str(workspace_path),
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if proc.returncode == 0:
+                reachable = True
+                break
+        if reachable:
             verified.append(sha)
     return verified
 
@@ -71,6 +83,7 @@ def _verified_handoff_commit_shas(workspace_path: Path, shas: list[str]) -> list
 def _handoff_documents_already_complete(
     workspace_path: Path,
     forge_handoff_path: Path | None,
+    base_branch: str,
 ) -> tuple[bool, list[dict], str | None]:
     """Decide whether the dev handoff explicitly documents 'work already complete'.
 
@@ -79,8 +92,10 @@ def _handoff_documents_already_complete(
     - the handoff parsed cleanly (no schema or parse errors),
     - it lists at least one acceptance criterion,
     - every acceptance criterion has status normalized to ``MET``,
-    - at least one commit SHA cited in the handoff resolves in the worktree's
-      git history (citation verification — protects against fabricated SHAs).
+    - at least one commit SHA cited in the handoff is reachable from HEAD or
+      the base branch (citation verification — protects against fabricated
+      SHAs and against SHAs on unrelated branches that are not actually part
+      of this branch's history).
     """
     handoff = _parse_dev_handoff(forge_handoff_path=forge_handoff_path)
     if handoff is None:
@@ -94,9 +109,9 @@ def _handoff_documents_already_complete(
         if status != "MET":
             return False, [], f"acceptance criterion status is {status!r}, not MET"
     cited_shas = [c.get("sha", "") for c in handoff.commits]
-    verified = _verified_handoff_commit_shas(workspace_path, cited_shas)
+    verified = _verified_handoff_commit_shas(workspace_path, cited_shas, base_branch)
     if not verified:
-        return False, [], "handoff cites no commit SHA verifiable on this branch"
+        return False, [], "handoff cites no commit SHA reachable from HEAD or base branch"
     verified_set = set(verified)
     verified_commits = [
         {"sha": c.get("sha", "").strip(), "message": c.get("message", "")}
@@ -545,7 +560,9 @@ def _run_validate_phase(
         if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
             handoff_path = _latest_forge_handoff_path(state)
             already_complete, verified_commits, reject_reason = (
-                _handoff_documents_already_complete(workspace_path, handoff_path)
+                _handoff_documents_already_complete(
+                    workspace_path, handoff_path, config.workspace.base_branch
+                )
             )
             if already_complete:
                 state.validate_already_complete = True
