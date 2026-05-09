@@ -833,20 +833,18 @@ def test_run_sprint_summary_records_run_log(tmp_path: Path) -> None:
 
 def test_is_branch_merged_squash_merge_reads_real_audit_history(tmp_path: Path) -> None:
     """Squash merges use persisted APPROVE history even though branch stays ahead."""
-    import json
+    from theforge.coordinator import audit_substrate
 
-    audits_dir = tmp_path / ".forge" / "audits"
-    audits_dir.mkdir(parents=True)
-    (audits_dir / "history.jsonl").write_text(
-        json.dumps(
+    audit_substrate.seed_records(
+        tmp_path,
+        [
             {
+                "run_id": "rec-landed",
                 "task": {"slug": "story-a"},
                 "landing_status": "landed",
                 "reviews": [{"verdict": "APPROVE"}],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
 
     def _mock_squash(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -869,20 +867,18 @@ def test_is_branch_merged_squash_merge_reads_real_audit_history(tmp_path: Path) 
 
 def test_is_branch_merged_squash_merge_ignores_failed_landing_audit(tmp_path: Path) -> None:
     """Failed landing history must not satisfy squash-merge detection."""
-    import json
+    from theforge.coordinator import audit_substrate
 
-    audits_dir = tmp_path / ".forge" / "audits"
-    audits_dir.mkdir(parents=True)
-    (audits_dir / "history.jsonl").write_text(
-        json.dumps(
+    audit_substrate.seed_records(
+        tmp_path,
+        [
             {
+                "run_id": "rec-failed",
                 "task": {"slug": "story-a"},
                 "landing_status": "failed",
                 "reviews": [{"verdict": "APPROVE"}],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
 
     def _mock_squash(cmd: list[str], **kwargs: object) -> MagicMock:

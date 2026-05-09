@@ -43,6 +43,14 @@ def test_run_sprint_timeout_writes_story_audit(tmp_path: Path) -> None:
     ):
         run_sprint(config, manifest)
 
-    audit_path = tmp_path / ".forge" / "audits" / "history.jsonl"
-    assert audit_path.exists()
-    assert "feature-a" in audit_path.read_text(encoding="utf-8")
+    # The substrate must record the timed-out story as an audit row.
+    from theforge.coordinator import audit_substrate
+
+    sub_path = audit_substrate.substrate_path(tmp_path)
+    assert sub_path.exists()
+    conn = audit_substrate.require_substrate(tmp_path)
+    try:
+        slugs = {(rec.get("task") or {}).get("slug") for rec in audit_substrate.iter_records(conn)}
+    finally:
+        conn.close()
+    assert "feature-a" in slugs

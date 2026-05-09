@@ -358,10 +358,15 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_done_path_does_not_write_assignment_history_snapshot(
+    def test_done_path_records_escalation_via_substrate_without_import_error(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """DONE with escalation memory no longer rewrites the YAML snapshot (#793)."""
+        """DONE with agents + escalation memory persists outcome via the audit substrate.
+
+        Pre-migration this wrote ``.forge/assignment_history.yaml``. Post-migration
+        the audit substrate is the canonical store and escalation history is a
+        projection of audit rows.
+        """
         config = replace(
             _make_config(tmp_path),
             agents=[
@@ -397,11 +402,21 @@ class TestDevModelEscalationIntegration:
         result = run_task(config, task, cached_preflight_state=cached_state)
 
         assert result.success is True
+        # Legacy YAML file is NOT written — substrate is canonical now.
         history_path = tmp_path / ".forge" / "assignment_history.yaml"
         assert not history_path.exists(), (
             "assignment_history.yaml is now derived from the audit substrate; "
             "completed runs must not rewrite the shared snapshot (#793)."
         )
+        # The substrate-derived loader must run without raising even when no
+        # substrate row exists yet (run_task does not itself flush to disk;
+        # the CLI _write_audit path or sprint runner does that).
+        from theforge.coordinator.escalation_history import (
+            load_escalation_history_from_substrate,
+        )
+
+        records = load_escalation_history_from_substrate(tmp_path)
+        assert isinstance(records, list)
 
     def test_coordinator_never_imports_assignment_from_coordinator_package(self):
         """Assignment helpers live at theforge.assignment, not the coordinator package."""

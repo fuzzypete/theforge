@@ -158,10 +158,11 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
     """Open a substrate that must exist and be valid for runtime readers.
 
     Behavior:
-      - Substrate missing + per-run files exist → rebuild from runs/*.json
-        (and auto-import legacy history.jsonl if also present).
-      - Substrate missing + only legacy history.jsonl exists → create
-        empty substrate and run the one-shot legacy import.
+      - Substrate missing + per-run files exist → rebuild from runs/*.json.
+      - Substrate missing + only legacy history.jsonl exists →
+        SubstrateMissingError pointing the operator at
+        ``forge audits rebuild --include-legacy-history``. Runtime readers
+        never silently import legacy history.
       - Substrate missing + no audit inputs at all → SubstrateMissingError.
         Callers that should treat fresh repos as "no history" must check
         :func:`has_audit_inputs` first.
@@ -175,15 +176,14 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
             raise SubstrateMissingError(
                 f"audit substrate not found at {path}. Run `forge audits rebuild` to create it."
             )
-        # Audit inputs exist — bootstrap from canonical per-run files
-        # first, then layer in legacy history if present.
         if runs_dir(project_root).exists() and any(runs_dir(project_root).glob("*.json")):
             rebuild_from_runs(project_root)
-        else:
-            create_or_open(project_root).close()
-        conn = _open_validated(path)
-        _maybe_run_one_shot_legacy_import(project_root, conn)
-        return conn
+            return _open_validated(path)
+        # Only legacy history.jsonl present — refuse to silently import.
+        raise SubstrateMissingError(
+            f"audit substrate not found at {path} but legacy history.jsonl exists. "
+            f"Run `forge audits rebuild --include-legacy-history` to backfill."
+        )
     conn = _open_validated(path)
     # Validate native rows against the canonical per-run files. Stale
     # state (deleted file or mtime mismatch) triggers a rebuild.
@@ -191,7 +191,6 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
         conn.close()
         rebuild_from_runs(project_root)
         conn = _open_validated(path)
-    _maybe_run_one_shot_legacy_import(project_root, conn)
     return conn
 
 
@@ -270,50 +269,6 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
         if rel not in on_disk_rels:
             return True
     return False
-
-
-def _maybe_run_one_shot_legacy_import(project_root: Path, conn: sqlite3.Connection) -> None:
-    """Run the legacy import once per repo when conditions are met.
-
-    Conditions:
-      - ``history.jsonl`` exists.
-      - meta key ``legacy_import_done`` is unset.
-      - No rows with ``provenance='legacy_history_jsonl'`` exist (defensive).
-    """
-    history = history_jsonl_path(project_root)
-    if not history.exists():
-        return
-    flag = _meta_get(conn, "legacy_import_done")
-    if flag == "1":
-        return
-    existing = conn.execute(
-        "SELECT 1 FROM audit_records WHERE provenance = 'legacy_history_jsonl' LIMIT 1"
-    ).fetchone()
-    if existing is not None:
-        # Already imported in a prior session; just set the flag forward.
-        _meta_set(conn, "legacy_import_done", "1")
-        conn.commit()
-        return
-    print(
-        "[forge] migrating history.jsonl into audit substrate (one-shot)",
-        flush=True,
-    )
-    summary = _import_history_jsonl_into(conn, history)
-    _meta_set(conn, "legacy_import_done", "1")
-    conn.commit()
-    print(
-        f"[forge] imported {summary.imported} records from history.jsonl",
-        flush=True,
-    )
-    print(
-        f"[forge] skipped existing {summary.skipped_existing}, "
-        f"updated/repaired {summary.updated_repaired}, failed {summary.failed}",
-        flush=True,
-    )
-    print(
-        f"[forge] substrate ready at {substrate_path(project_root)}",
-        flush=True,
-    )
 
 
 # ── Meta helpers ─────────────────────────────────────────────────────────
@@ -588,9 +543,50 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     and upserts each into a freshly recreated substrate with
     ``provenance='native'``. Records lacking a ``run_id`` are counted as
     failures (they cannot key the substrate deterministically).
+
+    Legacy rows imported from ``history.jsonl`` (provenance =
+    ``legacy_history_jsonl``) are snapshotted before the destructive
+    rebuild and re-applied afterward. Without this preservation, a
+    runtime stale-rebuild triggered by a deleted/mtime-mismatched
+    per-run file would silently drop historical upgrade data, breaking
+    the contract that imported legacy rows stay visible to migrated
+    readers across normal runtime operations. The legacy import flag
+    is also carried forward so a subsequent operator-driven import is
+    still considered already-done.
     """
     path = substrate_path(project_root)
+    legacy_snapshot: list[tuple[str, str, str | None, float | None]] = []
+    legacy_import_done: str | None = None
     if path.exists():
+        try:
+            existing_conn = sqlite3.connect(str(path))
+            try:
+                existing_conn.row_factory = sqlite3.Row
+                # Best-effort schema apply so the SELECT below works on
+                # older substrates that pre-date columns we touch.
+                _apply_schema(existing_conn)
+                rows = existing_conn.execute(
+                    "SELECT raw_json, provenance, source_path, source_mtime "
+                    "FROM audit_records WHERE provenance = 'legacy_history_jsonl'"
+                ).fetchall()
+                for row in rows:
+                    legacy_snapshot.append(
+                        (
+                            row["raw_json"],
+                            row["provenance"],
+                            row["source_path"],
+                            row["source_mtime"],
+                        )
+                    )
+                legacy_import_done = _meta_get(existing_conn, "legacy_import_done")
+            finally:
+                existing_conn.close()
+        except sqlite3.DatabaseError:
+            # Corrupt substrate — nothing usable to preserve. Operator
+            # must run `forge audits rebuild --include-legacy-history`
+            # explicitly to recover legacy data.
+            legacy_snapshot = []
+            legacy_import_done = None
         path.unlink()
     conn = create_or_open(project_root)
     summary = RebuildSummary()
@@ -622,6 +618,30 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
             except sqlite3.DatabaseError as exc:
                 summary.failed += 1
                 summary.failures.append(f"{run_file.name}: {exc}")
+    # Re-apply preserved legacy rows so a runtime rebuild does not silently
+    # drop history.jsonl-imported records. ``upsert_run_record`` with
+    # provenance=legacy_history_jsonl respects the native-row protection
+    # rule, so any identity collision with a freshly-rebuilt native row
+    # leaves the native row in place.
+    for raw_json, provenance, source_path, source_mtime in legacy_snapshot:
+        try:
+            record = json.loads(raw_json)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        try:
+            upsert_run_record(
+                conn,
+                record,
+                provenance=provenance,
+                source_path=source_path,
+                source_mtime=source_mtime,
+            )
+        except sqlite3.DatabaseError:
+            continue
+    if legacy_import_done is not None:
+        _meta_set(conn, "legacy_import_done", legacy_import_done)
     _meta_set(conn, "last_rebuild_at", _now_iso())
     conn.commit()
     conn.close()
@@ -793,6 +813,11 @@ def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
     Audit records that lack the routing/complexity fields needed to
     reconstruct an :class:`EscalationRecord` are skipped — they predate
     adaptive routing and were never represented in the legacy YAML either.
+
+    This is the CLI/export view (mapped complexity bands, derives dev model
+    from preflight routing assignments). Adaptive routing uses the more
+    runtime-faithful :func:`iter_escalation_records` instead, which derives
+    dev model from ``cost.agents`` (the model that actually ran).
     """
     out: list[dict] = []
     for record in iter_records(conn, order_by_started=True):
@@ -815,6 +840,29 @@ def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
         dev_raw = assignments.get("dev")
         dev = dev_raw if isinstance(dev_raw, dict) else {}
         dev_model = dev.get("canonical_id") or dev.get("model")
+        # Fallback: when the audit record lacks the preflight.complexity_routing
+        # block (older audits, or audits seeded by tests that bypass routing),
+        # derive the canonical dev model from cost.agents — the model that
+        # actually ran. provider/model/transport gives the same canonical_id
+        # shape the routing block would have provided.
+        if not (isinstance(dev_model, str) and dev_model):
+            cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+            agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
+            for entry in agents:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("phase") != "dev" and entry.get("role") != "dev":
+                    continue
+                provider = (entry.get("provider") or "").strip()
+                model = (entry.get("model") or "").strip()
+                cli = (entry.get("cli") or "").strip()
+                if model and provider:
+                    transport = "cli" if cli else "api"
+                    dev_model = f"{provider}/{model}/{transport}"
+                    break
+                if entry.get("name"):
+                    dev_model = str(entry["name"])
+                    break
         if not isinstance(dev_model, str) or not dev_model:
             continue
         timing = record.get("timing") or {}
@@ -833,3 +881,134 @@ def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
             }
         )
     return out
+
+
+def iter_escalation_records(conn: sqlite3.Connection) -> Iterable[dict]:
+    """Yield escalation-shaped dicts derived from audit records.
+
+    Each row exposes the fields the adaptive router cares about for promotion
+    bookkeeping: ``story``, ``complexity``, ``dev_model`` (canonicalized when
+    available, else falls back to embedded dev profile name), ``outcome``
+    ("DONE" if the run succeeded else "ESCALATE"), ``timestamp``, and
+    ``complexity_score``. Records ordered by ``started_at`` ascending so
+    callers can take the trailing window directly.
+
+    This is the runtime-routing view (raw complexity string, derives dev
+    model from ``cost.agents`` — the model that actually ran). The CLI/export
+    view :func:`derive_assignment_history` uses preflight assignments
+    instead, which is the *intended* dev model rather than the executed one.
+    """
+    rows = conn.execute("SELECT raw_json FROM audit_records ORDER BY COALESCE(started_at, '') ASC")
+    for row in rows:
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        derived = _derive_escalation(record)
+        if derived is not None:
+            yield derived
+
+
+_COMPLEXITY_BAND_NORMALIZE = {
+    "small": "LOW",
+    "medium": "MEDIUM",
+    "large": "HIGH",
+    "low": "LOW",
+    "high": "HIGH",
+}
+
+
+def _normalize_complexity_band(value: str) -> str:
+    """Map small/medium/large (and other casing) to LOW/MEDIUM/HIGH.
+
+    Mirrors ``theforge.assignment._normalize_complexity`` so substrate-derived
+    escalation history uses the same key the promotion logic compares against.
+    Empty input returns "" so callers can distinguish "no band recorded" from
+    a normalized band.
+    """
+    if not value:
+        return ""
+    return _COMPLEXITY_BAND_NORMALIZE.get(value.lower(), value.upper())
+
+
+def _derive_escalation(record: dict) -> dict | None:
+    """Project an audit record to its escalation-shape projection."""
+    task = record.get("task") or {}
+    slug = str(task.get("slug") or "").strip()
+    outcome = record.get("outcome") or {}
+    success = outcome.get("success")
+    if not isinstance(success, bool):
+        return None
+    preflight = record.get("preflight") if isinstance(record.get("preflight"), dict) else {}
+    raw_complexity = str(preflight.get("complexity") or "").strip()
+    # Promotion checks compare against LOW/MEDIUM/HIGH (see assignment._normalize_complexity).
+    # Audit records persist the lower-case band (small/medium/large), so normalize on the
+    # projection boundary so two ESCALATE rows for the same model actually match.
+    complexity = _normalize_complexity_band(raw_complexity)
+
+    # Canonical dev model identity, derived from the cost.agents block when
+    # present (carries provider/model/cli identity per phase).
+    dev_model = ""
+    cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+    agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
+    for entry in agents:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("phase") != "dev" and entry.get("role") != "dev":
+            continue
+        provider = (entry.get("provider") or "").strip()
+        model = (entry.get("model") or "").strip()
+        cli = (entry.get("cli") or "").strip()
+        if model and provider:
+            transport = "cli" if cli else "api"
+            dev_model = f"{provider}/{model}/{transport}"
+            break
+        if entry.get("name"):
+            dev_model = str(entry["name"])
+            break
+
+    raw_score = preflight.get("complexity_score") if isinstance(preflight, dict) else None
+    if isinstance(raw_score, bool):
+        complexity_score: int | None = None
+    elif isinstance(raw_score, int):
+        complexity_score = raw_score
+    elif isinstance(raw_score, float):
+        complexity_score = int(raw_score)
+    else:
+        complexity_score = None
+
+    timing = record.get("timing") or {}
+    timestamp = str(timing.get("finished_at") or timing.get("started_at") or "")
+
+    escalation_block = (
+        record.get("escalation") if isinstance(record.get("escalation"), dict) else {}
+    )
+    reason = str(escalation_block.get("reason") or "")
+
+    return {
+        "story": slug,
+        "complexity": complexity,
+        "dev_model": dev_model,
+        "outcome": "DONE" if success else "ESCALATE",
+        "reason": reason,
+        "timestamp": timestamp,
+        "complexity_score": complexity_score,
+    }
+
+
+def seed_records(project_root: Path, records: Iterable[dict]) -> None:
+    """Test helper: write records directly into the substrate as native rows.
+
+    This is the supported way to bootstrap a substrate fixture in tests
+    without going through the legacy ``history.jsonl`` import path.
+    """
+    conn = create_or_open(project_root)
+    try:
+        for record in records:
+            upsert_run_record(conn, record, provenance="native")
+        conn.commit()
+    finally:
+        conn.close()

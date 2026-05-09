@@ -20,6 +20,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator import audit_substrate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage, _triage_spec
@@ -340,7 +341,6 @@ class TestReadPriorSprintCost:
         self, tmp_path: Path
     ) -> None:
         """Missing worktree plus audit-backed squash-merged branch is treated as merged."""
-        import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         config = _make_config(tmp_path)
@@ -352,7 +352,8 @@ class TestReadPriorSprintCost:
             "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        record.setdefault("run_id", "sr-rec")
+        audit_substrate.seed_records(tmp_path, [record])
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -420,7 +421,6 @@ class TestReadPriorSprintCost:
 
     def test_triage_same_tip_failed_landing_audit_stays_full(self, tmp_path: Path) -> None:
         """A zero-delta APPROVE with failed landing stays eligible during resume."""
-        import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         config = _make_config(tmp_path)
@@ -432,7 +432,8 @@ class TestReadPriorSprintCost:
             "landing_status": "failed",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        record.setdefault("run_id", "sr-rec")
+        audit_substrate.seed_records(tmp_path, [record])
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -460,7 +461,6 @@ class TestReadPriorSprintCost:
         self, tmp_path: Path
     ) -> None:
         """Same-tip branch with audit-backed FF merge should still skip_merged."""
-        import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         config = _make_config(tmp_path)
@@ -475,7 +475,8 @@ class TestReadPriorSprintCost:
             "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        record.setdefault("run_id", "sr-rec")
+        audit_substrate.seed_records(tmp_path, [record])
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -501,7 +502,6 @@ class TestReadPriorSprintCost:
 
     def test_triage_open_issue_with_landed_audit_stays_full(self, tmp_path: Path) -> None:
         """An open issue is contradictory evidence and must not be skipped as merged."""
-        import json
 
         _make_spec_file(tmp_path, "Issue 1071", "issue-1071")
         config = _make_config(tmp_path)
@@ -513,7 +513,8 @@ class TestReadPriorSprintCost:
             "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        record.setdefault("run_id", "sr-rec")
+        audit_substrate.seed_records(tmp_path, [record])
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -542,7 +543,6 @@ class TestReadPriorSprintCost:
 
     def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
         """Worktree has commits ahead and prior APPROVE in audit trail → skip."""
-        import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         config = _make_config(tmp_path)
@@ -557,7 +557,8 @@ class TestReadPriorSprintCost:
             "task": {"slug": "feature-a"},
             "reviews": [{"verdict": "APPROVE"}],
         }
-        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        record.setdefault("run_id", "sr-rec")
+        audit_substrate.seed_records(tmp_path, [record])
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -608,7 +609,6 @@ class TestReadPriorSprintCost:
 class TestResumeSprintSkipApproved:
     def test_resume_sprint_skips_approved(self, tmp_path: Path) -> None:
         """Resume sprint: spec with prior APPROVE is treated as already satisfied."""
-        import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
@@ -621,7 +621,8 @@ class TestResumeSprintSkipApproved:
         audits_dir = tmp_path / ".forge" / "audits"
         audits_dir.mkdir(parents=True)
         record = {"task": {"slug": "feature-a"}, "reviews": [{"verdict": "APPROVE"}]}
-        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        record.setdefault("run_id", "sr-rec")
+        audit_substrate.seed_records(tmp_path, [record])
 
         skip_triage = StoryTriage(
             story_path="feature-a.md",

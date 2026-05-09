@@ -650,8 +650,13 @@ def test_record_run_memory_is_called_from_resume_path(tmp_path):
     assert source.count("_record_run_memory(") >= 3  # 1 def + 2 calls
 
 
-def test_record_run_memory_writes_profiles_and_skips_history(tmp_path):
-    """Helper writes model_profiles.yaml; assignment_history snapshot is dropped (#793)."""
+def test_record_run_memory_writes_profiles_and_no_legacy_history(tmp_path):
+    """Helper writes model_profiles.yaml; legacy assignment_history.yaml is NOT written.
+
+    Escalation memory now flows through the audit substrate (each run writes a
+    canonical audit row; escalation history is derived from those rows). This
+    test guards against regressing back to the old YAML-write path.
+    """
     from dataclasses import replace as _replace
 
     from theforge.coordinator.engine import _record_run_memory

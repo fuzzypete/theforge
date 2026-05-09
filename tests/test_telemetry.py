@@ -1,12 +1,12 @@
-"""Tests for cmd_telemetry — aggregation over history.jsonl records."""
+"""Tests for cmd_telemetry — aggregation over the SQLite audit substrate."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from theforge.cli import cmd_telemetry
+from theforge.coordinator import audit_substrate
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -65,10 +65,22 @@ def _make_record(
 
 
 def _write_history(history_path: Path, records: list[dict]) -> None:
-    history_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(history_path, "w", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec) + "\n")
+    """Seed the substrate with native audit rows.
+
+    Tests reference this helper as ``_write_history`` for historical
+    continuity, but it now writes SQLite rows — not the legacy
+    ``history.jsonl`` file. Each record gets a synthetic ``run_id`` so
+    upserts don't collapse onto the same row.
+    """
+    project_root = history_path.parent.parent.parent  # …/.forge/audits/history.jsonl → repo root
+    stamped: list[dict] = []
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict):
+            continue
+        copy = dict(rec)
+        copy.setdefault("run_id", f"telem-test-{i:04d}")
+        stamped.append(copy)
+    audit_substrate.seed_records(project_root, stamped)
 
 
 def _make_args(
@@ -243,13 +255,37 @@ class TestTelemetryGracefulHandling:
         out = capsys.readouterr().out
         assert "1 run(s) with phase data" in out
 
-    def test_malformed_jsonl_lines_skipped(self, tmp_path: Path, capsys) -> None:
-        """Malformed JSONL lines are skipped without error."""
+    def test_malformed_substrate_rows_skipped(self, tmp_path: Path, capsys) -> None:
+        """Substrate rows that fail to JSON-decode are skipped without error.
+
+        Substrate writers always write canonical JSON, but the iterator is
+        defensively tolerant of corruption — verify a hand-corrupted row
+        is skipped while neighbouring records still surface.
+        """
         _, history_path = _setup_project(tmp_path)
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(history_path, "w", encoding="utf-8") as f:
-            f.write("{not valid json}\n")
-            f.write(json.dumps(_make_record(slug="good-run")) + "\n")
+        good = _make_record(slug="good-run")
+        _write_history(history_path, [good])
+        # Hand-corrupt one row's raw_json column.
+        import sqlite3
+
+        sub_path = audit_substrate.substrate_path(tmp_path)
+        conn = sqlite3.connect(str(sub_path))
+        try:
+            conn.execute(
+                "INSERT INTO audit_records "
+                "(run_id, slug, started_at, provenance, raw_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "corrupt-row",
+                    "bad-run",
+                    "2026-03-01T09:00:00+00:00",
+                    "native",
+                    "{not valid json",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         args = _make_args(tmp_path / "forge.yaml")
         rc = cmd_telemetry(args)
         assert rc == 0

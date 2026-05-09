@@ -1052,21 +1052,26 @@ def _record_run_memory(
         return
 
     # ── Adaptive escalation memory ─────────────────────────────────────
-    # Assignment history is now a derived view over the audit substrate
-    # (#793). The per-run audit record written elsewhere already captures
-    # every fact the legacy .forge/assignment_history.yaml snapshot stored,
-    # so completed stories no longer rewrite that shared snapshot. Inspect
-    # the derived view via ``forge audits export-assignment-history``.
+    # Escalation history is now derived from substrate audit records on read
+    # (see coordinator.escalation_history). The audit record this run produces
+    # carries every field the router needs (slug, preflight.complexity,
+    # outcome.success, dev identity in cost.agents). Assignment history is a
+    # derived view; inspect it via ``forge audits export-assignment-history``.
+    # No separate write to the legacy .forge/assignment_history.yaml snapshot.
+    if config.assignment.escalation_memory and config.agents:
+        _log_verbose(
+            f"[adaptive] escalation memory persisted via audit substrate: "
+            f"story={task.slug} outcome={'DONE' if result.success else 'ESCALATE'}"
+        )
 
     # ── Model capability profiles (independent of escalation_memory) ───
     try:
         from .model_profiles_bridge import update_profiles_from_run  # noqa: PLC0415
 
         _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
-        _history_path = config.project_root / ".forge" / "assignment_history.yaml"
         update_profiles_from_run(
             profiles_path=_profiles_path,
-            history_path=_history_path if _history_path.exists() else None,
+            history_path=None,
             config=config,
             state=state,
             success=result.success,
