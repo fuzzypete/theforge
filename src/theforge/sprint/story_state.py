@@ -51,6 +51,11 @@ class StoryOutcome(str, Enum):
     DROPPED_SHAPE = "dropped_shape"
     REMEDIATED = "remediated"
     DROPPED_AFTER_FIX = "dropped_after_fix"
+    # operator-action: deliberately not run because the deliverable is human
+    # action no dev agent can perform. Distinct from SKIPPED (generic skip) and
+    # from FAILED-bucket outcomes — operator paid $0 and the system correctly
+    # identified the issue as not its work.
+    OPERATOR_ACTION = "operator_action"
 
     @property
     def is_terminal(self) -> bool:
@@ -80,7 +85,11 @@ class StoryOutcome(str, Enum):
 
     @property
     def is_skipped(self) -> bool:
-        return self in {StoryOutcome.SKIPPED, StoryOutcome.PRESERVED}
+        return self in {
+            StoryOutcome.SKIPPED,
+            StoryOutcome.PRESERVED,
+            StoryOutcome.OPERATOR_ACTION,
+        }
 
 
 _TERMINAL_OUTCOMES = {
@@ -94,6 +103,7 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.DROPPED,
     StoryOutcome.DROPPED_SHAPE,
     StoryOutcome.DROPPED_AFTER_FIX,
+    StoryOutcome.OPERATOR_ACTION,
 }
 
 
@@ -112,6 +122,7 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.DROPPED_SHAPE: "failed",
     StoryOutcome.DROPPED_AFTER_FIX: "failed",
     StoryOutcome.REMEDIATED: "waiting",
+    StoryOutcome.OPERATOR_ACTION: "operator-action",
 }
 
 
@@ -133,6 +144,8 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "dropped_shape": StoryOutcome.DROPPED_SHAPE,
     "remediated": StoryOutcome.REMEDIATED,
     "dropped_after_fix": StoryOutcome.DROPPED_AFTER_FIX,
+    "operator_action": StoryOutcome.OPERATOR_ACTION,
+    "operator-action": StoryOutcome.OPERATOR_ACTION,
 }
 
 

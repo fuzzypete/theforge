@@ -33,6 +33,14 @@ Storage is incidental; shape is what matters.
 | Rollup | Title, Why, Acceptance criteria (one per child), Example | Notes |
 | Docs / chore | Title, Why, Acceptance criteria, Example | Notes |
 
+There is also a sixth, deliberately-not-dev-runnable type:
+
+| Use case | Required sections | Required label |
+|----------|------------------|----------------|
+| Operator action | Title, Why, Acceptance criteria | `operator-action` |
+
+See [Operator-action issues](#operator-action-issues) below.
+
 A short shared rule across every use case: the issue body says **what** and
 **why** — never **how**. Do not list file paths, function names, numbered
 implementation steps, or test-strategy hints. Those belong in planning, not in
@@ -377,6 +385,50 @@ The new subsection follows the existing pattern used for `validation:`:
 
 ---
 
+## Operator-action issues
+
+Some work cannot be performed by a dev agent — running real validation
+sprints, capturing live operational evidence, signing a release, filing an
+incident report. The `operator-action` label declares an issue whose
+deliverable is human action by design.
+
+`forge sprint` refuses to dispatch operator-action issues to dev cycles. They
+appear in sprint output as deliberately non-dispatched (operator paid `$0`),
+not as failed and not as "wrong shape." The output uses a distinct status row
+so they cannot be confused with shape-gate skips.
+
+### Required shape
+
+- Apply the `operator-action` label.
+- Include an `## Acceptance criteria` section describing the operator
+  deliverable. The gate refuses operator-action issues without this section
+  (distinct skip code: `operator_action_missing_ac`).
+- Do not also apply `bug`, `enhancement`, `epic`, or `task`. Those are the
+  dev-runnable types and conflict with operator-action by design — pick
+  exactly one. The gate refuses multi-typed issues with the
+  `operator_action_label_conflict` code naming the conflict.
+
+### What the operator sees
+
+```
+$ forge sprint --verbose --issues 1326,1471 --budget 50 --parallel=3
+[forge] 1 issue(s) deliberately non-dispatched (operator-action):
+  - #1471 (label): operator-action — Validate v0.11 substrate
+[sprint] "issues-1326" 1 story budget=$50.00 parallel=3
+$ forge sprint-status <run-id>
+  ⊘ Issue #1471            operator-action       —         ...   not sprintable; operator deliverable
+```
+
+`--force` does not bypass operator-action; the label is the operator's
+deliberate signal, not a shape-gate guard to override.
+
+### What is out of scope
+
+Operator-action issues remain unautomated by design. There is no
+"`forge run-validation-sprint`" macro — the type exists precisely to mark the
+boundary between system-runnable work and operator-runnable work. If you want
+the system to do the work, file a `bug`/`enhancement`/`task` instead.
+
 ## Common reasons sprint entry rejects an issue
 
 If you followed the use-case templates above you should not see these, but
@@ -397,6 +449,10 @@ they are useful to recognize:
   Tracking issues are not runnable — file the runnable children separately.
 - **`too_many_behavioral_clusters`** — AC bullets touch too many distinct
   subsystems. Split the issue.
+- **`operator_action_label_conflict`** — `operator-action` is applied
+  alongside `bug`/`enhancement`/`epic`/`task`. Pick exactly one issue type.
+- **`operator_action_missing_ac`** — `operator-action` issue is missing the
+  `## Acceptance criteria` section describing the operator deliverable.
 
 ---
 

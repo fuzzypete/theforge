@@ -21,11 +21,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..shape_check import Shape, ShapeResult, check
+from ..shape_check.parsing import extract_ac_section, extract_bullets
 from ..shape_check.types import Severity
 from .reopen_context import analyze_reopen_contract, format_reopen_stale_detail
 
 NEEDS_GROOMING_LABEL = "needs-grooming"
 REOPENED_STALE_CONTRACT_CODE = "reopened_stale_contract"
+
+# operator-action: deliberate non-dispatch type. The label declares an issue
+# whose deliverable is human action no dev agent can perform. The gate refuses
+# to dispatch these issues to dev cycles — distinct from "wrong shape" skips.
+OPERATOR_ACTION_LABEL = "operator-action"
+OPERATOR_ACTION_CODE = "operator_action"
+OPERATOR_ACTION_LABEL_CONFLICT_CODE = "operator_action_label_conflict"
+OPERATOR_ACTION_MISSING_AC_CODE = "operator_action_missing_ac"
+# operator-action is mutually exclusive with the runnable type labels.
+OPERATOR_ACTION_CONFLICT_LABELS = frozenset({"bug", "enhancement", "epic", "task"})
 
 # Bot comments from #806b embed machine-readable reason codes on a single
 # line so local re-runs can match the Action's verdict exactly. Accept either
@@ -61,6 +72,64 @@ class ShapeGateResult:
     runnable: list[dict] = field(default_factory=list)
     skipped: list[SkippedIssue] = field(default_factory=list)
     advisories: list[SkippedIssue] = field(default_factory=list)
+    # Issues correctly labeled ``operator-action``: deliberate non-dispatch.
+    # Distinct from ``skipped`` (wrong shape) so operators can tell "system
+    # refused to run my malformed issue" from "system identified my issue as
+    # operator work". Issues with ``operator-action`` plus a label conflict
+    # or no AC section land in ``skipped`` instead.
+    operator_action: list[SkippedIssue] = field(default_factory=list)
+
+
+def _has_acceptance_criteria(body: str) -> bool:
+    """Return True if the body has a non-empty ``## Acceptance criteria`` section."""
+    section = extract_ac_section(body)
+    if not section:
+        return False
+    return bool(extract_bullets(section))
+
+
+def _classify_operator_action(
+    number: int,
+    title: str,
+    body: str,
+    labels: list[str],
+) -> SkippedIssue:
+    """Return the SkippedIssue describing how an ``operator-action`` issue is handled.
+
+    Caller decides whether to surface this in the deliberate-non-dispatch list
+    or in the wrong-shape skipped list based on the returned ``reason_codes``.
+    """
+    label_set = {str(lbl).strip().lower() for lbl in labels}
+    conflicts = sorted(label_set & OPERATOR_ACTION_CONFLICT_LABELS)
+    if conflicts:
+        return SkippedIssue(
+            issue_number=number,
+            reason_codes=(OPERATOR_ACTION_LABEL_CONFLICT_CODE,),
+            source="label",
+            title=title,
+            detail=(
+                f"'{OPERATOR_ACTION_LABEL}' conflicts with type label(s) "
+                f"{conflicts!r}; pick exactly one issue type."
+            ),
+        )
+    if not _has_acceptance_criteria(body):
+        return SkippedIssue(
+            issue_number=number,
+            reason_codes=(OPERATOR_ACTION_MISSING_AC_CODE,),
+            source="label",
+            title=title,
+            detail=(
+                f"'{OPERATOR_ACTION_LABEL}' issues require an "
+                "'## Acceptance criteria' section describing the operator deliverable."
+            ),
+        )
+    return SkippedIssue(
+        issue_number=number,
+        reason_codes=(OPERATOR_ACTION_CODE,),
+        source="label",
+        title=title,
+        detail="not sprintable; operator deliverable",
+    )
 
 
 def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
@@ -269,6 +338,13 @@ def apply_shape_gate(
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
     advisories: list[SkippedIssue] = []
+    operator_action: list[SkippedIssue] = []
+    # Tracks every issue number that carried the operator-action label,
+    # regardless of how it was classified (clean operator-action, label
+    # conflict, or missing-AC). --force must exclude all of them — the
+    # label is the operator's deliberate signal that no dev cycle should
+    # run for this issue, not a guard --force can override.
+    operator_action_label_numbers: set[int] = set()
 
     for issue in issues:
         number = int(issue["number"])
@@ -282,6 +358,23 @@ def apply_shape_gate(
         labels = detail["labels"]
         title = detail["title"] or title_short
         body = detail["body"]
+
+        # operator-action: short-circuit ahead of the regular shape check.
+        # An operator-action issue is not malformed; it is correctly identified
+        # as work no dev agent can perform. Running the standard shape check on
+        # it would flag it for missing_type (since operator-action is mutually
+        # exclusive with bug/enhancement/epic/task), conflating two distinct
+        # operator signals. Refuse here with a label-source skip and stop.
+        label_set_lc = {str(lbl).strip().lower() for lbl in labels}
+        if OPERATOR_ACTION_LABEL in label_set_lc:
+            operator_action_label_numbers.add(number)
+            entry = _classify_operator_action(number, title_short, body, labels)
+            if OPERATOR_ACTION_CODE in entry.reason_codes:
+                operator_action.append(entry)
+            else:
+                skipped.append(entry)
+            continue
+
         reopen_state = analyze_reopen_contract(detail, detail.get("timeline") or [])
         local = check(
             title,
@@ -344,10 +437,29 @@ def apply_shape_gate(
 
     if force:
         # Escape hatch: caller wants to run every input issue. Skip list is
-        # preserved so CLI can render a prominent warning.
-        return ShapeGateResult(runnable=list(issues), skipped=skipped, advisories=advisories)
+        # preserved so CLI can render a prominent warning. operator-action is
+        # NOT bypassed by --force regardless of how the label combined with
+        # other shape signals: clean operator-action, operator-action with a
+        # type-label conflict, and operator-action without an AC section all
+        # remain refused. The label is a deliberate operator signal, not a
+        # guard --force can override. CLI still renders the
+        # operator_action banner and the skipped warning.
+        force_runnable = [
+            issue for issue in issues if int(issue["number"]) not in operator_action_label_numbers
+        ]
+        return ShapeGateResult(
+            runnable=force_runnable,
+            skipped=skipped,
+            advisories=advisories,
+            operator_action=operator_action,
+        )
 
-    return ShapeGateResult(runnable=runnable, skipped=skipped, advisories=advisories)
+    return ShapeGateResult(
+        runnable=runnable,
+        skipped=skipped,
+        advisories=advisories,
+        operator_action=operator_action,
+    )
 
 
 def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
@@ -360,6 +472,23 @@ def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
         title = f" — {entry.title}" if entry.title else ""
         detail = f" [{entry.detail}]" if entry.detail else ""
         lines.append(f"  - #{entry.issue_number} ({entry.source}): {codes}{title}{detail}")
+    return "\n".join(lines)
+
+
+def format_operator_action_notice(operator_action: list[SkippedIssue]) -> str:
+    """Render the deliberate-non-dispatch banner for operator-action issues.
+
+    Phrased as "deliberately non-dispatched" to make clear this is not a
+    failure mode but the system correctly identifying operator deliverables.
+    """
+    if not operator_action:
+        return ""
+    lines = [
+        f"[forge] {len(operator_action)} issue(s) deliberately non-dispatched (operator-action):"
+    ]
+    for entry in operator_action:
+        title = f" — {entry.title}" if entry.title else ""
+        lines.append(f"  - #{entry.issue_number} (label): {OPERATOR_ACTION_LABEL}{title}")
     return "\n".join(lines)
 
 

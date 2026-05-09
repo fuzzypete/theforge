@@ -1944,16 +1944,26 @@ def run_sprint(
             if _story_state.has(_sk_slug):
                 continue
             _sk_codes = _sk_dict.get("reason_codes") or []
+            _is_operator_action = "operator_action" in _sk_codes
             _sk_reason = (
-                ", ".join(_sk_codes)
-                if _sk_codes
-                else (_sk_dict.get("detail") or _sk_dict.get("source") or "shape-gate")
+                "operator-action — operator deliverable"
+                if _is_operator_action
+                else (
+                    ", ".join(_sk_codes)
+                    if _sk_codes
+                    else (_sk_dict.get("detail") or _sk_dict.get("source") or "shape-gate")
+                )
+            )
+            _sk_outcome = (
+                StoryOutcome.OPERATOR_ACTION if _is_operator_action else StoryOutcome.SKIPPED
             )
             _sk_detail: dict = {
                 "shape_gate_source": _sk_dict.get("source"),
                 "shape_gate_codes": list(_sk_codes),
-                "final_outcome": "SKIPPED",
+                "final_outcome": _sk_outcome.name,
             }
+            if _is_operator_action:
+                _sk_detail["operator_action"] = True
             _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
             if _sk_intake is not None:
                 _sk_detail["intake_kind"] = _sk_intake.kind.value
@@ -1964,7 +1974,7 @@ def run_sprint(
             _state_writer.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
-                outcome=StoryOutcome.SKIPPED,
+                outcome=_sk_outcome,
                 reason=_sk_reason,
                 detail=_sk_detail,
             )
@@ -1978,7 +1988,15 @@ def run_sprint(
                 continue
             _sk_slug = f"issue-{_sk_num}"
             _sk_codes = _sk_dict.get("reason_codes") or []
-            _sk_reason = ", ".join(_sk_codes) if _sk_codes else "shape-gate"
+            _is_operator_action = "operator_action" in _sk_codes
+            _sk_reason = (
+                "operator-action — operator deliverable"
+                if _is_operator_action
+                else (", ".join(_sk_codes) if _sk_codes else "shape-gate")
+            )
+            _sk_outcome = (
+                StoryOutcome.OPERATOR_ACTION if _is_operator_action else StoryOutcome.SKIPPED
+            )
             _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
             _sk_detail = None
             if _sk_intake is not None:
@@ -1989,10 +2007,17 @@ def run_sprint(
                     "intake_audit": dict(_sk_intake.audit),
                     "intake_proposed_replacement": _sk_intake.proposed_replacement,
                 }
+            elif _is_operator_action:
+                _sk_detail = {
+                    "shape_gate_source": _sk_dict.get("source"),
+                    "shape_gate_codes": list(_sk_codes),
+                    "operator_action": True,
+                    "final_outcome": _sk_outcome.name,
+                }
             _story_state.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
-                outcome=StoryOutcome.SKIPPED,
+                outcome=_sk_outcome,
                 reason=_sk_reason,
                 detail=_sk_detail,
             )

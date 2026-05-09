@@ -139,6 +139,8 @@ def _outcome_to_status(outcome: str) -> str:
         return "done"
     if outcome == "SKIPPED":
         return "skipped"
+    if outcome == "OPERATOR_ACTION":
+        return "operator-action"
     if outcome in ("ESCALATE", "MERGE_FAILED"):
         return "failed"
     return "failed"
@@ -295,6 +297,9 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
 
     if status_val == "waiting":
         return "", "waiting", complexity
+
+    if status_val == "operator-action":
+        return "", "not sprintable; operator deliverable", complexity
 
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
@@ -466,7 +471,9 @@ def _stage_and_detail_from_completed_story(
         # on a FAILED/ESCALATED/SKIPPED row from a prior run must not leak.
         _success_outcome = outcome in {"DONE", "ALREADY_DONE"}
         verdict = _nonempty_str(story.get("verdict")) if _success_outcome else None
-        if verdict == "APPROVE":
+        if outcome == "OPERATOR_ACTION":
+            detail = "not sprintable; operator deliverable"
+        elif verdict == "APPROVE":
             detail = "APPROVE"
         elif verdict:
             detail = verdict
@@ -612,7 +619,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 phase_display = last_phase_str
         stage, detail, complexity = _stage_and_detail_from_live_story(story)
 
-        if status_val in {"skipped", "blocked"}:
+        if status_val in {"skipped", "blocked", "operator-action"}:
             model_val: str | None = None
         else:
             model_raw = story.get("current_model")
