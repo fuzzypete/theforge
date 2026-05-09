@@ -650,8 +650,8 @@ def test_record_run_memory_is_called_from_resume_path(tmp_path):
     assert source.count("_record_run_memory(") >= 3  # 1 def + 2 calls
 
 
-def test_record_run_memory_writes_profiles_and_history(tmp_path):
-    """Unit test of the shared helper: both files written when gates are met."""
+def test_record_run_memory_writes_profiles_and_skips_history(tmp_path):
+    """Helper writes model_profiles.yaml; assignment_history snapshot is dropped (#793)."""
     from dataclasses import replace as _replace
 
     from theforge.coordinator.engine import _record_run_memory
@@ -686,7 +686,10 @@ def test_record_run_memory_writes_profiles_and_history(tmp_path):
     profiles_path = tmp_path / ".forge" / "model_profiles.yaml"
     history_path = tmp_path / ".forge" / "assignment_history.yaml"
     assert profiles_path.exists()
-    assert history_path.exists()
+    assert not history_path.exists(), (
+        "assignment_history.yaml is now derived from the audit substrate, "
+        "not written on each completed run (#793)."
+    )
 
 
 def test_record_run_memory_skips_when_preflight_complexity_missing(tmp_path, caplog):

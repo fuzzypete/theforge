@@ -358,10 +358,10 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_done_path_writes_assignment_history_without_import_error(
+    def test_done_path_does_not_write_assignment_history_snapshot(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """DONE with agents + escalation memory writes assignment history successfully."""
+        """DONE with escalation memory no longer rewrites the YAML snapshot (#793)."""
         config = replace(
             _make_config(tmp_path),
             agents=[
@@ -398,8 +398,10 @@ class TestDevModelEscalationIntegration:
 
         assert result.success is True
         history_path = tmp_path / ".forge" / "assignment_history.yaml"
-        assert history_path.exists()
-        assert "outcome: DONE" in history_path.read_text(encoding="utf-8")
+        assert not history_path.exists(), (
+            "assignment_history.yaml is now derived from the audit substrate; "
+            "completed runs must not rewrite the shared snapshot (#793)."
+        )
 
     def test_coordinator_never_imports_assignment_from_coordinator_package(self):
         """Assignment helpers live at theforge.assignment, not the coordinator package."""
