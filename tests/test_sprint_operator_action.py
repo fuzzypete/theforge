@@ -159,6 +159,68 @@ def test_force_does_not_bypass_operator_action(tmp_path: Path) -> None:
     assert result.operator_action[0].reason_codes == (OPERATOR_ACTION_CODE,)
 
 
+def test_force_does_not_bypass_operator_action_with_label_conflict(tmp_path: Path) -> None:
+    """Even when operator-action collides with bug/enhancement/etc., --force
+    must NOT promote the issue to runnable. The label is the operator's
+    deliberate non-dispatch signal — it is not a guard --force can override."""
+    issues = [{"number": 2001, "title": "conflicted operator action"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_OPERATOR_ACTION_BODY, [OPERATOR_ACTION_LABEL, "bug"]),
+        force=True,
+    )
+
+    # The malformed operator-action issue must NOT leak into runnable.
+    assert result.runnable == []
+    # It still surfaces as a label-conflict skip so the operator can fix the
+    # collision (rather than the system silently swallowing it).
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason_codes == (OPERATOR_ACTION_LABEL_CONFLICT_CODE,)
+
+
+def test_force_does_not_bypass_operator_action_missing_ac(tmp_path: Path) -> None:
+    """Missing-AC operator-action issues stay refused under --force."""
+    body_no_ac = "## What\n\nDo something operator-shaped.\n\n## Why\n\nReasons.\n"
+    issues = [{"number": 2002, "title": "operator missing AC"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(body_no_ac, [OPERATOR_ACTION_LABEL]),
+        force=True,
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason_codes == (OPERATOR_ACTION_MISSING_AC_CODE,)
+
+
+def test_force_passes_through_non_operator_action_issues(tmp_path: Path) -> None:
+    """Sanity: --force still bypasses ordinary shape-gate skips, only
+    operator-action labeled issues are excluded."""
+    issues = [
+        {"number": 3001, "title": "malformed (not operator)"},
+        {"number": 3002, "title": "operator-action"},
+    ]
+
+    def fetch(number, _project_root):
+        if number == 3001:
+            return {"title": "malformed", "body": "no structure", "labels": []}
+        return {
+            "title": "operator-action",
+            "body": _OPERATOR_ACTION_BODY,
+            "labels": [OPERATOR_ACTION_LABEL],
+        }
+
+    result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch, force=True)
+
+    # Non-operator-action issue is forced through; operator-action one is not.
+    assert [i["number"] for i in result.runnable] == [3001]
+    assert [s.issue_number for s in result.operator_action] == [3002]
+
+
 # ── Banner formatting ──────────────────────────────────────────────────────
 
 

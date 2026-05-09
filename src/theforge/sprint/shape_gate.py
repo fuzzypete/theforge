@@ -339,6 +339,12 @@ def apply_shape_gate(
     skipped: list[SkippedIssue] = []
     advisories: list[SkippedIssue] = []
     operator_action: list[SkippedIssue] = []
+    # Tracks every issue number that carried the operator-action label,
+    # regardless of how it was classified (clean operator-action, label
+    # conflict, or missing-AC). --force must exclude all of them — the
+    # label is the operator's deliberate signal that no dev cycle should
+    # run for this issue, not a guard --force can override.
+    operator_action_label_numbers: set[int] = set()
 
     for issue in issues:
         number = int(issue["number"])
@@ -361,6 +367,7 @@ def apply_shape_gate(
         # operator signals. Refuse here with a label-source skip and stop.
         label_set_lc = {str(lbl).strip().lower() for lbl in labels}
         if OPERATOR_ACTION_LABEL in label_set_lc:
+            operator_action_label_numbers.add(number)
             entry = _classify_operator_action(number, title_short, body, labels)
             if OPERATOR_ACTION_CODE in entry.reason_codes:
                 operator_action.append(entry)
@@ -431,13 +438,16 @@ def apply_shape_gate(
     if force:
         # Escape hatch: caller wants to run every input issue. Skip list is
         # preserved so CLI can render a prominent warning. operator-action is
-        # NOT bypassed by --force: the label is a deliberate operator signal,
-        # not a guard the operator might want to override. The list still
-        # surfaces so the CLI can display the same notice.
+        # NOT bypassed by --force regardless of how the label combined with
+        # other shape signals: clean operator-action, operator-action with a
+        # type-label conflict, and operator-action without an AC section all
+        # remain refused. The label is a deliberate operator signal, not a
+        # guard --force can override. CLI still renders the
+        # operator_action banner and the skipped warning.
         force_runnable = [
             issue
             for issue in issues
-            if int(issue["number"]) not in {entry.issue_number for entry in operator_action}
+            if int(issue["number"]) not in operator_action_label_numbers
         ]
         return ShapeGateResult(
             runnable=force_runnable,
