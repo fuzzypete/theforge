@@ -755,8 +755,8 @@ def _run_review_phase(
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
     from .workspace_hygiene import (  # noqa: PLC0415
-        check_phase_no_mutation,
         enforce_pre_review_hygiene,
+        reconcile_post_review_mutations,
         snapshot_porcelain,
     )
 
@@ -810,12 +810,31 @@ def _run_review_phase(
     )
     state.last_cycle_reviewer_results = _named_parsed
 
-    _review_ok, _review_diag, _review_offending = check_phase_no_mutation(
-        workspace_path, _review_hygiene_before, "REVIEW"
+    _review_ok, _review_diag, _review_offending, _post_review_audit = (
+        reconcile_post_review_mutations(
+            workspace_path,
+            _review_hygiene_before,
+            _hygiene_run_id,
+            state.review_cycle,
+        )
     )
     state.workspace_hygiene_audit.append(
-        {"phase": "REVIEW", "ok": _review_ok, "offending_paths": _review_offending}
+        {
+            "phase": "REVIEW",
+            "ok": _review_ok,
+            "quarantined": _post_review_audit.get("quarantined", []),
+            "tracked_changes": _post_review_audit.get("tracked_changes", []),
+            "reverted": _post_review_audit.get("reverted", []),
+            "offending_paths": _review_offending,
+        }
     )
+    if _post_review_audit.get("quarantined"):
+        _moved = ", ".join(_post_review_audit["quarantined"])
+        _q_dir = _post_review_audit.get("quarantine_dir")
+        _log(f"  ⚠ REVIEW   quarantined reviewer scratch to {_q_dir}: {_moved}")
+    if _post_review_audit.get("reverted"):
+        _rev = ", ".join(_post_review_audit["reverted"])
+        _log(f"  ⚠ REVIEW   reverted reviewer-side tracked mutations: {_rev}")
     if not _review_ok:
         state.phase = Phase.ESCALATE
         state.error = _review_diag or "REVIEW phase mutated the worktree"

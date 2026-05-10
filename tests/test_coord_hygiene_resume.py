@@ -65,12 +65,21 @@ def _approve_review() -> ReviewResult:
 
 
 def _stub_review_pool_with_hygiene_mutation(workspace: Path):
-    """Return a side_effect that simulates a reviewer pool producing APPROVE consensus
-    while leaving a stray scratch file behind (workspace hygiene violation)."""
+    """Return a side_effect that simulates a reviewer pool producing APPROVE
+    consensus while modifying a tracked file AND planting a stale
+    .git/index.lock so the post-review revert cannot resolve. Snapshot-based
+    verification then catches the still-dirty tracked file and escalates —
+    the only remaining failsafe for the #1499 consensus-capture / resume-
+    replay machinery after #1497 made routine reviewer mutations auto-
+    reconciled.
+    """
 
     def _side_effect(*args, **kwargs):
-        # Inject a workspace mutation that the hygiene check will catch.
-        (workspace / "reviewer_scratch.txt").write_text("oops\n", encoding="utf-8")
+        (workspace / "README.md").write_text("seed\nreviewer mutation\n", encoding="utf-8")
+        # Stale index.lock causes git reset/checkout to exit 128 without
+        # raising — exercises the real subprocess-failure path the cycle-2
+        # review flagged.
+        (workspace / ".git" / "index.lock").write_text("", encoding="utf-8")
         candidate = _approve_review()
         named = [("reviewer_a", candidate)]
         return ([], [], candidate, [candidate], named)
@@ -114,6 +123,11 @@ def _run_first_pass(workspace: Path, config, task) -> CoordinatorState:
 
     assert outcome == _ReviewOutcome.ESCALATE
     assert result is not None
+    # Clean up the stale .git/index.lock the stub planted to drive escalation;
+    # downstream resume assertions need git operations to work normally.
+    lock = workspace / ".git" / "index.lock"
+    if lock.exists():
+        lock.unlink()
     return state
 
 
@@ -159,8 +173,8 @@ def test_resume_replays_consensus_when_dev_commit_unchanged(tmp_path):
     task = _make_task(tmp_path)
 
     _run_first_pass(workspace, config, task)
-    # Clean up the stray file before "resume" — operator removed it manually.
-    (workspace / "reviewer_scratch.txt").unlink()
+    # Clean up the tracked-file mutation before "resume" — operator restored.
+    (workspace / "README.md").write_text("seed\n", encoding="utf-8")
 
     # Build a fresh state that represents the resume entry: load sidecar.
     resume_state = CoordinatorState(
@@ -231,7 +245,7 @@ def _build_resume_state(workspace: Path) -> CoordinatorState:
 
 
 def test_resume_refuses_replay_when_untracked_mutation_persists(tmp_path):
-    """Reviewer-created untracked file still present at resume → fresh review re-trips hygiene."""
+    """Reviewer tracked-file mutation still present at resume → fresh review re-trips hygiene."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     head_sha = _init_repo(workspace)
@@ -240,8 +254,8 @@ def test_resume_refuses_replay_when_untracked_mutation_persists(tmp_path):
     task = _make_task(tmp_path)
 
     _run_first_pass(workspace, config, task)
-    # Operator did NOT clean up reviewer_scratch.txt — it is still present.
-    assert (workspace / "reviewer_scratch.txt").exists()
+    # Operator did NOT restore the mutated tracked file — it is still dirty.
+    assert "reviewer mutation" in (workspace / "README.md").read_text()
 
     resume_state = _build_resume_state(workspace)
     assert resume_state.escalate_kind == "hygiene"
@@ -271,7 +285,7 @@ def test_resume_refuses_replay_when_untracked_mutation_persists(tmp_path):
     assert audit is not None
     assert audit["resume_action"] == "rerun_dirty_worktree"
     assert audit["dev_commit_sha_at_resume"] == head_sha
-    assert "reviewer_scratch.txt" in audit["offending_paths"]
+    assert any("README.md" in p for p in audit["offending_paths"])
     # Fail closed: ESCALATE without re-running the pool, so a fresh review's
     # hygiene snapshot can't silently treat the persistent mutation as baseline.
     assert outcome == _ReviewOutcome.ESCALATE
@@ -415,7 +429,7 @@ def test_resume_runs_fresh_review_when_dev_commit_changed(tmp_path):
     task = _make_task(tmp_path)
 
     _run_first_pass(workspace, config, task)
-    (workspace / "reviewer_scratch.txt").unlink()
+    (workspace / "README.md").write_text("seed\n", encoding="utf-8")
 
     # Advance HEAD so the SHA differs at resume.
     (workspace / "more.txt").write_text("more\n", encoding="utf-8")
