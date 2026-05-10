@@ -1483,6 +1483,13 @@ def run_sprint(
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
 
+    # Surface the current sprint phase to forge status --watch so operators
+    # see meaningful progress signals during the multi-minute pre-init window.
+    if run_id:
+        from .state_writer import update_state_phase as _update_state_phase
+
+        _update_state_phase(run_id, config.project_root, "intake-remediation")
+
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
     # full normalized task list. When ``intake.auto_fix`` is enabled, semantic
@@ -1549,6 +1556,11 @@ def run_sprint(
         if dropped_slugs_intake:
             normalized = _filter_normalized_for_intake(normalized, dropped_slugs_intake)
 
+    if run_id:
+        from .state_writer import update_state_phase as _update_state_phase
+
+        _update_state_phase(run_id, config.project_root, "preflight")
+
     preflight_states = run_batch_preflight(
         normalized.tasks,
         config,
@@ -1603,6 +1615,10 @@ def run_sprint(
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")
     augmented_tasks = inject_synthetic_deps(normalized.tasks, synthetic_edges)
     blocked_slugs = dict(normalized.blocked)
+    if run_id:
+        from .state_writer import update_state_phase as _update_state_phase
+
+        _update_state_phase(run_id, config.project_root, "dag-build")
     try:
         dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
     except ValueError as exc:
@@ -1875,8 +1891,12 @@ def run_sprint(
             resolved.name,
             sprint_id=_sprint_id,
             story_state=_story_state,
+            budget_usd=resolved.budget_usd,
+            max_parallel=max_parallel,
+            base_branch=getattr(getattr(config, "workspace", None), "base_branch", None),
         )
         _state_writer.init(_initial_stories)
+        _state_writer.set_phase("running")
         # Register shape-gate-skipped issues in the canonical structure so
         # forge status surfaces them with the gate reason. They are visible
         # to every operator surface from this point on.

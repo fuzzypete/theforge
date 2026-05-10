@@ -33,13 +33,21 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
     unexpected_end = False
     total_cost_usd: float | None = None
     duration_seconds: float | None = None
+    sprint_phase: str | None = None
+    base_branch: str | None = None
+    budget_usd: float | None = None
+    max_parallel: int | None = None
 
     if is_live:
         entries = read_live_status(run_id, project_root)
-        if entries is not None:
-            state_path = find_live_state_path(run_id, project_root)
-            if state_path is not None:
-                sprint_name = _read_sprint_name_from_state(state_path)
+        state_path = find_live_state_path(run_id, project_root)
+        if state_path is not None:
+            sprint_name = _read_sprint_name_from_state(state_path)
+            meta = _read_sprint_meta_from_state(state_path)
+            sprint_phase = meta.get("sprint_phase")
+            base_branch = meta.get("base_branch")
+            budget_usd = meta.get("budget_usd")
+            max_parallel = meta.get("max_parallel")
         # Approximate elapsed from the process start time via detach
         try:
             from theforge import detach as _detach
@@ -103,6 +111,8 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
         state_label = "completed"
 
     header_parts: list[str] = [f"Sprint: {sprint_name}  run: {run_id}  [{state_label}]"]
+    if sprint_phase:
+        header_parts.append(f"phase: {sprint_phase}")
     if total_cost_usd is not None:
         header_parts.append(f"cost: ${total_cost_usd:.2f}")
     if duration_seconds is not None:
@@ -111,6 +121,19 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
         else:
             header_parts.append(f"duration: {int(duration_seconds // 60)}m")
     print("  ".join(header_parts))
+
+    # Second line: sprint configuration context (base branch, budget, parallel).
+    # These let the operator confirm the sprint launched against the right
+    # branch and ceiling without scrolling back to the launch banner.
+    config_parts: list[str] = []
+    if base_branch:
+        config_parts.append(f"base: {base_branch}")
+    if budget_usd is not None:
+        config_parts.append(f"budget: ${float(budget_usd):.2f}")
+    if max_parallel is not None:
+        config_parts.append(f"parallel: {max_parallel}")
+    if config_parts:
+        print("  ".join(config_parts))
 
     if unexpected_end:
         print("  ⚠  Sprint ended unexpectedly (PID file missing, state file present)")
@@ -173,6 +196,34 @@ def cmd_sprint_status(args: object) -> int:
     project_root = config.project_root
 
     return display_sprint_status(run_id, project_root)
+
+
+def _read_sprint_meta_from_state(state_path: object) -> dict:
+    """Return sprint-level metadata (phase, base_branch, budget, parallel).
+
+    Empty dict on any error or missing fields. Lets the live-status header
+    surface watch-mode context during the pre-preflight window when the
+    SprintStateWriter has not yet replaced the bootstrap state file.
+    """
+    import yaml  # noqa: PLC0415
+
+    try:
+        with open(Path(str(state_path)), encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict = {}
+    if isinstance(data.get("sprint_phase"), str):
+        out["sprint_phase"] = data["sprint_phase"]
+    if isinstance(data.get("base_branch"), str):
+        out["base_branch"] = data["base_branch"]
+    if isinstance(data.get("budget_usd"), (int, float)):
+        out["budget_usd"] = float(data["budget_usd"])
+    if isinstance(data.get("max_parallel"), int):
+        out["max_parallel"] = data["max_parallel"]
+    return out
 
 
 def _read_sprint_name_from_state(state_path: object) -> str:
