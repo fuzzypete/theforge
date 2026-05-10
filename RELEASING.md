@@ -21,9 +21,22 @@ This document defines how TheForge releases are cut, maintained, and hotfixed.
 
 Releases ship via a release-candidate ladder so dogfood sprints exercise the
 candidate against the next milestone's stories before the final tag is cut.
-The pattern: cut an RC, install it as the dogfood `forge` binary, run a small
-sprint ladder against it, promote when the ladder passes (or cut another RC
-if it doesn't).
+The pattern: cut an RC into an isolated dogfood substrate, point plain
+`forge` at it, run a small sprint ladder, promote when the ladder passes
+(or cut another RC if it doesn't).
+
+### Operator one-time setup: managed `forge` launcher
+
+`cut-rc.sh` repoints plain `forge` at the just-cut RC by writing a symlink
+to a managed launcher path (default: `~/.local/bin/forge`, overridable via
+`FORGE_MANAGED_LAUNCHER`). For this to work, the launcher's directory must
+be on `PATH` **ahead of any Python environment's `bin/`**. If a venv is
+activated whose `bin/forge` precedes the managed launcher, `cut-rc.sh`
+refuses to clobber it (a `pip install -e .` would regenerate the file and
+silently undo the cut-RC binding) and prints guidance.
+
+The simplest setup: ensure your shell's PATH puts `~/.local/bin` before any
+project venv `bin/`, or deactivate the venv before running `cut-rc.sh`.
 
 ### 1. Cut an RC
 
@@ -31,7 +44,7 @@ if it doesn't).
 scripts/cut-rc.sh X.Y.Z         # first RC: cuts vX.Y.ZrcN with N=0
 scripts/cut-rc.sh X.Y.Z 1       # subsequent RCs: explicit RC_NUM
 scripts/cut-rc.sh --dry-run X.Y.Z
-scripts/cut-rc.sh --no-install X.Y.Z   # skip auto-installing the RC into the active env
+scripts/cut-rc.sh --no-install X.Y.Z   # skip the isolated-venv install + launcher repoint
 ```
 
 `cut-rc.sh`:
@@ -42,13 +55,16 @@ scripts/cut-rc.sh --no-install X.Y.Z   # skip auto-installing the RC into the ac
 - bumps `pyproject.toml` to `X.Y.ZrcN` (PEP 440)
 - runs `make gate`
 - commits, tags `vX.Y.ZrcN`, pushes branch and tag
-- pip-installs the RC into the active Python environment (so `forge --version`
-  reports the RC and dogfood sprints exercise the candidate)
-- prints the test ladder
+- creates an isolated venv at `.forge/rc-envs/vX.Y.ZrcN/` and installs the
+  RC into it (no other Python environment is touched)
+- repoints the managed `forge` launcher at the new RC venv, so plain
+  `forge --version` reports the just-cut RC
+- prints the test ladder using plain `forge`
 
-The install step is intentional: cutting an RC and dogfooding it are the same
-muscle-memory action. Use `--no-install` if you need to install on a different
-machine or env.
+The launcher repoint is intentional: cutting an RC and dogfooding it are
+the same muscle-memory action, and the symlink keeps the substrate
+isolated from source-tree edits. Use `--no-install` if you need to install
+on a different machine or env (the managed launcher is left untouched).
 
 ### 2. Run the test ladder against the RC
 
@@ -103,9 +119,13 @@ scripts/promote-rc.sh --dry-run X.Y.Z
 After promotion, the script prints reminders for the manual follow-ups it
 intentionally does **not** automate:
 
-1. Update the dogfood install pin to the new release tag.
-2. Forward-port any RC fixes from `release/vX.Y` to `main` if main has diverged.
-3. Run the post-release doc review.
+1. Forward-port any RC fixes from `release/vX.Y` to `main` if main has diverged.
+2. Run the post-release doc review.
+
+(The managed `forge` launcher continues to point at the last-cut RC venv,
+which contains the same code as the just-promoted final tag. If you want
+plain `forge` to track the final tag specifically, cut a fresh venv from
+`vX.Y.Z` and `ln -snf` the managed launcher at it.)
 
 ### Direct release from main (legacy)
 

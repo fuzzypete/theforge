@@ -9,12 +9,20 @@
 # bumps pyproject.toml to X.Y.ZrcN, runs gate, tags vX.Y.ZrcN, pushes
 # branch and tag. Then installs the RC into an ISOLATED Python venv under
 # .forge/rc-envs/v<X.Y.Z>rc<N>/ so dogfood sprints exercise the candidate
-# without mutating the operator's default Python environment (use
-# --no-install to skip the verification install entirely).
+# without mutating any other Python environment (use --no-install to skip
+# the verification install entirely).
 #
-# The operator's shell-default `forge` is never touched by this script.
-# To dogfood the cut RC, invoke the path-qualified binary printed in the
-# Test ladder section below.
+# After the isolated venv install succeeds, the script repoints the
+# operator's managed `forge` launcher (default: ~/.local/bin/forge,
+# overridable via FORGE_MANAGED_LAUNCHER) at the new RC venv's binary, so
+# plain `forge --version` reports the just-cut RC with no shell-config
+# change. The launcher is a symlink — no Python environment is mutated, so
+# editable installs and source-tree edits cannot silently change what
+# plain `forge` runs. If plain `forge` currently resolves to a launcher
+# inside a Python environment's bin/ (an editable-install console script,
+# a pipx shim, etc.), the script refuses to overwrite it and prints
+# guidance, since pip would later regenerate that file and break the
+# binding.
 #
 # Does NOT block on open milestone issues — that's a promote-rc requirement.
 # Prints them informationally so the operator can see what is or isn't in
@@ -166,12 +174,16 @@ run git push origin "$RC_TAG"
 #
 # Earlier versions of this script ran `pip install --force-reinstall` against
 # whatever Python env was active, which silently overwrote the operator's
-# editable install of source. The operator's default env is now never touched
-# by the cut process — verification runs entirely inside the isolated venv.
+# editable install of source. The cut process never installs into any
+# pre-existing Python environment — the RC lives in a fresh venv, and the
+# operator-facing `forge` command is repointed at it via a symlink (step 10).
 RC_ENV_DIR="$(git rev-parse --show-toplevel)/.forge/rc-envs/${RC_TAG}"
 RC_ENV_FORGE="${RC_ENV_DIR}/bin/forge"
 RC_ENV_PIP="${RC_ENV_DIR}/bin/pip"
 RC_ENV_PYTHON="${RC_ENV_DIR}/bin/python"
+
+MANAGED_LAUNCHER="${FORGE_MANAGED_LAUNCHER:-${HOME}/.local/bin/forge}"
+MANAGED_LAUNCHER_DIR="$(dirname "$MANAGED_LAUNCHER")"
 
 if [[ "$NO_INSTALL" == false ]]; then
     echo "==> Verifying $RC_TAG installs cleanly (isolated venv at $RC_ENV_DIR)..."
@@ -197,7 +209,74 @@ if [[ "$NO_INSTALL" == false ]]; then
             echo "       The cut tag may not be publishable; investigate before promoting." >&2
             exit 1
         fi
-        echo "    ✓ $RC_TAG verified — operator's default env is unchanged."
+        echo "    ✓ $RC_TAG installed into isolated venv."
+    fi
+
+    # --- 10. Repoint the operator's managed `forge` launcher at the cut RC ---
+    #
+    # The cut establishes plain `forge` as the just-cut RC by atomically
+    # swapping a forge-managed symlink. We refuse to overwrite a launcher
+    # that lives inside a Python environment's bin/ (editable install,
+    # pipx shim, etc.), since pip would later regenerate that file and
+    # break the binding silently.
+    echo "==> Repointing plain \`forge\` at $RC_TAG ($MANAGED_LAUNCHER -> $RC_ENV_FORGE)..."
+    if [[ "$DRY_RUN" == false ]]; then
+        CURRENT_FORGE="$(command -v forge 2>/dev/null || true)"
+        if [[ -n "$CURRENT_FORGE" && "$CURRENT_FORGE" != "$MANAGED_LAUNCHER" ]]; then
+            CURRENT_FORGE_DIR="$(dirname "$CURRENT_FORGE")"
+            if [[ -f "${CURRENT_FORGE_DIR}/activate" \
+                  || -f "${CURRENT_FORGE_DIR}/../pyvenv.cfg" \
+                  || -f "${CURRENT_FORGE_DIR}/activate.fish" ]]; then
+                echo "" >&2
+                echo "Error: plain \`forge\` currently resolves to" >&2
+                echo "         $CURRENT_FORGE" >&2
+                echo "       which lives inside a Python environment's bin/." >&2
+                echo "       Replacing it would clobber a pip-generated console" >&2
+                echo "       script (e.g. an editable install of source); a later" >&2
+                echo "       \`pip install -e .\` in that environment would regenerate" >&2
+                echo "       the launcher and silently break the cut-RC binding." >&2
+                echo "" >&2
+                echo "       The cut RC is installed and verified at:" >&2
+                echo "         $RC_ENV_FORGE" >&2
+                echo "" >&2
+                echo "       To make plain \`forge\` track cut RCs, ensure" >&2
+                echo "         $MANAGED_LAUNCHER_DIR" >&2
+                echo "       is on PATH ahead of any Python environment's bin/" >&2
+                echo "       (deactivate the venv or reorder PATH), then re-run:" >&2
+                echo "         scripts/cut-rc.sh $VERSION $RC_NUM" >&2
+                exit 1
+            fi
+        fi
+
+        mkdir -p "$MANAGED_LAUNCHER_DIR"
+        ln -snf "$RC_ENV_FORGE" "$MANAGED_LAUNCHER"
+        hash -r 2>/dev/null || true
+
+        RESOLVED_FORGE="$(command -v forge 2>/dev/null || true)"
+        if [[ "$RESOLVED_FORGE" != "$MANAGED_LAUNCHER" ]]; then
+            echo "" >&2
+            echo "Error: after repointing, plain \`forge\` resolves to" >&2
+            echo "         '${RESOLVED_FORGE:-<not found>}'" >&2
+            echo "       expected '$MANAGED_LAUNCHER'." >&2
+            echo "       Ensure $MANAGED_LAUNCHER_DIR is on PATH ahead of any" >&2
+            echo "       Python environment's bin/, then re-run scripts/cut-rc.sh." >&2
+            exit 1
+        fi
+
+        PLAIN_VERSION=$(forge --version 2>/dev/null || echo "")
+        if [[ "$PLAIN_VERSION" != *"$RC_VERSION"* ]]; then
+            echo "" >&2
+            echo "Error: plain \`forge --version\` reports '$PLAIN_VERSION'," >&2
+            echo "       expected to contain $RC_VERSION." >&2
+            echo "       The managed launcher symlink may be broken; investigate" >&2
+            echo "         $MANAGED_LAUNCHER" >&2
+            echo "         $RC_ENV_FORGE" >&2
+            exit 1
+        fi
+
+        echo "    managed launcher : $MANAGED_LAUNCHER -> $RC_ENV_FORGE"
+        echo "    forge --version  : $PLAIN_VERSION"
+        echo "    ✓ plain \`forge\` now tracks $RC_TAG; substrate is isolated."
     fi
 else
     echo "==> Skipping verification install (--no-install)."
@@ -205,19 +284,21 @@ else
     echo "      python3 -m venv \"$RC_ENV_DIR\""
     echo "      \"$RC_ENV_PIP\" install git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
     echo "      \"$RC_ENV_FORGE\" --version"
+    echo "      ln -snf \"$RC_ENV_FORGE\" \"$MANAGED_LAUNCHER\""
 fi
 
-# --- 10. Print test ladder ---
+# --- 11. Print test ladder ---
 echo ""
 echo "==> $RC_TAG cut on $RELEASE_BRANCH."
 echo ""
-echo "Test ladder — run on TheForge's own repo against the cut RC binary."
-echo "The path-qualified binary below is the dogfood substrate; your shell-default"
-echo "\`forge\` is unchanged by this script and remains on whatever you had before."
+echo "Test ladder — run on TheForge's own repo against the cut RC."
+echo "Plain \`forge\` now resolves to the cut RC via the managed launcher"
+echo "($MANAGED_LAUNCHER -> $RC_ENV_FORGE); the substrate is isolated from"
+echo "source-tree edits and editable installs."
 echo ""
-echo "  1. Smoke pass (small story):       $RC_ENV_FORGE sprint --verbose --issues <small-issue>  --budget 50 --parallel 1"
-echo "  2. Boundary pass (medium story):   $RC_ENV_FORGE sprint --verbose --issues <medium-issue> --budget 50 --parallel 1"
-echo "  3. Moneyshot pass (high-complexity story): $RC_ENV_FORGE sprint --verbose --issues <high-complexity-issue> --budget 50 --parallel 1"
+echo "  1. Smoke pass (small story):              forge sprint --verbose --issues <small-issue>  --budget 50 --parallel 1"
+echo "  2. Boundary pass (medium story):          forge sprint --verbose --issues <medium-issue> --budget 50 --parallel 1"
+echo "  3. Moneyshot pass (high-complexity story): forge sprint --verbose --issues <high-complexity-issue> --budget 50 --parallel 1"
 echo ""
 echo "Pick the issues from milestone v$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}') (or the next milestone after v$VERSION)."
 echo "Watch for: 'budget' wording in audit/logs (should be 'per-story routing cost cap'), silent tier/pool downgrades without terminal warnings, regressions in any v$VERSION-shipped behavior."
