@@ -65,18 +65,21 @@ def _approve_review() -> ReviewResult:
 
 
 def _stub_review_pool_with_hygiene_mutation(workspace: Path):
-    """Return a side_effect that simulates a reviewer pool producing APPROVE consensus
-    while modifying a tracked file. Combined with patched `_revert_tracked_path`
-    in `_run_first_pass` (filesystem-failure simulation), this drives the
-    post-review reconciler down its escalation branch — the only remaining
-    failsafe for the consensus-capture / resume-replay machinery (#1499)
-    after #1497 made all routine reviewer mutations auto-reconciled.
+    """Return a side_effect that simulates a reviewer pool producing APPROVE
+    consensus while modifying a tracked file AND planting a stale
+    .git/index.lock so the post-review revert cannot resolve. Snapshot-based
+    verification then catches the still-dirty tracked file and escalates —
+    the only remaining failsafe for the #1499 consensus-capture / resume-
+    replay machinery after #1497 made routine reviewer mutations auto-
+    reconciled.
     """
 
     def _side_effect(*args, **kwargs):
-        # Inject a workspace mutation. Under the patched revert below it stays
-        # dirty post-REVIEW so the hygiene gate refuses and escalates.
         (workspace / "README.md").write_text("seed\nreviewer mutation\n", encoding="utf-8")
+        # Stale index.lock causes git reset/checkout to exit 128 without
+        # raising — exercises the real subprocess-failure path the cycle-2
+        # review flagged.
+        (workspace / ".git" / "index.lock").write_text("", encoding="utf-8")
         candidate = _approve_review()
         named = [("reviewer_a", candidate)]
         return ([], [], candidate, [candidate], named)
@@ -100,17 +103,9 @@ def _run_first_pass(workspace: Path, config, task) -> CoordinatorState:
     state.run_id = "test-run-1"
     state.adaptive_review_max = 2
 
-    with (
-        patch(
-            "theforge.coordinator.review_phase._run_review_pool",
-            side_effect=_stub_review_pool_with_hygiene_mutation(workspace),
-        ),
-        # Simulate a filesystem-level revert failure so the reviewer-side
-        # tracked mutation cannot be reconciled and the hygiene gate fires.
-        patch(
-            "theforge.coordinator.workspace_hygiene._revert_tracked_path",
-            return_value=False,
-        ),
+    with patch(
+        "theforge.coordinator.review_phase._run_review_pool",
+        side_effect=_stub_review_pool_with_hygiene_mutation(workspace),
     ):
         outcome, result, _config2 = _run_review_phase(
             state,
@@ -128,6 +123,11 @@ def _run_first_pass(workspace: Path, config, task) -> CoordinatorState:
 
     assert outcome == _ReviewOutcome.ESCALATE
     assert result is not None
+    # Clean up the stale .git/index.lock the stub planted to drive escalation;
+    # downstream resume assertions need git operations to work normally.
+    lock = workspace / ".git" / "index.lock"
+    if lock.exists():
+        lock.unlink()
     return state
 
 

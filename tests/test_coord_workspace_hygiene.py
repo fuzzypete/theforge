@@ -511,20 +511,26 @@ def test_reconcile_post_review_reverts_tracked_deletion(tmp_path: Path) -> None:
     assert audit["reverted"] == ["README.md"]
 
 
-def test_reconcile_post_review_escalates_when_revert_fails(tmp_path: Path, monkeypatch) -> None:
-    """If git revert itself fails, escalation fires so the consensus-capture +
-    resume-replay machinery has a real failsafe (#1499) to ride on."""
+def test_reconcile_post_review_escalates_when_index_lock_blocks_revert(
+    tmp_path: Path,
+) -> None:
+    """Real subprocess-failure mode: stale .git/index.lock causes git reset
+    and git checkout to exit 128 without raising. Snapshot-based verification
+    must catch the still-dirty tracked file and escalate — trusting subprocess
+    return codes (cycle-2 finding) would silently pass the dirty tree."""
     _init_repo(tmp_path)
     before = snapshot_porcelain(tmp_path)
     (tmp_path / "README.md").write_text("seed\nreviewer-edit\n", encoding="utf-8")
 
-    from theforge.coordinator import workspace_hygiene as wh
-
-    monkeypatch.setattr(wh, "_revert_tracked_path", lambda *a, **kw: False)
-
-    ok, diag, offending, audit = reconcile_post_review_mutations(
-        tmp_path, before, "run-1", cycle=0
-    )
+    lock = tmp_path / ".git" / "index.lock"
+    lock.write_text("", encoding="utf-8")
+    try:
+        ok, diag, offending, audit = reconcile_post_review_mutations(
+            tmp_path, before, "run-1", cycle=0
+        )
+    finally:
+        if lock.exists():
+            lock.unlink()
 
     assert ok is False
     assert diag is not None
@@ -532,6 +538,8 @@ def test_reconcile_post_review_escalates_when_revert_fails(tmp_path: Path, monke
     assert "could not be reverted" in diag
     assert offending == ["README.md"]
     assert audit["reverted"] == []
+    # The reviewer's mutation is still in the worktree — NOT silently reported reverted.
+    assert (tmp_path / "README.md").read_text() == "seed\nreviewer-edit\n"
 
 
 def test_reconcile_post_review_escalates_when_quarantine_fails(

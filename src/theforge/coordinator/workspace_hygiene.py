@@ -245,34 +245,30 @@ def enforce_pre_dev_hygiene(
     )
 
 
-def _revert_tracked_path(workspace_path: Path, rel_path: str) -> bool:
-    """Restore ``rel_path`` to HEAD content, undoing reviewer-side mutation.
+def _attempt_tracked_revert(workspace_path: Path, rel_path: str) -> None:
+    """Best-effort: restore ``rel_path`` to HEAD content via reset + checkout.
 
-    Sequence is ``git reset HEAD -- <path>`` (unstage anything the reviewer
-    happened to stage) followed by ``git checkout HEAD -- <path>`` (overwrite
-    the worktree from HEAD). For paths not in HEAD (newly staged adds) the
-    checkout legitimately fails; the residual file becomes untracked and is
-    handled by quarantine in the caller. Returns False only on subprocess
-    failure — i.e. a real filesystem/git error.
+    Subprocess return codes are intentionally ignored here — the caller
+    verifies success by re-reading the porcelain snapshot, not by trusting
+    these calls. ``git reset/checkout`` may legitimately exit nonzero (e.g.
+    path not in HEAD for a newly staged add, or .git/index.lock blocks the
+    operation); the snapshot is the source of truth.
     """
-    try:
-        subprocess.run(
-            ["git", "reset", "-q", "HEAD", "--", rel_path],
-            cwd=str(workspace_path),
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
-        subprocess.run(
-            ["git", "checkout", "-q", "HEAD", "--", rel_path],
-            cwd=str(workspace_path),
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+    for cmd in (
+        ["git", "reset", "-q", "HEAD", "--", rel_path],
+        ["git", "checkout", "-q", "HEAD", "--", rel_path],
+    ):
+        try:
+            subprocess.run(
+                cmd,
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # Snapshot will catch unresolved state below.
+            continue
 
 
 def reconcile_post_review_mutations(
@@ -292,13 +288,18 @@ def reconcile_post_review_mutations(
       - Untracked paths (status ``??``) → quarantined to
         ``.forge/quarantine/<run-id>/review-<cycle>-post/`` symmetrically
         with pre-phase hygiene.
-      - Tracked changes (M/D/A/staged-anything) → reverted via
-        ``_revert_tracked_path`` so the worktree returns to HEAD content.
-        Newly-staged-adds become untracked after reset and get quarantined.
+      - Tracked changes (M/D/A/staged-anything) → best-effort
+        ``git reset HEAD -- <path>`` + ``git checkout HEAD -- <path>``,
+        then VERIFIED via a follow-up porcelain snapshot. Subprocess
+        return codes are not trusted; the snapshot is the source of truth.
+        Any path still showing tracked status after the revert attempt is
+        treated as a revert failure (e.g. .git/index.lock present, real
+        filesystem error) and triggers escalation. Newly-staged-adds, after
+        reset, surface as untracked and fold into the quarantine pass.
 
     Returns ``(ok, diagnostic, offending_paths, audit)``. ``ok=False`` is
-    reserved for the failure case where revert or quarantine itself fails
-    (real filesystem/git error); that path still triggers the existing
+    reserved for the failure case where revert or quarantine cannot resolve
+    the worktree to a clean state; that path still triggers the existing
     consensus-capture + resume-replay escalation block in review_phase.
 
     Audit dict keys: ``snapshot_after``, ``quarantined``, ``quarantine_dir``,
@@ -316,52 +317,56 @@ def reconcile_post_review_mutations(
     if not new_entries:
         return True, None, [], audit
 
-    untracked: list[str] = []
-    tracked: list[str] = []
+    untracked_initial: list[str] = []
+    tracked_initial: list[str] = []
     for entry in new_entries:
         path = _path_of(entry)
         if entry[:2] == "??":
-            untracked.append(path)
+            untracked_initial.append(path)
         else:
-            tracked.append(path)
+            tracked_initial.append(path)
+    audit["tracked_changes"] = sorted(tracked_initial)
 
-    audit["tracked_changes"] = sorted(tracked)
+    untracked_all: list[str] = list(untracked_initial)
 
-    revert_failed: list[str] = []
-    reverted: list[str] = []
-    for path in sorted(tracked):
-        if _revert_tracked_path(workspace_path, path):
-            reverted.append(path)
-        else:
-            revert_failed.append(path)
-    audit["reverted"] = reverted
+    if tracked_initial:
+        for path in sorted(tracked_initial):
+            _attempt_tracked_revert(workspace_path, path)
 
-    if revert_failed:
-        rendered = ", ".join(revert_failed)
-        diagnostic = (
-            f"Reviewer-introduced tracked changes could not be reverted "
-            f"after REVIEW: {rendered}. Workspace hygiene gate refuses to "
-            "treat the review as valid against an unresolved dirty tree."
-        )
-        return False, diagnostic, revert_failed, audit
-
-    # After reverting, newly-staged-adds (status "A ") may now show up as
-    # untracked because reset cleared the index entry but left the file —
-    # union them in for quarantine alongside the originally-untracked set.
-    if tracked:
+        # Truth comes from re-snapshotting, not from subprocess return codes.
+        # Anything still showing tracked status is an unresolved revert
+        # (real filesystem/git failure — e.g. index.lock); newly untracked
+        # entries are staged-add residue we can quarantine.
         post_revert = snapshot_porcelain(workspace_path)
         post_revert_new = unexpected_entries(before, post_revert)
+        still_tracked: list[str] = []
+        residual_untracked: list[str] = []
         for entry in post_revert_new:
+            p = _path_of(entry)
             if entry[:2] == "??":
-                p = _path_of(entry)
-                if p not in untracked:
-                    untracked.append(p)
+                residual_untracked.append(p)
+            else:
+                still_tracked.append(p)
 
-    if not untracked:
+        if still_tracked:
+            rendered = ", ".join(sorted(still_tracked))
+            diagnostic = (
+                f"Reviewer-introduced tracked changes could not be reverted "
+                f"after REVIEW: {rendered}. Workspace hygiene gate refuses to "
+                "treat the review as valid against an unresolved dirty tree."
+            )
+            return False, diagnostic, sorted(still_tracked), audit
+
+        audit["reverted"] = sorted(tracked_initial)
+        for p in residual_untracked:
+            if p not in untracked_all:
+                untracked_all.append(p)
+
+    if not untracked_all:
         return True, None, [], audit
 
     quarantine_dir = _quarantine_root(workspace_path, run_id, f"review-{cycle}-post")
-    moved, failed = quarantine_paths(workspace_path, sorted(untracked), quarantine_dir)
+    moved, failed = quarantine_paths(workspace_path, sorted(untracked_all), quarantine_dir)
     audit["quarantined"] = moved
     audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
     if failed:
