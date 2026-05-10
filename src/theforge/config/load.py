@@ -455,16 +455,41 @@ def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
     return StuckDetectionConfig(**kwargs)
 
 
+def _resolve_project_root(config_path: Path) -> Path:
+    """Resolve the project root for a given forge.yaml path.
+
+    Forge-created worktrees live at ``<project_root>/.forge/worktrees/<slug>/``
+    and contain a synced ``forge.yaml`` but no ``.forge/.env``. When config is
+    loaded from such a worktree, the project-scoped secret store and other
+    project-level state belong to the parent checkout, not the worktree.
+    Detect that layout and walk up so secrets and project_root reference the
+    real project root.
+    """
+    parent = config_path.parent.resolve()
+    grandparent = parent.parent
+    great_grandparent = grandparent.parent
+    if (
+        grandparent.name == "worktrees"
+        and great_grandparent.name == ".forge"
+        and great_grandparent.parent != great_grandparent
+    ):
+        return great_grandparent.parent
+    return parent
+
+
 def load_config(config_path: Path) -> ForgeConfig:
     """Load forge.yaml and return a typed ForgeConfig.
 
-    The config file path is used to derive the project root (its parent directory).
+    The config file path is used to derive the project root (its parent directory),
+    except when ``config_path`` lives inside a forge-created worktree at
+    ``<root>/.forge/worktrees/<slug>/``, in which case the project root is
+    resolved to the parent checkout so project-scoped secrets remain accessible.
     Missing sections fall back to sensible defaults.
 
     Raises ValueError for invalid configurations (empty pool, duplicate names,
     unsupported CLI, missing synthesis profile when pool size > 1).
     """
-    project_root = config_path.parent.resolve()
+    project_root = _resolve_project_root(config_path)
 
     # Load project-scoped secrets before profile validation so _resolve_secret() works.
     env_path = project_root / ".forge" / ".env"
