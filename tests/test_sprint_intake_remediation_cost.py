@@ -216,3 +216,56 @@ class TestSprintIntakeRemediationCost:
             f"Sprint total ${result.total_cost_usd:.4f} must include "
             f"entry-level intake cost ${INTAKE_REMEDIATION_COST_USD}"
         )
+
+
+class TestAllSkippedQueryModeIntakeCost:
+    """Query-mode all-skipped path bypasses run_sprint and writes the audit
+    via _emit_all_skipped_audit. Entry intake remediation may have spent
+    agent budget before the all-skipped fork — the writer must include it.
+    """
+
+    def test_all_skipped_audit_includes_entry_intake_remediation_cost(
+        self, tmp_path: Path
+    ) -> None:
+        from types import SimpleNamespace
+
+        import yaml
+
+        from theforge.cli.sprint import _emit_all_skipped_audit
+        from theforge.sprint.shape_gate import SkippedIssue
+
+        config = SimpleNamespace(project_root=tmp_path)
+        skipped = [
+            SkippedIssue(
+                issue_number=4242,
+                reason_codes=("missing_acceptance_criteria",),
+                source="local_check",
+                title="No ACs",
+                detail="rejected at shape gate",
+            ),
+        ]
+        intake_outcomes = {
+            4242: _passed_outcome_with_cost("issue-4242", INTAKE_REMEDIATION_COST_USD),
+        }
+
+        _emit_all_skipped_audit(
+            config=config,
+            sprint_name="sprint-all-skipped-intake",
+            budget_usd=10.0,
+            skipped_issues=skipped,
+            intake_outcomes=intake_outcomes,
+        )
+
+        summary_path = (
+            tmp_path / ".forge" / "logs" / "sprint-all-skipped-intake" / "sprint-summary.yaml"
+        )
+        summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+        assert summary["sprint"]["total_cost_usd"] == pytest.approx(
+            INTAKE_REMEDIATION_COST_USD, abs=1e-6
+        )
+
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        assert audit["sprint"]["total_cost_usd"] == pytest.approx(
+            INTAKE_REMEDIATION_COST_USD, abs=1e-6
+        )
