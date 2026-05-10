@@ -12,12 +12,15 @@ Two layers:
    Any change to the porcelain set fails the phase. ``.forge/`` is gitignored,
    so coordinator-driven artifact writes are naturally excluded.
 
-2. ``enforce_pre_dev_hygiene``: invoked before DEV iteration 1. Unexpected
-   untracked paths are moved to ``.forge/quarantine/<run-id>/`` (audited, not
-   silently deleted) and DEV proceeds with a clean tree. If quarantine fails
-   or modifications to tracked files appear, DEV is rejected with a diagnostic
-   pointing at the offending paths instead of being handed to an agent that
-   will fail mysteriously.
+2. ``enforce_pre_dev_hygiene`` / ``enforce_pre_review_hygiene``: invoked
+   symmetrically before DEV iteration 1 and before each REVIEW cycle.
+   Unexpected untracked paths are moved to ``.forge/quarantine/<run-id>/``
+   (audited, not silently deleted) and the phase proceeds with a clean tree.
+   If quarantine fails, the phase is rejected with a diagnostic pointing at
+   the offending paths instead of being handed to an agent that will fail
+   mysteriously. REVIEW symmetry exists because stray pollution from a prior
+   interrupted iteration would otherwise be visible to reviewers (see issue
+   #1501).
 
 Sanctioned scratch space (``.forge/tmp/<run-id>/``) is provisioned by
 ``ensure_scratch_dir``; ``.forge/`` is already gitignored so the directory is
@@ -109,8 +112,8 @@ def ensure_scratch_dir(workspace_path: Path, run_id: str) -> Path:
     return scratch
 
 
-def _quarantine_root(workspace_path: Path, run_id: str, iteration: int) -> Path:
-    return workspace_path / ".forge" / "quarantine" / run_id / f"iter-{iteration}"
+def _quarantine_root(workspace_path: Path, run_id: str, label: str) -> Path:
+    return workspace_path / ".forge" / "quarantine" / run_id / label
 
 
 def quarantine_paths(
@@ -144,20 +147,21 @@ def quarantine_paths(
     return moved, failed
 
 
-def enforce_pre_dev_hygiene(
+def _enforce_phase_entry_hygiene(
     workspace_path: Path,
     run_id: str,
     *,
-    iteration: int,
+    label: str,
+    phase_label: str,
 ) -> tuple[bool, str | None, dict]:
-    """Reject or sanitise the worktree before DEV starts.
+    """Quarantine unexpected untracked paths before a phase starts.
 
     Behaviour:
       - Untracked paths (status ``??``) outside the allow-list → quarantined
-        to ``.forge/quarantine/<run-id>/iter-<n>/``. Audit-trail preserved,
-        worktree returned to a clean baseline, DEV proceeds. This is the
+        to ``.forge/quarantine/<run-id>/<label>/``. Audit-trail preserved,
+        worktree returned to a clean baseline, the phase proceeds. This is the
         primary motivator: stray scratch at repo root that silently sabotages
-        dev runs (issue #1179).
+        agent runs (issues #1179, #1501).
       - Modified tracked files (status M/A/D/...) → audited and left in
         place. These are legitimate worktree-reuse state (work-in-progress
         from a prior interrupted run); validate-phase's auto-commit owns
@@ -198,17 +202,54 @@ def enforce_pre_dev_hygiene(
     if not untracked:
         return True, None, audit
 
-    quarantine_dir = _quarantine_root(workspace_path, run_id, iteration)
+    quarantine_dir = _quarantine_root(workspace_path, run_id, label)
     moved, failed = quarantine_paths(workspace_path, sorted(untracked), quarantine_dir)
     audit["quarantined"] = moved
     audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
     if failed:
         rendered = ", ".join(failed)
         diagnostic = (
-            "Unexpected untracked files in worktree before DEV could not be "
+            f"Unexpected untracked files in worktree before {phase_label} could not be "
             f"quarantined: {rendered}. Workspace hygiene gate refuses to hand a "
-            "dirty tree to the dev agent. Resolve manually before retrying."
+            f"dirty tree to the {phase_label.lower()} agent. Resolve manually before retrying."
         )
         return False, diagnostic, audit
 
     return True, None, audit
+
+
+def enforce_pre_dev_hygiene(
+    workspace_path: Path,
+    run_id: str,
+    *,
+    iteration: int,
+) -> tuple[bool, str | None, dict]:
+    """Reject or sanitise the worktree before DEV starts (see #1179)."""
+    return _enforce_phase_entry_hygiene(
+        workspace_path,
+        run_id,
+        label=f"iter-{iteration}",
+        phase_label="DEV",
+    )
+
+
+def enforce_pre_review_hygiene(
+    workspace_path: Path,
+    run_id: str,
+    *,
+    cycle: int,
+) -> tuple[bool, str | None, dict]:
+    """Reject or sanitise the worktree before REVIEW starts (see #1501).
+
+    Symmetric counterpart to ``enforce_pre_dev_hygiene``: stray untracked
+    paths inherited from a prior interrupted iteration, resume, or a
+    non-DEV phase that wrote where it shouldn't are quarantined before any
+    reviewer observes the tree, so reviewers evaluate the implementation
+    rather than stale pollution.
+    """
+    return _enforce_phase_entry_hygiene(
+        workspace_path,
+        run_id,
+        label=f"review-{cycle}",
+        phase_label="REVIEW",
+    )

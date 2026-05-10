@@ -14,10 +14,12 @@ from unittest.mock import MagicMock, patch
 from coord_test_helpers import _make_agent_result, _make_config
 
 from theforge.coordinator.dev_phase import _run_dev_phase
-from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.review_phase import _ReviewOutcome, _run_review_phase
+from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.coordinator.workspace_hygiene import (
     check_phase_no_mutation,
     enforce_pre_dev_hygiene,
+    enforce_pre_review_hygiene,
     ensure_scratch_dir,
     snapshot_porcelain,
     unexpected_entries,
@@ -251,3 +253,181 @@ def test_run_dev_phase_skips_hygiene_gate_on_retry_iterations(tmp_path: Path) ->
     assert result is None  # no escalation, no quarantine
     assert (tmp_path / "test_flock.py").exists()
     assert not any(e.get("phase") == "PRE_DEV" for e in state.workspace_hygiene_audit)
+
+
+# ── enforce_pre_review_hygiene ────────────────────────────────────────
+
+
+def test_enforce_pre_review_hygiene_passes_on_clean_worktree(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    ok, diag, audit = enforce_pre_review_hygiene(tmp_path, "run-1", cycle=0)
+    assert ok is True
+    assert diag is None
+    assert audit["modified"] == []
+    assert audit["quarantined"] == []
+
+
+def test_enforce_pre_review_hygiene_quarantines_untracked(tmp_path: Path) -> None:
+    """The #1501 motivating case: stray paths inherited at REVIEW entry."""
+    _init_repo(tmp_path)
+    (tmp_path / "test_script.sh").write_text("oops\n", encoding="utf-8")
+
+    ok, diag, audit = enforce_pre_review_hygiene(tmp_path, "run-xyz", cycle=2)
+
+    assert ok is True
+    assert diag is None
+    assert not (tmp_path / "test_script.sh").exists()
+    quarantine_dir = tmp_path / ".forge" / "quarantine" / "run-xyz" / "review-2"
+    assert (quarantine_dir / "test_script.sh").read_text() == "oops\n"
+    assert audit["quarantined"] == ["test_script.sh"]
+    assert audit["quarantine_dir"] == ".forge/quarantine/run-xyz/review-2"
+
+
+def test_enforce_pre_review_hygiene_records_but_does_not_quarantine_modified(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("review-time WIP\n", encoding="utf-8")
+
+    ok, diag, audit = enforce_pre_review_hygiene(tmp_path, "run-1", cycle=0)
+
+    assert ok is True
+    assert diag is None
+    assert audit["modified"] == ["README.md"]
+    assert audit["quarantined"] == []
+    assert (tmp_path / "README.md").exists()
+
+
+# ── seam: _run_review_phase quarantines stray paths before reviewers ──
+
+
+def test_run_review_phase_quarantines_stray_paths_before_reviewers(tmp_path: Path) -> None:
+    """The #1501 seam contract: stray untracked paths inherited at REVIEW
+    entry are quarantined BEFORE any reviewer observes the tree.
+
+    We patch ``_run_review_pool`` to a side-effect that asserts the worktree
+    was clean when the pool was called, proving the hygiene gate ran first.
+    """
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    # Simulate a real dev commit so REVIEW has something to review.
+    (tmp_path / "src.py").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=tmp_path, check=True)
+    # Stray untracked file the reviewer must NEVER see.
+    (tmp_path / "test_script.sh").write_text("stale scratch\n", encoding="utf-8")
+
+    config = _make_config(tmp_path)
+    spec_path = tmp_path.parent / f"{tmp_path.name}-spec.md"
+    spec_path.write_text("# spec\n", encoding="utf-8")
+    task = TaskStory(name="t", slug="t", story_path=spec_path)
+    state = CoordinatorState()
+    state.run_id = "abcd1234"
+
+    seen_porcelain: list[set[str]] = []
+
+    def _fake_pool(*args, **kwargs):
+        # Record the porcelain set the reviewers would observe.
+        seen_porcelain.append(snapshot_porcelain(tmp_path))
+        # Return all-empty so phase escalates without needing the full
+        # review/synthesis machinery.
+        return ([], [], None, [], [])
+
+    with (
+        patch("theforge.coordinator.review_phase._run_review_pool", side_effect=_fake_pool),
+        patch(
+            "theforge.coordinator.review_phase._run_escalate_gate",
+            return_value=None,
+        ),
+    ):
+        outcome, _result, _config = _run_review_phase(
+            state,
+            config,
+            task,
+            "# spec\n",
+            tmp_path,
+            "feat/x",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    # Stray file is gone from the worktree.
+    assert not (tmp_path / "test_script.sh").exists()
+    # Quarantine directory holds the original.
+    quarantine_dir = tmp_path / ".forge" / "quarantine" / "abcd1234" / "review-0"
+    assert (quarantine_dir / "test_script.sh").read_text() == "stale scratch\n"
+    # The reviewer-observed worktree was clean.
+    assert seen_porcelain, "review pool was never invoked"
+    assert seen_porcelain[0] == set(), f"reviewers observed stray pollution: {seen_porcelain[0]!r}"
+    # Audit recorded under PRE_REVIEW.
+    pre_review_entry = next(e for e in state.workspace_hygiene_audit if e["phase"] == "PRE_REVIEW")
+    assert pre_review_entry["quarantined"] == ["test_script.sh"]
+    # Outcome is unrelated escalate (pool returned empty); it is not the
+    # hygiene-failure ESCALATE because quarantine succeeded.
+    assert outcome in (_ReviewOutcome.ESCALATE, _ReviewOutcome.RETRY_DEV)
+
+
+def test_run_review_phase_escalates_when_quarantine_fails(tmp_path: Path) -> None:
+    """If hygiene gate cannot quarantine, REVIEW escalates BEFORE invoking
+    reviewers — operator-visible failure, not a silent stale-tree review."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / "src.py").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=tmp_path, check=True)
+
+    config = _make_config(tmp_path)
+    spec_path = tmp_path.parent / f"{tmp_path.name}-spec.md"
+    spec_path.write_text("# spec\n", encoding="utf-8")
+    task = TaskStory(name="t", slug="t", story_path=spec_path)
+    state = CoordinatorState()
+    state.run_id = "abcd1234"
+
+    pool_called = []
+
+    def _fail_hygiene(*args, **kwargs):
+        return (
+            False,
+            "quarantine refused: stray.txt",
+            {
+                "snapshot": ["?? stray.txt"],
+                "modified": [],
+                "quarantined": [],
+                "quarantine_dir": ".forge/quarantine/abcd1234/review-0",
+            },
+        )
+
+    with (
+        patch(
+            "theforge.coordinator.workspace_hygiene.enforce_pre_review_hygiene",
+            side_effect=_fail_hygiene,
+        ),
+        patch(
+            "theforge.coordinator.review_phase._run_review_pool",
+            side_effect=lambda *a, **kw: pool_called.append(True) or ([], [], None, [], []),
+        ),
+    ):
+        outcome, result, _config = _run_review_phase(
+            state,
+            config,
+            task,
+            "# spec\n",
+            tmp_path,
+            "feat/x",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome == _ReviewOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert state.phase == Phase.ESCALATE
+    assert "quarantine refused" in (state.error or "")
+    # Reviewers were never invoked.
+    assert pool_called == []
