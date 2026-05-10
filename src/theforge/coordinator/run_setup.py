@@ -29,6 +29,75 @@ from .state import CoordinatorResult, CoordinatorState, MergeStepState, Phase
 _logger = logging.getLogger(__name__)
 
 
+def _yaml_safe(value: object) -> object:
+    """Recursively coerce tuples to lists so yaml.safe_load can round-trip."""
+    if isinstance(value, tuple):
+        return [_yaml_safe(v) for v in value]
+    if isinstance(value, list):
+        return [_yaml_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _yaml_safe(v) for k, v in value.items()}
+    return value
+
+
+def _serialize_review_result(rr: object) -> dict | None:
+    """Convert a ReviewResult dataclass into a yaml-safe dict for the resume sidecar.
+
+    Imported lazily so this module stays free of theforge.review at import time.
+    """
+    if rr is None:
+        return None
+    import dataclasses  # noqa: PLC0415
+
+    return _yaml_safe(dataclasses.asdict(rr))  # type: ignore[arg-type,return-value]
+
+
+def _deserialize_review_result(data: object) -> object | None:
+    """Reconstruct a ReviewResult/ReviewFinding/ACVerification graph from sidecar data."""
+    if not isinstance(data, dict):
+        return None
+    from theforge.review import ACVerification, ReviewFinding, ReviewResult  # noqa: PLC0415
+
+    findings = []
+    for f in data.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        findings.append(
+            ReviewFinding(
+                severity=f.get("severity", "P1"),
+                file=f.get("file", ""),
+                line=f.get("line"),
+                description=f.get("description", ""),
+                suggestion=f.get("suggestion"),
+                reviewers=tuple(f.get("reviewers") or ()),
+            )
+        )
+    ac_verification = []
+    for ac in data.get("ac_verification") or []:
+        if not isinstance(ac, dict):
+            continue
+        ac_verification.append(
+            ACVerification(
+                criterion=ac.get("criterion", ""),
+                status=ac.get("status", ""),
+                evidence=ac.get("evidence", ""),
+            )
+        )
+    return ReviewResult(
+        verdict=data.get("verdict", "REQUEST_CHANGES"),
+        summary=data.get("summary", ""),
+        findings=findings,
+        story_matches=bool(data.get("story_matches", False)),
+        story_mismatches=list(data.get("story_mismatches") or []),
+        test_adequate=bool(data.get("test_adequate", False)),
+        test_gaps=list(data.get("test_gaps") or []),
+        parse_errors=list(data.get("parse_errors") or []),
+        raw_yaml=dict(data.get("raw_yaml") or {}),
+        ac_verification=tuple(ac_verification),
+        sanitization_audit=dict(data.get("sanitization_audit") or {}),
+    )
+
+
 def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None:
     """Persist trajectory fields to <workspace_path>/.forge/trajectory.yaml.
 
@@ -53,6 +122,13 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
             [cycle_num, findings] for cycle_num, findings in state.review_cycle_findings
         ],
         "surviving_families": state.surviving_families,
+        "escalate_kind": state.escalate_kind,
+        "hygiene_escalation_dev_commit_sha": state.hygiene_escalation_dev_commit_sha,
+        "hygiene_escalation_prior_approve_count": state.hygiene_escalation_prior_approve_count,
+        "hygiene_escalation_total_count": state.hygiene_escalation_total_count,
+        "hygiene_escalation_prior_review": _serialize_review_result(
+            state.hygiene_escalation_prior_review
+        ),
     }
     sidecar.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
 
@@ -92,6 +168,19 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         ]
     if "surviving_families" in data and isinstance(data["surviving_families"], list):
         state.surviving_families = data["surviving_families"]
+    if data.get("escalate_kind") in ("hygiene", "content"):
+        state.escalate_kind = data["escalate_kind"]
+    if isinstance(data.get("hygiene_escalation_dev_commit_sha"), str):
+        state.hygiene_escalation_dev_commit_sha = data["hygiene_escalation_dev_commit_sha"]
+    if isinstance(data.get("hygiene_escalation_prior_approve_count"), int):
+        state.hygiene_escalation_prior_approve_count = data[
+            "hygiene_escalation_prior_approve_count"
+        ]
+    if isinstance(data.get("hygiene_escalation_total_count"), int):
+        state.hygiene_escalation_total_count = data["hygiene_escalation_total_count"]
+    _prior_rr = _deserialize_review_result(data.get("hygiene_escalation_prior_review"))
+    if _prior_rr is not None:
+        state.hygiene_escalation_prior_review = _prior_rr  # type: ignore[assignment]
 
 
 def save_merge_state(workspace_path: Path, merge_state: MergeStepState) -> None:
