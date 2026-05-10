@@ -89,3 +89,56 @@ def test_detect_substrate_returns_real_runtime_metadata() -> None:
     # binary may resolve to sys.executable when forge isn't on PATH; either way
     # the field is non-empty.
     assert sub.binary
+
+
+def test_resolve_running_binary_prefers_argv0_over_path(tmp_path: Path, monkeypatch) -> None:
+    """Operator workflow: dogfood test ladder runs `.forge/rc-envs/<tag>/bin/forge`
+    while PATH still has a different shell-default forge. The provenance line
+    must name the path-qualified binary actually executing, not whatever forge
+    PATH resolves to first.
+    """
+    import sys as _sys
+
+    from theforge.cli import substrate as _sub
+
+    # Path-qualified binary the operator actually invoked (mimics the test
+    # ladder's `.forge/rc-envs/v.../bin/forge`).
+    isolated_dir = tmp_path / "rc-envs" / "v0.10.0rc99" / "bin"
+    isolated_dir.mkdir(parents=True)
+    isolated = isolated_dir / "forge"
+    isolated.write_text("#!/bin/sh\necho isolated\n")
+    isolated.chmod(0o755)
+
+    # A different forge sitting on PATH (mimics the operator's shell-default).
+    path_dir = tmp_path / "default_path"
+    path_dir.mkdir()
+    default_forge = path_dir / "forge"
+    default_forge.write_text("#!/bin/sh\necho default\n")
+    default_forge.chmod(0o755)
+
+    monkeypatch.setattr(_sys, "argv", [str(isolated), "sprint", "--issues", "1"])
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    binary = _sub._resolve_running_binary()
+
+    assert binary == str(isolated.resolve())
+    assert binary != str(default_forge)
+
+
+def test_resolve_running_binary_falls_back_to_path_when_argv0_unusable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import sys as _sys
+
+    from theforge.cli import substrate as _sub
+
+    path_dir = tmp_path / "p"
+    path_dir.mkdir()
+    forge_bin = path_dir / "forge"
+    forge_bin.write_text("#!/bin/sh\n")
+    forge_bin.chmod(0o755)
+
+    monkeypatch.setattr(_sys, "argv", [""])
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    assert _sub._resolve_running_binary() == str(forge_bin)

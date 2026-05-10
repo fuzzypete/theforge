@@ -98,13 +98,41 @@ def _git_ref(source_root: Path) -> str | None:
         return None
 
 
+def _resolve_running_binary() -> str:
+    """Return the absolute path of the `forge` entry point that started this
+    process. Prefers ``sys.argv[0]`` (the actual executable invoked) over
+    ``shutil.which('forge')`` (which returns the first forge on PATH and can
+    point at a different binary entirely).
+
+    The dogfood ladder this fix introduces invokes a path-qualified RC binary
+    while the operator's PATH still resolves ``forge`` to the shell-default;
+    PATH-based detection would name the wrong runtime in that workflow and
+    silently violate the AC that every sprint launch reports the binary that
+    is actually executing.
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0:
+        p = Path(argv0)
+        if p.is_file():
+            return str(p.resolve())
+        # argv0 may be a bare name resolved via PATH (e.g. invoked as just
+        # ``forge``); resolve by name through PATH.
+        which = shutil.which(argv0)
+        if which:
+            return which
+    on_path = shutil.which("forge")
+    if on_path:
+        return on_path
+    return sys.executable
+
+
 def detect_substrate() -> Substrate:
     """Inspect the running interpreter's theforge install and return Substrate."""
     import theforge
 
     pkg_file = getattr(theforge, "__file__", "") or ""
     version = getattr(theforge, "__version__", "0.0.0-dev")
-    binary = shutil.which("forge") or sys.executable
+    binary = _resolve_running_binary()
 
     editable, source_root_str = _read_direct_url_editable(Path(pkg_file).parent)
     source_root: str | None = None
