@@ -272,6 +272,70 @@ def _terminal_phase(
     return outcome or None
 
 
+def _render_intake_drop_detail(final_outcome: str, detail_data: dict) -> str:
+    """Operator-readable DETAIL for an intake-dropped story.
+
+    Includes the primary rule code + finding problem (so the operator knows
+    *what* failed) and an agent attempt summary (whether the LLM ran, cost,
+    model) — the structured data already lives in ``detail.intake_findings``
+    and ``detail.intake_audit``; this renders it instead of reducing to the
+    rule-codes-only ``intake_summary`` string.
+    """
+    findings = detail_data.get("intake_findings") or []
+    primary_code: str | None = None
+    primary_problem: str | None = None
+    if isinstance(findings, list) and findings:
+        first = findings[0]
+        if isinstance(first, dict):
+            code = first.get("code")
+            problem = first.get("problem")
+            if isinstance(code, str) and code:
+                primary_code = code
+            if isinstance(problem, str) and problem.strip():
+                primary_problem = problem.strip()
+    if primary_code is None:
+        codes = detail_data.get("intake_codes")
+        if isinstance(codes, list) and codes and isinstance(codes[0], str):
+            primary_code = codes[0]
+
+    parts: list[str] = [final_outcome]
+    if primary_code:
+        head = f"[{primary_code}]"
+        if primary_problem:
+            head = f"{head} {primary_problem}"
+        parts.append(head)
+    elif primary_problem:
+        parts.append(primary_problem)
+    else:
+        intake_summary = _nonempty_str(detail_data.get("intake_summary"))
+        if intake_summary:
+            parts.append(intake_summary)
+
+    agent_summary = _nonempty_str(detail_data.get("intake_agent_summary"))
+    if not agent_summary:
+        intake_audit = detail_data.get("intake_audit")
+        if isinstance(intake_audit, dict):
+            agent = intake_audit.get("agent")
+            if isinstance(agent, dict):
+                bits: list[str] = []
+                if agent.get("attempted"):
+                    bits.append("agent_attempted=yes")
+                else:
+                    bits.append("agent_attempted=no")
+                cost = agent.get("cost_usd")
+                if isinstance(cost, (int, float)) and cost > 0:
+                    bits.append(f"cost=${float(cost):.4f}")
+                model = agent.get("model_used")
+                if isinstance(model, str) and model:
+                    bits.append(f"model={model}")
+                agent_summary = ", ".join(bits) or None
+    if agent_summary:
+        parts.append(f"({agent_summary})")
+    if len(parts) == 1:
+        return ""
+    return " ".join(parts)
+
+
 def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None]:
     phase_val = story.get("phase")
     status_val = story.get("status", "waiting")
@@ -311,6 +375,17 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
             canonical_outcome = _nonempty_str(story.get("outcome"))
             final_outcome = canonical_outcome.upper() if canonical_outcome else None
         skip_reason = _nonempty_str(story.get("reason")) if status_val == "skipped" else None
+        # Intake-drop outcomes carry structured rule codes in the detail dict.
+        # Surfacing them in the DETAIL column keeps operators from having to
+        # consult audit YAML to learn which rule fired, what the agent tried,
+        # or why the rerun gate failed.
+        if isinstance(final_outcome, str) and final_outcome in {
+            "DROPPED_AFTER_FIX",
+            "DROPPED_SHAPE",
+        }:
+            rendered = _render_intake_drop_detail(final_outcome, detail_data)
+            if rendered:
+                return "", rendered, complexity
         if (
             skip_reason
             and isinstance(final_outcome, str)
@@ -483,6 +558,27 @@ def _stage_and_detail_from_completed_story(
                 or _nonempty_str(story.get("drop_reason"))
                 or outcome
             )
+        elif outcome in {"DROPPED_AFTER_FIX", "DROPPED_SHAPE"}:
+            # Intake-drop entries carry the rule code + problem in ``error``
+            # and the structured detail in ``intake``. Render finding problem
+            # + agent attempt summary so the operator can act from this row
+            # alone — not just see the outcome name.
+            intake_block = story.get("intake")
+            synthetic_detail: dict = {}
+            if isinstance(intake_block, dict):
+                synthetic_detail = {
+                    "intake_findings": intake_block.get("findings") or [],
+                    "intake_codes": intake_block.get("codes") or [],
+                    "intake_agent_summary": intake_block.get("agent_summary"),
+                    "intake_audit": intake_block.get("audit") or {},
+                    "intake_summary": _nonempty_str(story.get("error")),
+                }
+            else:
+                synthetic_detail = {
+                    "intake_summary": _nonempty_str(story.get("error")),
+                }
+            rendered = _render_intake_drop_detail(outcome, synthetic_detail)
+            detail = rendered or outcome
         elif outcome == "DONE":
             detail = "APPROVE"
         elif outcome == "ALREADY_DONE":
