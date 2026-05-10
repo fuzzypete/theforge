@@ -390,6 +390,25 @@ class CoordinatorState:
     # to compute git diff --name-only for changed-file correlation.
     escalate_decision: str | None = None  # "approve" | "reject" | "continue"
     escalate_reason: str | None = None  # human-readable escalation reason
+    # Structured escalation kind: "hygiene" (workspace mutation by a non-DEV phase),
+    # "content" (review or gate found a real problem), or None when there is no
+    # active escalation. Distinct from escalate_reason so resume can tell the two
+    # apart without parsing the human-readable string.
+    escalate_kind: str | None = None
+    # Captured at the moment a REVIEW workspace-hygiene escalation fires when the
+    # reviewer pool had already produced an APPROVE-consensus candidate for the
+    # current dev commit. Used by `forge sprint --resume` to replay the prior
+    # consensus instead of re-running the reviewer pool against an unchanged
+    # dev commit. None means either (a) no hygiene escalation occurred, or
+    # (b) the pool did not reach APPROVE consensus before the trip.
+    hygiene_escalation_dev_commit_sha: str | None = None
+    hygiene_escalation_prior_review: ReviewResult | None = None
+    hygiene_escalation_prior_approve_count: int | None = None
+    hygiene_escalation_total_count: int | None = None
+    # Audit record describing how the resume entry handled a prior hygiene
+    # escalation: replayed the consensus, ran a fresh review because the dev
+    # commit moved, or ran a fresh review because no prior consensus existed.
+    hygiene_resume_audit: dict | None = None
     story_validation_result: StoryValidationResult | None = None
     convention_violations: list[dict] = field(default_factory=list)
     plan_validation_findings: list[dict] = field(default_factory=list)

@@ -66,7 +66,7 @@ from .state import (
     ReviewCycleMetadata,
     ReviewIterationTelemetry,
 )
-from .util import _fmt_duration, _log, _log_phase, _log_verbose
+from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_shell
 
 
 def _perform_dev_model_escalation(
@@ -444,6 +444,7 @@ def _handle_interactive_review_decision(
 
     if decision in ("escalate", "timeout"):
         state.phase = Phase.ESCALATE
+        state.escalate_kind = "content"
         if decision == "timeout":
             state.error = "Remote review timed out — auto-escalated."
         elif exhausted_cycles:
@@ -505,6 +506,101 @@ def _handle_interactive_review_decision(
     return _ReviewOutcome.RETRY_DEV, None, config
 
 
+def _maybe_replay_hygiene_consensus(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    workspace_path: Path,
+    branch_name: str,
+    task_start: float,
+    *,
+    auto_merge: bool,
+    notify: bool,
+    logger: StructuredLogger | None,
+    run_id: str,
+) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig] | None:
+    """Replay a prior APPROVE consensus captured at hygiene-escalation time.
+
+    Returns a DONE outcome when the dev commit is unchanged from the hygiene
+    trip and a prior APPROVE candidate was captured.  Returns None to fall
+    through to a fresh review otherwise; in that case escalation-state fields
+    are cleared so a future hygiene escalation does not silently reuse them.
+    """
+    prior_review = state.hygiene_escalation_prior_review
+    prior_sha = state.hygiene_escalation_dev_commit_sha or ""
+    _ok_sha, _sha_out = _run_shell("git rev-parse HEAD", workspace_path)
+    head_sha = _sha_out.strip() if _ok_sha else ""
+
+    if not head_sha or not prior_sha or head_sha != prior_sha:
+        audit = {
+            "resume_action": "rerun_dev_commit_changed"
+            if (head_sha and prior_sha)
+            else "rerun_no_prior_consensus",
+            "escalate_kind": state.escalate_kind,
+            "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+            "total_count": state.hygiene_escalation_total_count,
+            "dev_commit_sha_at_hygiene_trip": prior_sha or None,
+            "dev_commit_sha_at_resume": head_sha or None,
+        }
+        state.hygiene_resume_audit = audit
+        if logger:
+            logger._safe_emit("hygiene_resume", **audit)
+        _log(
+            "  ↺ RESUME   dev commit changed since hygiene escalation"
+            f" (was {prior_sha[:8] or '?'}, now {head_sha[:8] or '?'})"
+            " — running fresh review"
+        )
+        # Clear so a future hygiene escalation in this run does not replay.
+        state.escalate_kind = None
+        state.hygiene_escalation_prior_review = None
+        return None
+
+    state.review_cycle += 1
+    state.review_results.append(prior_review)
+    audit = {
+        "resume_action": "replayed_consensus",
+        "escalate_kind": state.escalate_kind,
+        "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+        "total_count": state.hygiene_escalation_total_count,
+        "dev_commit_sha_at_hygiene_trip": prior_sha,
+        "dev_commit_sha_at_resume": head_sha,
+    }
+    state.hygiene_resume_audit = audit
+    if logger:
+        logger._safe_emit("hygiene_resume", **audit)
+    _log(
+        "  ↺ RESUME   replaying prior APPROVE consensus from hygiene escalation,"
+        f" dev commit {prior_sha[:8]}"
+    )
+    # Clear so a subsequent escalation does not replay the same record.
+    state.escalate_kind = None
+    state.hygiene_escalation_prior_review = None
+    _append_cycle_history(state, prior_review)
+    return (
+        _ReviewOutcome.DONE,
+        _finalize_approve(
+            state,
+            config,
+            task,
+            prior_review,
+            workspace_path,
+            branch_name,
+            task_start,
+            auto_merge=auto_merge,
+            notify=notify,
+            logger=logger,
+            review_cost=0.0,
+            review_elapsed=0.0,
+            message=(
+                f"Task '{task.name}' completed. "
+                f"Replayed prior APPROVE consensus from hygiene escalation. "
+            ),
+            run_id=run_id,
+        ),
+        config,
+    )
+
+
 def _run_review_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -530,6 +626,26 @@ def _run_review_phase(
     config is returned because persistent-P1 model escalation may replace it.
     """
     state.phase = Phase.REVIEW
+
+    # Resume short-circuit: if the prior run escalated due to a workspace-hygiene
+    # mutation but the reviewer pool had already produced an APPROVE consensus
+    # for the dev commit, replay that consensus instead of re-running the pool
+    # against an unchanged dev commit (issue #1499).
+    if state.escalate_kind == "hygiene" and state.hygiene_escalation_prior_review is not None:
+        _resume_result = _maybe_replay_hygiene_consensus(
+            state,
+            config,
+            task,
+            workspace_path,
+            branch_name,
+            task_start,
+            auto_merge=auto_merge,
+            notify=notify,
+            logger=logger,
+            run_id=run_id,
+        )
+        if _resume_result is not None:
+            return _resume_result
     if state_update_fn is not None:
         state_update_fn(
             {
@@ -593,10 +709,41 @@ def _run_review_phase(
     if not _review_ok:
         state.phase = Phase.ESCALATE
         state.error = _review_diag or "REVIEW phase mutated the worktree"
+        state.escalate_kind = "hygiene"
+        # Capture prior reviewer consensus so `forge sprint --resume` can replay
+        # the APPROVE outcome for an unchanged dev commit instead of re-exposing
+        # the run to reviewer flakiness on a hygiene-only escalation.
+        _approve_count = sum(1 for _, rr in _named_parsed if rr.verdict == "APPROVE")
+        _total_count = len(_named_parsed)
+        state.hygiene_escalation_prior_approve_count = _approve_count
+        state.hygiene_escalation_total_count = _total_count
+        if (
+            _candidate is not None
+            and not _candidate.parse_errors
+            and _candidate.verdict == "APPROVE"
+        ):
+            _ok_sha, _sha_out = _run_shell("git rev-parse HEAD", workspace_path)
+            if _ok_sha and _sha_out.strip():
+                state.hygiene_escalation_dev_commit_sha = _sha_out.strip()
+                state.hygiene_escalation_prior_review = _candidate
+                _log(
+                    f"  ↺ Captured prior APPROVE consensus "
+                    f"({_approve_count}/{_total_count}) at dev commit "
+                    f"{state.hygiene_escalation_dev_commit_sha[:8]} for resume replay"
+                )
+        save_trajectory_state(workspace_path, state)
         _log(f"✗ ESCALATE   {state.error}")
         if logger:
             logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
-            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+            logger._safe_emit(
+                "escalate",
+                reason=state.error,
+                phase="REVIEW",
+                escalate_kind="hygiene",
+                prior_approve_count=_approve_count,
+                total_count=_total_count,
+                dev_commit_sha=state.hygiene_escalation_dev_commit_sha,
+            )
         _escalate_notify(task, state, notify, config)
         return (
             _ReviewOutcome.ESCALATE,
@@ -893,6 +1040,7 @@ def _run_review_phase(
             # Blocking P1 persists but reviewer has converged — escalate so
             # the persistent issue gets human attention rather than looping.
             state.phase = Phase.ESCALATE
+            state.escalate_kind = "content"
             state.error = (
                 f"Review converged with unresolved blocking P1(s) after "
                 f"{_zero_stop} consecutive zero-new-findings cycles."
@@ -927,6 +1075,7 @@ def _run_review_phase(
         workspace_path, config.workspace.base_branch
     ):
         state.phase = Phase.ESCALATE
+        state.escalate_kind = "content"
         state.error = (
             "Review verdict APPROVE on a branch with no commits ahead of base — "
             "refusing to mark DONE on an empty diff"
@@ -1064,6 +1213,7 @@ def _run_review_phase(
             )
         else:
             state.phase = Phase.ESCALATE
+            state.escalate_kind = "content"
             state.error = (
                 f"Review requested changes after {state.review_cycle} cycles. "
                 f"Max cycles ({_adaptive_review_max}) exhausted."
