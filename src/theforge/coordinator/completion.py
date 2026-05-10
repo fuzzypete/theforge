@@ -863,10 +863,24 @@ def _merge_pr(
             merged_pr = next((pr for pr in merged_prs if pr.get("mergedAt")), None)
             if merged_pr is not None:
                 pr_url = merged_pr.get("url")
+                pr_number = merged_pr.get("number")
+                merged_at = merged_pr.get("mergedAt")
+                guard_evidence = {
+                    "branch": branch_name,
+                    "pr_number": pr_number,
+                    "pr_url": pr_url,
+                    "merged_at": merged_at,
+                }
+                _log(
+                    f"LANDING already-merged short-circuit: branch {branch_name} matched "
+                    f"merged PR #{pr_number} (mergedAt={merged_at}) — "
+                    f"skipping push/PR/merge, cleaning up worktree"
+                )
                 _pr_log.info(
-                    "PR already merged for branch %s; skipping PR recreation and merge retry: %s",
+                    "land_story already-merged short-circuit: branch=%s pr=%s mergedAt=%s",
                     branch_name,
                     pr_url,
+                    merged_at,
                 )
                 if "cleanup" not in merge_state.completed_steps:
                     _step_cleanup(
@@ -886,6 +900,8 @@ def _merge_pr(
                     "auto_merge_queued": False,
                     "success": True,
                     "error": None,
+                    "landing_path": "already-merged",
+                    "guard_evidence": guard_evidence,
                 }
         else:
             err = merged_pr_proc.stderr.strip() or merged_pr_proc.stdout.strip()
@@ -951,9 +967,16 @@ def _merge_pr(
                 )
             if create_result["pr_url"] is None:
                 # Zero-delta branch: no commits ahead of base, nothing to merge.
+                ahead_commit_count = create_result.get("ahead_commit_count", 0)
+                guard_evidence = {
+                    "branch": branch_name,
+                    "base_branch": base_branch,
+                    "ahead_commit_count": ahead_commit_count,
+                }
                 _log(
-                    f"  Skipping merge: branch {branch_name} has no commits ahead of "
-                    f"origin/{base_branch}"
+                    f"LANDING zero-delta short-circuit: branch {branch_name} has "
+                    f"{ahead_commit_count} commits ahead of origin/{base_branch} "
+                    f"— nothing to merge"
                 )
                 delete_merge_state(worktree_path)
                 return {
@@ -966,6 +989,8 @@ def _merge_pr(
                     "error": None,
                     "skipped": True,
                     "skip_reason": "zero-delta branch",
+                    "landing_path": "zero-delta",
+                    "guard_evidence": guard_evidence,
                 }
             merge_state.pr_url = create_result["pr_url"]
             _complete_step(merge_state, "create_pr", pr_url=merge_state.pr_url)
@@ -1053,6 +1078,12 @@ def _merge_pr(
         "success": True,
         "error": None,
         "auto_merge_queued": auto_merge_queued,
+        "landing_path": "fresh-merge",
+        "guard_evidence": {
+            "branch": branch_name,
+            "pr_url": merge_state.pr_url,
+            "merge_queued": merge_queued,
+        },
     }
 
 
@@ -1167,8 +1198,20 @@ def land_story(
 
     elif effective_on_approve == "merge-pr":
         if parsed_review is None:
-            _log("WARN: land_story called for merge-pr but parsed_review is None — skipping")
-            return {"merged": False, "error": "no review result available"}, "failed"
+            _log(
+                "LANDING missing-review short-circuit: land_story called for merge-pr but "
+                f"parsed_review is None for branch {branch_name} — skipping"
+            )
+            return (
+                {
+                    "action": "merge-pr",
+                    "merged": False,
+                    "error": "no review result available",
+                    "landing_path": "missing-review",
+                    "guard_evidence": {"branch": branch_name},
+                },
+                "failed",
+            )
 
         merge_info = _merge_pr(config, task, branch_name, parsed_review, state)
         if logger:

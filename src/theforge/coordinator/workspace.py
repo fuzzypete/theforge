@@ -287,7 +287,18 @@ def _merge_branch(
     ok, log_out = _cu._run_shell(f"git log {base_branch}..{branch_name} --oneline", project_root)
     if not ok or not log_out.strip():
         info["error"] = f"Branch {branch_name!r} has no commits ahead of {base_branch!r}"
-        _cu._log(f"Auto-merge skipped: {info['error']}")
+        info["landing_path"] = "zero-delta"
+        info["skipped"] = True
+        info["skip_reason"] = "zero-delta branch"
+        info["guard_evidence"] = {
+            "branch": branch_name,
+            "base_branch": base_branch,
+            "ahead_commit_count": 0,
+        }
+        _cu._log(
+            f"LANDING zero-delta short-circuit: branch {branch_name} has 0 commits ahead of "
+            f"{base_branch} — nothing to merge"
+        )
         return info
 
     _deindex_forge_artifacts(workspace_path, purge=True)
@@ -322,6 +333,11 @@ def _merge_branch(
             return info
 
     info["merged"] = True
+    info["landing_path"] = "fresh-merge"
+    info["guard_evidence"] = {
+        "branch": branch_name,
+        "base_branch": base_branch,
+    }
     _cu._log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
 
     if auto_push:
