@@ -36,9 +36,7 @@ def _init_repo(path: Path, *, with_feature_commit: bool = True) -> str:
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
     if with_feature_commit:
-        subprocess.run(
-            ["git", "checkout", "-q", "-b", "forge/test-task"], cwd=path, check=True
-        )
+        subprocess.run(["git", "checkout", "-q", "-b", "forge/test-task"], cwd=path, check=True)
         (path / "feature.py").write_text("# feature\n", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=path, check=True)

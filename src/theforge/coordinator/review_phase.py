@@ -603,9 +603,7 @@ def _maybe_replay_hygiene_consensus(
         _escalate_notify(task, state, notify, config)
         return (
             _ReviewOutcome.ESCALATE,
-            CoordinatorResult(
-                success=False, phase=state.phase, state=state, message=state.error
-            ),
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
             config,
         )
 
