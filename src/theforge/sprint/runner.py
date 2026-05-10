@@ -1475,6 +1475,20 @@ def run_sprint(
 
     total = len(task_entries)
     noun = "stories" if total != 1 else "story"
+    # Substrate provenance: name the runtime executing this sprint so the
+    # operator can never be confused about which install is in effect. See
+    # theforge.cli.substrate for the failure mode this closes.
+    try:
+        from theforge.cli.substrate import emit_provenance
+
+        emit_provenance(
+            cwd=config.project_root,
+            bypass_mismatch=bool(force),
+        )
+    except Exception:
+        # Provenance is operator-visible information, not a correctness gate;
+        # never let a detection failure block sprint start.
+        pass
     print(
         f'[sprint] "{resolved.name}"  {total} {noun}  budget=${resolved.budget_usd:.2f}'
         f"  parallel={max_parallel}",

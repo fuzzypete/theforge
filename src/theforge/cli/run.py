@@ -125,6 +125,13 @@ def cmd_run(args: "argparse.Namespace") -> int:
     import theforge
 
     print(f"TheForge v{theforge.__version__}", file=sys.stderr)
+    # Substrate provenance — name the runtime executing this run.
+    try:
+        from theforge.cli.substrate import emit_provenance
+
+        emit_provenance(cwd=config.project_root, bypass_mismatch=False)
+    except Exception:
+        pass
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)

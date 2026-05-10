@@ -7,8 +7,14 @@
 #
 # Cuts release/vX.Y from current main (or fast-forwards if it exists),
 # bumps pyproject.toml to X.Y.ZrcN, runs gate, tags vX.Y.ZrcN, pushes
-# branch and tag. Then installs the RC into the active Python environment
-# so dogfood sprints exercise the candidate (use --no-install to skip).
+# branch and tag. Then installs the RC into an ISOLATED Python venv under
+# .forge/rc-envs/v<X.Y.Z>rc<N>/ so dogfood sprints exercise the candidate
+# without mutating the operator's default Python environment (use
+# --no-install to skip the verification install entirely).
+#
+# The operator's shell-default `forge` is never touched by this script.
+# To dogfood the cut RC, invoke the path-qualified binary printed in the
+# Test ladder section below.
 #
 # Does NOT block on open milestone issues — that's a promote-rc requirement.
 # Prints them informationally so the operator can see what is or isn't in
@@ -156,42 +162,62 @@ run git tag "$RC_TAG"
 run git push -u origin "$RELEASE_BRANCH"
 run git push origin "$RC_TAG"
 
-# --- 9. Install the RC into the active env, then assert the right binary is on PATH ---
+# --- 9. Install the RC into an ISOLATED venv and verify against THAT venv's binary ---
+#
+# Earlier versions of this script ran `pip install --force-reinstall` against
+# whatever Python env was active, which silently overwrote the operator's
+# editable install of source. The operator's default env is now never touched
+# by the cut process — verification runs entirely inside the isolated venv.
+RC_ENV_DIR="$(git rev-parse --show-toplevel)/.forge/rc-envs/${RC_TAG}"
+RC_ENV_FORGE="${RC_ENV_DIR}/bin/forge"
+RC_ENV_PIP="${RC_ENV_DIR}/bin/pip"
+RC_ENV_PYTHON="${RC_ENV_DIR}/bin/python"
+
 if [[ "$NO_INSTALL" == false ]]; then
-    echo "==> Installing $RC_TAG into active Python environment..."
-    run pip install --force-reinstall "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
+    echo "==> Verifying $RC_TAG installs cleanly (isolated venv at $RC_ENV_DIR)..."
     if [[ "$DRY_RUN" == false ]]; then
-        INSTALLED_VERSION=$(forge --version 2>/dev/null || echo "")
-        FORGE_PATH=$(command -v forge 2>/dev/null || echo "<not found>")
-        PIP_PATH=$(command -v pip 2>/dev/null || echo "<not found>")
-        PYTHON_PATH=$(command -v python 2>/dev/null || echo "<not found>")
+        if [[ -d "$RC_ENV_DIR" ]]; then
+            rm -rf "$RC_ENV_DIR"
+        fi
+        mkdir -p "$(dirname "$RC_ENV_DIR")"
+    fi
+    run python3 -m venv "$RC_ENV_DIR"
+    run "$RC_ENV_PIP" install --upgrade pip
+    run "$RC_ENV_PIP" install "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
+    if [[ "$DRY_RUN" == false ]]; then
+        INSTALLED_VERSION=$("$RC_ENV_FORGE" --version 2>/dev/null || echo "")
+        echo "    isolated forge   : $RC_ENV_FORGE"
         echo "    forge --version  : $INSTALLED_VERSION"
-        echo "    forge on PATH    : $FORGE_PATH"
-        echo "    pip on PATH      : $PIP_PATH"
-        echo "    python on PATH   : $PYTHON_PATH"
+        echo "    isolated pip     : $RC_ENV_PIP"
+        echo "    isolated python  : $RC_ENV_PYTHON"
         if [[ "$INSTALLED_VERSION" != *"$RC_VERSION"* ]]; then
             echo "" >&2
-            echo "Error: installed forge version does not match RC ($RC_VERSION)." >&2
-            echo "       'pip install' may have targeted a different environment than the 'forge' on PATH." >&2
-            echo "       Compare the pip/python/forge paths above and reinstall into the correct env, e.g.:" >&2
-            echo "         \"\$PYTHON_PATH\" -m pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@${RC_TAG}" >&2
+            echo "Error: isolated forge version does not match RC ($RC_VERSION)." >&2
+            echo "       Got: '$INSTALLED_VERSION'" >&2
+            echo "       The cut tag may not be publishable; investigate before promoting." >&2
             exit 1
         fi
+        echo "    ✓ $RC_TAG verified — operator's default env is unchanged."
     fi
 else
-    echo "==> Skipping install (--no-install)."
-    echo "    To install manually:"
-    echo "      pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
+    echo "==> Skipping verification install (--no-install)."
+    echo "    To verify manually in an isolated venv:"
+    echo "      python3 -m venv \"$RC_ENV_DIR\""
+    echo "      \"$RC_ENV_PIP\" install git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
+    echo "      \"$RC_ENV_FORGE\" --version"
 fi
 
 # --- 10. Print test ladder ---
 echo ""
 echo "==> $RC_TAG cut on $RELEASE_BRANCH."
 echo ""
-echo "Test ladder — run on TheForge's own repo against the installed RC:"
-echo "  1. Smoke pass (small story):       forge sprint --verbose --issues <small-issue>  --budget 50 --parallel 1"
-echo "  2. Boundary pass (medium story):   forge sprint --verbose --issues <medium-issue> --budget 50 --parallel 1"
-echo "  3. Moneyshot pass (high-complexity story): forge sprint --verbose --issues <high-complexity-issue> --budget 50 --parallel 1"
+echo "Test ladder — run on TheForge's own repo against the cut RC binary."
+echo "The path-qualified binary below is the dogfood substrate; your shell-default"
+echo "\`forge\` is unchanged by this script and remains on whatever you had before."
+echo ""
+echo "  1. Smoke pass (small story):       $RC_ENV_FORGE sprint --verbose --issues <small-issue>  --budget 50 --parallel 1"
+echo "  2. Boundary pass (medium story):   $RC_ENV_FORGE sprint --verbose --issues <medium-issue> --budget 50 --parallel 1"
+echo "  3. Moneyshot pass (high-complexity story): $RC_ENV_FORGE sprint --verbose --issues <high-complexity-issue> --budget 50 --parallel 1"
 echo ""
 echo "Pick the issues from milestone v$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}') (or the next milestone after v$VERSION)."
 echo "Watch for: 'budget' wording in audit/logs (should be 'per-story routing cost cap'), silent tier/pool downgrades without terminal warnings, regressions in any v$VERSION-shipped behavior."
