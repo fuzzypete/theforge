@@ -174,9 +174,7 @@ def test_intake_log_lines_for_dropped_after_fix_include_codes_problem_and_agent_
             },
         },
     )
-    lines = _intake_log_lines(
-        outcome, outcome_name="DROPPED_AFTER_FIX", display_key="Issue #1473"
-    )
+    lines = _intake_log_lines(outcome, outcome_name="DROPPED_AFTER_FIX", display_key="Issue #1473")
     blob = "\n".join(lines)
     assert "DROPPED_AFTER_FIX Issue #1473" in blob
     assert "groom_how_shaped_ac" in blob
