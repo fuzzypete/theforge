@@ -24,9 +24,11 @@ from theforge.intake.remediation import IntakeOutcome, IntakeOutcomeKind
 from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
 from theforge.sprint.manifest import ResolvedSprint, SprintResult
 from theforge.sprint.runner import (
+    _intake_agent_summary,
     _intake_audit_block,
     _intake_error_type,
     _intake_finding_codes,
+    _intake_log_lines,
     _intake_outcome_summary,
     _intake_problem_lines,
 )
@@ -107,6 +109,86 @@ def test_intake_error_type_falls_back_to_kind_value_when_no_findings():
     assert _intake_error_type(outcome) == "dropped_after_fix"
 
 
+def test_intake_agent_summary_includes_attempted_cost_model_transport():
+    outcome = _outcome(
+        findings=(_finding("groom_how_shaped_ac", "p"),),
+        audit={
+            "remediation_source": "agent",
+            "agent": {
+                "attempted": True,
+                "cost_usd": 0.083,
+                "model_used": "claude-sonnet-4-6",
+                "transport_used": "cli",
+            },
+            "issue_updated": False,
+            "comment_posted": False,
+        },
+    )
+    summary = _intake_agent_summary(outcome)
+    assert "source=agent" in summary
+    assert "agent_attempted=yes" in summary
+    assert "$0.0830" in summary
+    assert "model=claude-sonnet-4-6" in summary
+    assert "transport=cli" in summary
+
+
+def test_intake_agent_summary_when_agent_did_not_run():
+    """Real DROPPED_SHAPE outcomes always carry an ``agent`` block (built by
+    intake.remediation._build_audit) with attempted=False; the summary must
+    explicitly say so rather than going silent."""
+    outcome = _outcome(
+        kind=IntakeOutcomeKind.DROPPED_SHAPE,
+        findings=(_finding("missing_acceptance_criteria", "p", location="acceptance_criteria"),),
+        detail="auto-fix disabled",
+        audit={
+            "remediation_source": "none",
+            "agent": {
+                "attempted": False,
+                "detail": "",
+                "profile_name": None,
+                "model_used": None,
+                "cost_usd": None,
+                "transport_used": None,
+            },
+        },
+    )
+    summary = _intake_agent_summary(outcome)
+    assert "agent_attempted=no" in summary
+
+
+def test_intake_log_lines_for_dropped_after_fix_include_codes_problem_and_agent_attempt():
+    """The runner emits these lines verbatim — operators reading the run log
+    must learn the rule code, the finding problem string, AND whether the
+    auto-fix tried (cost/model/transport) without opening audit YAML."""
+    f = _finding("groom_how_shaped_ac", "ACs prescribe implementation steps")
+    outcome = _outcome(
+        findings=(f,),
+        detail="rerun gate still failing; did not edit issue",
+        audit={
+            "remediation_source": "agent",
+            "agent": {
+                "attempted": True,
+                "cost_usd": 0.083,
+                "model_used": "claude-sonnet-4-6",
+                "transport_used": "cli",
+            },
+        },
+    )
+    lines = _intake_log_lines(
+        outcome, outcome_name="DROPPED_AFTER_FIX", display_key="Issue #1473"
+    )
+    blob = "\n".join(lines)
+    assert "DROPPED_AFTER_FIX Issue #1473" in blob
+    assert "groom_how_shaped_ac" in blob
+    assert "ACs prescribe implementation steps" in blob
+    # Reviewer-required fields: agent attempted/cost/model/transport.
+    assert "agent_attempted=yes" in blob
+    assert "$0.0830" in blob
+    assert "model=claude-sonnet-4-6" in blob
+    assert "transport=cli" in blob
+    assert "source=agent" in blob
+
+
 def test_intake_audit_block_carries_codes_findings_and_audit():
     f = _finding("groom_how_shaped_ac", "p")
     outcome = _outcome(
@@ -123,29 +205,75 @@ def test_intake_audit_block_carries_codes_findings_and_audit():
     assert block["detail"] == "rerun gate still failing; did not edit issue"
 
 
-def test_live_status_detail_for_dropped_after_fix_includes_intake_summary():
-    # Mirrors what the runner writes into SprintStoryState.detail for a story
-    # dropped at the intake gate. status=failed because DROPPED_AFTER_FIX maps
-    # to legacy "failed"; final_outcome carries the canonical name.
+def _live_intake_detail_dict() -> dict:
+    """Mirror the SprintStoryState.detail dict written by the runner."""
+    return {
+        "final_outcome": "DROPPED_AFTER_FIX",
+        "intake_summary": "[groom_how_shaped_ac] rerun gate still failing; did not edit issue",
+        "intake_codes": ["groom_how_shaped_ac"],
+        "intake_kind": "dropped_after_fix",
+        "intake_findings": [
+            {
+                "code": "groom_how_shaped_ac",
+                "severity": "block",
+                "location": "acceptance_criteria",
+                "problem": "ACs prescribe implementation steps",
+                "suggested_replacement": None,
+                "fix_type": "semantic",
+            }
+        ],
+        "intake_agent_summary": (
+            "source=agent, agent_attempted=yes, cost=$0.0830, model=claude, transport=cli"
+        ),
+        "intake_audit": {
+            "remediation_source": "agent",
+            "agent": {
+                "attempted": True,
+                "cost_usd": 0.083,
+                "model_used": "claude",
+                "transport_used": "cli",
+            },
+        },
+    }
+
+
+def test_live_status_detail_for_dropped_after_fix_renders_problem_and_agent_summary():
     story = {
         "status": "failed",
         "outcome": "dropped_after_fix",
         "phase": None,
         "blocked_by": [],
-        "detail": {
-            "final_outcome": "DROPPED_AFTER_FIX",
-            "intake_summary": "[groom_how_shaped_ac] rerun gate still failing; did not edit issue",
-            "intake_codes": ["groom_how_shaped_ac"],
-            "intake_kind": "dropped_after_fix",
-        },
+        "detail": _live_intake_detail_dict(),
     }
     _, detail, _ = _stage_and_detail_from_live_story(story)
     assert "DROPPED_AFTER_FIX" in detail
     assert "groom_how_shaped_ac" in detail
-    assert "rerun gate still failing" in detail
+    # Finding.problem must be visible — not just the rule code.
+    assert "ACs prescribe implementation steps" in detail
+    # Agent attempt detail must be visible — operator needs to know whether
+    # the auto-fix tried, and at what cost/model.
+    assert "agent_attempted=yes" in detail
+    assert "$0.0830" in detail
 
 
-def test_live_status_detail_for_dropped_shape_includes_intake_summary():
+def test_live_status_detail_synthesizes_agent_summary_from_intake_audit_when_field_missing():
+    """If intake_agent_summary wasn't pre-rendered, derive it from intake_audit."""
+    detail_dict = _live_intake_detail_dict()
+    detail_dict.pop("intake_agent_summary", None)
+    story = {
+        "status": "failed",
+        "outcome": "dropped_after_fix",
+        "phase": None,
+        "blocked_by": [],
+        "detail": detail_dict,
+    }
+    _, detail, _ = _stage_and_detail_from_live_story(story)
+    assert "agent_attempted=yes" in detail
+    assert "$0.0830" in detail
+    assert "model=claude" in detail
+
+
+def test_live_status_detail_for_dropped_shape_includes_problem_string():
     story = {
         "status": "failed",
         "outcome": "dropped_shape",
@@ -156,11 +284,24 @@ def test_live_status_detail_for_dropped_shape_includes_intake_summary():
             "intake_summary": "[missing_acceptance_criteria] auto-fix disabled",
             "intake_codes": ["missing_acceptance_criteria"],
             "intake_kind": "dropped_shape",
+            "intake_findings": [
+                {
+                    "code": "missing_acceptance_criteria",
+                    "severity": "block",
+                    "location": "acceptance_criteria",
+                    "problem": "no acceptance_criteria section found",
+                    "suggested_replacement": None,
+                    "fix_type": "mechanical",
+                }
+            ],
+            "intake_audit": {"remediation_source": "none", "agent": {"attempted": False}},
         },
     }
     _, detail, _ = _stage_and_detail_from_live_story(story)
     assert "DROPPED_SHAPE" in detail
     assert "missing_acceptance_criteria" in detail
+    assert "no acceptance_criteria section found" in detail
+    assert "agent_attempted=no" in detail
 
 
 def _build_intake_dropped_entry(canonical_ref: str) -> dict:
@@ -252,6 +393,11 @@ def test_audit_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path)
     assert spec["intake"]["codes"] == ["groom_how_shaped_ac"]
     assert spec["intake"]["audit"]["agent"]["attempted"] is True
     assert spec["intake"]["audit"]["agent"]["cost_usd"] == 0.083
+    assert spec["intake"]["audit"]["agent"]["model_used"] == "claude"
+    # Pre-rendered agent_summary string must be on disk too so postmortem
+    # tooling does not have to re-derive it from the audit dict.
+    assert "agent_attempted=yes" in spec["intake"]["agent_summary"]
+    assert "$0.0830" in spec["intake"]["agent_summary"]
 
 
 def test_sprint_summary_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path):

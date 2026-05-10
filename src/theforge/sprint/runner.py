@@ -263,6 +263,62 @@ def _intake_error_type(outcome: IntakeOutcome) -> str:
     return outcome.kind.value
 
 
+def _intake_log_lines(outcome: IntakeOutcome, *, outcome_name: str, display_key: str) -> list[str]:
+    """Lines the runner emits to the sprint log for a non-PASSED intake outcome.
+
+    Operators must learn the rule code(s), the per-finding problem strings,
+    and the agent attempt details (whether the LLM ran, cost, model,
+    transport, whether the issue was edited or commented on) — without
+    consulting audit YAML or re-deriving with a Python snippet against
+    groom_check.
+    """
+    summary = _intake_outcome_summary(outcome)
+    lines: list[str] = []
+    if summary:
+        lines.append(f"  {outcome_name} {display_key}: {summary}")
+    else:
+        lines.append(f"  {outcome_name} {display_key}")
+    for problem_line in _intake_problem_lines(outcome):
+        lines.append(f"      - {problem_line}")
+    agent_summary = _intake_agent_summary(outcome)
+    if agent_summary:
+        lines.append(f"      auto-fix: {agent_summary}")
+    return lines
+
+
+def _intake_agent_summary(outcome: IntakeOutcome) -> str:
+    """One-line agent-attempt summary derived from outcome.audit.
+
+    Surfaces ``remediation_source`` plus the agent block fields (attempted,
+    cost_usd, model_used, transport_used) so the run log and forge status
+    DETAIL show whether the auto-fix actually tried and what it cost — not
+    just whether the rerun gate failed.
+    """
+    audit = outcome.audit or {}
+    parts: list[str] = []
+    source = audit.get("remediation_source")
+    if isinstance(source, str) and source and source != "none":
+        parts.append(f"source={source}")
+    agent = audit.get("agent")
+    if isinstance(agent, dict):
+        attempted = bool(agent.get("attempted"))
+        parts.append(f"agent_attempted={'yes' if attempted else 'no'}")
+        cost = agent.get("cost_usd")
+        if isinstance(cost, (int, float)) and cost > 0:
+            parts.append(f"cost=${float(cost):.4f}")
+        model = agent.get("model_used")
+        if isinstance(model, str) and model:
+            parts.append(f"model={model}")
+        transport = agent.get("transport_used")
+        if isinstance(transport, str) and transport:
+            parts.append(f"transport={transport}")
+    if audit.get("issue_updated") is True:
+        parts.append("issue_updated=true")
+    if audit.get("comment_posted") is True:
+        parts.append("comment_posted=true")
+    return ", ".join(parts)
+
+
 def _intake_audit_block(outcome: IntakeOutcome) -> dict:
     """Structured intake_findings block surfaced into audit/summary YAML."""
     return {
@@ -270,6 +326,7 @@ def _intake_audit_block(outcome: IntakeOutcome) -> dict:
         "detail": outcome.detail,
         "codes": _intake_finding_codes(outcome),
         "findings": [f.as_dict() for f in outcome.findings],
+        "agent_summary": _intake_agent_summary(outcome),
         "audit": dict(outcome.audit),
     }
 
@@ -1715,6 +1772,8 @@ def run_sprint(
             intake_codes = _intake_finding_codes(outcome)
             intake_summary = _intake_outcome_summary(outcome)
             intake_error_type = _intake_error_type(outcome)
+            intake_agent_summary = _intake_agent_summary(outcome)
+            intake_problem_lines = _intake_problem_lines(outcome)
             intake_block = _intake_audit_block(outcome)
             # Per-issue run-log line so operators reading the live sprint log
             # learn the blocking rule code(s) and detail without having to open
@@ -1730,13 +1789,10 @@ def run_sprint(
                 )
             else:
                 display_key = slug
-            _log(
-                f"  {outcome_value.name} {display_key}: {intake_summary}"
-                if intake_summary
-                else f"  {outcome_value.name} {display_key}"
-            )
-            for problem_line in _intake_problem_lines(outcome):
-                _log(f"      - {problem_line}")
+            for log_line in _intake_log_lines(
+                outcome, outcome_name=outcome_value.name, display_key=display_key
+            ):
+                _log(log_line)
             _set_outcome(
                 slug,
                 outcome_value,
@@ -1745,6 +1801,8 @@ def run_sprint(
                     "intake_findings": [f.as_dict() for f in outcome.findings],
                     "intake_codes": intake_codes,
                     "intake_summary": intake_summary,
+                    "intake_problem_lines": intake_problem_lines,
+                    "intake_agent_summary": intake_agent_summary,
                     "intake_detail": outcome.detail,
                     "intake_audit": dict(outcome.audit),
                 },
