@@ -791,15 +791,11 @@ def _write_sprint_summary(
         spec_entries.append(entry)
         accumulated_for_state.append(prior)
 
-    # Persist accumulated state so future runs can find stories from this invocation.
-    # Preserve prior entries that were not part of this invocation's canonical_refs
-    # so re-exec/resume summaries retain the full logical sprint history.
-    persist_accumulated_story_state(
-        sprint_id,
-        manifest.name,
-        project_root,
-        accumulated_for_state,
-    )
+    # Persistence is deferred until after canonical projection so the
+    # accumulated state on disk reflects per-story costs that include
+    # cross-phase spend attributed by the runner (e.g. intake remediation).
+    # Persisting before projection saves the stale CoordinatorState-only
+    # cost and a later --resume reloads the wrong total.
 
     usage_distribution = []
     for spec_str, res in result.results:
@@ -833,11 +829,14 @@ def _write_sprint_summary(
     # no canonical state was passed (legacy callers), fall back to recomputing
     # from spec_entries; the canonical path is the single source of truth.
     if story_state is not None and hasattr(story_state, "counts"):
-        # First, propagate canonical outcomes to per-story rows so that
-        # terminal-to-terminal corrections (e.g., DONE→FAILED for a queued PR
-        # that did not land) appear in the summary rows AND aggregate counts.
-        # The summary stories list and the summary totals must come from the
-        # same source — this loop ensures both project from story_state.
+        # First, propagate canonical outcomes AND cost_usd to per-story rows
+        # so that terminal-to-terminal corrections (e.g., DONE→FAILED for a
+        # queued PR that did not land) and cross-phase spend attribution
+        # (e.g. intake remediation) appear in the summary rows AND aggregate
+        # counts AND the persisted accumulated state. The summary stories
+        # list, persisted state, and summary totals must come from the same
+        # source — this loop ensures all three project from story_state.
+        accumulated_by_slug = {e.get("slug"): e for e in accumulated_for_state if e.get("slug")}
         for entry in spec_entries:
             slug = entry.get("slug")
             if not slug:
@@ -848,6 +847,10 @@ def _write_sprint_summary(
             entry["outcome"] = canonical_entry.outcome.name
             outcome_lower = canonical_entry.outcome.name.lower()
             entry["outcome_code"] = entry.get("error_type") or outcome_lower
+            entry["cost_usd"] = canonical_entry.cost_usd
+            accumulated = accumulated_by_slug.get(slug)
+            if accumulated is not None:
+                accumulated["cost_usd"] = canonical_entry.cost_usd
         canonical_counts = story_state.counts()
         effective_specs_total = canonical_counts["total"]
         effective_succeeded = canonical_counts["succeeded"]
@@ -894,6 +897,18 @@ def _write_sprint_summary(
             for e in spec_entries
             if e.get("outcome") in ("ALREADY_DONE", "SKIPPED", "PRESERVED", None)
         )
+
+    # Persist accumulated state so future runs can find stories from this
+    # invocation. Persistence runs after canonical projection so cost_usd
+    # values reflect cross-phase spend (e.g. intake remediation) attributed
+    # by the runner; otherwise --resume would reload stale per-story totals
+    # and sprint-summary.yaml would silently drop the prior intake spend.
+    persist_accumulated_story_state(
+        sprint_id,
+        manifest.name,
+        project_root,
+        accumulated_for_state,
+    )
 
     summary = {
         "sprint": {

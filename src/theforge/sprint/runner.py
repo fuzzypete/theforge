@@ -218,6 +218,25 @@ def _run_intake_remediation_pass(
     )
 
 
+def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
+    """Return the agent cost recorded in an intake outcome's audit block.
+
+    Intake remediation agent calls spend sprint-authorized budget but live
+    outside CoordinatorState.total_cost. Sprint cost rollups must consult
+    this seam so reported sprint totals reflect actual spend.
+    """
+    agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
+    if not isinstance(agent, dict):
+        return 0.0
+    raw = agent.get("cost_usd")
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _intake_finding_codes(outcome: IntakeOutcome) -> list[str]:
     """Stable-sorted list of unique blocking finding codes for an intake outcome."""
     seen: set[str] = set()
@@ -1543,6 +1562,17 @@ def run_sprint(
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
+    # Entry-level intake remediation runs in the CLI before run_sprint and
+    # spends the same sprint-authorized budget; fold its agent cost into
+    # the sprint total so operator-visible accounting matches actual spend.
+    if entry_intake_outcomes:
+        _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
+        if _entry_intake_cost > 0.0:
+            accumulated_cost += _entry_intake_cost
+            _log(
+                f"Entry-intake remediation cost: ${_entry_intake_cost:.4f} "
+                "(rolled into sprint total)"
+            )
     prior_cost = 0.0
     results: list[tuple[str, CoordinatorResult]] = []
     if notify and config.notifications.backend not in ("ntfy", "none"):
@@ -1744,6 +1774,15 @@ def run_sprint(
         log=_log,
         force=force,
     )
+    # Intake remediation agent spend (auto_fix LLM rewrites) must roll up
+    # into the sprint total. Without this, sprint.total_cost_usd silently
+    # excludes every dollar spent on intake auto-fix attempts.
+    _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
+    if _intake_remediation_cost > 0.0:
+        accumulated_cost += _intake_remediation_cost
+        _log(
+            f"Intake remediation cost: ${_intake_remediation_cost:.4f} (rolled into sprint total)"
+        )
     if intake_outcomes:
         terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
         dropped_slugs_intake = {
@@ -2855,6 +2894,24 @@ def run_sprint(
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
     duration = (finished_at - started_at).total_seconds()
+
+    # Attribute intake remediation agent spend back to each story's canonical
+    # cost_usd so per-story sums (used by sprint-summary.yaml) match the
+    # SprintResult total. The dev/review cycle's transition() overwrites
+    # cost_usd with CoordinatorState.total_cost, so this attribution must
+    # happen after the work loop completes — never before.
+    def _bump_story_cost(slug: str, extra: float) -> None:
+        if extra <= 0.0:
+            return
+        entry = _story_state.get(slug)
+        if entry is None:
+            return
+        _story_state.transition(slug, cost_usd=entry.cost_usd + extra)
+
+    for _slug, _outcome in (intake_outcomes or {}).items():
+        _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
+    for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
+        _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
 
     final_cost = accumulated_cost + prior_cost
     # Banner, summary, notifications, and SprintResult all project from the

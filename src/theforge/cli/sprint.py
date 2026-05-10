@@ -332,6 +332,22 @@ def _emit_all_skipped_audit(
     # structure run_sprint() uses. Counts and the per-story list both flow
     # from this single source.
     intake_outcomes = intake_outcomes or {}
+    # Entry-level intake remediation may have spent agent budget before the
+    # all-skipped fork. Roll those costs into the sprint total so the
+    # operator-visible accounting matches the actual spend even when no
+    # issue made it past the shape gate.
+    intake_remediation_cost = 0.0
+    for outcome in intake_outcomes.values():
+        agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
+        if not isinstance(agent, dict):
+            continue
+        raw = agent.get("cost_usd")
+        if raw is None:
+            continue
+        try:
+            intake_remediation_cost += float(raw)
+        except (TypeError, ValueError):
+            continue
     story_state = SprintStoryState()
     for sk in skipped_issues or []:
         sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
@@ -359,12 +375,20 @@ def _emit_all_skipped_audit(
         if is_operator_action:
             sk_detail["operator_action"] = True
         outcome = intake_outcomes.get(sk_num)
+        sk_cost = 0.0
         if outcome is not None:
             sk_detail["intake_kind"] = outcome.kind.value
             sk_detail["intake_detail"] = outcome.detail
             sk_detail["intake_findings"] = [f.as_dict() for f in outcome.findings]
             sk_detail["intake_audit"] = dict(outcome.audit)
             sk_detail["intake_proposed_replacement"] = outcome.proposed_replacement
+            agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
+            raw = agent.get("cost_usd") if isinstance(agent, dict) else None
+            if raw is not None:
+                try:
+                    sk_cost = float(raw)
+                except (TypeError, ValueError):
+                    sk_cost = 0.0
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
@@ -372,6 +396,7 @@ def _emit_all_skipped_audit(
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",
             detail=sk_detail,
+            cost_usd=sk_cost,
         )
     canonical_counts = story_state.counts()
     manifest = ResolvedSprint(
@@ -386,7 +411,7 @@ def _emit_all_skipped_audit(
         specs_succeeded=canonical_counts["succeeded"],
         specs_failed=canonical_counts["failed"],
         specs_skipped=canonical_counts["skipped"],
-        total_cost_usd=0.0,
+        total_cost_usd=intake_remediation_cost,
         budget_usd=budget_usd,
         results=[],
     )
