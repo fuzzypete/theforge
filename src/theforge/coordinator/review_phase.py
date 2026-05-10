@@ -555,6 +555,42 @@ def _maybe_replay_hygiene_consensus(
         state.hygiene_escalation_prior_review = None
         return None
 
+    # Refuse to replay if the worktree mutation that caused the original
+    # hygiene escalation (or any new mutation) is still present. Replaying
+    # under a dirty tree would let unreviewed reviewer-created changes ride
+    # under the prior dev-commit approval — and in merge mode land_story
+    # could auto-commit those changes before merging. Fall through to a
+    # fresh review, which will re-trip the hygiene gate and surface the
+    # offending paths to the operator instead of silently approving them.
+    from .workspace_hygiene import snapshot_porcelain  # noqa: PLC0415
+
+    _porcelain = snapshot_porcelain(workspace_path)
+    if _porcelain:
+        offending = sorted(entry[3:] if len(entry) > 3 else entry for entry in _porcelain)
+        audit = {
+            "resume_action": "rerun_dirty_worktree",
+            "escalate_kind": state.escalate_kind,
+            "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+            "total_count": state.hygiene_escalation_total_count,
+            "dev_commit_sha_at_hygiene_trip": prior_sha,
+            "dev_commit_sha_at_resume": head_sha,
+            "offending_paths": offending,
+        }
+        state.hygiene_resume_audit = audit
+        if logger:
+            logger._safe_emit("hygiene_resume", **audit)
+        _log(
+            "  ↺ RESUME   refusing to replay APPROVE consensus — worktree still"
+            f" dirty ({len(offending)} unresolved path(s)): {', '.join(offending[:5])}"
+        )
+        # Clear escalation-replay state so a subsequent fresh-review APPROVE
+        # does not get short-circuited again. The fresh review re-runs the
+        # hygiene gate and either passes (if the operator cleaned up) or
+        # re-escalates with current offending paths.
+        state.escalate_kind = None
+        state.hygiene_escalation_prior_review = None
+        return None
+
     state.review_cycle += 1
     state.review_results.append(prior_review)
     audit = {

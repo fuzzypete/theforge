@@ -204,6 +204,144 @@ def test_resume_replays_consensus_when_dev_commit_unchanged(tmp_path):
     assert resume_state.hygiene_escalation_prior_review is None
 
 
+def _build_resume_state(workspace: Path) -> CoordinatorState:
+    state = CoordinatorState(
+        phase=Phase.REVIEW,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.workspace_path = workspace
+    state.branch_name = "main"
+    state.run_id = "test-resume"
+    state.adaptive_review_max = 2
+    load_trajectory_state(workspace, state)
+    return state
+
+
+def test_resume_refuses_replay_when_untracked_mutation_persists(tmp_path):
+    """Reviewer-created untracked file still present at resume → fresh review re-trips hygiene."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    head_sha = _init_repo(workspace)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    _run_first_pass(workspace, config, task)
+    # Operator did NOT clean up reviewer_scratch.txt — it is still present.
+    assert (workspace / "reviewer_scratch.txt").exists()
+
+    resume_state = _build_resume_state(workspace)
+    assert resume_state.escalate_kind == "hygiene"
+
+    pool_calls = {"n": 0}
+
+    def _fresh_pool(*args, **kwargs):
+        pool_calls["n"] += 1
+        candidate = _approve_review()
+        return ([], [], candidate, [candidate], [("reviewer_a", candidate)])
+
+    with patch(
+        "theforge.coordinator.review_phase._run_review_pool",
+        side_effect=_fresh_pool,
+    ):
+        outcome, result, _config2 = _run_review_phase(
+            resume_state,
+            config,
+            task,
+            "story",
+            workspace,
+            "main",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    audit = resume_state.hygiene_resume_audit
+    assert audit is not None
+    assert audit["resume_action"] == "rerun_dirty_worktree"
+    assert audit["dev_commit_sha_at_resume"] == head_sha
+    assert "reviewer_scratch.txt" in audit["offending_paths"]
+    # Fresh review pool ran once. The run did NOT mark DONE under the prior approval —
+    # control flowed into a fresh review path that ultimately escalated rather than
+    # finalizing approval on the still-dirty worktree.
+    assert pool_calls["n"] == 1
+    assert outcome == _ReviewOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert result.phase != Phase.DONE
+
+
+def test_resume_refuses_replay_when_tracked_file_mutated(tmp_path):
+    """Reviewer modified a tracked file (HEAD unchanged) — replay must refuse."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    head_sha = _init_repo(workspace)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    # Stage hygiene-escalation state directly: prior consensus captured,
+    # HEAD unchanged, but a tracked file has been modified after the trip.
+    state = CoordinatorState(
+        phase=Phase.REVIEW,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.workspace_path = workspace
+    state.branch_name = "main"
+    state.run_id = "test-tracked"
+    state.adaptive_review_max = 2
+    state.escalate_kind = "hygiene"
+    state.hygiene_escalation_dev_commit_sha = head_sha
+    state.hygiene_escalation_prior_review = _approve_review()
+    state.hygiene_escalation_prior_approve_count = 1
+    state.hygiene_escalation_total_count = 1
+
+    # Mutate a tracked file — HEAD is unchanged, but the worktree is dirty.
+    (workspace / "README.md").write_text("seed\nhostile reviewer mutation\n", encoding="utf-8")
+
+    pool_calls = {"n": 0}
+
+    def _fresh_pool(*args, **kwargs):
+        pool_calls["n"] += 1
+        candidate = _approve_review()
+        return ([], [], candidate, [candidate], [("reviewer_a", candidate)])
+
+    with patch(
+        "theforge.coordinator.review_phase._run_review_pool",
+        side_effect=_fresh_pool,
+    ):
+        outcome, result, _config2 = _run_review_phase(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "main",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    audit = state.hygiene_resume_audit
+    assert audit is not None
+    assert audit["resume_action"] == "rerun_dirty_worktree"
+    assert any("README.md" in p for p in audit["offending_paths"])
+    # Critical: the run did NOT mark DONE under the prior dev-commit approval.
+    assert outcome != _ReviewOutcome.DONE
+    if result is not None:
+        assert result.phase != Phase.DONE
+    # The fresh review pool was invoked (then hygiene re-tripped on the modified tracked file).
+    assert pool_calls["n"] == 1
+
+
 def test_resume_runs_fresh_review_when_dev_commit_changed(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
