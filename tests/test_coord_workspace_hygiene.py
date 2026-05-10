@@ -21,6 +21,7 @@ from theforge.coordinator.workspace_hygiene import (
     enforce_pre_dev_hygiene,
     enforce_pre_review_hygiene,
     ensure_scratch_dir,
+    reconcile_post_review_mutations,
     snapshot_porcelain,
     unexpected_entries,
 )
@@ -431,3 +432,232 @@ def test_run_review_phase_escalates_when_quarantine_fails(tmp_path: Path) -> Non
     assert "quarantine refused" in (state.error or "")
     # Reviewers were never invoked.
     assert pool_called == []
+
+
+# ── reconcile_post_review_mutations (issue #1497) ─────────────────────
+
+
+def test_reconcile_post_review_no_mutation_returns_ok(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    ok, diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-1", cycle=0
+    )
+    assert ok is True
+    assert diag is None
+    assert offending == []
+    assert audit["quarantined"] == []
+    assert audit["tracked_changes"] == []
+
+
+def test_reconcile_post_review_quarantines_untracked_reviewer_scratch(tmp_path: Path) -> None:
+    """The #1497 motivating case: reviewer wrote test_script.sh via shell redirect."""
+    _init_repo(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    (tmp_path / "test_script.sh").write_text("MANAGED_LAUNCHER=...\n", encoding="utf-8")
+
+    ok, diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-xyz", cycle=2
+    )
+
+    assert ok is True
+    assert diag is None
+    assert offending == []
+    assert not (tmp_path / "test_script.sh").exists()
+    quarantine_dir = tmp_path / ".forge" / "quarantine" / "run-xyz" / "review-2-post"
+    assert (quarantine_dir / "test_script.sh").read_text() == "MANAGED_LAUNCHER=...\n"
+    assert audit["quarantined"] == ["test_script.sh"]
+    assert audit["quarantine_dir"] == ".forge/quarantine/run-xyz/review-2-post"
+    assert audit["tracked_changes"] == []
+
+
+def test_reconcile_post_review_escalates_on_tracked_mutation(tmp_path: Path) -> None:
+    """Reviewer modifying a tracked file (the implementation under review)
+    is real harm, not scratch — escalate."""
+    _init_repo(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    (tmp_path / "README.md").write_text("seed\nreviewer-edit\n", encoding="utf-8")
+    # Also add untracked scratch — should still be quarantined regardless.
+    (tmp_path / "test_script.sh").write_text("scratch\n", encoding="utf-8")
+
+    ok, diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-1", cycle=0
+    )
+
+    assert ok is False
+    assert diag is not None
+    assert "REVIEW" in diag
+    assert "README.md" in diag
+    assert offending == ["README.md"]
+    # Untracked scratch was still quarantined as a side effect.
+    assert audit["quarantined"] == ["test_script.sh"]
+    assert audit["tracked_changes"] == ["README.md"]
+
+
+def test_reconcile_post_review_escalates_when_quarantine_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If quarantine_paths fails for any untracked path, the review escalates
+    rather than silently treating the dirty tree as valid."""
+    _init_repo(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    (tmp_path / "test_script.sh").write_text("scratch\n", encoding="utf-8")
+
+    from theforge.coordinator import workspace_hygiene as wh
+
+    def _fail_quarantine(workspace_path, paths, quarantine_root):
+        return ([], list(paths))
+
+    monkeypatch.setattr(wh, "quarantine_paths", _fail_quarantine)
+
+    ok, diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-1", cycle=0
+    )
+
+    assert ok is False
+    assert diag is not None
+    assert "test_script.sh" in diag
+    assert offending == ["test_script.sh"]
+
+
+# ── seam: post-REVIEW reviewer scratch is auto-quarantined (issue #1497) ─
+
+
+def test_run_review_phase_quarantines_reviewer_scratch_after_review(tmp_path: Path) -> None:
+    """Issue #1497: a reviewer writing test_script.sh via shell during REVIEW
+    must not escalate an otherwise-APPROVE review."""
+    from coord_test_helpers import _make_task  # noqa: PLC0415
+
+    from theforge.review import ReviewResult  # noqa: PLC0415
+
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / "src.py").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=tmp_path, check=True)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(
+        phase=Phase.REVIEW,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.workspace_path = tmp_path
+    state.branch_name = "feat/x"
+    state.run_id = "abcd1234"
+    state.adaptive_review_max = 2
+
+    def _approve_pool(*args, **kwargs):
+        # Reviewer writes a scratch file mid-call.
+        (tmp_path / "test_script.sh").write_text("MANAGED_LAUNCHER=...\n", encoding="utf-8")
+        candidate = ReviewResult(
+            verdict="APPROVE",
+            summary="ok",
+            findings=[],
+            story_matches=True,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={"verdict": "APPROVE"},
+        )
+        return ([], [], candidate, [candidate], [("reviewer_a", candidate)])
+
+    with patch(
+        "theforge.coordinator.review_phase._run_review_pool",
+        side_effect=_approve_pool,
+    ):
+        outcome, _result, _config = _run_review_phase(
+            state,
+            config,
+            task,
+            "# spec\n",
+            tmp_path,
+            "feat/x",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    # Did NOT escalate on hygiene grounds — the reviewer scratch was quarantined.
+    assert state.escalate_kind != "hygiene"
+    # The scratch file is gone from the worktree.
+    assert not (tmp_path / "test_script.sh").exists()
+    # And lives under the post-review quarantine subdir.
+    quarantine_dir = tmp_path / ".forge" / "quarantine" / "abcd1234" / "review-0-post"
+    assert (quarantine_dir / "test_script.sh").read_text() == "MANAGED_LAUNCHER=...\n"
+    # Audit recorded the quarantined path under the REVIEW post-phase entry.
+    review_entry = next(e for e in state.workspace_hygiene_audit if e.get("phase") == "REVIEW")
+    assert review_entry["ok"] is True
+    assert review_entry["quarantined"] == ["test_script.sh"]
+    # Outcome reflects the APPROVE consensus, not a hygiene escalation.
+    assert outcome != _ReviewOutcome.ESCALATE or state.escalate_kind != "hygiene"
+
+
+def test_run_review_phase_escalates_when_reviewer_modifies_tracked_file(
+    tmp_path: Path,
+) -> None:
+    """A reviewer modifying a tracked file IS real harm — escalate."""
+    from coord_test_helpers import _make_task  # noqa: PLC0415
+
+    from theforge.review import ReviewResult  # noqa: PLC0415
+
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / "src.py").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=tmp_path, check=True)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(
+        phase=Phase.REVIEW,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.workspace_path = tmp_path
+    state.branch_name = "feat/x"
+    state.run_id = "abcd1234"
+    state.adaptive_review_max = 2
+
+    def _mutating_pool(*args, **kwargs):
+        (tmp_path / "src.py").write_text("ok\nreviewer-edit\n", encoding="utf-8")
+        candidate = ReviewResult(
+            verdict="APPROVE",
+            summary="ok",
+            findings=[],
+            story_matches=True,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={"verdict": "APPROVE"},
+        )
+        return ([], [], candidate, [candidate], [("reviewer_a", candidate)])
+
+    with patch(
+        "theforge.coordinator.review_phase._run_review_pool",
+        side_effect=_mutating_pool,
+    ):
+        outcome, _result, _config = _run_review_phase(
+            state,
+            config,
+            task,
+            "# spec\n",
+            tmp_path,
+            "feat/x",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome == _ReviewOutcome.ESCALATE
+    assert state.escalate_kind == "hygiene"
+    assert "src.py" in (state.error or "")

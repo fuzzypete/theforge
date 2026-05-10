@@ -6,11 +6,11 @@ mutation. This module provides the mechanical enforcement: snapshot the tree
 before a phase, compare after, and either quarantine stray untracked files or
 fail loudly with the offending paths.
 
-Two layers:
+Three layers:
 
-1. ``check_phase_no_mutation``: invoked around PLAN / PLAN_REVIEW / REVIEW.
-   Any change to the porcelain set fails the phase. ``.forge/`` is gitignored,
-   so coordinator-driven artifact writes are naturally excluded.
+1. ``check_phase_no_mutation``: invoked around PLAN / PLAN_REVIEW. Any change
+   to the porcelain set fails the phase. ``.forge/`` is gitignored, so
+   coordinator-driven artifact writes are naturally excluded.
 
 2. ``enforce_pre_dev_hygiene`` / ``enforce_pre_review_hygiene``: invoked
    symmetrically before DEV iteration 1 and before each REVIEW cycle.
@@ -21,6 +21,14 @@ Two layers:
    mysteriously. REVIEW symmetry exists because stray pollution from a prior
    interrupted iteration would otherwise be visible to reviewers (see issue
    #1501).
+
+3. ``reconcile_post_review_mutations``: invoked AFTER the REVIEW pool returns.
+   Reviewer agents may improvise scratch files in the worktree (e.g. shell
+   redirects to ``test_script.sh``); auto-quarantine those untracked paths
+   instead of escalating an otherwise-valid review verdict (see issue #1497).
+   Tracked-file mutations during REVIEW remain a hygiene escalation: a
+   reviewer modifying the implementation under review IS real harm and the
+   verdict is no longer trustworthy.
 
 Sanctioned scratch space (``.forge/tmp/<run-id>/``) is provisioned by
 ``ensure_scratch_dir``; ``.forge/`` is already gitignored so the directory is
@@ -231,6 +239,77 @@ def enforce_pre_dev_hygiene(
         label=f"iter-{iteration}",
         phase_label="DEV",
     )
+
+
+def reconcile_post_review_mutations(
+    workspace_path: Path,
+    before: set[str],
+    run_id: str,
+    cycle: int,
+) -> tuple[bool, str | None, list[str], dict]:
+    """Auto-quarantine reviewer-introduced untracked paths after REVIEW.
+
+    Issue #1497: REVIEW-phase reviewers occasionally improvise scratch files
+    in the worktree (e.g. ``cat <<EOF > test_script.sh``) while exercising the
+    change under review. Those untracked artifacts must not invalidate an
+    otherwise-valid review verdict, so they are quarantined symmetrically with
+    pre-phase hygiene. Tracked-file mutations remain an escalation — a
+    reviewer modifying the implementation under review IS real harm.
+
+    Returns ``(ok, diagnostic, offending_paths, audit)`` where ``audit`` is a
+    dict with keys ``snapshot_after``, ``quarantined``, ``quarantine_dir``,
+    ``tracked_changes``. ``ok=False`` triggers the existing post-REVIEW
+    hygiene escalation path (capturing prior consensus etc.).
+    """
+    after = snapshot_porcelain(workspace_path)
+    new_entries = unexpected_entries(before, after)
+    audit: dict = {
+        "snapshot_after": sorted(after),
+        "quarantined": [],
+        "quarantine_dir": None,
+        "tracked_changes": [],
+    }
+    if not new_entries:
+        return True, None, [], audit
+
+    untracked: list[str] = []
+    tracked: list[str] = []
+    for entry in new_entries:
+        path = _path_of(entry)
+        if entry[:2] == "??":
+            untracked.append(path)
+        else:
+            tracked.append(path)
+
+    audit["tracked_changes"] = sorted(tracked)
+
+    quarantine_dir = _quarantine_root(workspace_path, run_id, f"review-{cycle}-post")
+    moved: list[str] = []
+    failed: list[str] = []
+    if untracked:
+        moved, failed = quarantine_paths(workspace_path, sorted(untracked), quarantine_dir)
+        audit["quarantined"] = moved
+        audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
+
+    if tracked:
+        rendered = ", ".join(sorted(tracked))
+        diagnostic = (
+            f"Workspace hygiene violation: phase REVIEW is not authorized to mutate "
+            f"the repo tree, but introduced unexpected paths: {rendered}. "
+            "Remove or justify."
+        )
+        return False, diagnostic, sorted(tracked), audit
+
+    if failed:
+        rendered = ", ".join(failed)
+        diagnostic = (
+            f"Reviewer-introduced untracked paths could not be quarantined "
+            f"after REVIEW: {rendered}. Workspace hygiene gate refuses to "
+            "treat the review as valid against a still-dirty tree."
+        )
+        return False, diagnostic, failed, audit
+
+    return True, None, [], audit
 
 
 def enforce_pre_review_hygiene(
