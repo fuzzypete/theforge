@@ -289,6 +289,13 @@ class TestMergePrFunction:
             "auto_merge_queued": False,
             "success": True,
             "error": None,
+            "landing_path": "already-merged",
+            "guard_evidence": {
+                "branch": "forge/test-task",
+                "pr_number": None,
+                "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                "merged_at": "2025-01-01T00:00:00Z",
+            },
         }
         mock_create_pr.assert_not_called()
         assert calls[0][:3] == ["gh", "pr", "list"]
