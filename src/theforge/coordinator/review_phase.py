@@ -756,8 +756,41 @@ def _run_review_phase(
 
     from .workspace_hygiene import (  # noqa: PLC0415
         check_phase_no_mutation,
+        enforce_pre_review_hygiene,
         snapshot_porcelain,
     )
+
+    # ── Workspace hygiene gate (every REVIEW cycle entry) ─────────────
+    # Stray untracked paths inherited from a prior interrupted iteration,
+    # resume, or non-DEV phase mutation must be quarantined BEFORE reviewers
+    # observe the tree — otherwise reviewers flag stale pollution as a
+    # finding even though the implementation itself is valid (see #1501).
+    # Symmetric to enforce_pre_dev_hygiene; modified-tracked files are
+    # audited but left in place (validate-phase auto-commit owns cleanup).
+    _hygiene_run_id = run_id or state.run_id or "unknown"
+    _pre_review_ok, _pre_review_diag, _pre_review_audit = enforce_pre_review_hygiene(
+        workspace_path,
+        _hygiene_run_id,
+        cycle=state.review_cycle,
+    )
+    state.workspace_hygiene_audit.append({"phase": "PRE_REVIEW", **_pre_review_audit})
+    if _pre_review_audit.get("quarantined"):
+        _q_paths = ", ".join(_pre_review_audit["quarantined"])
+        _q_dir = _pre_review_audit.get("quarantine_dir")
+        _log(f"  ⚠ REVIEW   quarantined stray paths to {_q_dir}: {_q_paths}")
+    if not _pre_review_ok:
+        state.phase = Phase.ESCALATE
+        state.error = _pre_review_diag or "Workspace hygiene gate refused REVIEW entry"
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
+            config,
+        )
 
     _review_hygiene_before = snapshot_porcelain(workspace_path)
 
