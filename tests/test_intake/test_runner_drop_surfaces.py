@@ -4,21 +4,20 @@ When intake remediation drops a story (DROPPED_AFTER_FIX or DROPPED_SHAPE),
 every operator-facing surface — run log, audit YAML, sprint summary YAML, and
 forge sprint-status DETAIL column — must carry the rule code(s) that fired,
 the human-readable problem, and the structured intake metadata. These tests
-exercise the helpers that produce that data and the live-status renderer that
-projects it. The runner-level wiring (which sets entry detail / records the
-current_story_entries_by_ref entry) is exercised through the IntakeOutcome
-helper API the runner uses; the runner block itself is hard to call without
-the full sprint pipeline, so we keep the seam test focused on the helpers and
-the renderer that consume their outputs.
+exercise the helpers, the live-status renderer, and (at the bottom) the full
+``run_sprint`` runner path so a regression at the runner state-write boundary
+is caught — not just at the helper or writer level.
 """
 
 from __future__ import annotations
 
 import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
+from theforge.config.types import IntakeConfig
 from theforge.intake.findings import FixType, IntakeFinding, IntakeSeverity
 from theforge.intake.remediation import IntakeOutcome, IntakeOutcomeKind
 from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
@@ -31,6 +30,7 @@ from theforge.sprint.runner import (
     _intake_log_lines,
     _intake_outcome_summary,
     _intake_problem_lines,
+    run_sprint,
 )
 from theforge.sprint.status_reader import _stage_and_detail_from_live_story
 
@@ -423,6 +423,154 @@ def test_sprint_summary_yaml_carries_intake_finding_for_dropped_after_fix(tmp_pa
     assert story["outcome_code"] == "groom_how_shaped_ac"
     assert story["intake"]["codes"] == ["groom_how_shaped_ac"]
     assert story["intake"]["findings"][0]["problem"] == "ACs prescribe implementation steps"
+
+
+def _make_runner_config(tmp_path: Path):
+    """Minimal ForgeConfig wired with intake.grooming/auto_fix on so the runner
+    enters the gate; the gate itself is patched in the test."""
+    from theforge.config import (
+        DEFAULT_DEV_PROFILE,
+        DEFAULT_PREFLIGHT_PROFILE,
+        DEFAULT_REVIEW_PROFILE,
+        DEFAULT_VALIDATION,
+        ForgeConfig,
+        RetryPolicy,
+        WorkspaceConfig,
+    )
+
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        intake=IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+
+
+def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runner_path(
+    tmp_path: Path,
+    capfd,
+):
+    """End-to-end regression for the original defect: run the actual run_sprint
+    code path with a patched intake remediation result, then assert that the
+    captured run log, sprint-audit.yaml, and sprint-summary.yaml all carry the
+    rule code, finding problem, and agent attempt detail.
+
+    This protects against regressions where run_sprint stops calling
+    _record_current_story_entry, stops passing current_story_entries_by_ref to
+    the writers, or otherwise drops the structured detail at the runner state-
+    write boundary — the exact failure mode the spec describes."""
+    spec_path = tmp_path / "drop-me.md"
+    spec_path.write_text(
+        "---\nname: Drop Me\nslug: drop-me\n---\n# Drop Me\n\nbody\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "sprint.yaml"
+    manifest_path.write_text(
+        yaml.safe_dump(
+            {
+                "name": "Intake Drop Sprint",
+                "budget_usd": 1.0,
+                "specs": [str(spec_path)],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    finding = IntakeFinding(
+        code="groom_how_shaped_ac",
+        severity=IntakeSeverity.BLOCK,
+        location="acceptance_criteria",
+        problem="ACs prescribe implementation steps",
+        fix_type=FixType.SEMANTIC,
+    )
+    intake_outcome = IntakeOutcome(
+        slug="drop-me",
+        kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+        findings=(finding,),
+        detail="rerun gate still failing; did not edit issue",
+        audit={
+            "remediation_source": "agent",
+            "mechanical_findings": [],
+            "semantic_findings": [finding.as_dict()],
+            "agent": {
+                "attempted": True,
+                "detail": "tried rewrite",
+                "profile_name": "intake-fix",
+                "model_used": "claude-sonnet-4-6",
+                "cost_usd": 0.083,
+                "transport_used": "cli",
+            },
+            "issue_updated": False,
+            "comment_posted": False,
+        },
+    )
+
+    config = _make_runner_config(tmp_path)
+
+    with (
+        patch("theforge.sprint.runner._run_baseline_gate", return_value={"passed": True}),
+        patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+        patch("theforge.sprint.runner.resolve_satisfied_dependencies", return_value=set()),
+        patch(
+            "theforge.sprint.runner._run_intake_remediation_pass",
+            return_value={"drop-me": intake_outcome},
+        ),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+    ):
+        result = run_sprint(config, manifest_path, no_pull=True)
+
+    log_blob = capfd.readouterr().err
+
+    # ── Run log: rule code + finding problem + agent attempt detail ──
+    assert "DROPPED_AFTER_FIX" in log_blob and "drop-me" in log_blob, log_blob
+    assert "groom_how_shaped_ac" in log_blob
+    assert "ACs prescribe implementation steps" in log_blob
+    assert "agent_attempted=yes" in log_blob
+    assert "$0.0830" in log_blob
+    assert "model=claude-sonnet-4-6" in log_blob
+    assert "transport=cli" in log_blob
+    assert "source=agent" in log_blob
+
+    # ── Audit YAML: error/error_type + structured intake block ──
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    assert audit_path.exists(), f"audit YAML missing; result={result}"
+    audit = yaml.safe_load(audit_path.read_text())
+    spec_entry = next(
+        s for s in audit["specs"] if s.get("slug") == "drop-me" or "drop-me" in str(s)
+    )
+    assert spec_entry["outcome"] == "DROPPED_AFTER_FIX"
+    assert "groom_how_shaped_ac" in (spec_entry.get("error") or "")
+    assert spec_entry["error_type"] == "groom_how_shaped_ac"
+    assert spec_entry["outcome_code"] == "groom_how_shaped_ac"
+    intake = spec_entry["intake"]
+    assert intake["kind"] == "dropped_after_fix"
+    assert intake["codes"] == ["groom_how_shaped_ac"]
+    assert intake["findings"][0]["problem"] == "ACs prescribe implementation steps"
+    assert intake["audit"]["agent"]["attempted"] is True
+    assert intake["audit"]["agent"]["cost_usd"] == 0.083
+    assert intake["audit"]["agent"]["model_used"] == "claude-sonnet-4-6"
+    assert "agent_attempted=yes" in intake["agent_summary"]
+
+    # ── Sprint summary YAML: same fields ──
+    summary_path = tmp_path / ".forge" / "logs" / "Intake Drop Sprint" / "sprint-summary.yaml"
+    assert summary_path.exists(), f"sprint summary YAML missing; result={result}"
+    summary = yaml.safe_load(summary_path.read_text())
+    story = next(s for s in summary["stories"] if s.get("slug") == "drop-me")
+    assert story["outcome"] == "DROPPED_AFTER_FIX"
+    assert "groom_how_shaped_ac" in (story.get("error") or "")
+    assert story["error_type"] == "groom_how_shaped_ac"
+    assert story["intake"]["findings"][0]["problem"] == "ACs prescribe implementation steps"
+    assert story["intake"]["audit"]["agent"]["transport_used"] == "cli"
 
 
 def test_live_status_detail_falls_back_when_intake_summary_absent():
