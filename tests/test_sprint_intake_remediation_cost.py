@@ -1,0 +1,218 @@
+"""Regression: intake remediation agent cost rolls up into sprint total.
+
+Operator-visible accounting (sprint summary, audit YAML, forge status) must
+include every dollar an agent spent inside a sprint launch. Intake
+remediation auto-fix calls live outside CoordinatorState.total_cost; the
+sprint runner is responsible for folding them into accumulated_cost.
+
+Issue: https://github.com/fuzzypete/theforge/issues/1479
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from coord_test_helpers import _make_agent_result
+
+from tests.test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+from theforge.config.types import IntakeConfig
+from theforge.intake.remediation import IntakeOutcome, IntakeOutcomeKind
+from theforge.sprint.runner import run_sprint
+
+ALREADY_DONE_OUTPUT = """\
+```yaml
+verdict: ALREADY_DONE
+complexity: small
+complexity_score: 2
+sufficiency: implementation_ready
+work_type: feature
+bundle_candidate: false
+likely_files:
+  - src/theforge/sprint/runner.py
+reason: "All acceptance criteria are already satisfied."
+criteria_checked:
+  - criterion: "Feature is complete"
+    satisfied: true
+    files_checked:
+      - src/theforge/sprint/runner.py
+    runtime_path: src/theforge/sprint/runner.py
+    evidence: "Function already exists and is complete."
+```
+"""
+
+PREFLIGHT_COST_USD = 0.20
+INTAKE_REMEDIATION_COST_USD = 0.10
+
+
+def _shell_side_effect(workspace_root: Path):
+    def side_effect(cmd, cwd, **kwargs):
+        rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        cwd_path = Path(cwd)
+        if rendered.startswith("mkdir -p "):
+            target = rendered.removeprefix("mkdir -p ").strip()
+            (workspace_root / target).mkdir(parents=True, exist_ok=True)
+            return (True, "")
+        if "git rev-parse --abbrev-ref HEAD" in rendered:
+            return (True, f"forge/{cwd_path.name}")
+        if "git rev-parse" in rendered:
+            return (True, "abc1234deadbeef")
+        if "git log" in rendered and "--format=%ct" in rendered:
+            return (True, "1713900000")
+        if "rev-list" in rendered and "--count" in rendered:
+            return (True, "0")
+        return (True, "")
+
+    return side_effect
+
+
+def _config_with_intake(tmp_path: Path):
+    base = _make_config(tmp_path)
+    return dataclasses.replace(
+        base,
+        intake=IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+
+
+def _passed_outcome_with_cost(slug: str, cost: float) -> IntakeOutcome:
+    return IntakeOutcome(
+        slug=slug,
+        kind=IntakeOutcomeKind.PASSED,
+        findings=(),
+        detail="",
+        audit={
+            "remediation_source": "agent",
+            "mechanical_findings": [],
+            "semantic_findings": [],
+            "agent": {
+                "attempted": True,
+                "detail": "rewrote ACs",
+                "profile_name": "intake",
+                "model_used": "claude",
+                "cost_usd": cost,
+                "transport_used": "cli",
+            },
+            "issue_updated": True,
+            "comment_posted": False,
+        },
+    )
+
+
+class TestSprintIntakeRemediationCost:
+    def test_sprint_total_includes_intake_remediation_agent_cost(self, tmp_path: Path) -> None:
+        """A sprint that pays $0.10 for intake remediation must report it
+        in result.total_cost_usd, not silently drop it.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _config_with_intake(tmp_path)
+
+        shell_side_effect = _shell_side_effect(tmp_path)
+
+        def fake_preflight(*args, **kwargs):
+            return _make_agent_result(
+                success=True,
+                output=ALREADY_DONE_OUTPUT,
+                cost_usd=PREFLIGHT_COST_USD,
+                profile_name="preflight",
+            )
+
+        def fake_run_intake(_tasks, _root, **_kwargs):
+            return {
+                "feature-a": _passed_outcome_with_cost("feature-a", INTAKE_REMEDIATION_COST_USD)
+            }
+
+        with (
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True},
+            ),
+            patch(
+                "theforge.sprint.runner.resolve_satisfied_dependencies",
+                return_value=set(),
+            ),
+            patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+            patch(
+                "theforge.sprint.runner.run_intake_remediation",
+                side_effect=fake_run_intake,
+            ),
+            patch(
+                "theforge.sprint.runner._build_intake_agent_caller",
+                return_value=(lambda *a, **k: None, ""),
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                side_effect=fake_preflight,
+            ),
+            patch(
+                "theforge.coordinator.preflight_flow._is_branch_merged",
+                return_value=False,
+            ),
+        ):
+            result = run_sprint(config, manifest_path, no_pull=True)
+
+        expected_total = PREFLIGHT_COST_USD + INTAKE_REMEDIATION_COST_USD
+        assert result.total_cost_usd == pytest.approx(expected_total, abs=1e-6), (
+            f"Sprint total ${result.total_cost_usd:.4f} must include intake "
+            f"remediation cost ${INTAKE_REMEDIATION_COST_USD} on top of "
+            f"preflight cost ${PREFLIGHT_COST_USD} (expected ${expected_total})"
+        )
+
+    def test_entry_intake_outcomes_cost_rolls_into_sprint_total(self, tmp_path: Path) -> None:
+        """Entry-level intake remediation (CLI pre-pass before run_sprint)
+        passes outcomes via entry_intake_outcomes — those agent costs must
+        also fold into the sprint total.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)  # intake disabled — only entry pass spent
+
+        shell_side_effect = _shell_side_effect(tmp_path)
+
+        def fake_preflight(*args, **kwargs):
+            return _make_agent_result(
+                success=True,
+                output=ALREADY_DONE_OUTPUT,
+                cost_usd=PREFLIGHT_COST_USD,
+                profile_name="preflight",
+            )
+
+        entry_outcomes = {
+            12345: _passed_outcome_with_cost("issue-12345", INTAKE_REMEDIATION_COST_USD)
+        }
+
+        with (
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value={"passed": True},
+            ),
+            patch(
+                "theforge.sprint.runner.resolve_satisfied_dependencies",
+                return_value=set(),
+            ),
+            patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+            patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                side_effect=fake_preflight,
+            ),
+            patch(
+                "theforge.coordinator.preflight_flow._is_branch_merged",
+                return_value=False,
+            ),
+        ):
+            result = run_sprint(
+                config,
+                manifest_path,
+                no_pull=True,
+                entry_intake_outcomes=entry_outcomes,
+            )
+
+        expected_total = PREFLIGHT_COST_USD + INTAKE_REMEDIATION_COST_USD
+        assert result.total_cost_usd == pytest.approx(expected_total, abs=1e-6), (
+            f"Sprint total ${result.total_cost_usd:.4f} must include "
+            f"entry-level intake cost ${INTAKE_REMEDIATION_COST_USD}"
+        )
