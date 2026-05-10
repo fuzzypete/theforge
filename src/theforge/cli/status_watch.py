@@ -151,6 +151,14 @@ def _resolve_sprint_log_dir(run_id: str, project_root: Path) -> Path | None:
 
     if not logs_dir.exists():
         return None
+    # Run-id-keyed file is the canonical per-run record (#1480); match it
+    # directly by name so we don't have to scan every legacy file's YAML.
+    try:
+        for per_run in logs_dir.glob(f"*/run-{run_id}-summary.yaml"):
+            if per_run.is_file():
+                return per_run.parent
+    except OSError:
+        return None
     try:
         for summary in logs_dir.glob("*/sprint-summary.yaml"):
             try:

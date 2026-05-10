@@ -117,7 +117,12 @@ def _find_most_recent_run(project_root: Path) -> tuple[str, bool] | None:
     best: tuple[str, bool] | None = None
 
     # Sprint summaries are only written on completion — always historical.
-    for summary in logs_dir.rglob("sprint-summary.yaml"):
+    # Per-run files (run-<id>-summary.yaml) are the durable per-run record;
+    # scan those so historical runs whose name-keyed file was overwritten
+    # by a later same-name run are still discoverable.
+    summary_paths = list(logs_dir.rglob("run-*-summary.yaml"))
+    summary_paths.extend(logs_dir.rglob("sprint-summary.yaml"))
+    for summary in summary_paths:
         try:
             mtime = summary.stat().st_mtime
         except OSError:
