@@ -641,6 +641,36 @@ def _run_query_mode(
             locked_fds,
         )
         _detach.install_cleanup_handler(run_id, config.project_root)
+        # Write a bootstrap state file before run_sprint enters its long
+        # baseline-gate / intake-remediation / preflight phases so
+        # `forge status --watch` renders the issue list, sprint phase, and
+        # base-branch / budget / parallel context immediately on attach
+        # rather than displaying an empty table for several minutes.
+        from theforge.sprint.state_writer import write_bootstrap_state
+
+        try:
+            write_bootstrap_state(
+                run_id,
+                config.project_root,
+                sprint_name=sprint_name,
+                sprint_phase="starting",
+                base_branch=getattr(getattr(config, "workspace", None), "base_branch", None),
+                budget_usd=budget_usd,
+                max_parallel=effective_max_parallel,
+                issues=[
+                    {
+                        "number": issue.get("number"),
+                        "title": issue.get("title", ""),
+                    }
+                    for issue in issues
+                ],
+                skipped_issues=skipped_issues,
+            )
+        except Exception:
+            # Bootstrap state is a UX nicety; do not block sprint launch on
+            # write failure (the runner will still create the canonical
+            # state file once preflight completes).
+            pass
         print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
 
     # Query mode does not support daemon submission (no manifest file to pass)
