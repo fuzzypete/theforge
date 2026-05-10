@@ -1006,3 +1006,57 @@ class TestCliPoolCrossProviderRotation:
         assert "None" not in rationale, rationale
         for derived in ("anthropic", "openai", "google"):
             assert derived in rationale, f"expected {derived!r} in rationale: {rationale}"
+
+
+class TestWorktreeProjectRootResolution:
+    """Forge-created worktrees must resolve project_root to the parent checkout
+    so project-scoped secrets (.forge/.env) remain accessible regardless of
+    whether config is loaded from the main checkout or a worktree.
+    """
+
+    def _write_main_checkout(self, root: Path, env_contents: str | None) -> None:
+        (root / "forge.yaml").write_text(yaml.dump({"project": "p"}), encoding="utf-8")
+        if env_contents is not None:
+            (root / ".forge").mkdir(parents=True, exist_ok=True)
+            (root / ".forge" / ".env").write_text(env_contents, encoding="utf-8")
+
+    def _make_worktree(self, root: Path, slug: str) -> Path:
+        wt = root / ".forge" / "worktrees" / slug
+        wt.mkdir(parents=True, exist_ok=True)
+        (wt / "forge.yaml").write_text(yaml.dump({"project": "p"}), encoding="utf-8")
+        return wt
+
+    def test_load_from_main_checkout_reads_secrets(self, tmp_path):
+        self._write_main_checkout(tmp_path, "SLACK_WEBHOOK_URL=https://hooks/x\nFOO=bar\n")
+        config = load_config(tmp_path / "forge.yaml")
+        assert config.secrets.get("SLACK_WEBHOOK_URL") == "https://hooks/x"
+        assert config.secrets.get("FOO") == "bar"
+        assert config.project_root == tmp_path.resolve()
+
+    def test_load_from_worktree_recovers_parent_secrets(self, tmp_path):
+        self._write_main_checkout(tmp_path, "SLACK_WEBHOOK_URL=https://hooks/x\nFOO=bar\n")
+        wt = self._make_worktree(tmp_path, "issue-1503")
+        config = load_config(wt / "forge.yaml")
+        assert config.secrets.get("SLACK_WEBHOOK_URL") == "https://hooks/x"
+        assert config.secrets.get("FOO") == "bar"
+        assert config.project_root == tmp_path.resolve()
+
+    def test_load_from_worktree_with_no_parent_env_returns_empty_secrets(self, tmp_path):
+        self._write_main_checkout(tmp_path, env_contents=None)
+        wt = self._make_worktree(tmp_path, "issue-1503")
+        config = load_config(wt / "forge.yaml")
+        assert config.secrets == {}
+        assert config.project_root == tmp_path.resolve()
+
+    def test_unrelated_directory_named_worktrees_not_treated_as_forge_worktree(self, tmp_path):
+        """Only the canonical .forge/worktrees/<slug>/ layout triggers walk-up.
+        A user project that happens to have a folder named worktrees should not
+        have its project_root silently relocated.
+        """
+        # <tmp>/something/worktrees/<slug>/forge.yaml — grandparent is "worktrees"
+        # but great-grandparent is "something", not ".forge".
+        odd = tmp_path / "something" / "worktrees" / "slug-x"
+        odd.mkdir(parents=True)
+        (odd / "forge.yaml").write_text(yaml.dump({"project": "p"}), encoding="utf-8")
+        config = load_config(odd / "forge.yaml")
+        assert config.project_root == odd.resolve()
