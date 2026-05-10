@@ -161,6 +161,24 @@ class TestSprintIntakeRemediationCost:
             f"preflight cost ${PREFLIGHT_COST_USD} (expected ${expected_total})"
         )
 
+        # Audit YAML and summary YAML must agree with SprintResult — both
+        # write surfaces are operator-facing and must include intake spend.
+        import yaml
+
+        audit_yaml = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text()
+        )
+        assert audit_yaml["sprint"]["total_cost_usd"] == pytest.approx(expected_total, abs=1e-3), (
+            "audit YAML total must include intake remediation cost"
+        )
+
+        summary_yaml = yaml.safe_load(
+            (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text()
+        )
+        assert summary_yaml["sprint"]["total_cost_usd"] == pytest.approx(
+            expected_total, abs=1e-3
+        ), "summary YAML total must include intake remediation cost"
+
     def test_entry_intake_outcomes_cost_rolls_into_sprint_total(self, tmp_path: Path) -> None:
         """Entry-level intake remediation (CLI pre-pass before run_sprint)
         passes outcomes via entry_intake_outcomes — those agent costs must

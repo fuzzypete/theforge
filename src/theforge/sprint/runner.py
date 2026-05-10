@@ -2895,6 +2895,24 @@ def run_sprint(
     set_worker_slug("")
     duration = (finished_at - started_at).total_seconds()
 
+    # Attribute intake remediation agent spend back to each story's canonical
+    # cost_usd so per-story sums (used by sprint-summary.yaml) match the
+    # SprintResult total. The dev/review cycle's transition() overwrites
+    # cost_usd with CoordinatorState.total_cost, so this attribution must
+    # happen after the work loop completes — never before.
+    def _bump_story_cost(slug: str, extra: float) -> None:
+        if extra <= 0.0:
+            return
+        entry = _story_state.get(slug)
+        if entry is None:
+            return
+        _story_state.transition(slug, cost_usd=entry.cost_usd + extra)
+
+    for _slug, _outcome in (intake_outcomes or {}).items():
+        _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
+    for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
+        _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
+
     final_cost = accumulated_cost + prior_cost
     # Banner, summary, notifications, and SprintResult all project from the
     # same canonical structure — by construction they cannot disagree.
