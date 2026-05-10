@@ -92,6 +92,7 @@ def test_test_ladder_points_at_isolated_binary() -> None:
     assert "$RC_ENV_FORGE" in ladder_text or ".forge/rc-envs/" in ladder_text
 
 
+@pytest.mark.network_integration
 @pytest.mark.skipif(
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",
