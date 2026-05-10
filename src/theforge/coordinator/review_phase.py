@@ -824,6 +824,7 @@ def _run_review_phase(
             "ok": _review_ok,
             "quarantined": _post_review_audit.get("quarantined", []),
             "tracked_changes": _post_review_audit.get("tracked_changes", []),
+            "reverted": _post_review_audit.get("reverted", []),
             "offending_paths": _review_offending,
         }
     )
@@ -831,6 +832,9 @@ def _run_review_phase(
         _moved = ", ".join(_post_review_audit["quarantined"])
         _q_dir = _post_review_audit.get("quarantine_dir")
         _log(f"  ⚠ REVIEW   quarantined reviewer scratch to {_q_dir}: {_moved}")
+    if _post_review_audit.get("reverted"):
+        _rev = ", ".join(_post_review_audit["reverted"])
+        _log(f"  ⚠ REVIEW   reverted reviewer-side tracked mutations: {_rev}")
     if not _review_ok:
         state.phase = Phase.ESCALATE
         state.error = _review_diag or "REVIEW phase mutated the worktree"

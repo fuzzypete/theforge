@@ -23,12 +23,16 @@ Three layers:
    #1501).
 
 3. ``reconcile_post_review_mutations``: invoked AFTER the REVIEW pool returns.
-   Reviewer agents may improvise scratch files in the worktree (e.g. shell
-   redirects to ``test_script.sh``); auto-quarantine those untracked paths
-   instead of escalating an otherwise-valid review verdict (see issue #1497).
-   Tracked-file mutations during REVIEW remain a hygiene escalation: a
-   reviewer modifying the implementation under review IS real harm and the
-   verdict is no longer trustworthy.
+   Reviewer agents may improvise in the worktree (e.g. shell redirects writing
+   ``test_script.sh``, or accidentally editing a tracked file while exercising
+   the change). All reviewer-side mutations are mechanically reconciled: new
+   untracked paths are auto-quarantined; tracked-file mutations (modifications,
+   deletions, staged adds) are reverted back to HEAD via ``git reset`` +
+   ``git checkout HEAD --``. This way no reviewer-side filesystem effect can
+   invalidate an otherwise-sound review verdict (see issue #1497). Escalation
+   is reserved for the failure case where revert or quarantine itself fails
+   (filesystem error), so the consensus-capture / resume-replay machinery
+   (issue #1499) still has a real failsafe to ride on.
 
 Sanctioned scratch space (``.forge/tmp/<run-id>/``) is provisioned by
 ``ensure_scratch_dir``; ``.forge/`` is already gitignored so the directory is
@@ -241,25 +245,64 @@ def enforce_pre_dev_hygiene(
     )
 
 
+def _revert_tracked_path(workspace_path: Path, rel_path: str) -> bool:
+    """Restore ``rel_path`` to HEAD content, undoing reviewer-side mutation.
+
+    Sequence is ``git reset HEAD -- <path>`` (unstage anything the reviewer
+    happened to stage) followed by ``git checkout HEAD -- <path>`` (overwrite
+    the worktree from HEAD). For paths not in HEAD (newly staged adds) the
+    checkout legitimately fails; the residual file becomes untracked and is
+    handled by quarantine in the caller. Returns False only on subprocess
+    failure — i.e. a real filesystem/git error.
+    """
+    try:
+        subprocess.run(
+            ["git", "reset", "-q", "HEAD", "--", rel_path],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        subprocess.run(
+            ["git", "checkout", "-q", "HEAD", "--", rel_path],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def reconcile_post_review_mutations(
     workspace_path: Path,
     before: set[str],
     run_id: str,
     cycle: int,
 ) -> tuple[bool, str | None, list[str], dict]:
-    """Auto-quarantine reviewer-introduced untracked paths after REVIEW.
+    """Mechanically neutralize reviewer-side worktree mutations after REVIEW.
 
-    Issue #1497: REVIEW-phase reviewers occasionally improvise scratch files
-    in the worktree (e.g. ``cat <<EOF > test_script.sh``) while exercising the
-    change under review. Those untracked artifacts must not invalidate an
-    otherwise-valid review verdict, so they are quarantined symmetrically with
-    pre-phase hygiene. Tracked-file mutations remain an escalation — a
-    reviewer modifying the implementation under review IS real harm.
+    Issue #1497: REVIEW-phase reviewers occasionally improvise in the worktree
+    (e.g. ``cat <<EOF > test_script.sh``, or editing a tracked file while
+    exercising the change). No reviewer-side filesystem effect must invalidate
+    an otherwise-sound review verdict.
 
-    Returns ``(ok, diagnostic, offending_paths, audit)`` where ``audit`` is a
-    dict with keys ``snapshot_after``, ``quarantined``, ``quarantine_dir``,
-    ``tracked_changes``. ``ok=False`` triggers the existing post-REVIEW
-    hygiene escalation path (capturing prior consensus etc.).
+    For each new porcelain entry since ``before``:
+      - Untracked paths (status ``??``) → quarantined to
+        ``.forge/quarantine/<run-id>/review-<cycle>-post/`` symmetrically
+        with pre-phase hygiene.
+      - Tracked changes (M/D/A/staged-anything) → reverted via
+        ``_revert_tracked_path`` so the worktree returns to HEAD content.
+        Newly-staged-adds become untracked after reset and get quarantined.
+
+    Returns ``(ok, diagnostic, offending_paths, audit)``. ``ok=False`` is
+    reserved for the failure case where revert or quarantine itself fails
+    (real filesystem/git error); that path still triggers the existing
+    consensus-capture + resume-replay escalation block in review_phase.
+
+    Audit dict keys: ``snapshot_after``, ``quarantined``, ``quarantine_dir``,
+    ``tracked_changes``, ``reverted``.
     """
     after = snapshot_porcelain(workspace_path)
     new_entries = unexpected_entries(before, after)
@@ -268,6 +311,7 @@ def reconcile_post_review_mutations(
         "quarantined": [],
         "quarantine_dir": None,
         "tracked_changes": [],
+        "reverted": [],
     }
     if not new_entries:
         return True, None, [], audit
@@ -283,23 +327,43 @@ def reconcile_post_review_mutations(
 
     audit["tracked_changes"] = sorted(tracked)
 
-    quarantine_dir = _quarantine_root(workspace_path, run_id, f"review-{cycle}-post")
-    moved: list[str] = []
-    failed: list[str] = []
-    if untracked:
-        moved, failed = quarantine_paths(workspace_path, sorted(untracked), quarantine_dir)
-        audit["quarantined"] = moved
-        audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
+    revert_failed: list[str] = []
+    reverted: list[str] = []
+    for path in sorted(tracked):
+        if _revert_tracked_path(workspace_path, path):
+            reverted.append(path)
+        else:
+            revert_failed.append(path)
+    audit["reverted"] = reverted
 
-    if tracked:
-        rendered = ", ".join(sorted(tracked))
+    if revert_failed:
+        rendered = ", ".join(revert_failed)
         diagnostic = (
-            f"Workspace hygiene violation: phase REVIEW is not authorized to mutate "
-            f"the repo tree, but introduced unexpected paths: {rendered}. "
-            "Remove or justify."
+            f"Reviewer-introduced tracked changes could not be reverted "
+            f"after REVIEW: {rendered}. Workspace hygiene gate refuses to "
+            "treat the review as valid against an unresolved dirty tree."
         )
-        return False, diagnostic, sorted(tracked), audit
+        return False, diagnostic, revert_failed, audit
 
+    # After reverting, newly-staged-adds (status "A ") may now show up as
+    # untracked because reset cleared the index entry but left the file —
+    # union them in for quarantine alongside the originally-untracked set.
+    if tracked:
+        post_revert = snapshot_porcelain(workspace_path)
+        post_revert_new = unexpected_entries(before, post_revert)
+        for entry in post_revert_new:
+            if entry[:2] == "??":
+                p = _path_of(entry)
+                if p not in untracked:
+                    untracked.append(p)
+
+    if not untracked:
+        return True, None, [], audit
+
+    quarantine_dir = _quarantine_root(workspace_path, run_id, f"review-{cycle}-post")
+    moved, failed = quarantine_paths(workspace_path, sorted(untracked), quarantine_dir)
+    audit["quarantined"] = moved
+    audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
     if failed:
         rendered = ", ".join(failed)
         diagnostic = (

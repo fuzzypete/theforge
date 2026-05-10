@@ -471,14 +471,56 @@ def test_reconcile_post_review_quarantines_untracked_reviewer_scratch(tmp_path: 
     assert audit["tracked_changes"] == []
 
 
-def test_reconcile_post_review_escalates_on_tracked_mutation(tmp_path: Path) -> None:
-    """Reviewer modifying a tracked file (the implementation under review)
-    is real harm, not scratch — escalate."""
+def test_reconcile_post_review_reverts_tracked_modification(tmp_path: Path) -> None:
+    """Reviewer-side modification to a tracked file is reverted to HEAD content,
+    so an otherwise-APPROVE verdict is not invalidated by reviewer side effects."""
     _init_repo(tmp_path)
     before = snapshot_porcelain(tmp_path)
     (tmp_path / "README.md").write_text("seed\nreviewer-edit\n", encoding="utf-8")
-    # Also add untracked scratch — should still be quarantined regardless.
+    # Untracked scratch is reconciled in the same pass.
     (tmp_path / "test_script.sh").write_text("scratch\n", encoding="utf-8")
+
+    ok, diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-1", cycle=0
+    )
+
+    assert ok is True
+    assert diag is None
+    assert offending == []
+    # README.md restored to HEAD content; scratch quarantined.
+    assert (tmp_path / "README.md").read_text() == "seed\n"
+    assert not (tmp_path / "test_script.sh").exists()
+    assert audit["tracked_changes"] == ["README.md"]
+    assert audit["reverted"] == ["README.md"]
+    assert audit["quarantined"] == ["test_script.sh"]
+
+
+def test_reconcile_post_review_reverts_tracked_deletion(tmp_path: Path) -> None:
+    """Reviewer deleting a tracked file is reverted; file restored from HEAD."""
+    _init_repo(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    (tmp_path / "README.md").unlink()
+
+    ok, _diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-1", cycle=0
+    )
+
+    assert ok is True
+    assert offending == []
+    assert (tmp_path / "README.md").read_text() == "seed\n"
+    assert audit["reverted"] == ["README.md"]
+
+
+def test_reconcile_post_review_escalates_when_revert_fails(tmp_path: Path, monkeypatch) -> None:
+    """If git revert itself fails, escalation fires so the consensus-capture +
+    resume-replay machinery has a real failsafe (#1499) to ride on."""
+    _init_repo(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    (tmp_path / "README.md").write_text("seed\nreviewer-edit\n", encoding="utf-8")
+
+    from theforge.coordinator import workspace_hygiene as wh
+
+    monkeypatch.setattr(wh, "_revert_tracked_path", lambda *a, **kw: False)
 
     ok, diag, offending, audit = reconcile_post_review_mutations(
         tmp_path, before, "run-1", cycle=0
@@ -486,12 +528,10 @@ def test_reconcile_post_review_escalates_on_tracked_mutation(tmp_path: Path) -> 
 
     assert ok is False
     assert diag is not None
-    assert "REVIEW" in diag
     assert "README.md" in diag
+    assert "could not be reverted" in diag
     assert offending == ["README.md"]
-    # Untracked scratch was still quarantined as a side effect.
-    assert audit["quarantined"] == ["test_script.sh"]
-    assert audit["tracked_changes"] == ["README.md"]
+    assert audit["reverted"] == []
 
 
 def test_reconcile_post_review_escalates_when_quarantine_fails(
@@ -598,10 +638,12 @@ def test_run_review_phase_quarantines_reviewer_scratch_after_review(tmp_path: Pa
     assert outcome != _ReviewOutcome.ESCALATE or state.escalate_kind != "hygiene"
 
 
-def test_run_review_phase_escalates_when_reviewer_modifies_tracked_file(
+def test_run_review_phase_reverts_reviewer_tracked_mutation(
     tmp_path: Path,
 ) -> None:
-    """A reviewer modifying a tracked file IS real harm — escalate."""
+    """Issue #1497: a reviewer modifying a tracked file mid-review must NOT
+    escalate an otherwise-APPROVE consensus. The post-review reconciler
+    reverts the mutation back to HEAD and the sprint proceeds."""
     from coord_test_helpers import _make_task  # noqa: PLC0415
 
     from theforge.review import ReviewResult  # noqa: PLC0415
@@ -658,6 +700,14 @@ def test_run_review_phase_escalates_when_reviewer_modifies_tracked_file(
             logger=None,
         )
 
-    assert outcome == _ReviewOutcome.ESCALATE
-    assert state.escalate_kind == "hygiene"
-    assert "src.py" in (state.error or "")
+    assert state.escalate_kind != "hygiene"
+    # The tracked file was restored to HEAD content.
+    assert (tmp_path / "src.py").read_text() == "ok\n"
+    review_entry = next(e for e in state.workspace_hygiene_audit if e.get("phase") == "REVIEW")
+    assert review_entry["ok"] is True
+    assert review_entry["reverted"] == ["src.py"]
+    # Outcome did not escalate on hygiene grounds (may still escalate on
+    # downstream guards, e.g. zero-commits-ahead — that is unrelated).
+    assert outcome != _ReviewOutcome.ESCALATE or state.escalate_kind != "hygiene"
+    # Suppress unused-variable warning from outcome capture.
+    _ = outcome
