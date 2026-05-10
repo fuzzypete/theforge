@@ -311,6 +311,16 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
             canonical_outcome = _nonempty_str(story.get("outcome"))
             final_outcome = canonical_outcome.upper() if canonical_outcome else None
         skip_reason = _nonempty_str(story.get("reason")) if status_val == "skipped" else None
+        # Intake-drop outcomes carry structured rule codes in the detail dict.
+        # Surfacing them in the DETAIL column keeps operators from having to
+        # consult audit YAML to learn which rule fired on a dropped story.
+        if isinstance(final_outcome, str) and final_outcome in {
+            "DROPPED_AFTER_FIX",
+            "DROPPED_SHAPE",
+        }:
+            intake_summary = _nonempty_str(detail_data.get("intake_summary"))
+            if intake_summary:
+                return "", f"{final_outcome} {intake_summary}", complexity
         if (
             skip_reason
             and isinstance(final_outcome, str)
@@ -483,6 +493,15 @@ def _stage_and_detail_from_completed_story(
                 or _nonempty_str(story.get("drop_reason"))
                 or outcome
             )
+        elif outcome in {"DROPPED_AFTER_FIX", "DROPPED_SHAPE"}:
+            # Intake-drop entries carry the rule code + problem in ``error``
+            # and the structured detail in ``intake``. Surface either so the
+            # operator sees more than the bare outcome name.
+            error = _nonempty_str(story.get("error"))
+            if error:
+                detail = f"{outcome} {error}"
+            else:
+                detail = outcome
         elif outcome == "DONE":
             detail = "APPROVE"
         elif outcome == "ALREADY_DONE":

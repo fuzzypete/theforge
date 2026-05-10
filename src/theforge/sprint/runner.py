@@ -218,6 +218,62 @@ def _run_intake_remediation_pass(
     )
 
 
+def _intake_finding_codes(outcome: IntakeOutcome) -> list[str]:
+    """Stable-sorted list of unique blocking finding codes for an intake outcome."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for finding in outcome.findings:
+        code = finding.code
+        if code and code not in seen:
+            seen.add(code)
+            ordered.append(code)
+    return ordered
+
+
+def _intake_outcome_summary(outcome: IntakeOutcome) -> str:
+    """One-line operator-readable summary: '<codes> — <detail>'.
+
+    Carries enough information for an operator to know which intake rule fired
+    on the dropped story, the agent attempt status, and the rerun-gate result.
+    """
+    codes = _intake_finding_codes(outcome)
+    code_part = "[" + ", ".join(codes) + "]" if codes else ""
+    detail = outcome.detail or outcome.kind.value
+    if code_part and detail:
+        return f"{code_part} {detail}"
+    return code_part or detail
+
+
+def _intake_problem_lines(outcome: IntakeOutcome) -> list[str]:
+    """Human-readable per-finding descriptors: 'code (location): problem'."""
+    lines: list[str] = []
+    for finding in outcome.findings:
+        loc = finding.location or ""
+        head = f"{finding.code} ({loc})" if loc else finding.code
+        problem = (finding.problem or "").strip()
+        lines.append(f"{head}: {problem}" if problem else head)
+    return lines
+
+
+def _intake_error_type(outcome: IntakeOutcome) -> str:
+    """outcome_code-style classifier: dominant rule code, else the kind value."""
+    codes = _intake_finding_codes(outcome)
+    if codes:
+        return codes[0]
+    return outcome.kind.value
+
+
+def _intake_audit_block(outcome: IntakeOutcome) -> dict:
+    """Structured intake_findings block surfaced into audit/summary YAML."""
+    return {
+        "kind": outcome.kind.value,
+        "detail": outcome.detail,
+        "codes": _intake_finding_codes(outcome),
+        "findings": [f.as_dict() for f in outcome.findings],
+        "audit": dict(outcome.audit),
+    }
+
+
 def _filter_normalized_for_intake(
     plan: NormalizedDependencyPlan,
     dropped: set[str],
@@ -1562,6 +1618,62 @@ def run_sprint(
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
 
+    # Per-story projection used by audit and summary writers when a slug never
+    # produces a CoordinatorResult (e.g., dropped at the intake gate, blocked
+    # by deps, or skipped pre-launch). Defined here — before the intake gate —
+    # so intake-dropped stories can populate it with their finding detail; the
+    # writers read from this dict to surface error/error_type/intake metadata
+    # that would otherwise be null in audit YAML and sprint summary YAML.
+    current_story_entries_by_ref: dict[str, dict] = {}
+
+    def _record_current_story_entry(
+        slug: str,
+        outcome: str,
+        *,
+        error: str | None = None,
+        error_type: str | None = None,
+        cost_usd: float = 0.0,
+        extras: dict | None = None,
+    ) -> None:
+        task_ctx = slug_to_context.get(slug)
+        if task_ctx is None:
+            return
+        task, _source, canonical_ref = task_ctx
+        display_key = (
+            f"Issue #{canonical_ref.split(':')[1]}"
+            if canonical_ref.startswith("issue:")
+            else canonical_ref
+        )
+        entry: dict = {
+            "path": display_key,
+            "slug": slug,
+            "outcome": outcome,
+            "verdict": None,
+            "cost_usd": cost_usd,
+            "story_run_id": run_id,
+            "preflight": None,
+            "preflight_original_verdict": None,
+            "preflight_source_run_id": None,
+            "error": error,
+            "error_type": error_type,
+            "outcome_code": error_type or outcome.lower(),
+            "merge": False,
+            "batch": 0,
+            "depends_on": list(getattr(task, "depends_on", None) or []),
+            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
+            "inferred_dependencies": {
+                "manifest": [
+                    dep
+                    for dep in (getattr(task, "depends_on", None) or [])
+                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
+                ],
+                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
+            },
+        }
+        if extras:
+            entry.update(extras)
+        current_story_entries_by_ref[canonical_ref] = entry
+
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
     # full normalized task list. When ``intake.auto_fix`` is enabled, semantic
@@ -1600,17 +1712,59 @@ def run_sprint(
                 if outcome.kind is IntakeOutcomeKind.DROPPED_SHAPE
                 else StoryOutcome.DROPPED_AFTER_FIX
             )
+            intake_codes = _intake_finding_codes(outcome)
+            intake_summary = _intake_outcome_summary(outcome)
+            intake_error_type = _intake_error_type(outcome)
+            intake_block = _intake_audit_block(outcome)
+            # Per-issue run-log line so operators reading the live sprint log
+            # learn the blocking rule code(s) and detail without having to open
+            # audit YAML or re-derive them with a Python snippet against
+            # groom_check.
+            task_ctx = slug_to_context.get(slug)
+            if task_ctx is not None:
+                _, _, canonical_ref = task_ctx
+                display_key = (
+                    f"Issue #{canonical_ref.split(':')[1]}"
+                    if canonical_ref.startswith("issue:")
+                    else canonical_ref
+                )
+            else:
+                display_key = slug
+            _log(
+                f"  {outcome_value.name} {display_key}: {intake_summary}"
+                if intake_summary
+                else f"  {outcome_value.name} {display_key}"
+            )
+            for problem_line in _intake_problem_lines(outcome):
+                _log(f"      - {problem_line}")
             _set_outcome(
                 slug,
                 outcome_value,
                 detail={
                     "intake_kind": outcome.kind.value,
                     "intake_findings": [f.as_dict() for f in outcome.findings],
+                    "intake_codes": intake_codes,
+                    "intake_summary": intake_summary,
                     "intake_detail": outcome.detail,
                     "intake_audit": dict(outcome.audit),
                 },
-                reason=outcome.detail or outcome.kind.value,
+                reason=intake_summary or outcome.detail or outcome.kind.value,
             )
+            # Mirror the structured detail into current_story_entries_by_ref so
+            # both audit YAML and sprint summary YAML carry the rule code,
+            # human-readable problem, and the structured intake_findings block —
+            # not just the bare SKIPPED outcome with error: null.
+            if outcome.kind in {
+                IntakeOutcomeKind.DROPPED_SHAPE,
+                IntakeOutcomeKind.DROPPED_AFTER_FIX,
+            }:
+                _record_current_story_entry(
+                    slug,
+                    outcome_value.name,
+                    error=intake_summary,
+                    error_type=intake_error_type,
+                    extras={"intake": intake_block},
+                )
         if dropped_slugs_intake:
             normalized = _filter_normalized_for_intake(normalized, dropped_slugs_intake)
 
@@ -1672,51 +1826,6 @@ def run_sprint(
         dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
     except ValueError as exc:
         raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
-
-    current_story_entries_by_ref: dict[str, dict] = {}
-
-    def _record_current_story_entry(
-        slug: str,
-        outcome: str,
-        *,
-        error: str | None = None,
-        error_type: str | None = None,
-    ) -> None:
-        task_ctx = slug_to_context.get(slug)
-        if task_ctx is None:
-            return
-        task, _source, canonical_ref = task_ctx
-        display_key = (
-            f"Issue #{canonical_ref.split(':')[1]}"
-            if canonical_ref.startswith("issue:")
-            else canonical_ref
-        )
-        current_story_entries_by_ref[canonical_ref] = {
-            "path": display_key,
-            "slug": slug,
-            "outcome": outcome,
-            "verdict": None,
-            "cost_usd": 0.0,
-            "story_run_id": run_id,
-            "preflight": None,
-            "preflight_original_verdict": None,
-            "preflight_source_run_id": None,
-            "error": error,
-            "error_type": error_type,
-            "outcome_code": error_type or outcome.lower(),
-            "merge": False,
-            "batch": 0,
-            "depends_on": list(getattr(task, "depends_on", None) or []),
-            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
-            "inferred_dependencies": {
-                "manifest": [
-                    dep
-                    for dep in (getattr(task, "depends_on", None) or [])
-                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
-                ],
-                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
-            },
-        }
 
     # Dependencies already satisfied outside this sprint still count as landed
     # for deferred integration ordering.
