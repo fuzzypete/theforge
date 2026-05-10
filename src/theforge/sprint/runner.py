@@ -2699,6 +2699,9 @@ def run_sprint(
         dropped_slugs=_dropped_slugs,
         skipped_issues=skipped_issues,
         current_story_entries_by_ref=current_story_entries_by_ref,
+        triage_actions_by_ref={
+            canonical_ref: triage.action for canonical_ref, triage in triages.items()
+        },
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/

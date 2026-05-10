@@ -667,7 +667,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             outcome = str(story.get("outcome", "SKIPPED"))
             depends_on = list(story.get("depends_on") or [])
             detail = _nonempty_str(story.get("verdict")) or outcome
-            if outcome in {"SKIPPED", "DROPPED"} or depends_on:
+            if outcome in {"SKIPPED", "DROPPED", "ALREADY_DONE"} or depends_on:
                 _, detail, _ = _stage_and_detail_from_completed_story(story, None)
             entries.append(
                 StoryStatusEntry(

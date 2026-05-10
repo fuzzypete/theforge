@@ -341,6 +341,7 @@ def _write_sprint_audit(
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
     current_story_entries_by_ref: "dict[str, dict] | None" = None,
+    triage_actions_by_ref: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
@@ -350,6 +351,7 @@ def _write_sprint_audit(
     dropped_slugs = dropped_slugs or {}
     skipped_issues = skipped_issues or []
     current_story_entries_by_ref = current_story_entries_by_ref or {}
+    triage_actions_by_ref = triage_actions_by_ref or {}
 
     # Build per-spec entries
     spec_entries = []
@@ -410,9 +412,16 @@ def _write_sprint_audit(
                 if getattr(res.state, "review_iteration_telemetry", [])
                 else None
             )
+            # Tag the source of an ALREADY_DONE outcome so audit / postmortem
+            # consumers can distinguish a preflight short-circuit verdict from
+            # the resume-skip-merged classification without parsing strings.
+            outcome_source: str | None = None
+            if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE":
+                outcome_source = "preflight_verdict"
             entry: dict = {
                 "path": display_key,
                 "outcome": outcome,
+                "outcome_source": outcome_source,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
                 "preflight_original_verdict": getattr(
@@ -471,15 +480,21 @@ def _write_sprint_audit(
             # or preserved-escalated) takes precedence over the generic
             # SKIPPED path — operators need to see drop reasons explicitly.
             drop_reason = dropped_slugs.get(slug)
+            triage_action = triage_actions_by_ref.get(canonical_ref)
             if drop_reason == "preserved-escalated":
                 drop_outcome = "PRESERVED"
             elif drop_reason is not None:
                 drop_outcome = "DROPPED"
+            elif triage_action == "skip_merged":
+                drop_outcome = "ALREADY_DONE"
             else:
                 drop_outcome = "SKIPPED"
             entry = {
                 "path": display_key,
                 "outcome": drop_outcome,
+                "outcome_source": (
+                    "resume_skip_merged" if triage_action == "skip_merged" else None
+                ),
                 "cost_usd": 0.0,
                 "preflight": None,
                 "error": drop_reason,
