@@ -21,7 +21,13 @@ from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.review import ReviewResult
 
 
-def _init_repo(path: Path) -> str:
+def _init_repo(path: Path, *, with_feature_commit: bool = True) -> str:
+    """Initialize a git repo with a seed on main and (optionally) a feature commit.
+
+    When ``with_feature_commit`` is True, checks out ``forge/test-task`` on top of
+    main with one extra commit so HEAD is one ahead of base — required by the
+    empty-diff guard at REVIEW finalization. Returns the resulting HEAD SHA.
+    """
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
@@ -29,6 +35,13 @@ def _init_repo(path: Path) -> str:
     (path / "README.md").write_text("seed\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
+    if with_feature_commit:
+        subprocess.run(
+            ["git", "checkout", "-q", "-b", "forge/test-task"], cwd=path, check=True
+        )
+        (path / "feature.py").write_text("# feature\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=path, check=True)
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=path,
@@ -235,16 +248,12 @@ def test_resume_refuses_replay_when_untracked_mutation_persists(tmp_path):
     resume_state = _build_resume_state(workspace)
     assert resume_state.escalate_kind == "hygiene"
 
-    pool_calls = {"n": 0}
-
-    def _fresh_pool(*args, **kwargs):
-        pool_calls["n"] += 1
-        candidate = _approve_review()
-        return ([], [], candidate, [candidate], [("reviewer_a", candidate)])
+    def _pool_must_not_run(*args, **kwargs):
+        raise AssertionError("review pool must not be invoked when worktree is still dirty")
 
     with patch(
         "theforge.coordinator.review_phase._run_review_pool",
-        side_effect=_fresh_pool,
+        side_effect=_pool_must_not_run,
     ):
         outcome, result, _config2 = _run_review_phase(
             resume_state,
@@ -265,14 +274,12 @@ def test_resume_refuses_replay_when_untracked_mutation_persists(tmp_path):
     assert audit["resume_action"] == "rerun_dirty_worktree"
     assert audit["dev_commit_sha_at_resume"] == head_sha
     assert "reviewer_scratch.txt" in audit["offending_paths"]
-    # Fresh review pool ran once. The run did NOT mark DONE under the prior approval —
-    # control flowed into a fresh review path that ultimately escalated rather than
-    # finalizing approval on the still-dirty worktree.
-    assert pool_calls["n"] == 1
+    # Fail closed: ESCALATE without re-running the pool, so a fresh review's
+    # hygiene snapshot can't silently treat the persistent mutation as baseline.
     assert outcome == _ReviewOutcome.ESCALATE
     assert result is not None
     assert result.success is False
-    assert result.phase != Phase.DONE
+    assert result.phase == Phase.ESCALATE
 
 
 def test_resume_refuses_replay_when_tracked_file_mutated(tmp_path):
@@ -305,6 +312,65 @@ def test_resume_refuses_replay_when_tracked_file_mutated(tmp_path):
     # Mutate a tracked file — HEAD is unchanged, but the worktree is dirty.
     (workspace / "README.md").write_text("seed\nhostile reviewer mutation\n", encoding="utf-8")
 
+    def _pool_must_not_run(*args, **kwargs):
+        raise AssertionError("review pool must not be invoked when worktree is still dirty")
+
+    with patch(
+        "theforge.coordinator.review_phase._run_review_pool",
+        side_effect=_pool_must_not_run,
+    ):
+        outcome, result, _config2 = _run_review_phase(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "main",
+            task_start=0.0,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+        )
+
+    audit = state.hygiene_resume_audit
+    assert audit is not None
+    assert audit["resume_action"] == "rerun_dirty_worktree"
+    assert any("README.md" in p for p in audit["offending_paths"])
+    # Critical: the run did NOT mark DONE under the prior dev-commit approval —
+    # it escalated rather than letting a fresh review silently approve the dirty tree.
+    assert outcome == _ReviewOutcome.ESCALATE
+    assert result is not None
+    assert result.phase == Phase.ESCALATE
+
+
+def test_resume_refuses_replay_when_no_commits_ahead_of_base(tmp_path):
+    """Replay must not finalize approval on a branch with no commits ahead of base."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    # No feature commit → HEAD == main HEAD → 0 commits ahead of base.
+    head_sha = _init_repo(workspace, with_feature_commit=False)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    # Stage hygiene-escalation state directly with prior consensus captured at HEAD.
+    state = CoordinatorState(
+        phase=Phase.REVIEW,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.workspace_path = workspace
+    state.branch_name = "main"
+    state.run_id = "test-empty-diff"
+    state.adaptive_review_max = 2
+    state.escalate_kind = "hygiene"
+    state.hygiene_escalation_dev_commit_sha = head_sha
+    state.hygiene_escalation_prior_review = _approve_review()
+    state.hygiene_escalation_prior_approve_count = 1
+    state.hygiene_escalation_total_count = 1
+
     pool_calls = {"n": 0}
 
     def _fresh_pool(*args, **kwargs):
@@ -332,13 +398,13 @@ def test_resume_refuses_replay_when_tracked_file_mutated(tmp_path):
 
     audit = state.hygiene_resume_audit
     assert audit is not None
-    assert audit["resume_action"] == "rerun_dirty_worktree"
-    assert any("README.md" in p for p in audit["offending_paths"])
-    # Critical: the run did NOT mark DONE under the prior dev-commit approval.
+    assert audit["resume_action"] == "rerun_no_commits_ahead"
+    assert audit["base_branch"] == "main"
+    # Critical: replay did not mark DONE; the empty-diff guard still applies.
     assert outcome != _ReviewOutcome.DONE
     if result is not None:
         assert result.phase != Phase.DONE
-    # The fresh review pool was invoked (then hygiene re-tripped on the modified tracked file).
+    # Fresh review was invoked (and itself escalated on the empty-diff guard).
     assert pool_calls["n"] == 1
 
 

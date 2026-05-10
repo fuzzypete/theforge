@@ -559,9 +559,11 @@ def _maybe_replay_hygiene_consensus(
     # hygiene escalation (or any new mutation) is still present. Replaying
     # under a dirty tree would let unreviewed reviewer-created changes ride
     # under the prior dev-commit approval — and in merge mode land_story
-    # could auto-commit those changes before merging. Fall through to a
-    # fresh review, which will re-trip the hygiene gate and surface the
-    # offending paths to the operator instead of silently approving them.
+    # could auto-commit those changes before merging. Fail closed: ESCALATE
+    # with the offending paths so the operator either removes/quarantines
+    # them or marks the run rejected — do not fall through to a fresh
+    # review, whose own hygiene snapshot would treat the persistent
+    # mutation as part of the baseline and silently approve it.
     from .workspace_hygiene import snapshot_porcelain  # noqa: PLC0415
 
     _porcelain = snapshot_porcelain(workspace_path)
@@ -583,10 +585,51 @@ def _maybe_replay_hygiene_consensus(
             "  ↺ RESUME   refusing to replay APPROVE consensus — worktree still"
             f" dirty ({len(offending)} unresolved path(s)): {', '.join(offending[:5])}"
         )
-        # Clear escalation-replay state so a subsequent fresh-review APPROVE
-        # does not get short-circuited again. The fresh review re-runs the
-        # hygiene gate and either passes (if the operator cleaned up) or
-        # re-escalates with current offending paths.
+        # Keep escalate_kind='hygiene' so the operator-facing state still
+        # reflects the unresolved hygiene escalation; clear the prior review
+        # so a subsequent extend/retry cycle starts fresh once the workspace
+        # is clean.
+        state.hygiene_escalation_prior_review = None
+        state.phase = Phase.ESCALATE
+        state.error = (
+            "Workspace hygiene escalation has unresolved mutations at resume; "
+            f"remove or quarantine offending paths before retrying: {', '.join(offending)}"
+        )
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit(
+                "escalate", reason=state.error, phase="REVIEW", escalate_kind="hygiene"
+            )
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(
+                success=False, phase=state.phase, state=state, message=state.error
+            ),
+            config,
+        )
+
+    # Apply the same empty-diff guard as the normal APPROVE path: refuse to
+    # mark DONE on a branch with no commits ahead of base. Without this,
+    # replaying a captured APPROVE on a branch whose commits have been
+    # stripped (or never landed) would silently approve an empty diff.
+    if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+        audit = {
+            "resume_action": "rerun_no_commits_ahead",
+            "escalate_kind": state.escalate_kind,
+            "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+            "total_count": state.hygiene_escalation_total_count,
+            "dev_commit_sha_at_hygiene_trip": prior_sha,
+            "dev_commit_sha_at_resume": head_sha,
+            "base_branch": config.workspace.base_branch,
+        }
+        state.hygiene_resume_audit = audit
+        if logger:
+            logger._safe_emit("hygiene_resume", **audit)
+        _log(
+            "  ↺ RESUME   refusing to replay APPROVE consensus — branch has no"
+            f" commits ahead of {config.workspace.base_branch}; running fresh review"
+        )
         state.escalate_kind = None
         state.hygiene_escalation_prior_review = None
         return None
