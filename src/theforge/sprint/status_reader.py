@@ -134,6 +134,28 @@ def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
     return None
 
 
+def _already_done_detail(outcome_source: object, reason: str | None = None) -> str:
+    """Render the DETAIL string for an ALREADY_DONE outcome with a source tag.
+
+    The bare string ``ALREADY_DONE`` collapses two structurally distinct paths
+    (resume-skip-merged is mechanical and trustworthy; preflight-verdict
+    short-circuit is the historically-suspect path) into one indistinguishable
+    label. Operators must be able to tell at a glance which classification a
+    given story landed under without running ``gh`` commands. This helper is
+    the single rendering site that materialises that distinction.
+    """
+    if isinstance(outcome_source, str):
+        if outcome_source == "resume_skip_merged":
+            return "ALREADY_DONE (merged)"
+        if outcome_source == "preflight_verdict":
+            if reason:
+                return f"Preflight verdict: {reason}"
+            return "ALREADY_DONE (preflight)"
+    if reason:
+        return f"Preflight verdict: {reason}"
+    return "ALREADY_DONE"
+
+
 def _outcome_to_status(outcome: str) -> str:
     """Map a sprint-summary ``outcome`` value to a display status string."""
     if outcome in ("ALREADY_DONE", "DONE"):
@@ -305,6 +327,12 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
         ):
             return "", skip_reason, complexity
         if isinstance(final_outcome, str) and final_outcome:
+            if final_outcome == "ALREADY_DONE":
+                return (
+                    "",
+                    _already_done_detail(detail_data.get("outcome_source")),
+                    complexity,
+                )
             return "", final_outcome, complexity
         if skip_reason:
             return "", skip_reason, complexity
@@ -404,8 +432,7 @@ def _stage_and_detail_from_completed_story(
     if isinstance(audit_data, dict):
         if outcome == "ALREADY_DONE":
             reason = _nonempty_str(preflight.get("reason"))
-            if reason:
-                detail = f"Preflight verdict: {reason}"
+            detail = _already_done_detail(story.get("outcome_source"), reason)
         # For failure outcomes, the row's detail must describe the failure —
         # not surface a stale review APPROVE that conflates "review approved"
         # with "story is in good standing." Read outcome.message / error first;
@@ -472,7 +499,7 @@ def _stage_and_detail_from_completed_story(
         elif outcome == "DONE":
             detail = "APPROVE"
         elif outcome == "ALREADY_DONE":
-            detail = "ALREADY_DONE"
+            detail = _already_done_detail(story.get("outcome_source"))
         else:
             detail = outcome
 

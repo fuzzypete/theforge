@@ -221,11 +221,21 @@ def _load_story_summary_entry_from_audit(
         preflight_block.get("verdict") if isinstance(preflight_block, dict) else None
     )
 
+    # Tag the source of an ALREADY_DONE outcome so downstream renderers can
+    # distinguish a preflight short-circuit verdict from a resume-skip-merged
+    # classification — the two paths have materially different trust
+    # properties for operators (preflight verdict is the historically suspect
+    # path; resume-skip-merged is mechanical and trustworthy).
+    outcome_source: str | None = None
+    if final_phase == "ALREADY_DONE" and preflight_verdict == "ALREADY_DONE":
+        outcome_source = "preflight_verdict"
+
     return {
         "canonical_ref": canonical_ref,
         "path": display_key,
         "slug": slug,
         "outcome": final_phase,
+        "outcome_source": outcome_source,
         "verdict": verdict,
         "cost_usd": round(float(cost_block.get("total_usd", 0.0)), 4)
         if isinstance(cost_block, dict)
@@ -667,10 +677,18 @@ def _write_sprint_summary(
                 _model_used = getattr(_last_dev, "model_used", None)
                 if isinstance(_model_used, str) and _model_used:
                     _dev_model = _model_used
+            # Tag the source of an ALREADY_DONE outcome so renderers can
+            # distinguish a preflight short-circuit verdict from the
+            # resume-skip-merged classification — different trust properties
+            # (see status_reader._already_done_detail).
+            outcome_source: str | None = None
+            if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE":
+                outcome_source = "preflight_verdict"
             entry: dict = {
                 "path": display_key,
                 "slug": slug,
                 "outcome": outcome,
+                "outcome_source": outcome_source,
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),
                 "dev_model": _dev_model,
@@ -745,6 +763,9 @@ def _write_sprint_summary(
                 "path": display_key,
                 "slug": slug,
                 "outcome": drop_outcome,
+                "outcome_source": (
+                    "resume_skip_merged" if triage_action == "skip_merged" else None
+                ),
                 "verdict": None,
                 "cost_usd": 0.0,
                 "dev_model": None,

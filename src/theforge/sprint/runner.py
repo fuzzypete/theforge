@@ -1769,6 +1769,7 @@ def run_sprint(
                 "path": display_key,
                 "slug": slug,
                 "outcome": "ALREADY_DONE",
+                "outcome_source": "resume_skip_merged",
                 "verdict": None,
                 "cost_usd": 0.0,
                 "story_run_id": run_id,
@@ -1843,7 +1844,10 @@ def run_sprint(
                 _detail = {"final_outcome": "ESCALATE"}
             elif _triage and _triage.action == "skip_merged":
                 _status = "done"
-                _detail = {"final_outcome": "ALREADY_DONE"}
+                _detail = {
+                    "final_outcome": "ALREADY_DONE",
+                    "outcome_source": "resume_skip_merged",
+                }
             elif _triage and _triage.action == "skip":
                 _status = "skipped"
                 _detail = {"final_outcome": "SKIPPED"}
@@ -1881,7 +1885,10 @@ def run_sprint(
                     "bundle_candidate": False,
                     "blocked_by": [],
                     "complexity": None,
-                    "detail": {"final_outcome": "ALREADY_DONE"},
+                    "detail": {
+                        "final_outcome": "ALREADY_DONE",
+                        "outcome_source": "resume_skip_merged",
+                    },
                 }
             )
             _initial_story_slugs.add(_closed_slug)
@@ -2462,6 +2469,21 @@ def run_sprint(
                 }
                 if _terminal_model is not None:
                     _outcome_fields["current_model"] = _terminal_model
+                # Tag preflight-verdict ALREADY_DONE outcomes so renderers can
+                # distinguish them from the resume-skip-merged classification —
+                # the two paths have different trust properties and operators
+                # must not have to cross-reference GitHub state to tell them
+                # apart.
+                if (
+                    _classify_outcome == StoryOutcome.ALREADY_DONE
+                    and result.state.preflight_verdict == "ALREADY_DONE"
+                ):
+                    _existing_entry = _story_state.get(task.slug)
+                    _existing_detail = (
+                        dict(_existing_entry.detail) if _existing_entry is not None else {}
+                    )
+                    _existing_detail["outcome_source"] = "preflight_verdict"
+                    _outcome_fields["detail"] = _existing_detail
                 _set_outcome(task.slug, _classify_outcome, **_outcome_fields)
 
                 # Dependent stories in parallel mode need scheduler-side local merge
