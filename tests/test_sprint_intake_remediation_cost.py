@@ -179,6 +179,20 @@ class TestSprintIntakeRemediationCost:
             expected_total, abs=1e-3
         ), "summary YAML total must include intake remediation cost"
 
+        # Persisted accumulated state must also reflect the intake-inclusive
+        # per-story cost. Otherwise a later --resume reloads the stale total
+        # and sprint-summary.yaml regresses to undercounting on the resume.
+        sprint_id_path = tmp_path / ".forge" / "logs" / "Test Sprint" / ".sprint_id"
+        sprint_id = sprint_id_path.read_text(encoding="utf-8").strip()
+        state_yaml = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text()
+        )
+        persisted = {row["slug"]: row for row in state_yaml.get("stories", [])}
+        assert persisted["feature-a"]["cost_usd"] == pytest.approx(expected_total, abs=1e-3), (
+            "persisted accumulated state must include intake remediation "
+            "cost so resume reloads the correct total"
+        )
+
     def test_entry_intake_outcomes_cost_rolls_into_sprint_total(self, tmp_path: Path) -> None:
         """Entry-level intake remediation (CLI pre-pass before run_sprint)
         passes outcomes via entry_intake_outcomes — those agent costs must
@@ -234,6 +248,110 @@ class TestSprintIntakeRemediationCost:
             f"Sprint total ${result.total_cost_usd:.4f} must include "
             f"entry-level intake cost ${INTAKE_REMEDIATION_COST_USD}"
         )
+
+
+class TestResumeReloadsIntakeCost:
+    """A two-run --resume flow must surface prior-run intake remediation
+    cost in the resumed sprint-summary.yaml. Persistence of the accumulated
+    per-story state has to write the intake-inclusive cost; otherwise the
+    resumed summary loads the stale total and silently undercounts spend.
+    """
+
+    def test_resume_includes_prior_run_intake_remediation_cost(self, tmp_path: Path) -> None:
+        import yaml
+
+        from tests.test_sprint_run_id_rollover import (
+            _make_coordinator_result,
+        )
+        from tests.test_sprint_run_id_rollover import (
+            _make_manifest as _rollover_manifest,
+        )
+        from tests.test_sprint_run_id_rollover import (
+            _make_spec_file as _spec,
+        )
+        from theforge.sprint.audit import (
+            _get_or_create_sprint_id,
+            _save_accumulated_stories,
+        )
+        from theforge.sprint.dag import StoryTriage
+        from theforge.sprint.runner import run_sprint as _run_sprint
+
+        _spec(tmp_path, "Feature A", "feature-a")
+        _spec(tmp_path, "Feature B", "feature-b")
+        manifest_path = _rollover_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+        config = _make_config(tmp_path)
+        sprint_name = "Test Sprint"
+
+        # Simulate a prior run that paid intake remediation cost on feature-a.
+        # The prior run's accumulated state — written by _write_sprint_summary
+        # AFTER canonical projection — must already include the intake cost.
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        prior_dev_cost = 1.18
+        prior_intake_cost = 0.10
+        prior_total_per_story = prior_dev_cost + prior_intake_cost
+        _save_accumulated_stories(
+            sprint_id,
+            sprint_name,
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "verdict": "APPROVE",
+                    "cost_usd": prior_total_per_story,
+                    "story_run_id": "run-a-test",
+                    "preflight": "PROCEED",
+                    "merge": True,
+                    "depends_on": [],
+                }
+            ],
+        )
+
+        skip_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged",
+            worktree_path=None,
+            slug="feature-a",
+        )
+        full_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="full",
+            reason="no prior",
+            worktree_path=None,
+            slug="feature-b",
+        )
+
+        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+            slug = task.slug if task else Path(canonical_ref).stem
+            return skip_triage if slug == "feature-a" else full_triage
+
+        result_b = _make_coordinator_result(success=True, cost=9.26)
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
+            patch("theforge.sprint.runner.run_task", return_value=result_b),
+        ):
+            sprint_result = _run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+
+        # Resumed sprint-summary.yaml total includes feature-a's prior cost
+        # (dev + intake) plus feature-b's current-run cost.
+        summary = yaml.safe_load(
+            (tmp_path / ".forge" / "logs" / sprint_name / "sprint-summary.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        expected = prior_total_per_story + 9.26
+        assert summary["sprint"]["total_cost_usd"] == pytest.approx(expected), (
+            "resumed summary YAML must include prior-run intake remediation "
+            "cost via the persisted accumulated state"
+        )
+        # Per-story row also carries the intake-inclusive prior cost.
+        by_slug = {s["slug"]: s for s in summary["stories"]}
+        assert by_slug["feature-a"]["cost_usd"] == pytest.approx(prior_total_per_story)
+        assert sprint_result.specs_succeeded == 2
 
 
 class TestAllSkippedQueryModeIntakeCost:
