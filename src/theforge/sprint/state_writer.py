@@ -196,6 +196,7 @@ def write_bootstrap_state(
     budget_usd: float | None = None,
     max_parallel: int | None = None,
     issues: list[dict] | None = None,
+    skipped_issues: list | None = None,
 ) -> Path:
     """Write a minimal `.state` file before SprintStateWriter exists.
 
@@ -213,10 +214,11 @@ def write_bootstrap_state(
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     stories: list[dict] = []
+    seen_slugs: set[str] = set()
     for issue in issues or []:
         number = issue.get("number")
         slug = issue.get("slug") or (f"issue-{number}" if number is not None else None)
-        if not slug:
+        if not slug or slug in seen_slugs:
             continue
         path = issue.get("path") or (f"Issue #{number}" if number is not None else slug)
         canonical_ref = issue.get("canonical_ref")
@@ -240,6 +242,50 @@ def write_bootstrap_state(
                 "depends_on": [],
             }
         )
+        seen_slugs.add(slug)
+
+    # Shape-gate skips already known at daemonize time MUST surface in the
+    # bootstrap state — otherwise operators watching the sprint cannot see
+    # which issues were rejected by the gate until SprintStateWriter.init()
+    # registers them several minutes later, after preflight. They are
+    # rendered as terminal `skipped` rows with the gate reason in `reason`.
+    for sk in skipped_issues or []:
+        sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
+        sk_num = sk_dict.get("issue_number")
+        if sk_num is None:
+            continue
+        sk_slug = f"issue-{sk_num}"
+        if sk_slug in seen_slugs:
+            continue
+        sk_codes = sk_dict.get("reason_codes") or []
+        sk_reason = (
+            ", ".join(sk_codes)
+            if sk_codes
+            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
+        )
+        stories.append(
+            {
+                "slug": sk_slug,
+                "path": f"Issue #{sk_num}",
+                "status": "skipped",
+                "outcome": "skipped",
+                "phase": None,
+                "cost_usd": 0.0,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "complexity": None,
+                "complexity_score": None,
+                "detail": {
+                    "shape_gate_source": sk_dict.get("source"),
+                    "shape_gate_codes": list(sk_codes),
+                    "final_outcome": "SKIPPED",
+                },
+                "reason": sk_reason,
+                "canonical_ref": f"issue:{sk_num}",
+                "depends_on": [],
+            }
+        )
+        seen_slugs.add(sk_slug)
 
     data: dict = {
         "sprint_name": sprint_name,

@@ -664,6 +664,7 @@ def _run_query_mode(
                     }
                     for issue in issues
                 ],
+                skipped_issues=skipped_issues,
             )
         except Exception:
             # Bootstrap state is a UX nicety; do not block sprint launch on

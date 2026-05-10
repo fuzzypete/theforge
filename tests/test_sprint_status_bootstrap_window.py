@@ -188,6 +188,110 @@ def test_display_sprint_status_renders_bootstrap_window(tmp_path: Path) -> None:
     assert "waiting" in output
 
 
+def test_bootstrap_state_includes_shape_gate_skips(tmp_path: Path) -> None:
+    """Shape-gate skips already emitted before daemonize must surface as
+    terminal `skipped` rows in the bootstrap state, with the gate reason
+    populated so operators can see why an issue was rejected without
+    waiting for SprintStateWriter.init() to run after preflight.
+    """
+    from theforge.sprint.state_writer import write_bootstrap_state
+
+    skipped = [
+        {
+            "issue_number": 99,
+            "title": "stale contract",
+            "reason_codes": ["reopened_stale_contract", "missing_acceptance"],
+            "source": "shape_check",
+        }
+    ]
+
+    write_bootstrap_state(
+        "run-skip-1",
+        tmp_path,
+        sprint_name="issues-1,99",
+        sprint_phase="starting",
+        base_branch="main",
+        budget_usd=10.0,
+        max_parallel=1,
+        issues=[{"number": 1, "title": "runnable"}],
+        skipped_issues=skipped,
+    )
+
+    data = yaml.safe_load(
+        (tmp_path / ".forge" / "runs" / "run-skip-1.state").read_text(encoding="utf-8")
+    )
+    stories_by_slug = {s["slug"]: s for s in data["stories"]}
+
+    # Runnable + skipped both present.
+    assert "issue-1" in stories_by_slug
+    assert "issue-99" in stories_by_slug
+
+    sk = stories_by_slug["issue-99"]
+    assert sk["status"] == "skipped"
+    assert sk["reason"] == "reopened_stale_contract, missing_acceptance"
+    assert sk["detail"]["shape_gate_codes"] == [
+        "reopened_stale_contract",
+        "missing_acceptance",
+    ]
+    assert sk["detail"]["shape_gate_source"] == "shape_check"
+    assert sk["canonical_ref"] == "issue:99"
+
+
+def test_display_sprint_status_shows_shape_gate_skip_in_bootstrap(tmp_path: Path) -> None:
+    """display_sprint_status surfaces shape-gate-skipped rows during the
+    pre-preflight bootstrap window — not just runnable issues."""
+    from theforge.sprint.state_writer import write_bootstrap_state
+
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "run-skip-disp.pid").write_text("12345\nmy-sprint\n", encoding="utf-8")
+
+    write_bootstrap_state(
+        "run-skip-disp",
+        tmp_path,
+        sprint_name="issues-1,99",
+        sprint_phase="starting",
+        base_branch="main",
+        budget_usd=10.0,
+        max_parallel=1,
+        issues=[{"number": 1, "title": "runnable"}],
+        skipped_issues=[
+            {
+                "issue_number": 99,
+                "reason_codes": ["reopened_stale_contract"],
+                "source": "shape_check",
+            }
+        ],
+    )
+
+    code, output = _run_sprint_status_cli(tmp_path, "run-skip-disp")
+    assert code == 0
+    assert "Issue #99" in output
+    assert "skipped" in output
+    assert "reopened_stale_contract" in output
+
+
+def test_bootstrap_skipped_issues_dedup_against_runnable(tmp_path: Path) -> None:
+    """A slug present in both `issues` and `skipped_issues` must not appear
+    twice — runnable wins, since the operator sees the issue as still alive."""
+    from theforge.sprint.state_writer import write_bootstrap_state
+
+    write_bootstrap_state(
+        "run-dedup",
+        tmp_path,
+        sprint_name="issues-7",
+        sprint_phase="starting",
+        issues=[{"number": 7}],
+        skipped_issues=[{"issue_number": 7, "reason_codes": ["x"]}],
+    )
+    data = yaml.safe_load(
+        (tmp_path / ".forge" / "runs" / "run-dedup.state").read_text(encoding="utf-8")
+    )
+    slugs = [s["slug"] for s in data["stories"]]
+    assert slugs == ["issue-7"]
+    assert data["stories"][0]["status"] == "waiting"
+
+
 def test_status_watch_renders_bootstrap_first_frame(tmp_path: Path) -> None:
     """The watcher's render_frame succeeds (snapshot_ok=True) and surfaces
     issue rows + sprint phase the moment a bootstrap state file exists.
