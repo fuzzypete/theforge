@@ -104,6 +104,17 @@ def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
     logs_dir = project_root / ".forge" / "logs"
     if not logs_dir.exists():
         return None
+
+    # Run-id-keyed file is the canonical per-run record (issue #1480) — try
+    # it first so an earlier run's summary is still queryable after later
+    # same-name runs have overwritten the legacy name-keyed file.
+    for candidate_id in candidate_ids:
+        if not candidate_id:
+            continue
+        for per_run_path in logs_dir.glob(f"*/run-{candidate_id}-summary.yaml"):
+            if per_run_path.is_file():
+                return per_run_path
+
     try:
         sprint_dirs = sorted(d for d in logs_dir.iterdir() if d.is_dir())
     except OSError:

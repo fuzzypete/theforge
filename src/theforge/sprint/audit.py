@@ -342,6 +342,7 @@ def _write_sprint_audit(
     skipped_issues: "list | None" = None,
     current_story_entries_by_ref: "dict[str, dict] | None" = None,
     triage_actions_by_ref: "dict[str, str] | None" = None,
+    run_id: str | None = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
@@ -585,6 +586,14 @@ def _write_sprint_audit(
     audit_path = audits_dir / "sprint-audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+    # Run-id-keyed canonical copy: the name-keyed file at sprint-audit.yaml
+    # is overwritten every sprint, so historical audits would otherwise be
+    # lost. Keep the legacy file as a "latest" pointer for convenience and
+    # back-compat; treat the per-run file as the durable record.
+    if run_id:
+        per_run_audit_path = audits_dir / f"run-{run_id}-sprint-audit.yaml"
+        with open(per_run_audit_path, "w", encoding="utf-8") as f:
+            yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     _upsert_into_substrate(project_root, audit)
     _log(f"Audit written: {audit_path}")
 
@@ -941,7 +950,17 @@ def _write_sprint_summary(
         summary_path = sprint_log_dir / "sprint-summary.yaml"
         with open(summary_path, "w", encoding="utf-8") as f:
             yaml.dump(summary, f, default_flow_style=False, sort_keys=False)
-        _log(f"Sprint summary written: {summary_path}")
+        # Run-id-keyed canonical copy. The legacy name-keyed path is
+        # overwritten by every later run sharing the sprint name, so it
+        # cannot be the durable per-run record (issue #1480). The legacy
+        # file remains as a convenience "latest run" pointer.
+        if run_id:
+            per_run_summary_path = sprint_log_dir / f"run-{run_id}-summary.yaml"
+            with open(per_run_summary_path, "w", encoding="utf-8") as f:
+                yaml.dump(summary, f, default_flow_style=False, sort_keys=False)
+            _log(f"Sprint summary written: {summary_path} (and {per_run_summary_path.name})")
+        else:
+            _log(f"Sprint summary written: {summary_path}")
     except Exception as exc:
         _log(f"Warning: sprint summary write failed: {exc}")
 

@@ -1345,6 +1345,7 @@ def run_sprint(
             sprint_id=_sprint_id,
             dropped_slugs=dropped_slugs,
             skipped_issues=skipped_issues,
+            run_id=run_id,
         )
         raise RuntimeError(str(baseline_gate.get("message", "Broken baseline")))
 
@@ -2702,6 +2703,7 @@ def run_sprint(
         triage_actions_by_ref={
             canonical_ref: triage.action for canonical_ref, triage in triages.items()
         },
+        run_id=run_id,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
