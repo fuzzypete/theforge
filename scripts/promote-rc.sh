@@ -14,8 +14,10 @@
 #   - pyproject.toml version is X.Y.ZrcN (an RC was previously cut)
 #   - milestone vX.Y.Z has zero open issues
 #
-# Reminds the operator at the end to merge release branch back to main and
-# update the dogfood install pin.
+# Reminds the operator at the end to forward-port any RC-only fixes to main
+# and to run the post-release doc review. The managed dogfood `forge`
+# launcher (managed by cut-rc.sh) is intentionally not re-linked here — the
+# last-RC venv code already matches the promoted final tag.
 #
 # See RELEASING.md for the end-to-end RC flow.
 
@@ -265,12 +267,13 @@ echo ""
 echo "Promoted v$VERSION (from $RC_TAG)."
 echo ""
 echo "Manual follow-ups:"
-echo "  1. Update the dogfood install pin to the new release:"
-echo "       pip install --force-reinstall git+https://github.com/fuzzypete/theforge.git@v$VERSION"
-echo ""
-echo "  2. Forward-port any RC fixes from $RELEASE_BRANCH to main if main has diverged:"
+echo "  1. Forward-port any RC fixes from $RELEASE_BRANCH to main if main has diverged:"
 echo "       git checkout main"
 echo "       git log main..$RELEASE_BRANCH --oneline    # see what's on the branch but not on main"
 echo "       # cherry-pick or merge as appropriate"
 echo ""
-echo "  3. Run the post-release doc review (issue filed in milestone $NEXT_MILESTONE)."
+echo "  2. Run the post-release doc review (issue filed in milestone $NEXT_MILESTONE)."
+echo ""
+echo "(The managed \`forge\` launcher still points at the last RC venv, whose"
+echo " code matches v$VERSION. To track the final tag specifically, cut a"
+echo " fresh venv from v$VERSION and re-link the managed launcher.)"
