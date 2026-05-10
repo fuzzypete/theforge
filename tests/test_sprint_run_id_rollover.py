@@ -363,7 +363,9 @@ class TestRunIdRolloverReporting:
         assert entries is not None
         stories = {entry.slug: entry for entry in entries}
         assert stories["issue-959"].status == "done"
-        assert stories["issue-959"].detail == "ALREADY_DONE"
+        # Closed-dependency stories surface as resume-skip-merged to
+        # distinguish them from preflight-verdict ALREADY_DONE outcomes.
+        assert stories["issue-959"].detail == "ALREADY_DONE (merged)"
         # issue-960 now surfaces with its canonical terminal outcome — the
         # live status agrees with the banner and summary by construction.
         assert stories["issue-960"].status in {"done", "failed"}
