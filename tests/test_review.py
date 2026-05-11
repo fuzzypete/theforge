@@ -6,6 +6,7 @@ from theforge.review import (
     _best_individual_result,
     _coerce_line,
     _dedup_findings,
+    _sanitize_yaml_text,
     _try_parse_review,
     append_convention_retry_findings,
     convention_violations_to_review_findings,
@@ -218,6 +219,108 @@ class TestParseReviewOutput:
             "summary": {"sanitized_chars": 2},
             "findings[0].description": {"sanitized_chars": 2},
         }
+
+
+class TestSanitizeYamlText:
+    """Unit tests for _sanitize_yaml_text — apostrophe-in-single-quoted-scalar fix."""
+
+    def test_issue_1511_trace_line_fixed(self):
+        # Exact pattern from story #1511: LLM emitted criterion with unescaped apostrophe.
+        line = (
+            "  criterion: 'For features, stories, and docs: "
+            "ensures the body matches the type's required headings.'"
+        )
+        result = _sanitize_yaml_text(line)
+        import yaml
+
+        parsed = yaml.safe_load(result)
+        expected = (
+            "For features, stories, and docs: "
+            "ensures the body matches the type's required headings."
+        )
+        assert parsed["criterion"] == expected
+
+    def test_no_apostrophe_scalar_unchanged(self):
+        line = "  status: 'VERIFIED'\n"
+        assert _sanitize_yaml_text(line) == line
+
+    def test_doubled_apostrophe_already_valid_unchanged(self):
+        # 'it''s fine' is valid YAML single-quoted; must not be altered.
+        line = "  text: 'it''s fine'\n"
+        result = _sanitize_yaml_text(line)
+        import yaml
+
+        parsed = yaml.safe_load(result)
+        assert parsed["text"] == "it's fine"
+
+    def test_contraction_in_single_quoted_fixed(self):
+        line = "  summary: 'The system doesn't handle this case.'"
+        result = _sanitize_yaml_text(line)
+        import yaml
+
+        parsed = yaml.safe_load(result)
+        assert parsed["summary"] == "The system doesn't handle this case."
+
+    def test_existing_backslash_quote_fix_still_works(self):
+        text = 'description: \\"bad escape\\"'
+        result = _sanitize_yaml_text(text)
+        assert '\\"' not in result
+
+    def test_backtick_fix_still_works(self):
+        text = "description: use `foo.bar` here\n"
+        result = _sanitize_yaml_text(text)
+        assert "`" not in result
+
+    def test_non_scalar_line_not_affected(self):
+        # A line without a key: 'value' pattern should pass through unchanged.
+        line = "- item without quotes\n"
+        assert _sanitize_yaml_text(line) == line
+
+
+class TestParseReviewOutputApostrophe:
+    """End-to-end regression for issue #1511: apostrophe in single-quoted scalar."""
+
+    # Fixture reproduces the LLM emission failure from sprint 77a72be5ff30:
+    # unescaped apostrophe inside single-quoted YAML scalar ('type's name').
+    _ISSUE_1511_APOSTROPHE_YAML = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Review with possessive"
+findings:
+  - severity: P1
+    file: src/theforge/schemas.py
+    line: 10
+    description: "Missing required field"
+    suggestion: "Add the field"
+story_compliance:
+  matches_spec: false
+  mismatches:
+    - "Story body does not match spec"
+test_coverage:
+  adequate: false
+  gaps:
+    - "No regression test"
+ac_verification:
+  - criterion: 'Ensures the story body matches the type's required headings.'
+    status: NOT_VERIFIED
+    evidence: 'No evidence found'
+```
+"""
+
+    def test_apostrophe_in_criterion_parses_successfully(self):
+        result = parse_review_output(self._ISSUE_1511_APOSTROPHE_YAML)
+        assert result.parse_errors == [], f"Unexpected parse errors: {result.parse_errors}"
+        assert result.verdict == "REQUEST_CHANGES"
+        assert len(result.findings) == 1
+        assert result.findings[0].severity == "P1"
+        assert len(result.ac_verification) == 1
+        assert "type's required headings" in result.ac_verification[0].criterion
+
+    def test_apostrophe_parse_preserves_content(self):
+        result = parse_review_output(self._ISSUE_1511_APOSTROPHE_YAML)
+        assert result.ac_verification[0].criterion == (
+            "Ensures the story body matches the type's required headings."
+        )
 
 
 class TestFindingsToMarkdown:
