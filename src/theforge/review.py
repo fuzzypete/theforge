@@ -83,6 +83,20 @@ class ReviewResult:
     sanitization_audit: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
+def _fix_single_quoted_apostrophe(m: re.Match) -> str:
+    prefix = m.group(1)
+    content = m.group(2)
+    if "'" not in content:
+        return m.group(0)
+    # Skip if all apostrophes are already doubled (valid YAML single-quoted escaping).
+    if "'" not in content.replace("''", ""):
+        return m.group(0)
+    # Unescaped apostrophe detected: re-quote as double-quoted.
+    # Convert any existing '' escapes to literal ' before re-quoting.
+    double_content = content.replace("''", "'").replace('"', '\\"')
+    return f'{prefix}"{double_content}"'
+
+
 def _sanitize_yaml_text(yaml_text: str) -> str:
     """Sanitize reviewer output text to survive YAML parsing.
 
@@ -92,11 +106,22 @@ def _sanitize_yaml_text(yaml_text: str) -> str:
     2. Inline backtick code (`` `foo.bar` ``) → plain text. Backtick-wrapped
        code containing colons (e.g., `candidate.content.parts`) causes YAML
        to interpret the colon as a mapping separator.
+    3. Unescaped apostrophe inside single-quoted scalar (e.g., `'type's name'`).
+       LLMs reliably mis-emit possessives/contractions in single-quoted YAML
+       values. The intent is unambiguous; re-quote as double-quoted.
     """
     text = yaml_text.replace('\\"', "'")
     # Strip inline backticks — they're markdown formatting, not meaningful in YAML.
-    # This prevents `foo: bar` from being parsed as a YAML mapping key.
     text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    # Fix unescaped apostrophes inside single-quoted scalars on a single line.
+    # Pattern: key: 'value with internal apostrophe'
+    # Only acts when content contains a lone ' not already doubled as ''.
+    text = re.sub(
+        r"(^\s*(?:-\s+)?[\w_-]+:\s+)'(.*)'",
+        _fix_single_quoted_apostrophe,
+        text,
+        flags=re.MULTILINE,
+    )
     return text
 
 
