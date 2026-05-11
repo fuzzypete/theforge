@@ -28,7 +28,7 @@ Compound engineering is not an abstraction looking for a home. It already has a 
 - **Layer 2 — Summarize.** Distill runs into evidence-backed knowledge: what was attempted, what worked, what failed, what was learned. A bounded LLM task ("summarize, don't decide"), aligned with the principle that LLMs generate artifacts, not process decisions.
 - **Layer 3 — Feed forward.** Prior run summaries flow into future context assembly through existing machinery. Agents stop rediscovering the same conventions, patterns, and failure modes.
 
-The substrate that holds these layers durably is governed by [ADR-0002](../adr/0002-audit-substrate-and-queryable-run-history.md). The intake-readiness workflow that captures operator corrections rather than punishing them is [ADR-0001](../adr/0001-intake-readiness-workflow.md). Each is one expression of the doctrine; this document is the doctrine itself.
+The substrate that holds these layers durably is governed by [ADR-0002 (PR #1519)](https://github.com/fuzzypete/theforge/pull/1519). The intake-readiness workflow that captures operator corrections rather than punishing them is [ADR-0001](../adr/0001-intake-readiness-workflow.md). Each is one expression of the doctrine; this document is the doctrine itself. *(ADR-0002 references in this document point at PR #1519 until that ADR lands on main; a follow-up retargets them to the file path.)*
 
 ## How features are evaluated against this doctrine
 
@@ -41,7 +41,7 @@ Apply it to every meaningful feature. If the answer is "evaporates and that's fi
 Worked examples of the test in use:
 
 - A symptom-only bug entering a sprint via `--force` ships a fix but produces no diagnosis, no failure classification, and no input to the adaptive router. It evaporates. The doctrine demands either a diagnosis path (now formalized in [ADR-0001](../adr/0001-intake-readiness-workflow.md)) or an explicit operator-action one-off marker.
-- A reviewer pass that surfaces P1 findings and discards them when the run terminates evaporates. Findings should be persisted as queryable substrate rows (per [ADR-0002](../adr/0002-audit-substrate-and-queryable-run-history.md)) so the rate of recurrence is mechanical, not anecdotal.
+- A reviewer pass that surfaces P1 findings and discards them when the run terminates evaporates. Findings should be persisted as queryable substrate rows (per [ADR-0002 (PR #1519)](https://github.com/fuzzypete/theforge/pull/1519)) so the rate of recurrence is mechanical, not anecdotal.
 - An adaptive-router change that improves first-attempt success but does not record *why* in a form future routers can read is one-shot improvement. It works for this release; it does not compound across the system's lifetime.
 
 ## Compound engineering and refusal-capability are siblings
@@ -84,7 +84,6 @@ Concrete instantiations of compound engineering in the current codebase and road
 
 - **v0.10 retheming.** The milestone was originally framed as "autonomy." First dogfood produced operator-correction signal that autonomy was premature: the substrate of trust was not yet built. The roadmap was reshaped — autonomy → compounding memory → workflow determinism + operator trust — so the next milestone could compound on a trustworthy floor. This is compound engineering at the meta level: an operator correction reshaped the roadmap rather than evaporating into a sprint retro.
 - **`assignment_history.yaml` → adaptive router.** The earliest concrete compounding loop in TheForge: per-run model performance is recorded, future assignments adjust. Today this is the only routing decision that uses historical evidence. Future router work (a planned ADR before v0.13 implementation) generalizes this pattern.
-- **Cost-tiered generation as future routing signal** (see [`docs/vision/cost-tiered-generation.md`](cost-tiered-generation.md)). The cost-tiered mechanism produces per-run cost and outcome data that the adaptive router can consume. Doctrine constraint: any new generation tier (e.g., a local Aider adapter) must emit its performance into the substrate from day one, not as a follow-up — otherwise it ships as a one-shot tool and the routing signal evaporates.
 - **ADR-0001 intake readiness.** Operator corrections to half-formed issues used to evaporate (file → refuse → hand-edit → retry → next time same loop). The intake-readiness workflow captures each correction as a structured action (`forge shape`, `forge groom`, `forge diagnose`) that produces substrate-visible artifacts. The doctrine made the workflow worth defining; ADR-0001 made it concrete.
 - **ADR-0002 audit substrate.** The refusal-to-forget invariant — no operator-facing delete/redact API for run records — is compound engineering's most basic mechanical guarantee. Failures cannot be erased to make current state look better. The audit substrate is a record, not a portfolio.
 - **#1516 diagnosis-staleness check** *(open, v0.11.0)*. Once shipped, a diagnosis written against commit A will be mechanically detected as stale when commit B lands. The operator's earlier diagnostic work is preserved (compounding) and explicitly invalidated (refusal-capable) rather than silently rotting. Both axes in one feature.
@@ -106,14 +105,14 @@ These are signals the system should make legible over time. Not all are implemen
 - **Rediscovery rate.** How often agents re-learn conventions, patterns, or failure modes the substrate already contains. A doctrine-aligned system trends this down.
 - **Refusal economics.** The remediation-to-runnable cost ratio (defined as a substrate query obligation in ADR-0002 §6). Makes refusal-capability legible as cost saved rather than friction felt.
 - **Operator-correction reuse.** How often a captured operator correction influences a later automated decision. Today this is partially measurable through the assignment-history → router loop; future work will broaden it.
-- **Diagnosis trust horizon.** How long a diagnosis stays valid before staleness invalidates it. #1516 makes this mechanical; the metric over time tells us how aggressive the codebase's churn is relative to the diagnosis-decay rate.
+- **Diagnosis trust horizon.** How long a diagnosis stays valid before staleness invalidates it. Once #1516 ships, the staleness check will make this measurable mechanically; the metric over time tells us how aggressive the codebase's churn is relative to the diagnosis-decay rate.
 
 ## Relationship to other documents
 
 - [`docs/plans/knowledge-capture.md`](../plans/knowledge-capture.md) — the canonical three-layer mechanism this doctrine names. If the doctrine is "what good looks like," that plan is "how it gets built."
 - [`docs/plans/forge-storage-layout.md`](../plans/forge-storage-layout.md) — file format, gitignore, migration sequence. The substrate the mechanism writes into.
 - [ADR-0001](../adr/0001-intake-readiness-workflow.md) — intake readiness as a refusal-axis expression of compound engineering.
-- [ADR-0002](../adr/0002-audit-substrate-and-queryable-run-history.md) — audit substrate as the trust contract over what compound engineering captures.
+- [ADR-0002 (PR #1519)](https://github.com/fuzzypete/theforge/pull/1519) — audit substrate as the trust contract over what compound engineering captures. (Link retargets to the file path once #1519 merges.)
 - Future ADRs likely to cite this doctrine: adaptive-router trust model (v0.13 prereq), autonomy boundary, commit-centric review handoffs, operator-action work-object type.
 
 ## Companion doctrine
