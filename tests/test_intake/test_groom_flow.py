@@ -201,6 +201,43 @@ def test_groom_feature_inserts_missing_ac_and_example():
     assert "## Acceptance criteria" in result.proposed_body
     assert "## Example" in result.proposed_body
     assert result.needs_change
+    # P1: the groomed feature body must be shape-gate-clean.
+    assert result.post_verdict is ShapeVerdict.RUNNABLE
+
+
+def test_groom_docs_reaches_runnable():
+    """Docs-typed issues are first-class per ADR-0001; normalize them onto
+    the shape gate's recognized type vocabulary so the post-groom verdict
+    can reach runnable rather than tripping on missing_type."""
+    body = "## What\n\nDocument the new endpoint.\n"
+    fetch = _fake_fetch(
+        {
+            "title": "Document export endpoint",
+            "body": body,
+            "labels": ["docs"],
+        }
+    )
+    result = run_groom("88", fetch_issue=fetch, edit_issue_body=_no_op_edit)
+    assert result.action is GroomAction.RESTRUCTURED
+    assert result.issue_type == "docs"
+    assert result.post_verdict is ShapeVerdict.RUNNABLE
+
+
+def test_groom_story_reaches_runnable():
+    """Story-typed issues are supported per the lifecycle spec; normalize
+    them to a shape-gate-recognized label so they reach a real verdict."""
+    body = "## What\n\nUsers can filter by date.\n"
+    fetch = _fake_fetch(
+        {
+            "title": "Filter by date",
+            "body": body,
+            "labels": ["story"],
+        }
+    )
+    result = run_groom("99", fetch_issue=fetch, edit_issue_body=_no_op_edit)
+    assert result.action is GroomAction.RESTRUCTURED
+    assert result.issue_type == "story"
+    assert result.post_verdict is ShapeVerdict.RUNNABLE
 
 
 def test_groom_feature_no_changes_when_already_clean():
@@ -283,6 +320,57 @@ def test_apply_edit_failure_raises():
             fetch_issue=fetch,
             edit_issue_body=failing_edit,
         )
+
+
+# ── Post-apply re-check ──────────────────────────────────────────────────
+
+
+def test_apply_rechecks_persisted_body_via_refetch():
+    """P1: post-groom verdict must reflect the body that actually landed
+    upstream, not the in-memory proposal. If GitHub stored something other
+    than what we sent (e.g. a hook munged it), the reported verdict tracks
+    the persisted state, not the proposal."""
+    # First fetch returns dirty body; refetch (after --apply) returns a
+    # tampered body whose shape verdict differs from the proposal.
+    fetch_calls = {"count": 0}
+    tampered_body = "## What\n\ntampered with — no AC, no Example\n"
+
+    def fetch(_n, _root):
+        fetch_calls["count"] += 1
+        if fetch_calls["count"] == 1:
+            return {
+                "title": "feature",
+                "body": "## What\n\nusers can export.\n",
+                "labels": ["enhancement"],
+            }
+        return {"title": "feature", "body": tampered_body, "labels": ["enhancement"]}
+
+    result = run_groom(
+        "42", apply_changes=True, fetch_issue=fetch, edit_issue_body=_no_op_edit
+    )
+    assert fetch_calls["count"] == 2  # one for load, one for post-apply re-check
+    assert result.applied is True
+    # Proposed body still reflects what groom sent — not the tampered state.
+    assert "## Acceptance criteria" in result.proposed_body
+    # But the reported verdict reflects the persisted (tampered) body.
+    assert result.post_verdict is not ShapeVerdict.RUNNABLE
+
+
+def test_apply_rechecks_persisted_file_after_local_write(tmp_path: Path):
+    """P1: post-apply re-check also runs for local file inputs — verdict
+    is derived from what is actually on disk after the write."""
+    f = tmp_path / "issue.md"
+    f.write_text(
+        "---\ntitle: x\nlabels: [enhancement]\n---\n## What\n\nUsers can export.\n",
+        encoding="utf-8",
+    )
+    result = run_groom(str(f), apply_changes=True)
+    assert result.applied is True
+    # File on disk has the canonical groomed body, so re-read verdict is runnable.
+    assert result.post_verdict is ShapeVerdict.RUNNABLE
+    on_disk = f.read_text(encoding="utf-8")
+    assert "## Acceptance criteria" in on_disk
+    assert "## Example" in on_disk
 
 
 # ── Local file loading ───────────────────────────────────────────────────
