@@ -106,6 +106,9 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                 }
                 for ac in r.ac_verification
             ]
+            parse_errors_list = [
+                {"stage": pe.stage, "message": pe.message} for pe in r.parse_errors
+            ]
             entry.update(
                 {
                     "verdict": r.verdict,
@@ -115,6 +118,7 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                     "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
                     "findings": findings_list,
                     "ac_verification": ac_verification_list,
+                    "parse_errors": parse_errors_list,
                 }
             )
         reviews.append(entry)

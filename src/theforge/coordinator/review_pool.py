@@ -418,9 +418,14 @@ def _run_review_pool(
         # Capture original AgentResult for this reviewer (session_id + raw output)
         _original_result = successful[i]
         for _retry_num in range(1, max_review_parse_retries + 1):
-            _error_desc = "; ".join(parsed.parse_errors)
+            _error_desc = "; ".join(str(e) for e in parsed.parse_errors)
+            # Stage breakdown lets operators distinguish parser-layer failures
+            # from schema/contract-layer failures without parsing the message.
+            _stages = sorted({e.stage for e in parsed.parse_errors})
+            _stage_tag = ",".join(_stages) if _stages else "UNKNOWN"
             _log(
-                f"  ↻ {name} parse failed (retry {_retry_num}/{max_review_parse_retries}): "
+                f"  ↻ {name} rejected at {_stage_tag} "
+                f"(retry {_retry_num}/{max_review_parse_retries}): "
                 f"{_error_desc[:120]}"
             )
             # Build corrective prompt — mode-specific to avoid re-review
@@ -472,9 +477,10 @@ def _run_review_pool(
                 state.review_agent_results.append(_retry_result)
                 break
             else:
+                _retry_errors = parse_review_output(_retry_result.output).parse_errors
                 _log_verbose(
-                    f"  {name} retry {_retry_num} still has parse errors: "
-                    f"{parse_review_output(_retry_result.output).parse_errors}"
+                    f"  {name} retry {_retry_num} still rejected: "
+                    f"{[str(e) for e in _retry_errors]}"
                 )
                 parsed = ReviewResult(
                     verdict="REQUEST_CHANGES",
@@ -484,7 +490,7 @@ def _run_review_pool(
                     story_mismatches=[],
                     test_adequate=False,
                     test_gaps=[],
-                    parse_errors=[_error_desc],
+                    parse_errors=_retry_errors or list(parsed.parse_errors),
                     raw_yaml={},
                 )
 
