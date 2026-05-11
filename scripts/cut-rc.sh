@@ -279,18 +279,38 @@ if [[ "$NO_INSTALL" == false ]]; then
                     INSTALLED_THEFORGE_VERSION="$("$CURRENT_FORGE_PY" -c 'import importlib.metadata as m; print(m.version("theforge"))' 2>/dev/null || true)"
                 fi
 
-                if [[ -z "$INSTALLED_THEFORGE_VERSION" ]]; then
+                # An env can have theforge installed while CURRENT_FORGE itself
+                # is a hand-written wrapper or a console script for a different
+                # package. Identify CURRENT_FORGE as the theforge console
+                # script by grepping for theforge.cli (pyproject.toml has
+                # [project.scripts] forge = "theforge.cli:main", so every
+                # pip-generated console script contains this import literal).
+                CURRENT_FORGE_IS_THEFORGE=false
+                if [[ -f "$CURRENT_FORGE" ]] \
+                   && grep -q -E 'theforge\.cli|from[[:space:]]+theforge' "$CURRENT_FORGE" 2>/dev/null; then
+                    CURRENT_FORGE_IS_THEFORGE=true
+                fi
+
+                if [[ -z "$INSTALLED_THEFORGE_VERSION" || "$CURRENT_FORGE_IS_THEFORGE" == false ]]; then
                     echo "" >&2
                     echo "Error: plain \`forge\` currently resolves to" >&2
                     echo "         $CURRENT_FORGE" >&2
                     echo "       which lives inside a Python environment's bin/," >&2
-                    echo "       but that environment has no importable \`theforge\`" >&2
-                    echo "       distribution (probe via ${CURRENT_FORGE_PY:-<no python found in that bin/>}" >&2
-                    echo "       returned no version). The script cannot reason about" >&2
-                    echo "       what \`forge\` actually is — it may be a console script" >&2
-                    echo "       for an unrelated package, a hand-written wrapper, or" >&2
-                    echo "       an editable install of a different repo. Refusing to" >&2
-                    echo "       proceed rather than silently displace it on PATH." >&2
+                    if [[ -z "$INSTALLED_THEFORGE_VERSION" ]]; then
+                        echo "       but that environment has no importable \`theforge\`" >&2
+                        echo "       distribution (probe via ${CURRENT_FORGE_PY:-<no python found in that bin/>}" >&2
+                        echo "       returned no version)." >&2
+                    else
+                        echo "       and that environment has theforge==$INSTALLED_THEFORGE_VERSION" >&2
+                        echo "       installed, but the launcher file itself does not look" >&2
+                        echo "       like theforge's pip-generated console script (no" >&2
+                        echo "       \`theforge.cli\` / \`from theforge\` reference inside)." >&2
+                    fi
+                    echo "       The script cannot reason about what \`forge\` actually" >&2
+                    echo "       is — it may be a console script for an unrelated" >&2
+                    echo "       package, a hand-written wrapper, or an editable install" >&2
+                    echo "       of a different repo. Refusing to proceed rather than" >&2
+                    echo "       silently displace it on PATH." >&2
                     echo "" >&2
                     echo "       The cut RC is installed and verified at:" >&2
                     echo "         $RC_ENV_FORGE" >&2
@@ -301,8 +321,8 @@ if [[ "$NO_INSTALL" == false ]]; then
                     echo "         scripts/cut-rc.sh $VERSION $RC_NUM" >&2
                     exit 1
                 elif [[ "$INSTALLED_THEFORGE_VERSION" == "$RC_VERSION" ]]; then
-                    echo "    note: plain \`forge\` already resolves to theforge==$RC_VERSION"
-                    echo "          in $CURRENT_FORGE_DIR; repoint is identity. Proceeding."
+                    # Same RC as we're cutting; repoint is identity. Spec says
+                    # this case completes silently — no note.
                     INVENV_LAUNCHER_VERSION="$INSTALLED_THEFORGE_VERSION"
                     INVENV_LAUNCHER_DIR="$CURRENT_FORGE_DIR"
                 else
