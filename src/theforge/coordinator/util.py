@@ -27,6 +27,7 @@ _subprocess_run = subprocess.run
 # Absolute path to the subprocess eval entry point — invoked by path so the
 # coordinator's own version runs regardless of what the installed package provides.
 _SUBPROCESS_EVAL = Path(__file__).parent / "_subprocess_eval.py"
+_CHECKOUT_SRC = Path(__file__).resolve().parents[2]
 
 # Adaptive timeout fallback uses the same default headroom factor across
 # surfaces when forge.yaml does not provide an explicit complexity-tier
@@ -255,16 +256,26 @@ def _run_worktree_eval(
 
     Prepends workspace_path/src to PYTHONPATH so the subprocess imports
     theforge.* modules from the worktree rather than the coordinator's copies.
-    This is the isolation boundary for self-hosting: project code is never
-    imported into the coordinator's process; it runs only in this subprocess.
+    The checkout src that loaded this module is added as an explicit fallback
+    for sparse synthetic worktrees used by tests; this keeps those subprocesses
+    from falling through to whatever theforge happens to be installed in the
+    ambient Python environment. This is the isolation boundary for self-hosting:
+    project code is never imported into the coordinator's process; it runs only
+    in this subprocess.
 
     Returns the parsed JSON result dict. Raises RuntimeError on subprocess
     failure.
     """
     env = os.environ.copy()
     worktree_src = str((workspace_path / "src").resolve())
+    checkout_src = str(_CHECKOUT_SRC)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = worktree_src + (os.pathsep + existing if existing else "")
+    pythonpath_entries = [worktree_src]
+    if checkout_src != worktree_src:
+        pythonpath_entries.append(checkout_src)
+    if existing:
+        pythonpath_entries.append(existing)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     result = _subprocess_run(
         [sys.executable, str(_SUBPROCESS_EVAL), command],
