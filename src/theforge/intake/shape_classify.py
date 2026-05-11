@@ -16,11 +16,17 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from theforge.intake.clarification import ClarificationQuestion, for_situation
 from theforge.shape_check.parsing import (
     extract_ac_section,
     extract_section,
     has_heading,
 )
+
+# Back-compat alias so existing call sites that imported AmbiguityQuestion
+# continue to work; the canonical home for the type is the clarification
+# module, which the shape classifier reuses rather than re-defining.
+AmbiguityQuestion = ClarificationQuestion
 
 
 class Classification(str, Enum):
@@ -47,19 +53,13 @@ class DiagnosisState(str, Enum):
 
 
 @dataclass(frozen=True)
-class AmbiguityQuestion:
-    code: str
-    text: str
-
-
-@dataclass(frozen=True)
 class ShapeProposal:
     classification: Classification
     confidence: Confidence
     diagnosis_state: DiagnosisState | None = None
     proposed_labels: tuple[str, ...] = ()
     removed_labels: tuple[str, ...] = ()
-    ambiguity_questions: tuple[AmbiguityQuestion, ...] = ()
+    ambiguity_questions: tuple[ClarificationQuestion, ...] = ()
     proposed_adr_slug: str | None = None
     proposed_adr_title: str | None = None
     proposed_child_stories: tuple[str, ...] = ()
@@ -228,7 +228,7 @@ def classify(title: str, body: str, labels: list[str]) -> ShapeProposal:
         return ShapeProposal(
             classification=Classification.UNRESOLVED,
             confidence=Confidence.LOW,
-            ambiguity_questions=_default_ambiguity_questions(),
+            ambiguity_questions=for_situation("no_signal"),
             rationale=(
                 "No classifying signal in title, body, or labels — the draft is too thin to shape."
             ),
@@ -240,16 +240,7 @@ def classify(title: str, body: str, labels: list[str]) -> ShapeProposal:
         return ShapeProposal(
             classification=Classification.UNRESOLVED,
             confidence=Confidence.LOW,
-            ambiguity_questions=(
-                AmbiguityQuestion(
-                    code="deliverable_kind",
-                    text=("Is the deliverable code behavior, docs, or an operator decision?"),
-                ),
-                AmbiguityQuestion(
-                    code="agent_completable",
-                    text=("Should a dev agent be able to complete this without human action?"),
-                ),
-            ),
+            ambiguity_questions=for_situation("enhancement_vs_operator_action"),
             rationale="could be either operator-action or enhancement",
         )
 
@@ -308,22 +299,10 @@ def classify(title: str, body: str, labels: list[str]) -> ShapeProposal:
     )
 
 
-def _default_ambiguity_questions() -> tuple[AmbiguityQuestion, ...]:
-    return (
-        AmbiguityQuestion(
-            code="what_kind_of_work",
-            text="What kind of work is this — bug, enhancement, docs, or operator action?",
-        ),
-        AmbiguityQuestion(
-            code="observable_outcome",
-            text="What is the observable outcome that signals this is done?",
-        ),
-    )
-
-
 __all__ = [
     "AmbiguityQuestion",
     "Classification",
+    "ClarificationQuestion",
     "Confidence",
     "DiagnosisState",
     "ShapeProposal",

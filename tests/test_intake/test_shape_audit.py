@@ -79,4 +79,4 @@ def test_count_kept_as_draft(tmp_path: Path):
 
 
 def test_valid_input_sources_constant():
-    assert VALID_INPUT_SOURCES == {"issue", "file", "stdin"}
+    assert VALID_INPUT_SOURCES == {"issue", "file", "stdin", "none"}

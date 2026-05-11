@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_shape_events_classification
     ON shape_events(classification);
 """
 
-VALID_INPUT_SOURCES: frozenset[str] = frozenset({"issue", "file", "stdin"})
+VALID_INPUT_SOURCES: frozenset[str] = frozenset({"issue", "file", "stdin", "none"})
 
 
 def _ensure_shape_events(conn: sqlite3.Connection) -> None:

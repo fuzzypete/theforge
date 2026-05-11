@@ -19,6 +19,7 @@ from theforge.cli.shared import _find_config
 from theforge.coordinator.shape_audit import emit_shape_event
 from theforge.intake.shape_classify import (
     Classification,
+    Confidence,
     ShapeProposal,
     classify,
 )
@@ -154,135 +155,125 @@ def _apply_to_github(
     return True
 
 
+def _classify_input_source(args: argparse.Namespace) -> str:
+    """Return the canonical input_source for this invocation up-front.
+
+    Computed before any I/O so the audit row can always record where the
+    operator *tried* to read from, even when the load fails (file missing,
+    `gh` unavailable, no input flags given).
+    """
+    if args.from_brief:
+        return "file"
+    if args.from_stdin:
+        return "stdin"
+    if args.issue is not None:
+        return "issue"
+    return "none"
+
+
 def cmd_shape(args: argparse.Namespace) -> int:
     project_root = _project_root(args)
     if project_root is None:
         return 1
 
-    title: str
-    body: str
-    labels: list[str]
-    issue_number: int | None
-    input_source: str
+    input_source = _classify_input_source(args)
+    issue_number: int | None = args.issue if args.issue is not None else None
+    # Default to an unresolved/low-confidence proposal so an early failure
+    # before classification still produces a meaningful audit row.
+    proposal: ShapeProposal = ShapeProposal(
+        classification=Classification.UNRESOLVED,
+        confidence=Confidence.LOW,
+    )
+    apply_mutated = False
 
-    if args.from_brief:
-        brief_path = Path(args.from_brief)
-        if not brief_path.exists():
-            print(f"--from-brief: file not found: {brief_path}", file=sys.stderr)
+    try:
+        title: str
+        body: str
+        labels: list[str]
+
+        if args.from_brief:
+            brief_path = Path(args.from_brief)
+            if not brief_path.exists():
+                print(f"--from-brief: file not found: {brief_path}", file=sys.stderr)
+                return 1
+            title, body, labels = _load_from_file(brief_path)
+        elif args.from_stdin:
+            raw = sys.stdin.read()
+            title, body = _split_title_body(raw)
+            labels = []
+        elif args.issue is not None:
+            loaded = _load_issue(args.issue, project_root)
+            if loaded is None:
+                return 1
+            title, body, labels = loaded
+        else:
+            print(
+                "forge shape: provide an issue number, --from-brief PATH, or --from-stdin",
+                file=sys.stderr,
+            )
             return 1
-        title, body, labels = _load_from_file(brief_path)
-        issue_number = None
-        input_source = "file"
-    elif args.from_stdin:
-        raw = sys.stdin.read()
-        title, body = _split_title_body(raw)
-        labels = []
-        issue_number = None
-        input_source = "stdin"
-    elif args.issue is not None:
-        loaded = _load_issue(args.issue, project_root)
-        if loaded is None:
-            return 1
-        title, body, labels = loaded
-        issue_number = args.issue
-        input_source = "issue"
-    else:
-        print(
-            "forge shape: provide an issue number, --from-brief PATH, or --from-stdin",
-            file=sys.stderr,
+
+        proposal = classify(title, body, labels)
+
+        # --next: print only the operator-facing next command and exit 0.
+        if args.next:
+            print(next_command(proposal, issue_number))
+            return 0
+
+        source_label = (
+            f"#{issue_number} {title!r}".strip()
+            if issue_number is not None
+            else f"brief: {title!r}"
+            if title
+            else "<draft>"
         )
-        return 1
-
-    proposal = classify(title, body, labels)
-
-    # --next: print only the operator-facing next command and exit 0.
-    if args.next:
+        rendered = render_proposal(
+            proposal,
+            source_label=source_label,
+            current_body=body,
+            show_diff=True,
+        )
+        print(rendered, end="")
         print(next_command(proposal, issue_number))
+
+        if args.apply:
+            if proposal.classification is Classification.UNRESOLVED:
+                print(
+                    "--apply refused: classification is unresolved (kept as todo:draft).",
+                    file=sys.stderr,
+                )
+                return 1
+            if issue_number is None:
+                print(
+                    "--apply requires an issue number; --from-brief and --from-stdin "
+                    "cannot mutate.",
+                    file=sys.stderr,
+                )
+                return 1
+            new_body = restructure_body(proposal, body)
+            ok = _apply_to_github(issue_number, proposal, new_body, project_root)
+            if not ok:
+                return 1
+            print(f"Applied proposal to #{issue_number}.")
+            apply_mutated = True
+            return 0
+
+        # Without --apply: non-zero when changes would be needed.
+        needs_change = (
+            proposal.classification is Classification.UNRESOLVED
+            or bool(proposal.proposed_labels)
+            or bool(proposal.removed_labels)
+            or restructure_body(proposal, body) != body
+        )
+        return 1 if needs_change else 0
+    finally:
         _safe_emit(
             project_root,
             issue_number=issue_number,
             input_source=input_source,
             proposal=proposal,
-            apply_mutated=False,
+            apply_mutated=apply_mutated,
         )
-        return 0
-
-    source_label = (
-        f"#{issue_number} {title!r}".strip()
-        if issue_number is not None
-        else f"brief: {title!r}"
-        if title
-        else "<draft>"
-    )
-    rendered = render_proposal(
-        proposal,
-        source_label=source_label,
-        current_body=body,
-        show_diff=True,
-    )
-    print(rendered, end="")
-    print(next_command(proposal, issue_number))
-
-    mutated = False
-    if args.apply:
-        if proposal.classification is Classification.UNRESOLVED:
-            print(
-                "--apply refused: classification is unresolved (kept as todo:draft).",
-                file=sys.stderr,
-            )
-            _safe_emit(
-                project_root,
-                issue_number=issue_number,
-                input_source=input_source,
-                proposal=proposal,
-                apply_mutated=False,
-            )
-            return 1
-        if issue_number is None:
-            print(
-                "--apply requires an issue number; --from-brief and --from-stdin cannot mutate.",
-                file=sys.stderr,
-            )
-            _safe_emit(
-                project_root,
-                issue_number=issue_number,
-                input_source=input_source,
-                proposal=proposal,
-                apply_mutated=False,
-            )
-            return 1
-        new_body = restructure_body(proposal, body)
-        ok = _apply_to_github(issue_number, proposal, new_body, project_root)
-        if not ok:
-            _safe_emit(
-                project_root,
-                issue_number=issue_number,
-                input_source=input_source,
-                proposal=proposal,
-                apply_mutated=False,
-            )
-            return 1
-        print(f"Applied proposal to #{issue_number}.")
-        mutated = True
-
-    _safe_emit(
-        project_root,
-        issue_number=issue_number,
-        input_source=input_source,
-        proposal=proposal,
-        apply_mutated=mutated,
-    )
-
-    if args.apply:
-        return 0
-    # Without --apply: non-zero when changes would be needed.
-    needs_change = (
-        proposal.classification is Classification.UNRESOLVED
-        or bool(proposal.proposed_labels)
-        or bool(proposal.removed_labels)
-        or restructure_body(proposal, body) != body
-    )
-    return 1 if needs_change else 0
 
 
 def _safe_emit(

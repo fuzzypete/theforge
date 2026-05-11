@@ -168,3 +168,105 @@ def test_shape_no_input_errors(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 1
     assert "provide an issue number" in err
+
+
+def _shape_event_row(tmp_path: Path) -> tuple:
+    """Helper: return the (input_source, classification, apply_mutated)
+    of the single shape_events row written under tmp_path, or None if none."""
+    db = substrate_path(tmp_path)
+    if not db.exists():
+        return None
+    conn = sqlite3.connect(str(db))
+    try:
+        return conn.execute(
+            "SELECT input_source, classification, apply_mutated FROM shape_events"
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def test_audit_emitted_when_from_brief_file_missing(tmp_path, capsys):
+    args = _make_args(tmp_path, from_brief=str(tmp_path / "missing.md"))
+    rc = cmd_shape(args)
+    assert rc == 1
+    assert "file not found" in capsys.readouterr().err
+    # Acceptance criterion: every invocation writes a structured event.
+    assert _shape_event_row(tmp_path) == ("file", "unresolved", 0)
+
+
+def test_audit_emitted_when_no_input_given(tmp_path, capsys):
+    args = _make_args(tmp_path)
+    rc = cmd_shape(args)
+    assert rc == 1
+    assert _shape_event_row(tmp_path) == ("none", "unresolved", 0)
+
+
+@patch("theforge.cli.shape.subprocess.run")
+def test_audit_emitted_when_gh_issue_view_fails(mock_run, tmp_path, capsys):
+    mock_run.return_value = _proc(returncode=1, stderr="no such issue")
+    args = _make_args(tmp_path, issue=999999)
+    rc = cmd_shape(args)
+    assert rc == 1
+    assert "no such issue" in capsys.readouterr().err
+    assert _shape_event_row(tmp_path) == ("issue", "unresolved", 0)
+
+
+@patch("theforge.cli.shape.subprocess.run")
+def test_audit_emitted_when_gh_returns_malformed_json(mock_run, tmp_path, capsys):
+    mock_run.return_value = _proc(stdout="not-json")
+    args = _make_args(tmp_path, issue=42)
+    rc = cmd_shape(args)
+    assert rc == 1
+    assert "malformed JSON" in capsys.readouterr().err
+    assert _shape_event_row(tmp_path) == ("issue", "unresolved", 0)
+
+
+def test_parser_help_lists_shape_command(capsys):
+    parser = build_parser()
+    try:
+        parser.parse_args(["--help"])
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "shape" in out
+
+
+def test_classify_treats_story_label_as_enhancement():
+    from theforge.intake.shape_classify import Classification, classify
+
+    proposal = classify("title", "body without ac", ["story"])
+    assert proposal.classification is Classification.ENHANCEMENT
+
+
+def test_classify_treats_feature_label_as_enhancement():
+    from theforge.intake.shape_classify import Classification, classify
+
+    proposal = classify("title", "body without ac", ["feature"])
+    assert proposal.classification is Classification.ENHANCEMENT
+
+
+@patch("theforge.cli.shape.subprocess.run")
+def test_normal_render_never_invokes_downstream_producers(mock_run, tmp_path, capsys):
+    """Regression: a non-apply, non-next shape run must NOT spawn any
+    subprocess beyond the gh issue view it needs to load the issue."""
+    gh_view = _proc(
+        stdout=json.dumps(
+            {
+                "title": "cut-rc.sh broke",
+                "body": "happens on every release",
+                "labels": [{"name": "bug"}],
+            }
+        )
+    )
+    mock_run.return_value = gh_view
+    args = _make_args(tmp_path, issue=1497)
+    cmd_shape(args)
+    # Exactly one subprocess call — the gh issue view to load the issue.
+    assert mock_run.call_count == 1
+    call_args = mock_run.call_args.args[0]
+    assert call_args[:3] == ["gh", "issue", "view"]
+    # And none of the producer command names appear in any argv.
+    for call in mock_run.call_args_list:
+        argv = call.args[0]
+        for forbidden in ("diagnose", "groom"):
+            assert forbidden not in argv, f"unexpected producer call: {argv}"
