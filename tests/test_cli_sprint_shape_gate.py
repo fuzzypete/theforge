@@ -541,3 +541,139 @@ def test_cli_remediated_issues_not_in_nothing_to_run_message(tmp_path: Path, cap
     assert rc == 0
     err = capsys.readouterr().err
     assert "nothing to run" not in err
+
+
+def test_cli_remediated_issues_publish_env_var_for_reexec_carry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """After successful intake remediation, the just-remediated issue numbers
+    are stashed in ``FORGE_INTAKE_REMEDIATED`` so they survive ``os.execv``
+    when the runner re-execs on a mid-sprint source pull. Without this,
+    the post-re-exec shape gate re-queries GitHub and drops issues whose
+    ``needs-grooming`` label hasn't been async-reconciled yet."""
+    from theforge.cli.sprint import _INTAKE_REMEDIATED_ENV
+    from theforge.config.types import IntakeConfig
+    from theforge.intake import IntakeOutcome, IntakeOutcomeKind
+
+    monkeypatch.delenv(_INTAKE_REMEDIATED_ENV, raising=False)
+
+    config = _make_config(tmp_path)
+    object.__setattr__(
+        config,
+        "intake",
+        IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+    args = _query_args(tmp_path)
+
+    fetched = [
+        {"number": 1543, "title": "a"},
+        {"number": 1544, "title": "b"},
+        {"number": 1545, "title": "c"},
+    ]
+    gated = ShapeGateResult(
+        runnable=[],
+        skipped=[
+            SkippedIssue(
+                issue_number=n,
+                reason_codes=("missing_observed",),
+                source="local_check",
+                title=str(n),
+            )
+            for n in (1543, 1544, 1545)
+        ],
+    )
+
+    def fake_remediate(skipped, **_kw):
+        return {
+            sk.issue_number: IntakeOutcome(
+                slug=f"issue-{sk.issue_number}",
+                kind=IntakeOutcomeKind.REMEDIATED,
+                detail="edit mode: issue body updated, gate rerun passed",
+                audit={"remediation_source": "agent"},
+            )
+            for sk in skipped
+        }
+
+    captured_env_at_run_sprint: dict = {}
+
+    def fake_run_sprint(*_a, **_kw):
+        import os as _os
+
+        captured_env_at_run_sprint["val"] = _os.environ.get(_INTAKE_REMEDIATED_ENV)
+        return _ok_result()
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.shape_gate.apply_shape_gate", return_value=gated),
+        patch(
+            "theforge.sprint.entry_intake.remediate_entry_skipped_issues",
+            side_effect=fake_remediate,
+        ),
+        patch(
+            "theforge.sprint.query.build_resolved_sprint",
+            return_value=_resolved([1543, 1544, 1545]),
+        ),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", side_effect=fake_run_sprint),
+    ):
+        cmd_sprint(args)
+
+    # By the time run_sprint runs (and may re-exec via pull_base_branch),
+    # the env var must be set so the post-re-exec gate trusts the
+    # just-remediated bodies over the async-stale label.
+    assert captured_env_at_run_sprint.get("val") == "1543,1544,1545"
+
+
+def test_cli_carries_remediated_numbers_from_env_into_shape_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On re-exec entry, the gate must receive the carried numbers via the
+    ``intake_remediated_numbers`` kwarg, and the env var must be consumed
+    (cleared) so it doesn't bleed into a downstream subprocess."""
+    from theforge.cli.sprint import _INTAKE_REMEDIATED_ENV
+
+    monkeypatch.setenv(_INTAKE_REMEDIATED_ENV, "1545,1543")
+
+    config = _make_config(tmp_path)
+    args = _query_args(tmp_path)
+
+    fetched = [{"number": 1543, "title": "good"}]
+    gated = ShapeGateResult(runnable=fetched, skipped=[])
+    captured: dict = {}
+
+    def _spy(*_a, **kwargs):
+        captured["kwargs"] = kwargs
+        return gated
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.query.build_resolved_sprint", return_value=_resolved([1543])),
+        patch("theforge.sprint.shape_gate.apply_shape_gate", side_effect=_spy),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", return_value=_ok_result()),
+    ):
+        cmd_sprint(args)
+
+    threaded = captured["kwargs"].get("intake_remediated_numbers")
+    assert threaded is not None
+    assert set(threaded) == {1543, 1545}
+
+    # The env var is re-published with the carried set so a downstream
+    # re-exec (rare but possible if a second source-pull lands mid-run)
+    # still treats the async-stale label as non-authoritative for these
+    # already-remediated issues.
+    import os as _os
+
+    assert _os.environ.get(_INTAKE_REMEDIATED_ENV) == "1543,1545"

@@ -296,6 +296,52 @@ def _acquire_launch_locks(
     )
 
 
+_INTAKE_REMEDIATED_ENV = "FORGE_INTAKE_REMEDIATED"
+
+
+def _consume_intake_remediated_env() -> set[int]:
+    """Read and clear the carry-across-re-exec remediated-issues env var.
+
+    Set by an earlier process before ``os.execv`` (see ``pull_base_branch``
+    in coordinator/workspace.py). Cleared on consumption so it never bleeds
+    into a subsequent re-exec or a child subprocess that has no business
+    inheriting the sprint's intake state.
+    """
+    import os
+
+    raw = os.environ.pop(_INTAKE_REMEDIATED_ENV, "")
+    if not raw:
+        return set()
+    numbers: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            numbers.add(int(part))
+        except ValueError:
+            continue
+    return numbers
+
+
+def _publish_intake_remediated_env(numbers: "set[int] | frozenset[int]") -> None:
+    """Stash the just-remediated issue numbers in the environment.
+
+    The sprint runner may re-exec the process if ``git pull`` updates the
+    src/theforge tree between intake remediation and dispatch. Env vars
+    survive ``os.execv``; in-memory dicts do not. Re-entry reads the value
+    via ``_consume_intake_remediated_env`` and threads it into the post-
+    re-exec shape gate so the just-remediated issues aren't dropped on a
+    stale ``needs-grooming`` label that the async labeler hasn't reconciled
+    yet.
+    """
+    import os
+
+    if not numbers:
+        return
+    os.environ[_INTAKE_REMEDIATED_ENV] = ",".join(str(n) for n in sorted(numbers))
+
+
 def _is_reexec() -> bool:
     """Return True when the current process was started by a forge re-exec.
 
@@ -539,6 +585,11 @@ def _run_query_mode(
     # Dry-run is a pure dependency preview — bypass the gate there so
     # operators can inspect the DAG without making ``gh`` calls per issue.
     skipped_issues: list = []
+    # Carry-across-re-exec: a prior process may have intake-remediated some
+    # issues and stashed their numbers in the environment before re-exec.
+    # Consume them here so the post-re-exec gate treats the async-lagging
+    # ``needs-grooming`` label as stale rather than authoritative.
+    carried_remediated_numbers = _consume_intake_remediated_env()
     if not dry_run:
         classifier_mode = getattr(getattr(config, "shape_check", None), "classifier", "heuristic")
         gate_result = apply_shape_gate(
@@ -546,6 +597,7 @@ def _run_query_mode(
             config.project_root,
             classifier_mode=classifier_mode,
             force=force,
+            intake_remediated_numbers=carried_remediated_numbers or None,
         )
         if gate_result.skipped:
             warning = format_skipped_warning(gate_result.skipped)
@@ -599,6 +651,14 @@ def _run_query_mode(
                 skipped_issues = [
                     sk for sk in skipped_issues if sk.issue_number not in remediated_numbers
                 ]
+            # Publish the union of this run's remediations and any that were
+            # carried across an earlier re-exec. If run_sprint re-execs after
+            # a mid-sprint source pull, the next entry into _run_query_mode
+            # must trust the just-remediated bodies over the async-stale
+            # ``needs-grooming`` label.
+            _publish_intake_remediated_env(remediated_numbers | carried_remediated_numbers)
+        elif carried_remediated_numbers:
+            _publish_intake_remediated_env(carried_remediated_numbers)
 
         if not issues:
             print(
