@@ -456,11 +456,383 @@ def test_full_execution_refuses_to_clobber_venv_resident_forge(tmp_path: Path) -
     )
     # Operator's venv forge must not have been touched.
     assert venv_forge.read_bytes() == venv_forge_pre_bytes
-    # The error message must guide the operator.
+    # The error message must guide the operator and explain why (no
+    # importable theforge in that env).
     assert "inside a Python environment" in combined
+    assert "no importable" in combined or "cannot reason" in combined
     # The managed launcher must NOT have been created.
     managed_launcher = fake_home / ".local" / "bin" / "forge"
     assert not managed_launcher.exists()
+
+
+def _build_cut_rc_fixture(
+    tmp_path: Path,
+    installed_theforge_version: str | None,
+) -> tuple[Path, dict[str, str], Path, Path]:
+    """Shared fixture builder for the venv-resident-forge discrimination tests.
+
+    Constructs a fake repo, a hermetic PATH with shimmed gh/make/git/python3,
+    and a fake operator venv whose ``bin/forge`` is a fake console script. If
+    ``installed_theforge_version`` is not None, the fake venv's ``bin/python``
+    answers ``importlib.metadata.version('theforge')`` with that string.
+
+    Returns (script_copy_path, env_dict, fake_home, fake_venv).
+    """
+    repo = tmp_path / "fake_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "pyproject.toml").write_text('version = "0.99.0"\n')
+    (repo / "Makefile").write_text("gate:\n\t@true\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+
+    real_git = subprocess.run(
+        ["bash", "-c", "command -v git"], capture_output=True, text=True
+    ).stdout.strip()
+
+    bin_dir = tmp_path / "shim_bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "gh").chmod(0o755)
+    (bin_dir / "make").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "make").chmod(0o755)
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            case "$1" in
+                push) exit 0 ;;
+                ls-remote) exit 0 ;;
+                pull) exit 0 ;;
+            esac
+            exec {real_git} "$@"
+            """
+        )
+    )
+    git_shim.chmod(0o755)
+
+    pip_log = tmp_path / "pip_calls.log"
+    py_shim = bin_dir / "python3"
+    py_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+                VENV="$3"
+                mkdir -p "$VENV/bin"
+                : > "$VENV/pyvenv.cfg"
+                cat > "$VENV/bin/pip" <<'PIP'
+            #!/bin/sh
+            echo "$@" >> "{pip_log}"
+            exit 0
+            PIP
+                chmod +x "$VENV/bin/pip"
+                cat > "$VENV/bin/forge" <<'FORGE'
+            #!/bin/sh
+            if [ "$1" = "version" ]; then
+                echo "TheForge v0.99.0rc0"
+            fi
+            FORGE
+                chmod +x "$VENV/bin/forge"
+                : > "$VENV/bin/python"
+                chmod +x "$VENV/bin/python"
+                exit 0
+            fi
+            exit 0
+            """
+        )
+    )
+    py_shim.chmod(0o755)
+
+    # Fake operator venv. Its bin/python answers importlib.metadata if
+    # installed_theforge_version is provided; otherwise the probe fails.
+    fake_venv = tmp_path / "operator_venv"
+    (fake_venv / "bin").mkdir(parents=True)
+    (fake_venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    venv_forge = fake_venv / "bin" / "forge"
+    if installed_theforge_version is not None:
+        # Make `forge version` report the env's installed theforge version so
+        # the post-repoint plain-version check has something realistic to
+        # match against, even when this binary still wins PATH after the
+        # symlink is created. The script's vetting check requires a literal
+        # non-comment `from theforge…` / `import theforge…` line at column 0
+        # (the pip-generated console script has `from theforge.cli import main`).
+        # Place that line after `exit 0` so it lives in the file (and the grep
+        # finds it) without breaking shell parsing.
+        venv_forge.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/bin/sh
+                if [ "$1" = "version" ]; then
+                    echo "TheForge v{installed_theforge_version}"
+                fi
+                exit 0
+                from theforge.cli import main
+                """
+            )
+        )
+    else:
+        venv_forge.write_text("#!/bin/sh\necho 'in-venv forge'\n")
+    venv_forge.chmod(0o755)
+    venv_python = fake_venv / "bin" / "python"
+    if installed_theforge_version is not None:
+        venv_python.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/bin/sh
+                # Minimal stand-in: respond to the cut-rc probe
+                #   python -c 'import importlib.metadata as m; print(m.version("theforge"))'
+                # by emitting the configured version. Any other invocation is a no-op.
+                case "$*" in
+                    *importlib.metadata*theforge*)
+                        echo "{installed_theforge_version}"
+                        exit 0
+                        ;;
+                esac
+                exit 0
+                """
+            )
+        )
+    else:
+        venv_python.write_text("#!/bin/sh\nexit 1\n")
+    venv_python.chmod(0o755)
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".local" / "bin").mkdir(parents=True)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    # fake_venv/bin is AHEAD of $MANAGED_LAUNCHER_DIR. This is the documented
+    # dogfood operator state (pyenv on PATH ahead of ~/.local/bin) — the
+    # post-repoint check must NOT require the symlink to win PATH for the
+    # in-venv-with-theforge case.
+    env["PATH"] = f"{fake_venv}/bin:{fake_home}/.local/bin:{bin_dir}:/usr/bin:/bin"
+    env.pop("VIRTUAL_ENV", None)
+
+    script_copy = tmp_path / "cut-rc.sh"
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    script_text = re.sub(
+        r"^export PATH=\"/opt/homebrew/bin:\$PATH\"\s*$",
+        ": # PATH override stripped for hermetic test",
+        script_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    script_copy.write_text(script_text)
+    script_copy.chmod(0o755)
+
+    return script_copy, env, fake_home, fake_venv
+
+
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_venv_resident_forge_with_same_rc_proceeds(tmp_path: Path) -> None:
+    """When plain ``forge`` lives in a Python env that has ``theforge``
+    pip-installed at the SAME version we're cutting, the repoint is
+    identity — the script must proceed silently and the symlink must land.
+    """
+    script_copy, env, fake_home, _fake_venv = _build_cut_rc_fixture(
+        tmp_path, installed_theforge_version="0.99.0rc0"
+    )
+
+    repo = tmp_path / "fake_repo"
+    proc = subprocess.run(
+        ["bash", str(script_copy), "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, (
+        "cut-rc.sh must proceed when the in-venv forge is the same RC we're cutting. "
+        f"Output:\n{combined}"
+    )
+    managed_launcher = fake_home / ".local" / "bin" / "forge"
+    assert managed_launcher.is_symlink(), f"managed launcher must be created. Output:\n{combined}"
+    # No "uninstall" / "deactivate" / "re-run" remediation must appear.
+    assert "uninstall" not in combined.lower()
+    assert "deactivate" not in combined.lower()
+    # Spec: the same-RC path completes silently — no identity note about
+    # what the env already has, no takeover note, no shadowing note.
+    assert "repoint is identity" not in combined
+    assert "taking over plain" not in combined
+    assert "shadow" not in combined.lower()
+
+
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_venv_resident_forge_with_theforge_installed_but_foreign_launcher_refuses(
+    tmp_path: Path,
+) -> None:
+    """An environment can have ``theforge`` importable while its ``bin/forge``
+    is a hand-written wrapper or a console script for a different package.
+    In that case the cut script must still refuse — having theforge in the
+    env is not sufficient to vet what plain ``forge`` actually does.
+    """
+    script_copy, env, fake_home, fake_venv = _build_cut_rc_fixture(
+        tmp_path, installed_theforge_version="0.10.0rc12"
+    )
+    # Overwrite the venv's forge with a wrapper that does NOT mention
+    # theforge.cli (i.e., it's not the pip-generated console script). The
+    # env still has theforge importable per the python shim, but bin/forge
+    # is foreign.
+    venv_forge = fake_venv / "bin" / "forge"
+    venv_forge.write_text(
+        textwrap.dedent(
+            """\
+            #!/bin/sh
+            # hand-written wrapper for some other tool; no theforge reference
+            echo "not-theforge-launcher"
+            exit 0
+            """
+        )
+    )
+    venv_forge.chmod(0o755)
+    venv_forge_pre_bytes = venv_forge.read_bytes()
+
+    repo = tmp_path / "fake_repo"
+    proc = subprocess.run(
+        ["bash", str(script_copy), "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, (
+        "cut-rc.sh must refuse when bin/forge is not identifiable as the "
+        "theforge console script, even if the env has theforge importable. "
+        f"Output:\n{combined}"
+    )
+    # Operator's bin/forge must not be touched.
+    assert venv_forge.read_bytes() == venv_forge_pre_bytes
+    # Managed launcher must not be created.
+    managed_launcher = fake_home / ".local" / "bin" / "forge"
+    assert not managed_launcher.exists()
+    # The diagnostic must explain the bin/forge mismatch and reference the
+    # installed-but-not-the-launcher condition.
+    assert "from theforge" in combined or "import theforge" in combined
+    assert "0.10.0rc12" in combined
+
+
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_venv_resident_forge_with_comment_only_theforge_mention_refuses(
+    tmp_path: Path,
+) -> None:
+    """Stronger refusal: a hand-written wrapper whose only mention of
+    theforge is in COMMENT text (no real Python import line at column 0)
+    must still be refused, even when the env has theforge importable.
+    This guards against the loose text-grep regression: ``# copied from
+    theforge`` or ``# uses theforge.cli`` inside a shell wrapper must not
+    be accepted as evidence that bin/forge is the pip-generated console
+    script.
+    """
+    script_copy, env, fake_home, fake_venv = _build_cut_rc_fixture(
+        tmp_path, installed_theforge_version="0.10.0rc12"
+    )
+    # Overwrite bin/forge with a wrapper whose only theforge mention is in
+    # comment lines. No non-comment `from theforge` / `import theforge`
+    # line — must NOT match the strict probe.
+    venv_forge = fake_venv / "bin" / "forge"
+    venv_forge.write_text(
+        textwrap.dedent(
+            """\
+            #!/bin/sh
+            # hand-written wrapper, copied from theforge originally,
+            # references theforge.cli only in this comment text — not a
+            # real `from theforge` import line.
+            echo "wrapper output"
+            exit 0
+            """
+        )
+    )
+    venv_forge.chmod(0o755)
+    venv_forge_pre_bytes = venv_forge.read_bytes()
+
+    repo = tmp_path / "fake_repo"
+    proc = subprocess.run(
+        ["bash", str(script_copy), "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, (
+        "cut-rc.sh must refuse when bin/forge mentions theforge only in "
+        f"comments — not a real import line. Output:\n{combined}"
+    )
+    assert venv_forge.read_bytes() == venv_forge_pre_bytes
+    managed_launcher = fake_home / ".local" / "bin" / "forge"
+    assert not managed_launcher.exists()
+    # Diagnostic must mention the installed-but-not-the-launcher condition,
+    # naming the strict non-comment requirement.
+    assert "non-comment" in combined or "column 0" in combined
+
+
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_venv_resident_forge_with_different_theforge_proceeds_with_note(
+    tmp_path: Path,
+) -> None:
+    """When plain ``forge`` lives in a Python env that has ``theforge``
+    pip-installed at a DIFFERENT version (older RC, dev install, etc.),
+    the script must proceed, emit a one-line takeover note pointing the
+    operator at ``python -m theforge`` for the displaced install, and
+    land the symlink.
+    """
+    script_copy, env, fake_home, fake_venv = _build_cut_rc_fixture(
+        tmp_path, installed_theforge_version="0.10.0rc12"
+    )
+
+    repo = tmp_path / "fake_repo"
+    proc = subprocess.run(
+        ["bash", str(script_copy), "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, (
+        "cut-rc.sh must proceed (with a note) when the in-venv forge is a "
+        f"different theforge version. Output:\n{combined}"
+    )
+    managed_launcher = fake_home / ".local" / "bin" / "forge"
+    assert managed_launcher.is_symlink()
+    # Takeover note must mention the displaced version and how to reach it.
+    assert "0.10.0rc12" in combined
+    assert "-m theforge" in combined
+    assert str(fake_venv / "bin" / "python") in combined
+    # Because fake_venv/bin precedes ~/.local/bin on PATH, plain `forge` still
+    # resolves to the env launcher (which reports 0.10.0rc12). The script must
+    # surface that shadowing and tell the operator how to switch, without
+    # erroring out and without recommending "uninstall" / "deactivate".
+    assert "shadow" in combined.lower() or "precedes" in combined.lower()
+    assert "uninstall" not in combined.lower()
+    assert "deactivate" not in combined.lower()
 
 
 @pytest.mark.skipif(
