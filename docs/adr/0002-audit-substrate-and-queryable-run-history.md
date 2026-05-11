@@ -56,7 +56,7 @@ If a piece of data is not in a native-provenance substrate row, it is not author
 
 #### 2. What is derived
 
-Everything else under `.forge/audits/` is derived from the per-run records:
+Everything else under `.forge/audits/` is derived from the authoritative native-provenance records:
 
 - `.forge/audits/index.sqlite` — local query index. Gitignored. Rebuildable on demand via `forge audits rebuild`. Zero merge surface.
 - `.forge/audits/history.jsonl` — legacy compat during Phase A–C migration. Gitignored after Phase C. Will not exist at all in post-v0.11 fresh installs.
