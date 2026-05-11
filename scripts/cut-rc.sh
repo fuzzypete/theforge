@@ -238,10 +238,19 @@ if [[ "$NO_INSTALL" == false ]]; then
     # --- 10. Repoint the operator's managed `forge` launcher at the cut RC ---
     #
     # The cut establishes plain `forge` as the just-cut RC by atomically
-    # swapping a forge-managed symlink. We refuse to overwrite a launcher
-    # that lives inside a Python environment's bin/ (editable install,
-    # pipx shim, etc.), since pip would later regenerate that file and
-    # break the binding silently.
+    # swapping a forge-managed symlink at $MANAGED_LAUNCHER. If plain
+    # `forge` currently resolves into a Python environment's bin/, the
+    # symlink itself doesn't overwrite that file — but we still want to
+    # reason about what we're displacing on PATH, since a pip-managed
+    # console script for an unrelated package would later regenerate
+    # itself and silently shadow the symlink.
+    #
+    # Three-way discrimination on the existing in-venv launcher:
+    #   - Same RC as we're cutting: clobber is identity, proceed silently.
+    #   - Different theforge version: print one-line note (the operator's
+    #     env install is still importable as `python -m theforge`).
+    #   - Unrecognized (no importable theforge, or probe failed): refuse,
+    #     since we cannot reason about what we're displacing.
     echo "==> Repointing plain \`forge\` at $RC_TAG ($MANAGED_LAUNCHER -> $RC_ENV_FORGE)..."
     if [[ "$DRY_RUN" == false ]]; then
         CURRENT_FORGE="$(command -v forge 2>/dev/null || true)"
@@ -250,24 +259,46 @@ if [[ "$NO_INSTALL" == false ]]; then
             if [[ -f "${CURRENT_FORGE_DIR}/activate" \
                   || -f "${CURRENT_FORGE_DIR}/../pyvenv.cfg" \
                   || -f "${CURRENT_FORGE_DIR}/activate.fish" ]]; then
-                echo "" >&2
-                echo "Error: plain \`forge\` currently resolves to" >&2
-                echo "         $CURRENT_FORGE" >&2
-                echo "       which lives inside a Python environment's bin/." >&2
-                echo "       Replacing it would clobber a pip-generated console" >&2
-                echo "       script (e.g. an editable install of source); a later" >&2
-                echo "       \`pip install -e .\` in that environment would regenerate" >&2
-                echo "       the launcher and silently break the cut-RC binding." >&2
-                echo "" >&2
-                echo "       The cut RC is installed and verified at:" >&2
-                echo "         $RC_ENV_FORGE" >&2
-                echo "" >&2
-                echo "       To make plain \`forge\` track cut RCs, ensure" >&2
-                echo "         $MANAGED_LAUNCHER_DIR" >&2
-                echo "       is on PATH ahead of any Python environment's bin/" >&2
-                echo "       (deactivate the venv or reorder PATH), then re-run:" >&2
-                echo "         scripts/cut-rc.sh $VERSION $RC_NUM" >&2
-                exit 1
+                CURRENT_FORGE_PY=""
+                if [[ -x "${CURRENT_FORGE_DIR}/python" ]]; then
+                    CURRENT_FORGE_PY="${CURRENT_FORGE_DIR}/python"
+                elif [[ -x "${CURRENT_FORGE_DIR}/python3" ]]; then
+                    CURRENT_FORGE_PY="${CURRENT_FORGE_DIR}/python3"
+                fi
+                INSTALLED_THEFORGE_VERSION=""
+                if [[ -n "$CURRENT_FORGE_PY" ]]; then
+                    INSTALLED_THEFORGE_VERSION="$("$CURRENT_FORGE_PY" -c 'import importlib.metadata as m; print(m.version("theforge"))' 2>/dev/null || true)"
+                fi
+
+                if [[ -z "$INSTALLED_THEFORGE_VERSION" ]]; then
+                    echo "" >&2
+                    echo "Error: plain \`forge\` currently resolves to" >&2
+                    echo "         $CURRENT_FORGE" >&2
+                    echo "       which lives inside a Python environment's bin/," >&2
+                    echo "       but that environment has no importable \`theforge\`" >&2
+                    echo "       distribution (probe via ${CURRENT_FORGE_PY:-<no python found in that bin/>}" >&2
+                    echo "       returned no version). The script cannot reason about" >&2
+                    echo "       what \`forge\` actually is — it may be a console script" >&2
+                    echo "       for an unrelated package, a hand-written wrapper, or" >&2
+                    echo "       an editable install of a different repo. Refusing to" >&2
+                    echo "       proceed rather than silently displace it on PATH." >&2
+                    echo "" >&2
+                    echo "       The cut RC is installed and verified at:" >&2
+                    echo "         $RC_ENV_FORGE" >&2
+                    echo "" >&2
+                    echo "       If you want plain \`forge\` to track cut RCs, ensure" >&2
+                    echo "         $MANAGED_LAUNCHER_DIR" >&2
+                    echo "       is on PATH ahead of $CURRENT_FORGE_DIR, then re-run:" >&2
+                    echo "         scripts/cut-rc.sh $VERSION $RC_NUM" >&2
+                    exit 1
+                elif [[ "$INSTALLED_THEFORGE_VERSION" == "$RC_VERSION" ]]; then
+                    echo "    note: plain \`forge\` already resolves to theforge==$RC_VERSION"
+                    echo "          in $CURRENT_FORGE_DIR; repoint is identity. Proceeding."
+                else
+                    echo "    note: taking over plain \`forge\`; theforge==$INSTALLED_THEFORGE_VERSION"
+                    echo "          in $CURRENT_FORGE_DIR is still importable as"
+                    echo "          \`$CURRENT_FORGE_PY -m theforge\`."
+                fi
             fi
         fi
 
