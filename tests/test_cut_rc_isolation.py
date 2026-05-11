@@ -554,7 +554,23 @@ def _build_cut_rc_fixture(
     (fake_venv / "bin").mkdir(parents=True)
     (fake_venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
     venv_forge = fake_venv / "bin" / "forge"
-    venv_forge.write_text("#!/bin/sh\necho 'in-venv forge'\n")
+    if installed_theforge_version is not None:
+        # Make `forge version` report the env's installed theforge version so
+        # the post-repoint plain-version check has something realistic to
+        # match against, even when this binary still wins PATH after the
+        # symlink is created.
+        venv_forge.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/bin/sh
+                if [ "$1" = "version" ]; then
+                    echo "TheForge v{installed_theforge_version}"
+                fi
+                """
+            )
+        )
+    else:
+        venv_forge.write_text("#!/bin/sh\necho 'in-venv forge'\n")
     venv_forge.chmod(0o755)
     venv_python = fake_venv / "bin" / "python"
     if installed_theforge_version is not None:
@@ -584,11 +600,11 @@ def _build_cut_rc_fixture(
 
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
-    # fake_venv ahead of ~/.local/bin so the venv's forge is the
-    # CURRENT_FORGE the script discovers; the managed-launcher dir is
-    # still on PATH so the post-repoint resolution can find the symlink
-    # once we put one there.
-    env["PATH"] = f"{fake_home}/.local/bin:{fake_venv}/bin:{bin_dir}:/usr/bin:/bin"
+    # fake_venv/bin is AHEAD of $MANAGED_LAUNCHER_DIR. This is the documented
+    # dogfood operator state (pyenv on PATH ahead of ~/.local/bin) — the
+    # post-repoint check must NOT require the symlink to win PATH for the
+    # in-venv-with-theforge case.
+    env["PATH"] = f"{fake_venv}/bin:{fake_home}/.local/bin:{bin_dir}:/usr/bin:/bin"
     env.pop("VIRTUAL_ENV", None)
 
     script_copy = tmp_path / "cut-rc.sh"
@@ -679,8 +695,13 @@ def test_venv_resident_forge_with_different_theforge_proceeds_with_note(
     assert "0.10.0rc12" in combined
     assert "-m theforge" in combined
     assert str(fake_venv / "bin" / "python") in combined
-    # No "uninstall theforge" remediation must appear anywhere.
+    # Because fake_venv/bin precedes ~/.local/bin on PATH, plain `forge` still
+    # resolves to the env launcher (which reports 0.10.0rc12). The script must
+    # surface that shadowing and tell the operator how to switch, without
+    # erroring out and without recommending "uninstall" / "deactivate".
+    assert "shadow" in combined.lower() or "precedes" in combined.lower()
     assert "uninstall" not in combined.lower()
+    assert "deactivate" not in combined.lower()
 
 
 @pytest.mark.skipif(
