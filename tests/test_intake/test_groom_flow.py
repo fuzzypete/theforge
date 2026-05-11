@@ -345,9 +345,7 @@ def test_apply_rechecks_persisted_body_via_refetch():
             }
         return {"title": "feature", "body": tampered_body, "labels": ["enhancement"]}
 
-    result = run_groom(
-        "42", apply_changes=True, fetch_issue=fetch, edit_issue_body=_no_op_edit
-    )
+    result = run_groom("42", apply_changes=True, fetch_issue=fetch, edit_issue_body=_no_op_edit)
     assert fetch_calls["count"] == 2  # one for load, one for post-apply re-check
     assert result.applied is True
     # Proposed body still reflects what groom sent — not the tampered state.
