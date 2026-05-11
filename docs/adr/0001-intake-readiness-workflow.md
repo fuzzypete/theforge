@@ -58,7 +58,9 @@ gets shaped or repaired.
 
 ### Command taxonomy
 
-Five distinct verbs, each answering a single question:
+Six distinct commands across the lifecycle, each answering a single question.
+The first five are *producers* (they bring work toward readiness); `forge sprint`
+is the *consumer* that runs what the producers prepared.
 
 | Command | Question it answers | Status |
 |---|---|---|
@@ -143,11 +145,26 @@ pretend ambiguous prose is runnable work.
 ### `forge groom` MVP behavior
 
 - **Input:** a typed issue (bug, feature, story, docs).
-- **Output:** issue body restructured to be shape-gate-clean for its type. For bugs,
-  requires diagnosis exists (any state). For features/stories, fills missing AC sections
-  and concrete examples.
-- **Refuses with reason** when prerequisites aren't met (e.g., bug without diagnosis).
+- **Output:** issue body restructured to be shape-gate-clean for its type. For
+  features, stories, and docs, this fills missing AC sections and concrete
+  examples.
+- **For bugs, groom respects the three-state diagnosis vocabulary:**
+  - *No diagnosis present* → refused with reason "needs diagnosis — run
+    `forge diagnose` first." No body edits.
+  - *Diagnosis exists, cause unknown* → groom may normalize the body (clean
+    section ordering, prose tightening, evidence formatting). The issue stays
+    investigation-ready, NOT sprint-ready. The `ready` label MUST NOT be applied;
+    this state continues to need investigation, not implementation.
+  - *Diagnosis with confirmed cause* → groom restructures the body to
+    shape-gate-clean. The issue is sprint-ready; applying `ready` is appropriate.
+- **Refuses with reason** when prerequisites aren't met (e.g., bug missing
+  diagnosis entirely).
 - Does NOT invoke `forge diagnose` or `forge shape` automatically.
+
+Invariant: only diagnosis-with-confirmed-cause bugs can transition to sprint-ready.
+Groom must not provide a path that lets cause-unknown bugs reach the `ready`
+state — preserving the refusal-capability the three-state taxonomy exists to
+enable.
 
 ## Mid-sprint workflow (v0.11.x)
 
@@ -181,9 +198,15 @@ When inline remediation fires, the log must explicitly state:
 [forge] Intended workflow: run `forge groom N` before sprint selection.
 ```
 
-This turns inline remediation into training wheels rather than magic. The default
-value of `intake.grooming` flips to `false` once `forge groom` ships (solo-operator
-memo: no migration ramp).
+This turns inline remediation into training wheels rather than magic.
+
+The schema default for `intake.grooming` in `IntakeConfig` is already `false`
+(see `src/theforge/config/types.py`). TheForge's own `forge.yaml` sets
+`intake.grooming: true` as a dogfood override. The action when `forge groom`
+ships is to **remove the dogfood override** so this repo runs on the schema
+default like any consumer would. `forge init` and any generated templates
+continue to emit `false`; no schema or migration change is needed. Solo-operator
+memo: no migration ramp.
 
 ## Out of scope for v0.11.x
 
@@ -229,8 +252,9 @@ Explicitly deferred to later milestones, not lost:
 
 ### Negative
 
-- v0.11.x grows by three new top-level commands (`shape`, `groom` net-new; existing
-  `diagnose` continues). CLI surface expansion is real cost.
+- v0.11.x grows by two new top-level commands (`forge shape`, `forge groom`).
+  Existing `forge diagnose` continues unchanged; `forge triage` remains a v0.12+
+  epic. CLI surface expansion is real cost.
 - Operators must learn the per-type pipeline. Initial discovery cost is a
   documentation problem (`docs/guides/authoring.md` updates).
 - The slice is wide enough that scope creep is the dominant risk. Treat the v0.11.x
