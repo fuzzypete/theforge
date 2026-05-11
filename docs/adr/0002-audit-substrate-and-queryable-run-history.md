@@ -47,12 +47,12 @@ The distinction between file-backed and file-less native rows is implementation,
 - `parent_run_id` (where present) links resume-style runs back to their predecessor for lineage.
 - File-backed native records additionally carry the per-file invariants from `forge-storage-layout.md`: written exactly once at run termination, after a mandatory redaction pass, immutable on disk.
 - File-less native records (sprint rollups, etc.) are inserted programmatically by coordinator-owned writers; they obey the same upsert-and-stand contract via the substrate's `upsert_run_record` path with the native-row protection rule.
-- Records with `provenance='legacy_history_jsonl'` are migration-compat only; they are not authoritative and any conflict with a native row leaves the native row in place (see `upsert_run_record` line 459–464).
+- Records with `provenance='legacy_history_jsonl'` are migration-compat only; they are not authoritative and any conflict with a native row leaves the native row in place. (See the native-row protection branch in `upsert_run_record`, which refuses a legacy-provenance import from overwriting an existing native row.)
 - Mid-run state lives in `.forge/runs/` (machine-local, untracked). That is execution state, not audit. The two directories are distinct by design.
 
 If a piece of data is not in a native-provenance substrate row, it is not authoritative. Sprint summaries, status displays, intake remediation logs, and audit YAML pointers are reflections of native rows, not parallel sources of truth.
 
-> **Future convergence.** Sprint-rollup records will gain canonical per-run-style JSON sources in a later slice so the file-backed and file-less native shapes unify. Until then, the substrate row itself stands as the authoritative artifact, and both shapes share the native provenance protection.
+The file-backed and file-less native shapes are both authoritative today. Whether they eventually unify under a single per-run JSON convention is an open implementation question, not an architectural commitment of this ADR.
 
 #### 2. What is derived
 
@@ -94,7 +94,7 @@ The router MUST NOT route on:
 
 - LLM-generated summaries (`.forge/knowledge/summaries/`). These are Layer 2 context inputs for future agent prompts, not mechanical decision inputs. (See clause 5.)
 - Ad-hoc state files outside the substrate (e.g., the legacy `assignment_history.yaml` after Phase C).
-- Records from `forge_version` newer than the reader. Skip with a warning; do not guess at unknown fields.
+- Records from `forge_version` newer than the reader. Skip with a warning; do not guess at unknown fields. *(Today `forge_version` is recorded per record but hardcoded to a placeholder value; meaningful per-release population is part of the per-record schema versioning work in #1522. The clause states the forward-looking contract that the reader-side dispatch in #1522 will rely on.)*
 
 The router's trust surface is exactly the substrate. Anything else is advisory.
 
@@ -153,16 +153,15 @@ No flag days. Schema migrations are reader-side, lazy, and per-record. This ADR 
 
 ### Refusal-economics metric
 
-The substrate must support computing — via a single query against the SQLite index — the **remediation-to-runnable cost ratio** per milestone:
+The substrate must support queries that distinguish three quantities, per milestone:
 
-```
-ratio = (total_cost_of_inline_remediation_events + cost_of_runs_that_were_refused)
-        / total_cost_of_runnable_runs
-```
+- **Cost spent on inline remediation events** — what we paid because upstream grooming was skipped at intake (`intake.grooming: true` fired at sprint entry per ADR-0001's posture).
+- **Cost spent on runs that proceeded after upstream grooming** — the "clean intake" path's cost footprint.
+- **Counts of refusals at each gate** — how often each gate declined to proceed, with verdict identifier and base SHA.
 
-This metric makes refusal-capability legible as a number. Today, refusal feels like friction to operators because the cost avoided is invisible. Once the metric is queryable, postmortem and release-readiness reviews can cite the upstream-refusal savings directly.
+From these three dimensions, postmortem and release-readiness reviews can derive whatever ratio or trend makes refusal-capability legible — e.g., remediation cost as a fraction of clean-intake cost, or refusal rate over time. The exact formula belongs in the dogfood / postmortem slice that consumes these dimensions, not in this ADR. **The ADR's obligation is to make those three dimensions queryable**, not to fix the metric shape.
 
-The metric itself is not implemented by this ADR; the *substrate's obligation* to make it computable is. Specifically: the substrate must record cost, milestone, and outcome on every refused-at-gate event, every inline-remediation event, and every completed run. The metric is then a single aggregation query.
+This matters because refusal feels like friction to operators today — the cost avoided is invisible. The dimensions above make the cost avoided countable, even if the headline metric's formula evolves with use.
 
 ## Out of scope
 
@@ -195,7 +194,7 @@ Explicitly deferred to later ADRs or implementation issues:
 
 - **Substrate write becomes load-bearing despite clause 6.** A future contributor accidentally treats substrate-write success as a gate prerequisite. Mitigated by uniform "log and proceed" pattern in the shared writer and a single seam-level test that covers it.
 - **LLM summaries are used as decision inputs anyway.** Clause 5 forbids it, but routing or scoring code could grow a covert dependency on summary content via prompt manipulation. Mitigated by keeping summaries off the router's read path entirely — the router consumes the SQLite index, not `.forge/knowledge/`.
-- **Schema drift goes unnoticed.** A field is renamed without a version bump and old readers silently break. Mitigated by a single linter (added as a follow-up issue) that requires `schema_version` change when the per-run record dataclass changes.
+- **Schema drift goes unnoticed.** A field is renamed without a version bump and old readers silently break. Mitigated by the CI guard tracked in #1528, which fails when the per-run record's serializable shape changes without a corresponding `schema_version` bump and migration helper entry.
 - **The refusal-economics metric becomes vibes.** The query exists but no postmortem cites it, so refusal stays "feels like friction." Mitigated by surfacing it in `forge audits show` (already in flight via #1470) and in release-readiness reviews going forward.
 
 ## References
@@ -207,5 +206,5 @@ Explicitly deferred to later ADRs or implementation issues:
 - #1509 / #1517 — shape-gate verdict emission
 - #1511, #1513, #1516 — intake-readiness substrate emission obligations
 - `project_north_star.md` (memory) — refusal-capability as TheForge's core property; this ADR makes the substrate side of that property concrete
-- `project_full_audit_trail.md` (memory) — durable full-output capture intent. **Partially superseded** by this ADR for the trust-boundary aspects (clauses 1, 2, 6 above). Full prompt/response and reasoning capture detail remains in `docs/plans/knowledge-capture.md` (Layer 1 capture) and is not collapsed into this ADR. Future cleanup should narrow the memory entry to the knowledge-capture aspects rather than retire it wholesale.
+- `project_full_audit_trail.md` (memory) — durable full-output capture intent and `forge.yaml audit.level` configurability. **Related thread; not superseded by this ADR.** The memory entry's two concerns (storing full prompt/response content in audit, and operator-configurable audit verbosity) sit outside this ADR's trust-boundary scope. Full-output capture continues to be governed by `docs/plans/knowledge-capture.md` (Layer 1 surfaces a subset; raw prompts and full responses remain in `.forge/logs/`); audit-level configurability is open future work and would warrant its own ADR if/when it ships.
 - #1522 — substrate-schema obligations (per-record schema versioning, indexed dimensions for routing and refusal-economics)
