@@ -295,11 +295,25 @@ class _ReviewOutcome(Enum):
 # ── Review-phase helpers ──────────────────────────────────────────────
 
 
+REVIEW_INFRASTRUCTURE_PARSE_FAILURE_REASON = (
+    "Review infrastructure failure: all reviewers failed to produce parseable output. "
+    "This is a review-layer defect, not an implementation defect — DEV cannot resolve it. "
+    "Manual review required."
+)
+
+
 def _apply_review_parse_fallback(
     candidate: ReviewResult,
     individual_results: list[ReviewResult],
-) -> ReviewResult:
-    """Fall back from a merged candidate with parse errors to best individual or synthetic P1."""
+) -> ReviewResult | None:
+    """Fall back from a merged candidate with parse errors to best individual result.
+
+    Returns the candidate unchanged when it has no parse errors. When the merged
+    candidate has parse errors, returns the best parseable individual result if any
+    reviewer produced one. Returns None when no reviewer produced parseable output —
+    callers must treat this as a review-infrastructure failure and escalate directly
+    rather than routing the run back through DEV with a synthetic finding.
+    """
     if not candidate.parse_errors:
         return candidate
     _log(
@@ -310,31 +324,8 @@ def _apply_review_parse_fallback(
     if _fallback is not None:
         _log(f"  ↩ using best individual result: {_fallback.verdict}")
         return _fallback
-    _log(
-        "  ⚠ all reviewers failed to produce usable output — "
-        "injecting synthetic P1, returning REQUEST_CHANGES"
-    )
-    return ReviewResult(
-        verdict="REQUEST_CHANGES",
-        summary="Review pool failed to produce a usable verdict",
-        findings=[
-            ReviewFinding(
-                severity="P1",
-                file="",
-                line=None,
-                description=(
-                    "All reviewers failed to produce parseable output. Manual review required."
-                ),
-                suggestion="Check reviewer logs for details.",
-            )
-        ],
-        story_matches=False,
-        story_mismatches=[],
-        test_adequate=False,
-        test_gaps=[],
-        parse_errors=[],
-        raw_yaml={},
-    )
+    _log("  ✗ all reviewers failed to produce parseable output — escalating directly")
+    return None
 
 
 def _log_review_findings(
@@ -902,6 +893,24 @@ def _run_review_phase(
 
     # ── Graceful empty-merge fallback ─────────────────────────────────
     parsed_review = _apply_review_parse_fallback(_candidate, _individual_results)
+    if parsed_review is None:
+        # All reviewers failed schema parsing. This is a review-infrastructure
+        # failure, not an actionable code finding — escalate directly rather than
+        # injecting a synthetic P1 and looping back through DEV (which cannot fix
+        # reviewer output) only to later surface as a misleading no-changes
+        # escalation.
+        state.phase = Phase.ESCALATE
+        state.error = REVIEW_INFRASTRUCTURE_PARSE_FAILURE_REASON
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
+            config,
+        )
 
     # Valid verdict — increment review cycle counter
     state.review_cycle += 1
