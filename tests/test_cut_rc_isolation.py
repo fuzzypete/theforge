@@ -98,14 +98,14 @@ def test_script_refuses_to_overwrite_venv_resident_launcher() -> None:
 
 
 def test_script_verifies_plain_forge_reports_rc() -> None:
-    """After repointing, the script must invoke plain ``forge --version``
+    """After repointing, the script must invoke plain ``forge version``
     (PATH-resolved, no path qualification) and fail loud if the resolved
     binary doesn't report the RC version.
     """
     body = SCRIPT.read_text(encoding="utf-8")
-    # The post-repoint verify uses bare `forge --version` (PATH-resolved).
-    assert re.search(r"PLAIN_VERSION=\$\(forge --version", body), (
-        "cut-rc.sh must verify plain `forge --version` after repointing the launcher"
+    # The post-repoint verify uses bare `forge version` (PATH-resolved).
+    assert re.search(r"PLAIN_OUTPUT=\$\(forge version", body), (
+        "cut-rc.sh must verify plain `forge version` after repointing the launcher"
     )
     # And RC_ENV_FORGE is still used for the in-venv install verification.
     assert "$RC_ENV_FORGE" in body
@@ -145,7 +145,7 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
       (no pip install ever ran outside the isolated venv);
     - the managed launcher (``$HOME/.local/bin/forge`` in this fixture)
       exists, is a symlink, and points at the isolated venv's binary;
-    - plain ``forge --version`` (PATH-resolved) reports the cut RC version
+    - plain ``forge version`` (PATH-resolved) reports the cut RC version
       via the symlink chain.
     """
     import theforge as _theforge_under_test
@@ -216,7 +216,7 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
                 chmod +x "$VENV/bin/pip"
                 cat > "$VENV/bin/forge" <<'FORGE'
             #!/bin/sh
-            if [ "$1" = "--version" ]; then
+            if [ "$1" = "version" ]; then
                 echo "TheForge v0.99.0rc0"
             fi
             FORGE
@@ -291,11 +291,11 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
         f"managed launcher points at {os.readlink(managed_launcher)}, expected {rc_forge}"
     )
 
-    # Plain `forge --version` (PATH-resolved through the managed launcher)
+    # Plain `forge version` (PATH-resolved through the managed launcher)
     # must report the cut RC. Substrate provenance: the binary actually
     # executing is the RC venv's forge, not whatever was on PATH before.
     plain_check = subprocess.run(
-        ["bash", "-c", "command -v forge && forge --version"],
+        ["bash", "-c", "command -v forge && forge version"],
         env=env,
         capture_output=True,
         text=True,
@@ -304,7 +304,7 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
     assert plain_check.returncode == 0, plain_check.stderr
     assert str(managed_launcher) in plain_check.stdout
     assert "0.99.0rc0" in plain_check.stdout, (
-        f"plain forge --version did not report cut RC: {plain_check.stdout}"
+        f"plain forge version did not report cut RC: {plain_check.stdout}"
     )
 
     # Operator env theforge package must be bit-for-bit unchanged.
@@ -403,7 +403,7 @@ def test_full_execution_refuses_to_clobber_venv_resident_forge(tmp_path: Path) -
                 chmod +x "$VENV/bin/pip"
                 cat > "$VENV/bin/forge" <<'FORGE'
             #!/bin/sh
-            if [ "$1" = "--version" ]; then
+            if [ "$1" = "version" ]; then
                 echo "TheForge v0.99.0rc0"
             fi
             FORGE
