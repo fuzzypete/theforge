@@ -6,9 +6,9 @@ import pytest
 
 from theforge.intake import clarification
 from theforge.intake.clarification import (
-    ClarificationQuestion,
     QUESTIONS,
     SITUATIONS,
+    ClarificationQuestion,
     build,
     for_situation,
 )
