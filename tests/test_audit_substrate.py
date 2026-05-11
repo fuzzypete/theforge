@@ -913,3 +913,112 @@ class TestRebuildBackfillsNewColumns:
         finally:
             conn.close()
         assert row == ("v0.11", 1522, "anthropic/opus/cli", 2)
+
+
+class TestRedactionContract:
+    """ADR-0002 §1 redaction-contract guarantees for substrate writers."""
+
+    def _make_secret_record(self, run_id: str = "r-redact") -> dict:
+        rec = _make_record(run_id=run_id)
+        rec["api_key"] = "sk-supersecrettoken-from-env"
+        rec["environment"] = {"FOO": "1", "BAR": "2"}
+        rec["task"]["notes"] = "leaked: sk-supersecrettoken-from-env"
+        return rec
+
+    def test_upsert_redacts_secret_keyed_value(self, tmp_path: Path) -> None:
+        """Secret-keyed values are scrubbed even when no env_file is provided."""
+        rec = self._make_secret_record()
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute(
+                "SELECT raw_json FROM audit_records WHERE run_id='r-redact'"
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = json.loads(row[0])
+        assert stored["api_key"] == "[REDACTED]"
+        assert stored["environment"] == ["BAR", "FOO"]
+
+    def test_upsert_scrubs_env_file_secret_value(self, tmp_path: Path) -> None:
+        """Values present in env_file are scrubbed wherever they appear."""
+        env = sub.secrets_env_path(tmp_path)
+        env.parent.mkdir(parents=True, exist_ok=True)
+        env.write_text('SECRET="sk-supersecrettoken-from-env"\n', encoding="utf-8")
+        rec = self._make_secret_record()
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native", env_file=env)
+            conn.commit()
+            row = conn.execute(
+                "SELECT raw_json FROM audit_records WHERE run_id='r-redact'"
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = json.loads(row[0])
+        # The secret value must be gone from every string field.
+        assert "sk-supersecrettoken-from-env" not in row[0]
+        assert "[REDACTED]" in stored["task"]["notes"]
+
+    def test_sprint_rollup_path_redacts_into_substrate(self, tmp_path: Path) -> None:
+        """The programmatic sprint-rollup writer must scrub secrets too.
+
+        Regression test for the ADR-0002 §1 redaction-contract gap where
+        sprint/audit._upsert_into_substrate() called the substrate without
+        first redacting.
+        """
+        from theforge.sprint import audit as sprint_audit
+
+        env = sub.secrets_env_path(tmp_path)
+        env.parent.mkdir(parents=True, exist_ok=True)
+        env.write_text('SECRET="sk-sprint-rollup-secret-xyz"\n', encoding="utf-8")
+        record = _make_record(run_id="r-sprint-rollup")
+        record["api_key"] = "leaked-via-key"
+        record["task"]["notes"] = "embedded sk-sprint-rollup-secret-xyz here"
+
+        sprint_audit._upsert_into_substrate(tmp_path, record)
+
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            row = conn.execute(
+                "SELECT raw_json FROM audit_records WHERE run_id='r-sprint-rollup'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert "sk-sprint-rollup-secret-xyz" not in row[0]
+        assert "leaked-via-key" not in row[0]
+        stored = json.loads(row[0])
+        assert stored["api_key"] == "[REDACTED]"
+
+    def test_rebuild_from_runs_does_not_unredact(self, tmp_path: Path) -> None:
+        """Rebuilding from per-run JSON yields a substrate with no unredacted secrets.
+
+        Per-run JSON files are written already-redacted by cli/shared.py; this
+        test asserts the rebuild path inherits that redaction rather than
+        re-introducing raw values (defense-in-depth via the writer-side scrub).
+        """
+        env = sub.secrets_env_path(tmp_path)
+        env.parent.mkdir(parents=True, exist_ok=True)
+        env.write_text('SECRET="rebuild-secret-abc12345"\n', encoding="utf-8")
+
+        # Simulate a per-run JSON file that somehow contains a raw secret.
+        # The writer-side redaction inside upsert_run_record should still
+        # scrub it during rebuild.
+        rec = _make_record(run_id="r-rebuild")
+        rec["api_key"] = "rebuild-secret-abc12345"
+        rec["task"]["notes"] = "contains rebuild-secret-abc12345"
+        _write_runs(tmp_path, [rec])
+
+        sub.rebuild_from_runs(tmp_path)
+
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            row = conn.execute(
+                "SELECT raw_json FROM audit_records WHERE run_id='r-rebuild'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert "rebuild-secret-abc12345" not in row[0]

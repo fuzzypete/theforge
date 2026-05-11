@@ -37,15 +37,25 @@ def _log(msg: str) -> None:
 def _upsert_into_substrate(project_root: Path, record: dict) -> None:
     """Best-effort mirror of a sprint/story audit dict into the SQLite substrate.
 
+    Redaction is enforced inside ``upsert_run_record`` (ADR-0002 §1); we
+    pass the project's ``.forge/.env`` path so env-defined secrets are
+    also scrubbed before the record is indexed.
+
     Failure is logged but not fatal — the per-run JSON / sprint-audit.yaml
     is canonical and `forge audits rebuild` can recover.
     """
     try:
         from ..coordinator import audit_substrate
 
+        env_file = audit_substrate.secrets_env_path(project_root)
         conn = audit_substrate.create_or_open(project_root)
         try:
-            audit_substrate.upsert_run_record(conn, record, provenance="native")
+            audit_substrate.upsert_run_record(
+                conn,
+                record,
+                provenance="native",
+                env_file=env_file if env_file.exists() else None,
+            )
             conn.commit()
         finally:
             conn.close()

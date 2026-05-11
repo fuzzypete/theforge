@@ -174,6 +174,7 @@ def _write_per_run_record(
                 provenance="native",
                 source_path=str(run_file.relative_to(config.project_root)),
                 source_mtime=stat.st_mtime,
+                env_file=env_file if env_file.exists() else None,
             )
             conn.commit()
         finally:

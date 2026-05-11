@@ -39,6 +39,7 @@ SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
 AUDITS_RELPATH = (".forge", "audits")
+SECRETS_RELPATH = (".forge", ".env")
 
 
 class SubstrateError(Exception):
@@ -70,6 +71,16 @@ def runs_dir(project_root: Path) -> Path:
 
 def audits_dir(project_root: Path) -> Path:
     return project_root.joinpath(*AUDITS_RELPATH)
+
+
+def secrets_env_path(project_root: Path) -> Path:
+    """Path to the project's ``.forge/.env`` secrets file.
+
+    Substrate writers pass this (or ``None`` when not applicable) into
+    :func:`upsert_run_record` so the secret values it contains are
+    redacted from every record before it lands in the SQLite index.
+    """
+    return project_root.joinpath(*SECRETS_RELPATH)
 
 
 # ── Schema ───────────────────────────────────────────────────────────────
@@ -652,13 +663,27 @@ def upsert_run_record(
     provenance: str,
     source_path: str | None = None,
     source_mtime: float | None = None,
+    env_file: Path | None = None,
 ) -> UpsertResult:
     """Insert-or-replace a single audit record.
+
+    Redaction contract (ADR-0002 §1): every record written to the
+    substrate is passed through :func:`coordinator.redact.redact`
+    inside this function before any persistence happens. This is the
+    *only* sanctioned write path into the audit substrate, so the
+    redaction guarantee holds for every caller — direct dict bypass is
+    not possible. Callers SHOULD pass ``env_file`` (typically
+    :func:`secrets_env_path`) so values from ``.forge/.env`` are also
+    scrubbed; secret-key-pattern and ``environment``-dict scrubbing
+    happen unconditionally even when ``env_file`` is ``None``.
 
     Returns :class:`UpsertResult` indicating whether this was a fresh
     insert, an update of an existing row with different content, or an
     unchanged row. Reviews flat-table is rewritten on each upsert.
     """
+    from .redact import redact
+
+    record = redact(record, env_file)
     run_id = derive_run_id(record)
     raw_json = _canonical_json(record)
     existing = conn.execute(
@@ -812,6 +837,8 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     conn = create_or_open(project_root)
     summary = RebuildSummary()
     runs = runs_dir(project_root)
+    env_file = secrets_env_path(project_root)
+    env_file_arg: Path | None = env_file if env_file.exists() else None
     if runs.exists():
         for run_file in sorted(runs.glob("*.json")):
             summary.runs_seen += 1
@@ -834,6 +861,7 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
                     provenance="native",
                     source_path=str(run_file.relative_to(project_root)),
                     source_mtime=stat.st_mtime,
+                    env_file=env_file_arg,
                 )
                 summary.imported += 1
             except sqlite3.DatabaseError as exc:
@@ -858,6 +886,7 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
                 provenance=provenance,
                 source_path=source_path,
                 source_mtime=source_mtime,
+                env_file=env_file_arg,
             )
         except sqlite3.DatabaseError:
             continue
@@ -887,7 +916,11 @@ class ImportSummary:
     failures: list[str] = field(default_factory=list)
 
 
-def _import_history_jsonl_into(conn: sqlite3.Connection, history_path: Path) -> ImportSummary:
+def _import_history_jsonl_into(
+    conn: sqlite3.Connection,
+    history_path: Path,
+    env_file: Path | None = None,
+) -> ImportSummary:
     """Stream ``history.jsonl`` into the open substrate connection."""
     summary = ImportSummary()
     if not history_path.exists():
@@ -914,6 +947,7 @@ def _import_history_jsonl_into(conn: sqlite3.Connection, history_path: Path) -> 
                         record,
                         provenance="legacy_history_jsonl",
                         source_path=str(history_path.name),
+                        env_file=env_file,
                     )
                 except sqlite3.DatabaseError as exc:
                     summary.failed += 1
@@ -930,8 +964,12 @@ def _import_history_jsonl_into(conn: sqlite3.Connection, history_path: Path) -> 
 def import_history_jsonl(project_root: Path) -> ImportSummary:
     """Public entry: open (or create) substrate and import legacy history."""
     conn = create_or_open(project_root)
+    env_file = secrets_env_path(project_root)
+    env_file_arg: Path | None = env_file if env_file.exists() else None
     try:
-        summary = _import_history_jsonl_into(conn, history_jsonl_path(project_root))
+        summary = _import_history_jsonl_into(
+            conn, history_jsonl_path(project_root), env_file=env_file_arg
+        )
         _meta_set(conn, "legacy_import_done", "1")
         conn.commit()
         return summary
