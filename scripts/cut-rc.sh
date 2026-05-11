@@ -15,7 +15,7 @@
 # After the isolated venv install succeeds, the script repoints the
 # operator's managed `forge` launcher (default: ~/.local/bin/forge,
 # overridable via FORGE_MANAGED_LAUNCHER) at the new RC venv's binary, so
-# plain `forge --version` reports the just-cut RC with no shell-config
+# plain `forge version` reports the just-cut RC with no shell-config
 # change. The launcher is a symlink — no Python environment is mutated, so
 # editable installs and source-tree edits cannot silently change what
 # plain `forge` runs. If plain `forge` currently resolves to a launcher
@@ -197,9 +197,10 @@ if [[ "$NO_INSTALL" == false ]]; then
     run "$RC_ENV_PIP" install --upgrade pip
     run "$RC_ENV_PIP" install "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
     if [[ "$DRY_RUN" == false ]]; then
-        INSTALLED_VERSION=$("$RC_ENV_FORGE" --version 2>/dev/null || echo "")
+        INSTALLED_OUTPUT=$("$RC_ENV_FORGE" version 2>&1 || echo "")
+        INSTALLED_VERSION=$(echo "$INSTALLED_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1)
         echo "    isolated forge   : $RC_ENV_FORGE"
-        echo "    forge --version  : $INSTALLED_VERSION"
+        echo "    forge version    : $INSTALLED_VERSION"
         echo "    isolated pip     : $RC_ENV_PIP"
         echo "    isolated python  : $RC_ENV_PYTHON"
         if [[ "$INSTALLED_VERSION" != *"$RC_VERSION"* ]]; then
@@ -263,10 +264,11 @@ if [[ "$NO_INSTALL" == false ]]; then
             exit 1
         fi
 
-        PLAIN_VERSION=$(forge --version 2>/dev/null || echo "")
+        PLAIN_OUTPUT=$(forge version 2>&1 || echo "")
+        PLAIN_VERSION=$(echo "$PLAIN_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1)
         if [[ "$PLAIN_VERSION" != *"$RC_VERSION"* ]]; then
             echo "" >&2
-            echo "Error: plain \`forge --version\` reports '$PLAIN_VERSION'," >&2
+            echo "Error: plain \`forge version\` reports '$PLAIN_VERSION'," >&2
             echo "       expected to contain $RC_VERSION." >&2
             echo "       The managed launcher symlink may be broken; investigate" >&2
             echo "         $MANAGED_LAUNCHER" >&2
@@ -275,7 +277,7 @@ if [[ "$NO_INSTALL" == false ]]; then
         fi
 
         echo "    managed launcher : $MANAGED_LAUNCHER -> $RC_ENV_FORGE"
-        echo "    forge --version  : $PLAIN_VERSION"
+        echo "    forge version    : $PLAIN_VERSION"
         echo "    ✓ plain \`forge\` now tracks $RC_TAG; substrate is isolated."
     fi
 else
@@ -283,7 +285,7 @@ else
     echo "    To verify manually in an isolated venv:"
     echo "      python3 -m venv \"$RC_ENV_DIR\""
     echo "      \"$RC_ENV_PIP\" install git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
-    echo "      \"$RC_ENV_FORGE\" --version"
+    echo "      \"$RC_ENV_FORGE\" version"
     echo "      ln -snf \"$RC_ENV_FORGE\" \"$MANAGED_LAUNCHER\""
 fi
 
