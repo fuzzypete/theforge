@@ -15,14 +15,20 @@ drops.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ..shape_check import Shape, ShapeResult, ShapeVerdict, check
 from ..shape_check.types import VERDICT_DESCRIPTIONS, Severity
 from .reopen_context import analyze_reopen_contract, format_reopen_stale_detail
+
+_log = logging.getLogger(__name__)
+
+VerdictEmitter = Callable[[dict], None]
 
 NEEDS_GROOMING_LABEL = "needs-grooming"
 REOPENED_STALE_CONTRACT_CODE = "reopened_stale_contract"
@@ -274,6 +280,10 @@ def _resolve_classifier(classifier_mode: str, llm_caller=None) -> str:
     return classifier_mode
 
 
+def _noop_emit_verdict(_event: dict) -> None:
+    return None
+
+
 def apply_shape_gate(
     issues: list[dict],
     project_root: Path | None,
@@ -282,6 +292,7 @@ def apply_shape_gate(
     force: bool = False,
     fetch_detail=_fetch_issue_detail,
     llm_caller=None,
+    emit_verdict: VerdictEmitter = _noop_emit_verdict,
 ) -> ShapeGateResult:
     """Partition issues into runnable vs skipped before preflight runs.
 
@@ -302,6 +313,20 @@ def apply_shape_gate(
     effective_mode = _resolve_classifier(classifier_mode, llm_caller=llm_caller)
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
+
+    def _safe_emit(payload: dict) -> None:
+        # Substrate emission is observability, not gating: a write failure
+        # must not block the sprint. Log at WARNING so operators notice but
+        # the gate continues to partition issues exactly as before.
+        try:
+            emit_verdict(payload)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "shape-gate verdict substrate write failed for issue=%s verdict=%s: %s",
+                payload.get("issue_id"),
+                payload.get("verdict"),
+                exc,
+            )
 
     for issue in issues:
         number = int(issue["number"])
@@ -345,6 +370,14 @@ def apply_shape_gate(
                     verdict_description=VERDICT_DESCRIPTIONS[verdict],
                 )
             )
+            _safe_emit(
+                {
+                    "issue_id": str(number),
+                    "verdict": verdict.value,
+                    "source": "label",
+                    "reason_codes": list(codes),
+                }
+            )
             continue
 
         if reopen_state.has_stale_body:
@@ -359,6 +392,14 @@ def apply_shape_gate(
                     verdict=verdict.value,
                     verdict_description=VERDICT_DESCRIPTIONS[verdict],
                 )
+            )
+            _safe_emit(
+                {
+                    "issue_id": str(number),
+                    "verdict": verdict.value,
+                    "source": "local_check",
+                    "reason_codes": [REOPENED_STALE_CONTRACT_CODE],
+                }
             )
             continue
 
@@ -382,6 +423,14 @@ def apply_shape_gate(
                     verdict=ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
                     verdict_description=VERDICT_DESCRIPTIONS[ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN],
                 )
+            )
+            _safe_emit(
+                {
+                    "issue_id": str(number),
+                    "verdict": ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
+                    "source": "local_check",
+                    "reason_codes": list(codes),
+                }
             )
             continue
 
@@ -407,6 +456,14 @@ def apply_shape_gate(
                     verdict_description=VERDICT_DESCRIPTIONS[verdict],
                 )
             )
+            _safe_emit(
+                {
+                    "issue_id": str(number),
+                    "verdict": verdict.value,
+                    "source": "local_check",
+                    "reason_codes": list(codes),
+                }
+            )
             continue
 
         # Runnable: attach the verdict to the dict so downstream audit/summary
@@ -414,6 +471,14 @@ def apply_shape_gate(
         issue_with_verdict = dict(issue)
         issue_with_verdict["shape_verdict"] = ShapeVerdict.RUNNABLE.value
         runnable.append(issue_with_verdict)
+        _safe_emit(
+            {
+                "issue_id": str(number),
+                "verdict": ShapeVerdict.RUNNABLE.value,
+                "source": "local_check",
+                "reason_codes": [],
+            }
+        )
 
     if force:
         # Escape hatch: caller wants to run every input issue. Skip list is

@@ -225,6 +225,36 @@ def _acquire_launch_locks(
     )
 
 
+def _resolve_base_branch_sha(config: object) -> str | None:
+    """Best-effort lookup of the configured base branch's HEAD SHA.
+
+    Returned as a column on shape-gate verdict events so downstream queries
+    can scope refusal-economics samples to a specific tree state. Returns
+    ``None`` when git is unavailable or the branch is not resolvable —
+    substrate emission must not fail because of a git lookup miss.
+    """
+    import subprocess as _sp
+
+    base = getattr(getattr(config, "workspace", None), "base_branch", None)
+    if not base:
+        return None
+    project_root = getattr(config, "project_root", None)
+    try:
+        proc = _sp.run(
+            ["git", "rev-parse", str(base)],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root) if project_root else None,
+            timeout=10,
+        )
+    except (OSError, _sp.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
 def _is_reexec() -> bool:
     """Return True when the current process was started by a forge re-exec.
 
@@ -448,6 +478,7 @@ def _run_query_mode(
     _generate_run_id: object,
 ) -> int:
     """Handle --milestone / --label / --issues query mode."""
+    from theforge.coordinator.audit_substrate import record_shape_verdict_event
     from theforge.sprint.dag import resolve_satisfied_dependencies
     from theforge.sprint.query import (
         assign_dependency_batches_with_satisfied,
@@ -512,13 +543,29 @@ def _run_query_mode(
     # Dry-run is a pure dependency preview — bypass the gate there so
     # operators can inspect the DAG without making ``gh`` calls per issue.
     skipped_issues: list = []
+    # Pre-compute the run_id so the shape gate's substrate verdict events
+    # can be correlated with the sprint that produced them. The same id is
+    # reused below where the daemon previously generated it.
+    gate_run_id = _generate_run_id() if not dry_run else None
+    gate_sprint_name = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
     if not dry_run:
         classifier_mode = getattr(getattr(config, "shape_check", None), "classifier", "heuristic")
+        base_branch_sha = _resolve_base_branch_sha(config)
+
+        def _emit_shape_verdict(payload: dict) -> None:
+            event = dict(payload)
+            event.setdefault("run_id", gate_run_id)
+            event.setdefault("sprint_name", gate_sprint_name)
+            event.setdefault("milestone", milestone)
+            event.setdefault("base_branch_sha", base_branch_sha)
+            record_shape_verdict_event(config.project_root, event)
+
         gate_result = apply_shape_gate(
             issues,
             config.project_root,
             classifier_mode=classifier_mode,
             force=force,
+            emit_verdict=_emit_shape_verdict,
         )
         if gate_result.skipped:
             warning = format_skipped_warning(gate_result.skipped)
@@ -622,7 +669,9 @@ def _run_query_mode(
     live_slugs = [s for s in slugs if s not in dropped_slugs]
 
     # ── Daemonization: slug from sprint name, not manifest filename ───────
-    run_id = _generate_run_id()
+    # Reuse the run_id pre-generated for the shape gate so its substrate
+    # verdict events correlate with this sprint's downstream rows.
+    run_id = gate_run_id or _generate_run_id()
     sprint_slug = sprint_name.replace(" ", "-").replace("/", "-").lower()[:50]
 
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
