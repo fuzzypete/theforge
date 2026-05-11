@@ -4,7 +4,7 @@
 - **Date:** 2026-05-10 (proposed)
 - **Deciders:** Peter Wickersham (project lead), with iterative review by Claude and Codex
 - **Affected milestones:** v0.11.x (substrate landing), v0.12+ (autonomy depends on these invariants), v0.13+ (adaptive router consumes the substrate)
-- **Related issues:** #1465, #1467, #1470, #1324, #1509 / #1517, #1511, #1513, #1516
+- **Related issues:** #1465, #1467, #1470, #1324, #1509 / #1517, #1511, #1513, #1516, #1522 (substrate-schema obligations follow-up)
 - **Related plans:** `docs/plans/forge-storage-layout.md` (file format, gitignore, migration), `docs/plans/knowledge-capture.md` (three-layer mechanism)
 
 ---
@@ -36,18 +36,23 @@ The substrate's contract is articulated in six clauses. Every downstream feature
 
 #### 1. What is authoritative
 
-`.forge/audits/runs/{run_id}.json` — one file per run, tracked by default (per `forge init --shared-memory`).
+**Audit records with `provenance='native'` in the substrate.** Native provenance has two shapes today:
 
-A per-run record is the canonical, immutable description of what happened during that run. Specifically:
+- **Per-run record files.** `.forge/audits/runs/{run_id}.json` — one file per run, tracked by default (per `forge init --shared-memory`). These are the canonical, immutable description of what happened during that run.
+- **Programmatic native inserts.** Sprint rollups and other coordinator-level audit dicts written directly into the substrate without a per-run file source path. `audit_substrate.py` already treats these as native (the source-path-less branch in `_native_rows_are_stale`). They are equally authoritative.
+
+The distinction between file-backed and file-less native rows is implementation, not architecture. **Provenance is the authority signal**, not file presence. Specifically:
 
 - `run_id` is globally unique and stable forever; never reused, never reassigned.
-- `parent_run_id` links resume-style runs back to their predecessor for lineage.
-- `schema_version` declares the record's shape. Readers MUST check this before parsing.
-- `forge_version` declares the writer's version so mixed-version readers can skip records they don't understand.
-- The record is written exactly once, at run termination, after a mandatory redaction pass (per `forge-storage-layout.md`).
+- `parent_run_id` (where present) links resume-style runs back to their predecessor for lineage.
+- File-backed native records additionally carry the per-file invariants from `forge-storage-layout.md`: written exactly once at run termination, after a mandatory redaction pass, immutable on disk.
+- File-less native records (sprint rollups, etc.) are inserted programmatically by coordinator-owned writers; they obey the same upsert-and-stand contract via the substrate's `upsert_run_record` path with the native-row protection rule.
+- Records with `provenance='legacy_history_jsonl'` are migration-compat only; they are not authoritative and any conflict with a native row leaves the native row in place (see `upsert_run_record` line 459–464).
 - Mid-run state lives in `.forge/runs/` (machine-local, untracked). That is execution state, not audit. The two directories are distinct by design.
 
-If a piece of data is not in a per-run record, it is not authoritative. Sprint summaries, status displays, intake remediation logs, and audit YAML pointers are all reflections of the per-run records, not parallel sources of truth.
+If a piece of data is not in a native-provenance substrate row, it is not authoritative. Sprint summaries, status displays, intake remediation logs, and audit YAML pointers are reflections of native rows, not parallel sources of truth.
+
+> **Future convergence.** Sprint-rollup records will gain canonical per-run-style JSON sources in a later slice so the file-backed and file-less native shapes unify. Until then, the substrate row itself stands as the authoritative artifact, and both shapes share the native provenance protection.
 
 #### 2. What is derived
 
@@ -62,14 +67,18 @@ A derived view that disagrees with the per-run records is a bug in the derivatio
 
 #### 3. What is queryable
 
-The SQLite index is the read path for all structured queries. Its schema MUST support, at minimum:
+The SQLite index is the read path for all structured queries. The current schema indexes `slug` and `started_at` and exposes flat columns for `run_id`, `total_cost_usd`, `final_phase`, `outcome_success`, `branch`, `landing_status`, `complexity_score`, `provenance`, `source_path`, plus per-cycle `verdict` in the `reviews` table. The `raw_json` blob carries everything else.
 
-- `count / GROUP BY` over: `verdict`, `phase`, `outcome`, `model`, `slug`, `milestone`.
+This ADR establishes the **substrate's queryability obligation**, not the current column set. The substrate MUST eventually support, at minimum:
+
+- `count / GROUP BY` over: `verdict` (at record level, not only per-cycle), `phase`, `outcome`, `dev_model`, `slug`, `milestone`.
 - Per-issue trajectory: `SELECT * WHERE issue_id = ? ORDER BY timestamp` (the shape needed to compute the readiness → ready transition rate per issue).
-- Time-windowed aggregation: `WHERE started_at BETWEEN ? AND ?` (the shape needed for milestone-bounded postmortems).
+- Time-windowed aggregation: `WHERE started_at BETWEEN ? AND ?` (already supported via the `idx_audit_records_started_at` index).
 - Cost aggregation: `SUM(cost) GROUP BY phase, milestone` (the shape needed for the refusal-economics metric below).
 
-Indexed columns are stable across schema versions. New schema versions may add columns; they MUST NOT remove or repurpose existing ones — readers from older `forge_version` clients still need to query the substrate. (Adding columns is non-breaking; renaming or dropping is breaking and requires a `schema_version` bump.)
+The dimensions not yet indexed at the record level (`milestone`, `issue_id`, `dev_model`, record-level `verdict`, non-terminal `phase`) are tracked as substrate-schema obligations in **#1522**. Until those columns land, consumers parse the `raw_json` blob — correct but unscalable. ADR-0002 commits the substrate to closing that gap; it does not claim those columns ship today.
+
+Indexed columns are stable once introduced. New schema versions may add columns; they MUST NOT remove or repurpose existing ones — readers from older `forge_version` clients still need to query the substrate. (Adding columns is non-breaking; renaming or dropping is breaking and requires a `schema_version` bump.)
 
 Staleness of the index is detected by file-presence cross-reference against `runs/*.json`, not by `mtime` alone. `forge audits rebuild` is the manual escape hatch.
 
@@ -125,15 +134,22 @@ The rebuild command (`forge audits rebuild`) is exempt — it operates only on d
 
 ### Schema versioning is load-bearing
 
-The substrate evolves over the project's lifetime. The contract that keeps that evolution safe:
+The substrate evolves over the project's lifetime. The contract that keeps that evolution safe has two layers, one shipped and one obligated:
 
-- Every per-run record has `schema_version: int`.
-- Every reader checks `schema_version` before parsing and routes to a migration helper if the version is below its known maximum.
-- Adding a field is non-breaking and does not bump the version.
-- Renaming, removing, or repurposing a field is breaking and MUST bump the version. Migration helpers are added in the same PR.
+**Shipped today:**
+
+- A substrate-level schema version (`SUBSTRATE_SCHEMA_VERSION = 2`) lives in the `meta` table of the SQLite index. `_apply_schema` is idempotent and reapplies on every open, so the index file can evolve forward without explicit migrations.
+- The substrate refuses corrupt or unreadable files and points at `forge audits rebuild` (see `SubstrateCorruptError`).
+
+**Obligated (tracked in #1522):**
+
+- Every per-run record gains a top-level `schema_version: int` field. Records written before this slice are treated as `schema_version=1`.
+- Readers consult per-record `schema_version` before parsing and route through a migration helper when the version is below their known maximum.
+- Adding a field is non-breaking and does not bump the version. Renaming, removing, or repurposing a field is breaking and MUST bump the version, with migration helpers added in the same PR.
 - The substrate must support reading records from at least the two most recent shipped `schema_version`s at any given time. (Older readers from outside the active support window may skip with a warning, per clause 4.)
+- A CI check refuses a `schema_version` bump on the writer side without a matching migration-helper entry.
 
-No flag days. Schema migrations are reader-side, lazy, and per-record.
+No flag days. Schema migrations are reader-side, lazy, and per-record. This ADR commits to that property; #1522 implements it.
 
 ### Refusal-economics metric
 
@@ -191,4 +207,5 @@ Explicitly deferred to later ADRs or implementation issues:
 - #1509 / #1517 — shape-gate verdict emission
 - #1511, #1513, #1516 — intake-readiness substrate emission obligations
 - `project_north_star.md` (memory) — refusal-capability as TheForge's core property; this ADR makes the substrate side of that property concrete
-- `project_full_audit_trail.md` (memory) — durable full-output capture intent; promoted from memory to ADR
+- `project_full_audit_trail.md` (memory) — durable full-output capture intent. **Partially superseded** by this ADR for the trust-boundary aspects (clauses 1, 2, 6 above). Full prompt/response and reasoning capture detail remains in `docs/plans/knowledge-capture.md` (Layer 1 capture) and is not collapsed into this ADR. Future cleanup should narrow the memory entry to the knowledge-capture aspects rather than retire it wholesale.
+- #1522 — substrate-schema obligations (per-record schema versioning, indexed dimensions for routing and refusal-economics)
