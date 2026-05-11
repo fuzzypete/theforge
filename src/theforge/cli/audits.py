@@ -256,6 +256,7 @@ def _import_with_snapshot(
         _canonical_json,
         create_or_open,
         derive_run_id,
+        secrets_env_path,
         upsert_run_record,
     )
 
@@ -263,6 +264,8 @@ def _import_with_snapshot(
     if not history_path.exists():
         return summary
     conn = create_or_open(project_root)
+    env_file = secrets_env_path(project_root)
+    env_file_arg: Path | None = env_file if env_file.exists() else None
     try:
         try:
             with open(history_path, encoding="utf-8") as fh:
@@ -290,6 +293,7 @@ def _import_with_snapshot(
                         record,
                         provenance="legacy_history_jsonl",
                         source_path=history_path.name,
+                        env_file=env_file_arg,
                     )
                     # A native row with the same identity is canonical and
                     # protected; count those as skipped-existing.
