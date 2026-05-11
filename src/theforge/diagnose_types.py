@@ -5,6 +5,7 @@ stdlib-only imports; no coordinator or runner dependencies.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -41,6 +42,22 @@ class Hypothesis:
 
 
 @dataclass(frozen=True)
+class InspectedFile:
+    """A file the diagnosis agent inspected, with its content hash at baseline.
+
+    ``content_sha256`` is the hex digest of the file's bytes at
+    ``baseline_sha`` — the staleness check compares this to a fresh hash of
+    the same path against the current base to detect material drift.
+    Untracked or missing-at-baseline files carry an empty ``content_sha256``;
+    they cannot be used for staleness comparison and the groom-side check
+    treats them as informational only.
+    """
+
+    path: str
+    content_sha256: str = ""
+
+
+@dataclass(frozen=True)
 class DiagnosisArtifact:
     """Structured diagnosis output from an investigative agent.
 
@@ -58,6 +75,9 @@ class DiagnosisArtifact:
     fix_success_criterion: str
     partial: bool = False  # True when the agent ran out of time/budget
     notes: str = ""
+    baseline_sha: str = ""
+    baseline_captured_at: str = ""
+    inspected_files: tuple[InspectedFile, ...] = ()
 
     def is_complete(self) -> bool:
         """Return True only when every required field is non-empty."""
@@ -92,6 +112,8 @@ class DiagnoseState:
     landing_destination: str | None = None
     landed_location: str | None = None  # URL / path / comment id
     error: str | None = None
+    baseline_sha: str = ""
+    baseline_captured_at: str = ""
     phase_transitions: list[tuple[str, str]] = field(default_factory=list)
     # (phase_name, ISO timestamp) entries appended on every transition.
     sub_investigations: list[dict] = field(default_factory=list)
@@ -128,6 +150,17 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             "> ⚠ Partial diagnosis — the investigation hit its budget or "
             "timeout before reaching a confirmed cause. Operator review required."
         )
+    if artifact.baseline_sha:
+        lines.append("")
+        ts = artifact.baseline_captured_at or "unknown"
+        lines.append(f"**Baseline:** `{artifact.baseline_sha}` captured at `{ts}`")
+    if artifact.inspected_files:
+        lines.append("")
+        lines.append("**Inspected files:**")
+        lines.append("")
+        for f in artifact.inspected_files:
+            digest = f.content_sha256 or "unknown"
+            lines.append(f"- `{f.path}` — `sha256:{digest}`")
     lines.extend(
         [
             "",
@@ -199,3 +232,69 @@ def upsert_diagnosis_section(body: str, section_markdown: str) -> str:
             break
     new_lines = lines[:start] + [section.rstrip()] + lines[end:]
     return "\n".join(new_lines).rstrip() + "\n"
+
+
+# ── Baseline metadata extraction ──────────────────────────────────────
+
+
+_BASELINE_LINE_RE = re.compile(
+    r"\*\*Baseline:\*\*\s*`([^`]+)`\s*captured at\s*`([^`]+)`",
+    re.IGNORECASE,
+)
+_INSPECTED_HEADER_RE = re.compile(r"\*\*Inspected files:\*\*", re.IGNORECASE)
+_INSPECTED_BULLET_RE = re.compile(
+    r"^\s*-\s*`([^`]+)`\s*(?:—|--)\s*`sha256:([0-9a-fA-F]*|unknown)`\s*$"
+)
+
+
+@dataclass(frozen=True)
+class BaselineMetadata:
+    """Baseline metadata parsed from a rendered diagnosis section."""
+
+    baseline_sha: str
+    baseline_captured_at: str
+    inspected_files: tuple[InspectedFile, ...]
+
+
+def parse_baseline_metadata(body: str) -> BaselineMetadata | None:
+    """Parse baseline + inspected-file metadata out of an issue body.
+
+    Returns ``None`` when no ``**Baseline:**`` line is present anywhere in
+    the body (a diagnosis written before this baseline-anchoring feature
+    shipped). Returns a :class:`BaselineMetadata` with possibly-empty
+    ``inspected_files`` when a baseline line is present but the inspected
+    block is absent or unparseable.
+    """
+    m = _BASELINE_LINE_RE.search(body)
+    if not m:
+        return None
+    sha = m.group(1).strip()
+    ts = m.group(2).strip()
+
+    files: list[InspectedFile] = []
+    header_match = _INSPECTED_HEADER_RE.search(body)
+    if header_match:
+        tail = body[header_match.end() :]
+        for line in tail.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                if files:
+                    # blank line after at least one bullet ends the block
+                    break
+                continue
+            if stripped.startswith("##") or stripped.startswith("###"):
+                break
+            bm = _INSPECTED_BULLET_RE.match(line)
+            if bm:
+                digest = bm.group(2).strip()
+                if digest.lower() == "unknown":
+                    digest = ""
+                files.append(InspectedFile(path=bm.group(1).strip(), content_sha256=digest))
+            elif files:
+                # non-bullet, non-blank after bullets started — block ended
+                break
+    return BaselineMetadata(
+        baseline_sha=sha,
+        baseline_captured_at=ts,
+        inspected_files=tuple(files),
+    )

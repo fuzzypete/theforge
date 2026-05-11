@@ -37,6 +37,21 @@ def _print_summary(result: GroomResult) -> None:
     print(f"Type: {result.issue_type or '(none)'}", file=sys.stderr)
     if result.issue_type == "bug":
         print(f"Diagnosis state: {result.bug_state.value}", file=sys.stderr)
+        if result.staleness is not None:
+            sha = result.staleness.baseline_sha or "(none)"
+            print(
+                f"Diagnosis baseline: {sha} (staleness={result.staleness.state.value})",
+                file=sys.stderr,
+            )
+            if result.staleness.changed_files:
+                changed = ", ".join(result.staleness.changed_files)
+                print(f"  Changed since baseline: {changed}", file=sys.stderr)
+            if result.confirm_diagnosis_current and result.staleness.is_stale:
+                print(
+                    "  --confirm-diagnosis-current: operator override applied "
+                    "(decision recorded in audit substrate)",
+                    file=sys.stderr,
+                )
     print(f"Pre-groom verdict:  {result.pre_verdict.value}", file=sys.stderr)
     print(f"Post-groom verdict: {result.post_verdict.value}", file=sys.stderr)
 
@@ -54,6 +69,7 @@ def cmd_groom(args: argparse.Namespace) -> int:
             issue_ref,
             apply_changes=apply_changes,
             project_root=project_root,
+            confirm_diagnosis_current=bool(getattr(args, "confirm_diagnosis_current", False)),
         )
     except GroomError as exc:
         print(f"[forge groom] {exc}", file=sys.stderr)
@@ -84,6 +100,12 @@ def cmd_groom(args: argparse.Namespace) -> int:
             "      Next step: continue diagnosis until a confirmed cause is identified.",
             file=sys.stdout,
         )
+        if result.staleness_notice:
+            print(
+                "\nNOTE: Diagnosis baseline is stale; continued investigation should\n"
+                "      re-run forge diagnose to refresh ruled-out hypotheses.",
+                file=sys.stdout,
+            )
 
     if result.needs_change:
         if apply_changes:
@@ -136,6 +158,17 @@ def register_parser(subparsers: object) -> None:
         help=(
             "Print a recommended next operator command "
             "(output is for humans, not a stable protocol)"
+        ),
+    )
+    p.add_argument(
+        "--confirm-diagnosis-current",
+        dest="confirm_diagnosis_current",
+        action="store_true",
+        default=False,
+        help=(
+            "Operator assertion that the diagnosis is still valid against the current "
+            "base, even if the recorded baseline is stale. Recorded in the audit "
+            "substrate so the decision is auditable rather than silent."
         ),
     )
     p.add_argument(

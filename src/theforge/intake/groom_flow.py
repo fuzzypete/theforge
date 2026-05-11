@@ -30,6 +30,7 @@ from ..shape_check.heuristics import (
     is_bug_format_issue,
 )
 from ..shape_check.parsing import find_heading
+from .diagnosis_staleness import StalenessReport, evaluate_staleness
 
 # ── Types ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,9 @@ class GroomResult:
     next_command: str | None = None
     investigation_only_notice: bool = False
     labels: tuple[str, ...] = field(default_factory=tuple)
+    staleness: StalenessReport | None = None
+    confirm_diagnosis_current: bool = False
+    staleness_notice: bool = False
 
     @property
     def needs_change(self) -> bool:
@@ -77,7 +81,7 @@ class GroomResult:
 
     def as_event(self) -> dict:
         """Return the SQLite audit-substrate event payload."""
-        return {
+        payload: dict = {
             "kind": "groom",
             "issue_ref": self.issue_ref,
             "issue_type": self.issue_type,
@@ -88,6 +92,14 @@ class GroomResult:
             "applied": self.applied,
             "refusal_reason": self.refusal_reason,
         }
+        if self.staleness is not None:
+            payload["staleness_verdict"] = self.staleness.state.value
+            payload["diagnosis_baseline_sha"] = self.staleness.baseline_sha
+            payload["diagnosis_current_sha"] = self.staleness.current_sha
+            payload["stale_files"] = list(self.staleness.changed_files)
+            if self.confirm_diagnosis_current:
+                payload["confirm_diagnosis_current"] = True
+        return payload
 
 
 # ── I/O seams ─────────────────────────────────────────────────────────────
@@ -404,14 +416,34 @@ def _classify_action(
     bug_state: BugDiagnosisState,
     pre_verdict: ShapeVerdict,
     needs_change: bool,
+    staleness: StalenessReport | None = None,
+    confirm_diagnosis_current: bool = False,
+    issue_ref: str = "<N>",
 ) -> tuple[GroomAction, str | None]:
     """Return (action, refusal_reason).
 
     Pure decision function — does not produce output text. Enforces the
-    three-state bug invariant.
+    three-state bug invariant *and* the baseline-staleness invariant: a
+    stale ``CONFIRMED_CAUSE`` diagnosis cannot transition to ready unless
+    the operator passes ``confirm_diagnosis_current``. Cause-unknown stays
+    investigation-ready regardless of staleness (per spec — staleness is
+    informational for that state, not a refusal).
     """
     if issue_type == "bug" and bug_state is BugDiagnosisState.NO_DIAGNOSIS:
         return GroomAction.REFUSED, "needs diagnosis — run forge diagnose <N> first."
+    if (
+        issue_type == "bug"
+        and bug_state is BugDiagnosisState.CONFIRMED_CAUSE
+        and staleness is not None
+        and staleness.is_stale
+        and not confirm_diagnosis_current
+    ):
+        sha = staleness.baseline_sha or "unknown"
+        reason = (
+            f"diagnosis baseline (SHA {sha}) is stale relative to current base — "
+            f"re-run forge diagnose {issue_ref} or confirm baseline is still valid."
+        )
+        return GroomAction.REFUSED, reason
     if issue_type == "bug" and bug_state is BugDiagnosisState.CAUSE_UNKNOWN:
         return GroomAction.NORMALIZED_ONLY, None
     return GroomAction.RESTRUCTURED, None
@@ -424,6 +456,7 @@ def run_groom(
     project_root: Path | None = None,
     fetch_issue: FetchIssue | None = None,
     edit_issue_body: EditIssueBody | None = None,
+    confirm_diagnosis_current: bool = False,
 ) -> GroomResult:
     """Run the groom flow against a single issue.
 
@@ -446,6 +479,13 @@ def run_groom(
         else BugDiagnosisState.NOT_A_BUG
     )
 
+    staleness: StalenessReport | None = None
+    if issue_type == "bug" and bug_state in (
+        BugDiagnosisState.CONFIRMED_CAUSE,
+        BugDiagnosisState.CAUSE_UNKNOWN,
+    ):
+        staleness = evaluate_staleness(body, project_root=project_root)
+
     # Shape gate's native type vocabulary doesn't include ``docs`` or
     # ``story``; normalize before each check so verdict-derivation runs
     # against a recognized type label.
@@ -460,6 +500,9 @@ def run_groom(
         bug_state=bug_state,
         pre_verdict=pre_verdict,
         needs_change=False,
+        staleness=staleness,
+        confirm_diagnosis_current=confirm_diagnosis_current,
+        issue_ref=str(loaded.number) if loaded.number is not None else issue_ref,
     )
 
     if action is GroomAction.REFUSED:
@@ -484,6 +527,13 @@ def run_groom(
             refusal_reason=refusal_reason,
             next_command=next_cmd,
             labels=tuple(labels),
+            staleness=staleness,
+            confirm_diagnosis_current=confirm_diagnosis_current,
+            staleness_notice=(
+                staleness is not None
+                and staleness.is_stale
+                and bug_state is BugDiagnosisState.CAUSE_UNKNOWN
+            ),
         )
 
     # Body restructure / normalization
@@ -556,4 +606,11 @@ def run_groom(
         next_command=next_cmd,
         investigation_only_notice=(bug_state is BugDiagnosisState.CAUSE_UNKNOWN),
         labels=tuple(labels),
+        staleness=staleness,
+        confirm_diagnosis_current=confirm_diagnosis_current,
+        staleness_notice=(
+            staleness is not None
+            and staleness.is_stale
+            and bug_state is BugDiagnosisState.CAUSE_UNKNOWN
+        ),
     )
