@@ -282,12 +282,17 @@ if [[ "$NO_INSTALL" == false ]]; then
                 # An env can have theforge installed while CURRENT_FORGE itself
                 # is a hand-written wrapper or a console script for a different
                 # package. Identify CURRENT_FORGE as the theforge console
-                # script by grepping for theforge.cli (pyproject.toml has
+                # script by requiring an actual non-comment Python import
+                # line — pyproject.toml has
                 # [project.scripts] forge = "theforge.cli:main", so every
-                # pip-generated console script contains this import literal).
+                # pip-generated console script contains a literal
+                # `from theforge.cli import main` (or `import theforge`) at
+                # column 0. Comments and incidental text (e.g. a shell
+                # wrapper with `# copied from theforge`) must not satisfy
+                # the check.
                 CURRENT_FORGE_IS_THEFORGE=false
                 if [[ -f "$CURRENT_FORGE" ]] \
-                   && grep -q -E 'theforge\.cli|from[[:space:]]+theforge' "$CURRENT_FORGE" 2>/dev/null; then
+                   && grep -q -E '^[[:space:]]*(from|import)[[:space:]]+theforge([[:space:].]|$)' "$CURRENT_FORGE" 2>/dev/null; then
                     CURRENT_FORGE_IS_THEFORGE=true
                 fi
 
@@ -304,7 +309,8 @@ if [[ "$NO_INSTALL" == false ]]; then
                         echo "       and that environment has theforge==$INSTALLED_THEFORGE_VERSION" >&2
                         echo "       installed, but the launcher file itself does not look" >&2
                         echo "       like theforge's pip-generated console script (no" >&2
-                        echo "       \`theforge.cli\` / \`from theforge\` reference inside)." >&2
+                        echo "       non-comment \`from theforge\` / \`import theforge\` line" >&2
+                        echo "       at column 0; incidental comment text does not count)." >&2
                     fi
                     echo "       The script cannot reason about what \`forge\` actually" >&2
                     echo "       is — it may be a console script for an unrelated" >&2
