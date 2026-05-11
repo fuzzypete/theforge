@@ -355,14 +355,13 @@ def _emit_all_skipped_audit(
 
     from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
     from theforge.sprint.manifest import ResolvedSprint, SprintResult
+    from theforge.sprint.shape_gate import skipped_issue_state_fields
     from theforge.sprint.story_state import SprintStoryState, StoryOutcome
 
     # Build a canonical SprintStoryState containing every shape-gate-skipped
     # issue so the all-skipped audit/summary projects from the same SoT
     # structure run_sprint() uses. Counts and the per-story list both flow
     # from this single source.
-    from theforge.sprint.shape_gate import skipped_issue_state_fields
-
     story_state = SprintStoryState()
     for sk in skipped_issues or []:
         sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
