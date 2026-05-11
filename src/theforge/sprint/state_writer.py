@@ -258,11 +258,16 @@ def write_bootstrap_state(
         if sk_slug in seen_slugs:
             continue
         sk_codes = sk_dict.get("reason_codes") or []
-        sk_reason = (
-            ", ".join(sk_codes)
-            if sk_codes
-            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
-        )
+        sk_verdict = sk_dict.get("verdict")
+        sk_verdict_desc = sk_dict.get("verdict_description") or ""
+        # Prefer the typed verdict identifier for the operator-facing reason
+        # string; fall back to comma-joined raw codes for older skip records.
+        if sk_verdict:
+            sk_reason = sk_verdict
+        elif sk_codes:
+            sk_reason = ", ".join(sk_codes)
+        else:
+            sk_reason = sk_dict.get("detail") or sk_dict.get("source") or "shape-gate"
         stories.append(
             {
                 "slug": sk_slug,
@@ -278,6 +283,8 @@ def write_bootstrap_state(
                 "detail": {
                     "shape_gate_source": sk_dict.get("source"),
                     "shape_gate_codes": list(sk_codes),
+                    "shape_verdict": sk_verdict,
+                    "shape_verdict_description": sk_verdict_desc,
                     "final_outcome": "SKIPPED",
                 },
                 "reason": sk_reason,

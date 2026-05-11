@@ -369,11 +369,14 @@ def _emit_all_skipped_audit(
             continue
         sk_slug = f"issue-{sk_num}"
         sk_codes = sk_dict.get("reason_codes") or []
-        sk_reason = (
-            ", ".join(sk_codes)
-            if sk_codes
-            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
-        )
+        sk_verdict = sk_dict.get("verdict")
+        sk_verdict_desc = sk_dict.get("verdict_description") or ""
+        if sk_verdict:
+            sk_reason = sk_verdict
+        elif sk_codes:
+            sk_reason = ", ".join(sk_codes)
+        else:
+            sk_reason = sk_dict.get("detail") or sk_dict.get("source") or "shape-gate"
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
@@ -383,6 +386,8 @@ def _emit_all_skipped_audit(
             detail={
                 "shape_gate_source": sk_dict.get("source"),
                 "shape_gate_codes": list(sk_codes),
+                "shape_verdict": sk_verdict,
+                "shape_verdict_description": sk_verdict_desc,
                 "final_outcome": "SKIPPED",
             },
         )

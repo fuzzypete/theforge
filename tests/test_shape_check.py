@@ -571,7 +571,7 @@ class TestCheckAggregation:
         result = check("Bug: command exits incorrectly", "## What\nprose only", ["bug"])
         assert result.shape is Shape.NEEDS_GROOMING
         assert result.suggested_action is SuggestedAction.CLARIFY
-        assert any(r.code == "bug_missing_diagnosis" for r in result.reasons)
+        assert any(r.code == "needs_diagnosis" for r in result.reasons)
 
     def test_bug_report_headings_without_diagnosis_are_blocked(self):
         body = textwrap.dedent(
@@ -585,7 +585,7 @@ class TestCheckAggregation:
         )
         result = check("Shape gate blocks bugs", body, ["bug"])
         assert result.shape is Shape.NEEDS_GROOMING
-        assert any(r.code == "bug_missing_diagnosis" for r in result.reasons)
+        assert any(r.code == "needs_diagnosis" for r in result.reasons)
 
     def test_implementation_plan_in_body_flags_as_needs_grooming(self):
         body = textwrap.dedent(

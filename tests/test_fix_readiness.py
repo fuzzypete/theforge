@@ -76,7 +76,7 @@ class TestCheckBugMissingDiagnosis:
     def test_bug_without_diagnosis_blocks(self) -> None:
         reason = check_bug_missing_diagnosis("T", "## What\nprose", ["bug"])
         assert reason is not None
-        assert reason.code == "bug_missing_diagnosis"
+        assert reason.code == "needs_diagnosis"
         assert "Diagnosis" in reason.detail
 
     def test_bug_with_complete_diagnosis_passes(self) -> None:
@@ -97,7 +97,7 @@ class TestCheckBugMissingDiagnosis:
     def test_check_pipeline_blocks_undiagnosed_bug(self) -> None:
         result = check("Bug: foo", "## What\nprose only", ["bug"])
         assert result.shape is Shape.NEEDS_GROOMING
-        assert any(r.code == "bug_missing_diagnosis" for r in result.reasons)
+        assert any(r.code == "needs_diagnosis" for r in result.reasons)
 
     def test_check_pipeline_passes_diagnosed_bug(self) -> None:
         result = check("Bug: foo", DIAGNOSIS_BODY, ["bug"])
@@ -251,7 +251,7 @@ class TestSprintShapeGateRefusesUndiagnosedBugs:
         assert result.runnable == []
         assert len(result.skipped) == 1
         skipped = result.skipped[0]
-        assert "bug_missing_diagnosis" in skipped.reason_codes
+        assert "needs_diagnosis" in skipped.reason_codes
         assert "Diagnosis" in skipped.detail
 
     def test_diagnosed_bug_passes_through(self, tmp_path: Path) -> None:
@@ -261,7 +261,7 @@ class TestSprintShapeGateRefusesUndiagnosedBugs:
             return {"title": "Diagnosed bug", "body": DIAGNOSIS_BODY, "labels": ["bug"]}
 
         result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
-        assert result.runnable == issues
+        assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
         assert result.skipped == []
 
 
@@ -290,5 +290,5 @@ def test_features_pass_shape_gate_without_diagnosis(label: str, tmp_path: Path) 
         }
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     assert result.skipped == []

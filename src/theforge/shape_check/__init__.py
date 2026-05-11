@@ -15,10 +15,12 @@ from theforge.shape_check.check import (
     check,
 )
 from theforge.shape_check.types import (
+    VERDICT_DESCRIPTIONS,
     Reason,
     Severity,
     Shape,
     ShapeResult,
+    ShapeVerdict,
     SuggestedAction,
 )
 
@@ -30,6 +32,8 @@ __all__ = [
     "Severity",
     "Shape",
     "ShapeResult",
+    "ShapeVerdict",
     "SuggestedAction",
+    "VERDICT_DESCRIPTIONS",
     "check",
 ]
