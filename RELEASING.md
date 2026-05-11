@@ -41,11 +41,20 @@ project venv `bin/`, or deactivate the venv before running `cut-rc.sh`.
 ### 1. Cut an RC
 
 ```bash
-scripts/cut-rc.sh X.Y.Z         # first RC: cuts vX.Y.ZrcN with N=0
-scripts/cut-rc.sh X.Y.Z 1       # subsequent RCs: explicit RC_NUM
+scripts/cut-rc.sh X.Y.Z              # first RC: cuts vX.Y.ZrcN with N=0
+scripts/cut-rc.sh X.Y.Z 1            # subsequent RCs: explicit RC_NUM
 scripts/cut-rc.sh --dry-run X.Y.Z
-scripts/cut-rc.sh --no-install X.Y.Z   # skip the isolated-venv install + launcher repoint
+scripts/cut-rc.sh --no-install X.Y.Z # skip the isolated-venv install + launcher repoint
+scripts/cut-rc.sh --resume X.Y.Z N   # finish a cut that aborted after tag-push
 ```
+
+`--resume` is the recovery path when a cut aborts at one of the post-tag steps
+(isolated venv install, managed-launcher repoint, ladder print). Because the
+tag has already been pushed to origin at that point, re-running the plain
+invocation fails on the `git tag` step. `--resume` skips bump/commit/tag/push,
+asserts the RC tag is already on origin, and picks up at the isolated-venv
+install. The launcher-refusal error messages the script prints today point at
+this invocation — fix the env-state issue they describe, then `--resume`.
 
 `cut-rc.sh`:
 

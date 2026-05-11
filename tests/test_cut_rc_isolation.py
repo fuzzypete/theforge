@@ -939,6 +939,334 @@ def test_running_interpreter_survives_swapping_on_disk_script(tmp_path: Path) ->
     )
 
 
+def test_script_parses_resume_flag() -> None:
+    """The script must accept a ``--resume`` flag and a corresponding
+    ``RESUME`` state variable. This is the surface contract for
+    recovering from a cut that aborted after tag-push.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+    assert "--resume" in body, "cut-rc.sh must accept a --resume flag"
+    assert re.search(r"--resume\)\s*RESUME=true", body), (
+        "cut-rc.sh must parse --resume into a RESUME=true state"
+    )
+
+
+def test_resume_skips_bump_commit_tag_push() -> None:
+    """In resume mode, the bump/commit/tag/push phase must be guarded
+    off — the previous cut already pushed the tag, so re-running those
+    steps would either no-op noisily or fail outright.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+    # The mutating commands must live inside a RESUME==false branch.
+    bump_block = re.search(
+        r'if\s+\[\[\s+"\$RESUME"\s*==\s*false\s+\]\];\s*then(.*?)(?:^else|^fi)',
+        body,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert bump_block is not None, (
+        "cut-rc.sh must gate bump/commit/tag/push behind `if [[ $RESUME == false ]]`"
+    )
+    guarded = bump_block.group(1)
+    for needle in (
+        "git commit -m",
+        'git tag "$RC_TAG"',
+        'git push origin "$RC_TAG"',
+        "sed -i ''",
+    ):
+        assert needle in guarded, (
+            f"cut-rc.sh must keep {needle!r} inside the RESUME==false branch; "
+            "resume must not re-run that step"
+        )
+
+
+def test_resume_requires_existing_tag_on_origin() -> None:
+    """Resume only makes sense if the previous cut reached tag-push.
+    The script must verify the tag is already on origin before skipping
+    the bump/commit/tag/push phase.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+    # Find the specific else attached to the RESUME guard by string search:
+    idx = body.find('if [[ "$RESUME" == false ]]')
+    assert idx >= 0
+    tail = body[idx:]
+    assert re.search(
+        r"ls-remote\s+--tags\s+origin\s+\"refs/tags/\$RC_TAG\"",
+        tail,
+    ), "resume branch must verify the tag exists on origin via git ls-remote"
+    assert "--resume requires" in tail, (
+        "resume branch must emit a clear error when the tag isn't on origin"
+    )
+
+
+def test_launcher_refusal_messages_reference_resume() -> None:
+    """The two error branches that previously printed 'scripts/cut-rc.sh
+    $VERSION $RC_NUM' as remediation must now print the --resume form.
+    The plain re-run is broken once the tag has been pushed.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+    # Both refusal/repoint-failure error messages must mention --resume.
+    refuse_msgs = re.findall(
+        r'echo\s+"[^"]*scripts/cut-rc\.sh[^"]*"',
+        body,
+    )
+    # Filter to error-message branches (those redirected to stderr appear in
+    # the same echo line preceded by content). We just check that no
+    # remediation message tells the operator to re-run the plain form.
+    for msg in refuse_msgs:
+        # The ladder-print suggestion at end of script is for the NEXT RC
+        # (bump RC_NUM), not a recovery — allow that one through.
+        if "RC_NUM + 1" in msg:
+            continue
+        # All remaining script-invocation suggestions in operator-facing text
+        # must be the --resume form.
+        assert "--resume" in msg, (
+            "remediation message still suggests plain re-run: "
+            f"{msg}. The tag is already on origin in this branch — "
+            "--resume is the only invocation that completes the cut."
+        )
+
+
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_resume_skips_mutating_steps_and_reaches_install(tmp_path: Path) -> None:
+    """End-to-end: with ``--resume`` the script must not run
+    bump/commit/tag/push, but must still drive the isolated-venv install
+    and managed-launcher repoint. The git shim refuses any push/tag in
+    this fixture so any regression that leaves those calls outside the
+    RESUME guard would fail the run.
+    """
+    repo = tmp_path / "fake_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    # pyproject is ALREADY at the RC version — simulating the prior cut's
+    # bump commit having landed on the release branch.
+    (repo / "pyproject.toml").write_text('version = "0.99.0rc0"\n')
+    (repo / "Makefile").write_text("gate:\n\t@echo 'gate-should-not-run-in-resume'; exit 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+
+    real_git = subprocess.run(
+        ["bash", "-c", "command -v git"], capture_output=True, text=True
+    ).stdout.strip()
+
+    bin_dir = tmp_path / "shim_bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "gh").chmod(0o755)
+    # `make` must NOT run in resume mode (gate is skipped). Make it loud if it does.
+    (bin_dir / "make").write_text("#!/bin/sh\necho 'MAKE_INVOKED_IN_RESUME' >&2\nexit 1\n")
+    (bin_dir / "make").chmod(0o755)
+    # git shim: pretend the RC tag exists on origin via ls-remote, but refuse
+    # push/tag operations so a regression that left them outside the RESUME
+    # guard would surface here.
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            case "$1" in
+                push)
+                    echo "GIT_PUSH_INVOKED_IN_RESUME: $*" >&2
+                    exit 1
+                    ;;
+                tag)
+                    echo "GIT_TAG_INVOKED_IN_RESUME: $*" >&2
+                    exit 1
+                    ;;
+                commit)
+                    echo "GIT_COMMIT_INVOKED_IN_RESUME: $*" >&2
+                    exit 1
+                    ;;
+                ls-remote)
+                    # Match the script's ls-remote --tags origin refs/tags/<tag> call
+                    case "$*" in
+                        *refs/tags/v0.99.0rc0*)
+                            printf 'deadbeef\\trefs/tags/v0.99.0rc0\\n'
+                            exit 0
+                            ;;
+                    esac
+                    exit 0
+                    ;;
+                pull) exit 0 ;;
+            esac
+            exec {real_git} "$@"
+            """
+        )
+    )
+    git_shim.chmod(0o755)
+
+    pip_log = tmp_path / "pip_calls.log"
+    py_shim = bin_dir / "python3"
+    py_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+                VENV="$3"
+                mkdir -p "$VENV/bin"
+                : > "$VENV/pyvenv.cfg"
+                cat > "$VENV/bin/pip" <<'PIP'
+            #!/bin/sh
+            echo "$@" >> "{pip_log}"
+            exit 0
+            PIP
+                chmod +x "$VENV/bin/pip"
+                cat > "$VENV/bin/forge" <<'FORGE'
+            #!/bin/sh
+            if [ "$1" = "version" ]; then
+                echo "TheForge v0.99.0rc0"
+            fi
+            FORGE
+                chmod +x "$VENV/bin/forge"
+                : > "$VENV/bin/python"
+                chmod +x "$VENV/bin/python"
+                exit 0
+            fi
+            exit 0
+            """
+        )
+    )
+    py_shim.chmod(0o755)
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".local" / "bin").mkdir(parents=True)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{fake_home}/.local/bin:{bin_dir}:/usr/bin:/bin"
+    env.pop("VIRTUAL_ENV", None)
+
+    script_copy = tmp_path / "cut-rc.sh"
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    script_text = re.sub(
+        r"^export PATH=\"/opt/homebrew/bin:\$PATH\"\s*$",
+        ": # PATH override stripped for hermetic test",
+        script_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    script_copy.write_text(script_text)
+    script_copy.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(script_copy), "--resume", "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = proc.stdout + proc.stderr
+
+    assert proc.returncode == 0, (
+        f"--resume should complete the cut without re-running mutating steps. Output:\n{combined}"
+    )
+    # No mutating git op may have run.
+    for forbidden in (
+        "GIT_PUSH_INVOKED_IN_RESUME",
+        "GIT_TAG_INVOKED_IN_RESUME",
+        "GIT_COMMIT_INVOKED_IN_RESUME",
+        "MAKE_INVOKED_IN_RESUME",
+    ):
+        assert forbidden not in combined, (
+            f"--resume re-ran a mutating step ({forbidden}). Output:\n{combined}"
+        )
+    # The isolated venv must still be created and pip-installed against.
+    rc_env = repo / ".forge" / "rc-envs" / "v0.99.0rc0"
+    assert rc_env.is_dir(), f"--resume must still build the isolated venv. Output:\n{combined}"
+    assert pip_log.exists(), "--resume must still drive the isolated venv pip install"
+    # Managed launcher must be repointed.
+    managed_launcher = fake_home / ".local" / "bin" / "forge"
+    assert managed_launcher.is_symlink(), (
+        f"--resume must still repoint the managed launcher. Output:\n{combined}"
+    )
+
+
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_resume_fails_loud_when_tag_not_on_origin(tmp_path: Path) -> None:
+    """--resume is only valid when the previous cut reached tag-push. If
+    the tag isn't on origin, the script must abort with a clear message
+    rather than silently fall through to the install phase against a
+    non-existent tag.
+    """
+    repo = tmp_path / "fake_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "pyproject.toml").write_text('version = "0.99.0"\n')
+    (repo / "Makefile").write_text("gate:\n\t@true\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+
+    real_git = subprocess.run(
+        ["bash", "-c", "command -v git"], capture_output=True, text=True
+    ).stdout.strip()
+
+    bin_dir = tmp_path / "shim_bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "gh").chmod(0o755)
+    (bin_dir / "make").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "make").chmod(0o755)
+    # ls-remote returns nothing — tag is not on origin.
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            case "$1" in
+                ls-remote) exit 0 ;;
+                push) exit 0 ;;
+                pull) exit 0 ;;
+            esac
+            exec {real_git} "$@"
+            """
+        )
+    )
+    git_shim.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+
+    script_copy = tmp_path / "cut-rc.sh"
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    script_text = re.sub(
+        r"^export PATH=\"/opt/homebrew/bin:\$PATH\"\s*$",
+        ": # PATH override stripped for hermetic test",
+        script_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    script_copy.write_text(script_text)
+    script_copy.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(script_copy), "--resume", "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, (
+        f"--resume must fail when the RC tag is not on origin. Output:\n{combined}"
+    )
+    assert "--resume requires" in combined
+
+
 @pytest.mark.skipif(
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",

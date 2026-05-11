@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # scripts/cut-rc.sh — cut a TheForge release candidate
 #
-# Usage: scripts/cut-rc.sh [--dry-run] [--no-install] VERSION [RC_NUM]
+# Usage: scripts/cut-rc.sh [--dry-run] [--no-install] [--resume] VERSION [RC_NUM]
 #   VERSION   The target final version, e.g. 0.10.0
 #   RC_NUM    The RC number, default 0 (so first RC is 0.10.0rc0)
+#   --resume  Re-enter a previous cut past the tag-push step. The post-tag
+#             steps (isolated venv install, launcher repoint, ladder print)
+#             must remain runnable after the operator has fixed whatever
+#             env-state issue caused the original cut to abort. With
+#             --resume, the script skips the bump/commit/tag/push phase
+#             (requiring the tag to already exist on origin) and picks up
+#             at the isolated-venv install.
 #
 # Cuts release/vX.Y from current main (or fast-forwards if it exists),
 # bumps pyproject.toml to X.Y.ZrcN, runs gate, tags vX.Y.ZrcN, pushes
@@ -58,6 +65,7 @@ export PATH="/opt/homebrew/bin:$PATH"
 
 DRY_RUN=false
 NO_INSTALL=false
+RESUME=false
 VERSION=""
 RC_NUM=""
 
@@ -65,6 +73,7 @@ for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=true ;;
         --no-install) NO_INSTALL=true ;;
+        --resume) RESUME=true ;;
         *)
             if [[ -z "$VERSION" ]]; then
                 VERSION="$arg"
@@ -80,7 +89,7 @@ done
 
 if [[ -z "$VERSION" ]]; then
     echo "Error: VERSION required (e.g. 0.10.0)" >&2
-    echo "Usage: scripts/cut-rc.sh [--dry-run] [--no-install] VERSION [RC_NUM]" >&2
+    echo "Usage: scripts/cut-rc.sh [--dry-run] [--no-install] [--resume] VERSION [RC_NUM]" >&2
     exit 2
 fi
 
@@ -109,6 +118,7 @@ echo "RC tag          : $RC_TAG"
 echo "Release branch  : $RELEASE_BRANCH"
 echo "Dry run         : $DRY_RUN"
 echo "Install RC      : $([ "$NO_INSTALL" = true ] && echo "no (--no-install)" || echo "yes")"
+echo "Resume          : $RESUME"
 echo ""
 
 run() {
@@ -151,46 +161,72 @@ else
     echo "    (created $RELEASE_BRANCH from main)"
 fi
 
-# --- 4. Refuse if the RC tag already exists ---
-if git rev-parse --verify --quiet "$RC_TAG" >/dev/null; then
-    echo "Error: tag $RC_TAG already exists locally. Delete it or bump RC_NUM." >&2
-    exit 1
-fi
-if git ls-remote --tags origin "refs/tags/$RC_TAG" | grep -q "$RC_TAG"; then
-    echo "Error: tag $RC_TAG already exists on origin. Bump RC_NUM." >&2
-    exit 1
-fi
-
-# --- 5. Read current pyproject version (now that release branch is up to date) ---
-CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-echo "==> Current version on $RELEASE_BRANCH: $CURRENT_VERSION"
-if [[ "$CURRENT_VERSION" == "$RC_VERSION" ]]; then
-    echo "Error: pyproject is already at $RC_VERSION on $RELEASE_BRANCH." >&2
-    exit 1
-fi
-
-# --- 6. Bump pyproject to RC version ---
-echo "==> Bumping pyproject.toml to $RC_VERSION..."
-if [[ "$DRY_RUN" == false ]]; then
-    sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$RC_VERSION\"/" pyproject.toml
-    BUMPED=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-    if [[ "$BUMPED" != "$RC_VERSION" ]]; then
-        echo "Error: pyproject bump failed — version is $BUMPED, expected $RC_VERSION." >&2
+if [[ "$RESUME" == false ]]; then
+    # --- 4. Refuse if the RC tag already exists ---
+    if git rev-parse --verify --quiet "$RC_TAG" >/dev/null; then
+        echo "Error: tag $RC_TAG already exists locally. Delete it or bump RC_NUM." >&2
+        echo "       If you are recovering from a previous cut that failed after" >&2
+        echo "       tag-push, re-run with --resume:" >&2
+        echo "         scripts/cut-rc.sh --resume $VERSION $RC_NUM" >&2
         exit 1
     fi
+    if git ls-remote --tags origin "refs/tags/$RC_TAG" | grep -q "$RC_TAG"; then
+        echo "Error: tag $RC_TAG already exists on origin. Bump RC_NUM." >&2
+        echo "       If you are recovering from a previous cut that failed after" >&2
+        echo "       tag-push, re-run with --resume:" >&2
+        echo "         scripts/cut-rc.sh --resume $VERSION $RC_NUM" >&2
+        exit 1
+    fi
+
+    # --- 5. Read current pyproject version (now that release branch is up to date) ---
+    CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+    echo "==> Current version on $RELEASE_BRANCH: $CURRENT_VERSION"
+    if [[ "$CURRENT_VERSION" == "$RC_VERSION" ]]; then
+        echo "Error: pyproject is already at $RC_VERSION on $RELEASE_BRANCH." >&2
+        exit 1
+    fi
+
+    # --- 6. Bump pyproject to RC version ---
+    echo "==> Bumping pyproject.toml to $RC_VERSION..."
+    if [[ "$DRY_RUN" == false ]]; then
+        sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$RC_VERSION\"/" pyproject.toml
+        BUMPED=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        if [[ "$BUMPED" != "$RC_VERSION" ]]; then
+            echo "Error: pyproject bump failed — version is $BUMPED, expected $RC_VERSION." >&2
+            exit 1
+        fi
+    fi
+
+    # --- 7. Gate ---
+    echo "==> Running gate..."
+    run make gate
+
+    # --- 8. Commit, tag, push ---
+    echo "==> Committing, tagging, pushing..."
+    run git add pyproject.toml
+    run git commit -m "chore: cut $RC_TAG"
+    run git tag "$RC_TAG"
+    run git push -u origin "$RELEASE_BRANCH"
+    run git push origin "$RC_TAG"
+else
+    # --- 4-8 (resume). Skip bump/commit/tag/push; the previous cut already
+    # pushed the tag. Verify that's actually the case so --resume isn't used
+    # for a cut that never reached tag-push.
+    echo "==> --resume: skipping bump/commit/tag/push (must already be on origin)..."
+    if ! git ls-remote --tags origin "refs/tags/$RC_TAG" | grep -q "$RC_TAG"; then
+        echo "Error: --resume requires $RC_TAG to already exist on origin." >&2
+        echo "       It does not. Either run without --resume to cut it fresh," >&2
+        echo "       or correct VERSION / RC_NUM." >&2
+        exit 1
+    fi
+    CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+    if [[ "$CURRENT_VERSION" != "$RC_VERSION" ]]; then
+        echo "    warn: pyproject on $RELEASE_BRANCH is at $CURRENT_VERSION," >&2
+        echo "          expected $RC_VERSION. The tag is on origin so resume" >&2
+        echo "          will install from there; only the local working tree" >&2
+        echo "          mismatches." >&2
+    fi
 fi
-
-# --- 7. Gate ---
-echo "==> Running gate..."
-run make gate
-
-# --- 8. Commit, tag, push ---
-echo "==> Committing, tagging, pushing..."
-run git add pyproject.toml
-run git commit -m "chore: cut $RC_TAG"
-run git tag "$RC_TAG"
-run git push -u origin "$RELEASE_BRANCH"
-run git push origin "$RC_TAG"
 
 # --- 9. Install the RC into an ISOLATED venv and verify against THAT venv's binary ---
 #
@@ -323,8 +359,9 @@ if [[ "$NO_INSTALL" == false ]]; then
                     echo "" >&2
                     echo "       If you want plain \`forge\` to track cut RCs, ensure" >&2
                     echo "         $MANAGED_LAUNCHER_DIR" >&2
-                    echo "       is on PATH ahead of $CURRENT_FORGE_DIR, then re-run:" >&2
-                    echo "         scripts/cut-rc.sh $VERSION $RC_NUM" >&2
+                    echo "       is on PATH ahead of $CURRENT_FORGE_DIR, then resume" >&2
+                    echo "       this cut (the tag is already on origin):" >&2
+                    echo "         scripts/cut-rc.sh --resume $VERSION $RC_NUM" >&2
                     exit 1
                 elif [[ "$INSTALLED_THEFORGE_VERSION" == "$RC_VERSION" ]]; then
                     # Same RC as we're cutting; repoint is identity. Spec says
@@ -353,7 +390,9 @@ if [[ "$NO_INSTALL" == false ]]; then
                 echo "         '${RESOLVED_FORGE:-<not found>}'" >&2
                 echo "       expected '$MANAGED_LAUNCHER'." >&2
                 echo "       Ensure $MANAGED_LAUNCHER_DIR is on PATH ahead of any" >&2
-                echo "       Python environment's bin/, then re-run scripts/cut-rc.sh." >&2
+                echo "       Python environment's bin/, then resume this cut" >&2
+                echo "       (the tag is already on origin):" >&2
+                echo "         scripts/cut-rc.sh --resume $VERSION $RC_NUM" >&2
                 exit 1
             fi
             # The in-venv probe vetted what plain `forge` resolves to; the env
