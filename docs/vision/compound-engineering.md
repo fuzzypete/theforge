@@ -28,7 +28,7 @@ Compound engineering is not an abstraction looking for a home. It already has a 
 - **Layer 2 — Summarize.** Distill runs into evidence-backed knowledge: what was attempted, what worked, what failed, what was learned. A bounded LLM task ("summarize, don't decide"), aligned with the principle that LLMs generate artifacts, not process decisions.
 - **Layer 3 — Feed forward.** Prior run summaries flow into future context assembly through existing machinery. Agents stop rediscovering the same conventions, patterns, and failure modes.
 
-The substrate that holds these layers durably is governed by [ADR-0002 (PR #1519)](https://github.com/fuzzypete/theforge/pull/1519). The intake-readiness workflow that captures operator corrections rather than punishing them is [ADR-0001](../adr/0001-intake-readiness-workflow.md). Each is one expression of the doctrine; this document is the doctrine itself. *(ADR-0002 references in this document point at PR #1519 until that ADR lands on main; a follow-up retargets them to the file path.)*
+The substrate that holds these layers durably is governed by [ADR-0002](../adr/0002-audit-substrate-and-queryable-run-history.md). The intake-readiness workflow that captures operator corrections rather than punishing them is [ADR-0001](../adr/0001-intake-readiness-workflow.md). Each is one expression of the doctrine; this document is the doctrine itself.
 
 ## How features are evaluated against this doctrine
 
@@ -41,7 +41,7 @@ Apply it to every meaningful feature. If the answer is "evaporates and that's fi
 Worked examples of the test in use:
 
 - A symptom-only bug entering a sprint via `--force` ships a fix but produces no diagnosis, no failure classification, and no input to the adaptive router. It evaporates. The doctrine demands either a diagnosis path (now formalized in [ADR-0001](../adr/0001-intake-readiness-workflow.md)) or an explicit operator-action one-off marker.
-- A reviewer pass that surfaces P1 findings and discards them when the run terminates evaporates. Findings should be persisted as queryable substrate rows (per [ADR-0002 (PR #1519)](https://github.com/fuzzypete/theforge/pull/1519)) so the rate of recurrence is mechanical, not anecdotal.
+- A reviewer pass that surfaces P1 findings and discards them when the run terminates evaporates. Findings should be persisted as queryable substrate rows (per [ADR-0002](../adr/0002-audit-substrate-and-queryable-run-history.md)) so the rate of recurrence is mechanical, not anecdotal.
 - An adaptive-router change that improves first-attempt success but does not record *why* in a form future routers can read is one-shot improvement. It works for this release; it does not compound across the system's lifetime.
 
 ## Compound engineering and refusal-capability are siblings
@@ -112,7 +112,7 @@ These are signals the system should make legible over time. Not all are implemen
 - [`docs/plans/knowledge-capture.md`](../plans/knowledge-capture.md) — the canonical three-layer mechanism this doctrine names. If the doctrine is "what good looks like," that plan is "how it gets built."
 - [`docs/plans/forge-storage-layout.md`](../plans/forge-storage-layout.md) — file format, gitignore, migration sequence. The substrate the mechanism writes into.
 - [ADR-0001](../adr/0001-intake-readiness-workflow.md) — intake readiness as a refusal-axis expression of compound engineering.
-- [ADR-0002 (PR #1519)](https://github.com/fuzzypete/theforge/pull/1519) — audit substrate as the trust contract over what compound engineering captures. (Link retargets to the file path once #1519 merges.)
+- [ADR-0002](../adr/0002-audit-substrate-and-queryable-run-history.md) — audit substrate as the trust contract over what compound engineering captures.
 - Future ADRs likely to cite this doctrine: adaptive-router trust model (v0.13 prereq), autonomy boundary, commit-centric review handoffs, operator-action work-object type.
 
 ## Companion doctrine
