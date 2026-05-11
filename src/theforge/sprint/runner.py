@@ -1916,22 +1916,15 @@ def run_sprint(
             _sk_slug = f"issue-{_sk_num}"
             if _story_state.has(_sk_slug):
                 continue
-            _sk_codes = _sk_dict.get("reason_codes") or []
-            _sk_reason = (
-                ", ".join(_sk_codes)
-                if _sk_codes
-                else (_sk_dict.get("detail") or _sk_dict.get("source") or "shape-gate")
-            )
+            from .shape_gate import skipped_issue_state_fields  # noqa: PLC0415
+
+            _sk_reason, _sk_detail = skipped_issue_state_fields(_sk)
             _state_writer.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
                 outcome=StoryOutcome.SKIPPED,
                 reason=_sk_reason,
-                detail={
-                    "shape_gate_source": _sk_dict.get("source"),
-                    "shape_gate_codes": list(_sk_codes),
-                    "final_outcome": "SKIPPED",
-                },
+                detail=_sk_detail,
             )
     elif skipped_issues or []:
         # Headless invocation (no run_id) — still register skipped issues in
@@ -1942,13 +1935,15 @@ def run_sprint(
             if _sk_num is None:
                 continue
             _sk_slug = f"issue-{_sk_num}"
-            _sk_codes = _sk_dict.get("reason_codes") or []
-            _sk_reason = ", ".join(_sk_codes) if _sk_codes else "shape-gate"
+            from .shape_gate import skipped_issue_state_fields  # noqa: PLC0415
+
+            _sk_reason, _sk_detail = skipped_issue_state_fields(_sk)
             _story_state.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
                 outcome=StoryOutcome.SKIPPED,
                 reason=_sk_reason,
+                detail=_sk_detail,
             )
 
     # Parallel scheduling state

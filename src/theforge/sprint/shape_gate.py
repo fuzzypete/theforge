@@ -66,6 +66,36 @@ class ShapeGateResult:
     skipped: list[SkippedIssue] = field(default_factory=list)
 
 
+def skipped_issue_state_fields(skipped: object) -> tuple[str, dict]:
+    """Return ``(reason, detail)`` for registering a SkippedIssue in canonical state.
+
+    Centralizes the verdict-preferred reason resolution and the per-story
+    ``detail`` shape so every caller (state_writer.write_bootstrap_state,
+    cli.sprint._emit_all_skipped_audit, sprint.runner skipped registration)
+    surfaces the typed verdict identifier consistently. forge sprint-status
+    reads the canonical ``reason`` for the DETAIL column, so divergence here
+    silently regresses the AC that verdicts appear in operator surfaces.
+    """
+    sk_dict = skipped.as_dict() if hasattr(skipped, "as_dict") else dict(skipped)
+    codes = sk_dict.get("reason_codes") or []
+    verdict = sk_dict.get("verdict")
+    verdict_desc = sk_dict.get("verdict_description") or ""
+    if verdict:
+        reason = verdict
+    elif codes:
+        reason = ", ".join(codes)
+    else:
+        reason = sk_dict.get("detail") or sk_dict.get("source") or "shape-gate"
+    detail = {
+        "shape_gate_source": sk_dict.get("source"),
+        "shape_gate_codes": list(codes),
+        "shape_verdict": verdict,
+        "shape_verdict_description": verdict_desc,
+        "final_outcome": "SKIPPED",
+    }
+    return reason, detail
+
+
 def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
     """Fetch issue detail for a single issue via ``gh``.
 

@@ -20,7 +20,11 @@ import textwrap
 from pathlib import Path
 
 from theforge.shape_check.types import VERDICT_DESCRIPTIONS, ShapeVerdict
-from theforge.sprint.shape_gate import apply_shape_gate
+from theforge.sprint.shape_gate import (
+    SkippedIssue,
+    apply_shape_gate,
+    skipped_issue_state_fields,
+)
 
 NO_DIAGNOSIS_BODY = "## What happened\nThings broke.\n\n## What was expected\nThey work.\n"
 
@@ -111,3 +115,46 @@ def test_complete_diagnosis_lands_on_runnable(tmp_path: Path) -> None:
     assert runnable["number"] == 3
     assert runnable["shape_verdict"] == ShapeVerdict.RUNNABLE.value
     assert VERDICT_DESCRIPTIONS[ShapeVerdict.RUNNABLE].strip() != ""
+
+
+def test_skipped_issue_state_fields_prefers_typed_verdict() -> None:
+    """Mixed-sprint regression guard: the helper used by sprint.runner,
+    state_writer, and cli.sprint must surface the verdict identifier in the
+    canonical reason so forge sprint-status displays it (AC).
+    """
+    sk = SkippedIssue(
+        issue_number=1497,
+        reason_codes=("missing_acceptance_criteria",),
+        source="local_check",
+        title="Feature without ACs",
+        detail="No acceptance criteria section found.",
+        verdict=ShapeVerdict.NEEDS_GROOMING_MISSING_AC.value,
+        verdict_description=VERDICT_DESCRIPTIONS[ShapeVerdict.NEEDS_GROOMING_MISSING_AC],
+    )
+    reason, detail = skipped_issue_state_fields(sk)
+    # forge sprint-status renders ``story.reason`` for skipped rows; this is
+    # the operator-visible verdict surface.
+    assert reason == ShapeVerdict.NEEDS_GROOMING_MISSING_AC.value
+    assert detail["shape_verdict"] == ShapeVerdict.NEEDS_GROOMING_MISSING_AC.value
+    assert (
+        detail["shape_verdict_description"]
+        == VERDICT_DESCRIPTIONS[ShapeVerdict.NEEDS_GROOMING_MISSING_AC]
+    )
+    assert detail["shape_gate_codes"] == ["missing_acceptance_criteria"]
+    assert detail["final_outcome"] == "SKIPPED"
+
+
+def test_skipped_issue_state_fields_falls_back_to_codes_for_legacy_records() -> None:
+    """Records without the verdict field (older skip artifacts) must still
+    project a non-empty reason so the canonical state isn't blank."""
+    legacy = {
+        "issue_number": 9,
+        "reason_codes": ["legacy_code"],
+        "source": "local_check",
+        "title": "Legacy",
+        "detail": "",
+    }
+    reason, detail = skipped_issue_state_fields(legacy)
+    assert reason == "legacy_code"
+    assert detail["shape_verdict"] is None
+    assert detail["shape_gate_codes"] == ["legacy_code"]

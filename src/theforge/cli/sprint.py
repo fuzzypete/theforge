@@ -361,6 +361,8 @@ def _emit_all_skipped_audit(
     # issue so the all-skipped audit/summary projects from the same SoT
     # structure run_sprint() uses. Counts and the per-story list both flow
     # from this single source.
+    from theforge.sprint.shape_gate import skipped_issue_state_fields
+
     story_state = SprintStoryState()
     for sk in skipped_issues or []:
         sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
@@ -368,28 +370,14 @@ def _emit_all_skipped_audit(
         if sk_num is None:
             continue
         sk_slug = f"issue-{sk_num}"
-        sk_codes = sk_dict.get("reason_codes") or []
-        sk_verdict = sk_dict.get("verdict")
-        sk_verdict_desc = sk_dict.get("verdict_description") or ""
-        if sk_verdict:
-            sk_reason = sk_verdict
-        elif sk_codes:
-            sk_reason = ", ".join(sk_codes)
-        else:
-            sk_reason = sk_dict.get("detail") or sk_dict.get("source") or "shape-gate"
+        sk_reason, sk_detail = skipped_issue_state_fields(sk)
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
             outcome=StoryOutcome.SKIPPED,
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",
-            detail={
-                "shape_gate_source": sk_dict.get("source"),
-                "shape_gate_codes": list(sk_codes),
-                "shape_verdict": sk_verdict,
-                "shape_verdict_description": sk_verdict_desc,
-                "final_outcome": "SKIPPED",
-            },
+            detail=sk_detail,
         )
     canonical_counts = story_state.counts()
     manifest = ResolvedSprint(
