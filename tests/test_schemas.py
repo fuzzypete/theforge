@@ -151,23 +151,24 @@ class TestValidateReviewYaml:
         assert len(errors) == 1
         assert "mapping" in errors[0]
 
-    def test_p1_with_file_and_null_line_is_error(self):
-        """P1 finding with file set and line: null must be a validation error."""
+    def test_p1_with_file_and_null_line_is_valid(self):
+        """P1 file-scope finding (file existence/whole-file state) with line: null
+        is valid — the defect is the file itself, not a specific source line."""
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
         data["findings"] = [
             {
                 "severity": "P1",
-                "file": "src/foo.py",
+                "file": "test_script.sh",
                 "line": None,
-                "observed": "Bug here",
-                "suggestion": "Fix it",
+                "observed": "Scratch file committed at repo root",
+                "suggestion": "Delete the file",
                 "expected": "project-contract category rule (test fixture)",
                 "evidence": "(test fixture evidence)",
             }
         ]
         errors = validate_review_yaml(data)
-        assert any("line" in e for e in errors)
+        assert errors == []
 
     def test_p1_with_null_file_and_null_line_is_valid(self):
         """P1 finding with file: null and line: null is valid (architectural finding)."""

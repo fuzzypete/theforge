@@ -398,16 +398,22 @@ def _run_review_pool(
         'summary: "one-line summary"\n'
         "findings:\n"
         "  - severity: P1 | P2\n"
-        '    file: "path"\n'
-        "    line: <number or null>\n"
-        '    description: "what is wrong"\n'
-        '    suggestion: "how to fix"\n'
+        '    file: "path"   # null for architectural findings\n'
+        "    line: <number or null>   # null for file-scope findings "
+        "(file existence, whole-file state, structural hygiene)\n"
+        '    observed: "what is wrong"\n'
+        '    expected: "category-level rule that generalises"\n'
+        '    evidence: "file path, line, or anchor"\n'
+        '    suggestion: "how to fix (optional)"\n'
         "story_compliance:\n"
         "  matches_spec: true | false\n"
         "  mismatches: []\n"
         "test_coverage:\n"
         "  adequate: true | false\n"
         "  gaps: []\n"
+        "Do not drop a P1 finding to satisfy a line-number requirement: "
+        "line: null is valid when the defect is the existence, absence, mode, "
+        "or whole-file state of the path.\n"
     )
     for i, (name, parsed) in enumerate(zip(names, parsed_results)):
         if not parsed.parse_errors:

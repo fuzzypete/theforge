@@ -105,13 +105,10 @@ def validate_review_yaml(data: Any) -> list[str]:
             if file_val is not None and not file_val:
                 errors.append(f"findings[{i}].file must be non-empty for P1 findings")
 
-            # P1 with file set must also cite a specific line to be actionable.
-            # P1 with file: null (architectural finding) does not require a line.
-            if file_val and not finding.get("line"):
-                errors.append(
-                    f"findings[{i}].line must be set for P1 findings with a file — "
-                    f"vague P1s block the pipeline without clear fix targets"
-                )
+            # line may be null even when file is set: file-scope findings
+            # (file existence, mode, whole-file state, structural hygiene) target
+            # the path itself, not a specific source line. Architectural findings
+            # (file: null) also do not require a line.
 
         for prose_field in ("observed", "expected", "evidence"):
             value = finding.get(prose_field)

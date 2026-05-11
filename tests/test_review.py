@@ -87,6 +87,38 @@ class TestParseReviewOutput:
         assert result.test_adequate is False
         assert len(result.test_gaps) == 1
 
+    def test_file_scope_p1_with_null_line_parses_cleanly(self):
+        """File-scope P1 (file existence) with line: null preserves REQUEST_CHANGES."""
+        text = (
+            "```yaml\n"
+            "verdict: REQUEST_CHANGES\n"
+            'summary: "Scratch file at repo root"\n'
+            "findings:\n"
+            "  - severity: P1\n"
+            "    file: test_script.sh\n"
+            "    line: null\n"
+            '    observed: "Scratch shell script committed at repo root"\n'
+            '    expected: "Repo root contains only tracked project artefacts; '
+            'transient scratch files must not be committed."\n'
+            '    evidence: "test_script.sh"\n'
+            '    suggestion: "Delete the file"\n'
+            "story_compliance:\n"
+            "  matches_spec: false\n"
+            "  mismatches: []\n"
+            "test_coverage:\n"
+            "  adequate: true\n"
+            "  gaps: []\n"
+            "ac_verification: []\n"
+            "```\n"
+        )
+        result = parse_review_output(text)
+        assert result.parse_errors == []
+        assert result.verdict == "REQUEST_CHANGES"
+        assert len(result.findings) == 1
+        assert result.findings[0].severity == "P1"
+        assert result.findings[0].file == "test_script.sh"
+        assert result.findings[0].line is None
+
     def test_bare_yaml_no_fences(self):
         bare = (
             "verdict: APPROVE\n"
