@@ -32,6 +32,28 @@
 
 set -euo pipefail
 
+# --- Self-isolate from the on-disk script source ---------------------------
+# This script performs `git checkout` mid-run (steps 2-3). Bash reads its
+# script by byte offset from the on-disk file, so a checkout that swaps in a
+# divergent copy of scripts/cut-rc.sh causes bash to continue executing
+# whatever bytes land at the current offset in the new file — silent
+# corruption per byte, per branch. To make behavior independent of which
+# branch the operator launched from, copy the launching source to a temp
+# path once, before any git operation runs, and re-exec from there. The
+# child's $CUT_RC_SELF_COPY guard prevents infinite re-exec; the trap in
+# the child removes the temp file on exit.
+if [[ "${CUT_RC_SELF_COPY:-}" != "1" ]]; then
+    _self_copy="$(mktemp -t cut-rc.XXXXXX)"
+    cat "$0" > "$_self_copy"
+    chmod +x "$_self_copy"
+    export CUT_RC_SELF_COPY=1
+    export CUT_RC_SELF_COPY_PATH="$_self_copy"
+    exec bash "$_self_copy" "$@"
+fi
+if [[ -n "${CUT_RC_SELF_COPY_PATH:-}" ]]; then
+    trap 'rm -f "$CUT_RC_SELF_COPY_PATH"' EXIT
+fi
+
 export PATH="/opt/homebrew/bin:$PATH"
 
 DRY_RUN=false
