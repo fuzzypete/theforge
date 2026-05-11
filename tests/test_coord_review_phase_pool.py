@@ -481,7 +481,7 @@ class TestReviewParseRetry:
     def test_all_parse_retries_exhausted(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
-        """All per-reviewer parse retries exhausted → synthetic P1 → cycles exhaust → ESCALATE."""
+        """All per-reviewer parse retries exhausted → direct review-infrastructure ESCALATE."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -494,7 +494,7 @@ class TestReviewParseRetry:
         mock_review_agent.return_value = _make_agent_result()
 
         # Pool always returns unparseable output; run_agent retries also return "Done." (fails)
-        # Synthetic P1 injected → REQUEST_CHANGES → review cycles exhaust → ESCALATE
+        # All reviewers unparseable → direct ESCALATE with review-infrastructure reason
         mock_pool.return_value = [
             _make_agent_result(
                 success=True, output=PARSE_ERROR_OUTPUT, profile_name="review", cost_usd=0.1
@@ -505,8 +505,11 @@ class TestReviewParseRetry:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        # Escalation is due to review cycles being exhausted, not "unreliable" pool
-        assert "cycles" in result.message.lower() or "exhausted" in result.message.lower()
+        # Escalation reason is review-infrastructure failure, not exhausted cycles or no-changes
+        assert "review infrastructure" in result.message.lower()
+        assert "parseable" in result.message.lower()
+        # Only one review cycle attempted — no DEV iteration for synthetic finding
+        assert result.state.review_cycle == 0
 
     @patch("theforge.coordinator.review_pool.run_agent")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -627,7 +630,7 @@ class TestReviewPoolResilience:
     def test_max_review_parse_retries_zero_disables_retry(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """max_review_parse_retries=0 → no per-reviewer retry; synthetic P1 injected."""
+        """max_review_parse_retries=0 → no per-reviewer retry; direct infrastructure ESCALATE."""
         from dataclasses import replace as _dc_replace
 
         from theforge.config import RetryPolicy
@@ -651,9 +654,10 @@ class TestReviewPoolResilience:
 
         result = run_task(config, task)
 
-        # No retries → synthetic P1 → REQUEST_CHANGES → cycles exhaust → ESCALATE
+        # No retries → all reviewers unparseable → direct review-infrastructure ESCALATE
         assert result.success is False
         assert result.phase == Phase.ESCALATE
+        assert "review infrastructure" in result.message.lower()
         # parse_retries == 0 (none attempted)
         assert result.state.review_cycle_metadata[0].parse_retries == 0
 
@@ -702,10 +706,16 @@ class TestReviewPoolResilience:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_synthetic_p1_when_all_reviewers_fail(
+    def test_all_reviewers_unparseable_escalates_as_infrastructure(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
-        """When all reviewers fail to parse and retries fail, synthetic P1 is injected."""
+        """All reviewers unparseable → direct ESCALATE with review-infrastructure reason.
+
+        Regression test for issue #1502: previously the sprint injected a synthetic
+        P1, looped through DEV (which cannot fix reviewer output), and escalated
+        with a misleading no-changes reason. The fix escalates directly at the
+        review layer with a clear infrastructure reason.
+        """
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -724,15 +734,16 @@ class TestReviewPoolResilience:
 
         result = run_task(config, task)
 
-        # Synthetic P1 → REQUEST_CHANGES → cycles exhaust → ESCALATE
+        # All reviewers unparseable → direct ESCALATE at review layer
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        # At least one review cycle was recorded
-        assert result.state.review_cycle >= 1
-        # The recorded review should have P1 findings (synthetic)
-        last_review = result.state.review_results[-1]
-        assert last_review.verdict == "REQUEST_CHANGES"
-        assert any(f.severity == "P1" for f in last_review.findings)
+        # Reason names review-infrastructure failure, not DEV no-changes or cycles
+        assert "review infrastructure" in result.message.lower()
+        assert "parseable" in result.message.lower()
+        # No review_cycle incremented (escalation happens before increment)
+        assert result.state.review_cycle == 0
+        # No synthetic finding was recorded as an actionable review result
+        assert result.state.review_results == []
 
     @patch("theforge.coordinator.review_pool.run_agent")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
