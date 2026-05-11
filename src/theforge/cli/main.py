@@ -20,6 +20,7 @@ from theforge.cli import (
     providers,
     review,
     run,
+    shape,
     sprint,
     status,
     telemetry,
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.register_parser(subparsers)
     todo.register_parser(subparsers)
     diagnose.register_parser(subparsers)
+    shape.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
     profiles.register_parser(subparsers)
     status.register_parsers(subparsers)
@@ -105,6 +107,7 @@ def main() -> None:
         "eval-preflight": eval_cmd.cmd_eval_preflight,
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
+        "shape": shape.cmd_shape,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
         "profiles": profiles.cmd_profiles,
         "status": status.cmd_status,

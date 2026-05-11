@@ -354,6 +354,41 @@ forge init-hooks
 
 ---
 
+## `forge shape`
+
+Classify a rough draft (issue, file, or stdin) into a typed work object —
+`bug`, `enhancement`, `epic`, `operator-action`, `documentation`,
+`adr-candidate`, or `duplicate/stale`. Refusal-capable: low-confidence inputs
+are kept as `todo:draft` with structured ambiguity questions rather than
+force-classified.
+
+```bash
+forge shape <issue>          # classify a GitHub issue
+forge shape --from-brief FILE
+forge shape --from-stdin
+forge shape <issue> --apply  # commit the label + body edits via gh
+forge shape <issue> --next   # print only the recommended next command
+```
+
+**Use this when:** You captured a rough thought (`forge todo`, a brain-dump
+file, or a freshly-filed issue) and need to know what kind of work object it
+should become before grooming or diagnosing it.
+
+**The command never auto-invokes a producer.** `--next` prints a hint
+(`forge diagnose 123`, `forge groom 123`, etc.); it does not run it.
+`--next` output is human-readable in v0.11; no stable machine-readable
+contract is promised yet.
+
+**ADR candidates** receive a proposed slug and title — the ADR file is not
+written. **Epic** classifications may propose child stories in prose; no
+child issues are created.
+
+Every invocation writes a row into the audit substrate's `shape_events`
+table (issue number, input source, classification, confidence, ambiguity
+question count, whether `--apply` mutated the issue).
+
+---
+
 ## `forge audit`
 
 Display a human-readable summary of an audit file.

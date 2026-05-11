@@ -9,6 +9,24 @@ TheForge's sprint-entry validation as-is.
 You do not need to read the validator's source to follow this guide. Following
 the per-section rules will produce input that passes.
 
+## Shaping rough drafts first
+
+Before an issue can be authored against the rules below, it has to *be the
+right kind of thing*. If you captured a thought with `forge todo` or filed a
+freshly-rough issue without a clear type, run `forge shape <issue>` first.
+
+`forge shape` proposes one of TheForge's typed work objects — bug,
+enhancement, epic, operator-action, documentation, adr-candidate, or
+duplicate/stale — and prints a body restructure. It is **refusal-capable**:
+when confidence is low it keeps the item as `todo:draft` and asks you
+structured ambiguity questions rather than force-classifying. Use `--apply`
+to commit the proposal via `gh`, and `--next` to print the recommended next
+operator command (`forge diagnose`, `forge groom`, etc.). The next command is
+never auto-invoked — you run it.
+
+Once `forge shape` has put the issue in a typed bucket, the per-use-case
+rules below apply.
+
 ## Storage: GitHub issue vs local story file
 
 TheForge accepts the same content in two storage backends:
