@@ -146,14 +146,15 @@ class TestCoordinatorSchemaErrorOnRequestChanges:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
-        # Malformed REQUEST_CHANGES: has P1 finding but story_compliance missing fields
+        # Malformed REQUEST_CHANGES: invalid severity (P0 is not a valid finding severity)
         malformed_review = """\
 ```yaml
 verdict: REQUEST_CHANGES
 summary: "Needs work"
 findings:
-  - severity: P1
+  - severity: P0
     file: src/foo.py
+    line: 10
     observed: "Bug"
     expected: "Behaviour conforms to project contract for this category of inputs."
     evidence: "(test fixture evidence)"
