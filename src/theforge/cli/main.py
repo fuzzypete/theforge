@@ -12,6 +12,7 @@ from theforge.cli import (
     diagnose,
     eval_cmd,
     forge_yaml_guard,
+    groom,
     hooks,
     ideate,
     index,
@@ -69,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     todo.register_parser(subparsers)
     diagnose.register_parser(subparsers)
     shape.register_parser(subparsers)
+    groom.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
     profiles.register_parser(subparsers)
     status.register_parsers(subparsers)
@@ -108,6 +110,7 @@ def main() -> None:
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
         "shape": shape.cmd_shape,
+        "groom": groom.cmd_groom,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
         "profiles": profiles.cmd_profiles,
         "status": status.cmd_status,

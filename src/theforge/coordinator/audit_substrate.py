@@ -100,6 +100,23 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS readiness_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    issue_ref TEXT NOT NULL,
+    issue_type TEXT,
+    pre_verdict TEXT,
+    post_verdict TEXT,
+    action TEXT NOT NULL,
+    applied INTEGER NOT NULL,
+    bug_diagnosis_state TEXT,
+    refusal_reason TEXT,
+    emitted_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_readiness_events_kind ON readiness_events(kind);
+CREATE INDEX IF NOT EXISTS idx_readiness_events_issue ON readiness_events(issue_ref);
+CREATE INDEX IF NOT EXISTS idx_readiness_events_action ON readiness_events(action);
 """
 
 
@@ -997,6 +1014,68 @@ def _derive_escalation(record: dict) -> dict | None:
         "timestamp": timestamp,
         "complexity_score": complexity_score,
     }
+
+
+def record_readiness_event(project_root: Path, event: dict) -> int:
+    """Insert a readiness event row into the audit substrate.
+
+    Used by intake-readiness commands (``forge groom`` today; ``forge shape``
+    and ``forge diagnose`` per ADR-0002 clause 6) to record what happened
+    per invocation so refusal-economics and intake-trust queries can run
+    against a single substrate table rather than parsing scattered logs.
+
+    Returns the inserted row's ``event_id``. Stdlib only; raises
+    :class:`SubstrateError` on I/O failure so callers can decide whether
+    audit failure should fail the user's command.
+    """
+    required = {"kind", "issue_ref", "action"}
+    missing = required - set(event)
+    if missing:
+        raise SubstrateError(f"readiness event missing required keys: {sorted(missing)}")
+    raw_json = _canonical_json(event)
+    emitted_at = _now_iso()
+    conn = create_or_open(project_root)
+    try:
+        cur = conn.execute(
+            "INSERT INTO readiness_events "
+            "(kind, issue_ref, issue_type, pre_verdict, post_verdict, action, "
+            "applied, bug_diagnosis_state, refusal_reason, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(event["kind"]),
+                str(event["issue_ref"]),
+                event.get("issue_type"),
+                event.get("pre_verdict"),
+                event.get("post_verdict"),
+                str(event["action"]),
+                1 if event.get("applied") else 0,
+                event.get("bug_diagnosis_state"),
+                event.get("refusal_reason"),
+                emitted_at,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def iter_readiness_events(conn: sqlite3.Connection, *, kind: str | None = None) -> Iterable[dict]:
+    """Yield readiness-event dicts (parsed from raw_json), newest first."""
+    if kind is not None:
+        cur = conn.execute(
+            "SELECT raw_json FROM readiness_events WHERE kind = ? ORDER BY event_id DESC",
+            (kind,),
+        )
+    else:
+        cur = conn.execute("SELECT raw_json FROM readiness_events ORDER BY event_id DESC")
+    for row in cur:
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
 
 
 def seed_records(project_root: Path, records: Iterable[dict]) -> None:
