@@ -389,6 +389,45 @@ question count, whether `--apply` mutated the issue).
 
 ---
 
+## `forge groom`
+
+Restructure a typed issue body to satisfy the shape-gate rules for its type
+(bug, enhancement/task, docs). Operates on one issue per invocation; does
+not invoke `forge diagnose` or `forge shape` — operator runs those
+explicitly in the `capture → shape → diagnose → groom → ready → sprint`
+lifecycle.
+
+```bash
+forge groom <issue>            # show proposed body diff (exit 2 if changes needed)
+forge groom <issue> --apply    # commit the restructure via `gh issue edit`
+forge groom <issue> --next     # also print a recommended next operator command
+```
+
+`<issue>` is a GitHub issue number (`1503` or `#1503`) or a local issue
+body file path.
+
+**Three-state bug handling.** Bug-typed issues are routed by the diagnosis
+state present in the body:
+
+| Diagnosis state         | Behavior                                                                                          |
+|-------------------------|---------------------------------------------------------------------------------------------------|
+| No diagnosis            | Refused with `"needs diagnosis — run forge diagnose <N> first."` No body edits proposed.          |
+| Diagnosis, cause unknown| Body normalization only; output says "investigation-ready, not implementation-ready." No ready.   |
+| Diagnosis, confirmed    | Body is restructured; post-groom verdict reported. Operator may then label `ready`.               |
+
+`forge groom` will never propose adding the `ready` label to a bug whose
+cause is unknown — this is a hard invariant of the lifecycle.
+
+**`--next` is operator hint, not protocol.** Output is human-readable; the
+v0.11 contract does not promise a stable machine-readable shape. A `--json`
+extension may follow when auto-routing in v0.12+ needs it.
+
+Every invocation emits a `groom` row to the SQLite audit substrate
+(`.forge/audits/index.sqlite`, table `readiness_events`) so refusal counts
+and investigation-ready piles are queryable.
+
+---
+
 ## `forge audit`
 
 Display a human-readable summary of an audit file.

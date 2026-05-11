@@ -395,6 +395,20 @@ The new subsection follows the existing pattern used for `validation:`:
 
 ---
 
+## Repairing a rejected issue with `forge groom`
+
+If an issue is typed but fails the shape gate, `forge groom <N>` will
+propose a body restructure to fix it. The command applies the three-state
+bug rule from ADR-0001 — bugs without a diagnosis are refused with a
+pointer to `forge diagnose`, bugs whose cause is still unknown can only
+be normalized (never labeled `ready`), and bugs with a confirmed cause are
+restructured normally. See `cli-reference.md#forge-groom` for usage.
+
+Groom does **not** invoke `forge diagnose` or `forge shape` for you; the
+operator runs them in order (`shape → diagnose → groom`).
+
+---
+
 ## Common reasons sprint entry rejects an issue
 
 If you followed the use-case templates above you should not see these, but
