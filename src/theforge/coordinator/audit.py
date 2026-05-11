@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from theforge.config import ForgeConfig
@@ -11,7 +12,35 @@ from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
 
 from .audit_render import build_agent_entries, build_reviews
+from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .state import CoordinatorResult, CoordinatorState
+
+# Per-run audit-record schema version. Sourced from audit_substrate so the
+# writer (this module) and the reader-side migration dispatch stay locked
+# together. See ADR-0002 §"Schema versioning is load-bearing".
+__all_schema_exports__ = ("SCHEMA_VERSION", "MIGRATION_HELPERS", "MAX_KNOWN_VERSION")
+
+
+def _migrate_v1_to_v2(record: dict) -> dict:
+    """No-op: v1 → v2 introduced no breaking field rename or removal.
+
+    The seam exists so future structural changes register here in a chained
+    `MIGRATION_HELPERS[N] = _migrate_vN_to_vN+1` entry, satisfying the
+    writer-side guard that bumps to ``SCHEMA_VERSION`` always ship with a
+    matching helper.
+    """
+    return record
+
+
+# Keys are the FROM version; each helper translates a record at version N
+# into the shape expected at version N+1. Reaching ``SCHEMA_VERSION`` from
+# version 1 requires applying helpers for keys 1..SCHEMA_VERSION-1, so the
+# CI guard asserts ``max(MIGRATION_HELPERS.keys()) == SCHEMA_VERSION - 1``.
+MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
+    1: _migrate_v1_to_v2,
+}
+
+MAX_KNOWN_VERSION = max(MIGRATION_HELPERS.keys()) if MIGRATION_HELPERS else 0
 
 
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
@@ -460,7 +489,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
 
     return {
         "forge_version": "0.1.0",
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "run_id": state.run_id,
         "task": {
             "name": task.name,
