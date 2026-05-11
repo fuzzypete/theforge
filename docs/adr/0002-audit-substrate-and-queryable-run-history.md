@@ -147,9 +147,12 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 - Readers consult per-record `schema_version` before parsing and route through a migration helper when the version is below their known maximum.
 - Adding a field is non-breaking and does not bump the version. Renaming, removing, or repurposing a field is breaking and MUST bump the version, with migration helpers added in the same PR.
 - The substrate must support reading records from at least the two most recent shipped `schema_version`s at any given time. (Older readers from outside the active support window may skip with a warning, per clause 4.)
-- A CI check refuses a `schema_version` bump on the writer side without a matching migration-helper entry.
 
-No flag days. Schema migrations are reader-side, lazy, and per-record. This ADR commits to that property; #1522 implements it.
+**Writer-side guard (tracked in #1528):**
+
+- A CI check refuses a `schema_version` bump on the writer side without a matching migration-helper entry. This is the writer-side counterpart to #1522's reader-side dispatch; the two issues are sized to land independently.
+
+No flag days. Schema migrations are reader-side, lazy, and per-record. This ADR commits to that property; #1522 + #1528 implement it together.
 
 ### Refusal-economics metric
 
@@ -182,7 +185,7 @@ Explicitly deferred to later ADRs or implementation issues:
 - The refusal-to-forget invariant makes compound engineering's "non-evaporation" property mechanically enforced, not aspirational.
 - The clear separation between authoritative records and advisory LLM summaries forecloses an entire class of future mistakes (LLM-generated drift influencing mechanical decisions).
 - Schema versioning + reader-side migration means the substrate can evolve without flag days.
-- The substrate's query obligation makes the refusal-economics metric a one-query implementation rather than an architectural argument.
+- The substrate's query obligations make refusal-economics inputs (inline-remediation cost, clean-intake-run cost, refusal counts) measurable and queryable rather than the subject of an architectural argument. The headline formula is then a downstream choice, not an ADR-bound contract.
 
 ### Negative
 
@@ -195,7 +198,7 @@ Explicitly deferred to later ADRs or implementation issues:
 - **Substrate write becomes load-bearing despite clause 6.** A future contributor accidentally treats substrate-write success as a gate prerequisite. Mitigated by uniform "log and proceed" pattern in the shared writer and a single seam-level test that covers it.
 - **LLM summaries are used as decision inputs anyway.** Clause 5 forbids it, but routing or scoring code could grow a covert dependency on summary content via prompt manipulation. Mitigated by keeping summaries off the router's read path entirely — the router consumes the SQLite index, not `.forge/knowledge/`.
 - **Schema drift goes unnoticed.** A field is renamed without a version bump and old readers silently break. Mitigated by the CI guard tracked in #1528, which fails when the per-run record's serializable shape changes without a corresponding `schema_version` bump and migration helper entry.
-- **The refusal-economics metric becomes vibes.** The query exists but no postmortem cites it, so refusal stays "feels like friction." Mitigated by surfacing it in `forge audits show` (already in flight via #1470) and in release-readiness reviews going forward.
+- **The refusal-economics dimensions exist but go unused.** The substrate surfaces inline-remediation cost, clean-intake-run cost, and refusal counts, but if no postmortem queries them, refusal stays "feels like friction." Mitigated by surfacing the dimensions in `forge audits show` (already in flight via #1470) and citing them in release-readiness reviews going forward.
 
 ## References
 
