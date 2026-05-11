@@ -68,11 +68,12 @@ notes: |
   context the operator should see.
 inspected_files:
   # REQUIRED. List every file path you read or grepped during the
-  # investigation. This anchors the diagnosis to a baseline so a later
-  # `forge groom` can detect when the diagnosis has gone stale because
-  # one of these files was changed by an intervening commit.
-  - "src/theforge/relative/path/to/file.py"
-  - "tests/relative/path/to/test_file.py"
+  # investigation, one repo-relative path per entry. This anchors the
+  # diagnosis to a baseline so a later `forge groom` can detect when the
+  # diagnosis has gone stale because one of these files was changed by
+  # an intervening commit.
+  - "<repo-relative path to a file you inspected>"
+  - "<repo-relative path to another file you inspected>"
 ```
 """
 
