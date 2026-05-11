@@ -99,6 +99,74 @@ def test_label_skip_falls_back_to_label_detail_when_live_check_is_runnable(
     assert entry.detail == "issue carries 'needs-grooming' label"
 
 
+# ── Intake-remediated label suppression (re-exec carry) ─────────────────────
+
+
+def test_intake_remediated_issue_with_stale_grooming_label_runs(tmp_path: Path) -> None:
+    """If a sprint just remediated an issue's body, the post-re-exec gate
+    must trust the local re-check over the async-lagging ``needs-grooming``
+    label that the GH labeler workflow has not yet reconciled.
+    """
+    issues = [{"number": 1545, "title": "Just-remediated"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_RUNNABLE_BODY, [NEEDS_GROOMING_LABEL, "enhancement"]),
+        intake_remediated_numbers={1545},
+    )
+
+    assert result.runnable == issues
+    assert result.skipped == []
+
+
+def test_intake_remediated_set_does_not_rescue_unrelated_issues(tmp_path: Path) -> None:
+    """The suppression is per-issue: a remediated issue is rescued, an
+    unrelated needs-grooming issue is still skipped on the same call.
+    """
+    issues = [
+        {"number": 1545, "title": "Just-remediated"},
+        {"number": 9999, "title": "Stale label, not remediated"},
+    ]
+
+    def fetch(number, _project_root):
+        return {
+            "title": f"#{number}",
+            "body": _RUNNABLE_BODY,
+            "labels": [NEEDS_GROOMING_LABEL, "enhancement"],
+        }
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=fetch,
+        intake_remediated_numbers={1545},
+    )
+
+    assert [i["number"] for i in result.runnable] == [1545]
+    assert len(result.skipped) == 1
+    assert result.skipped[0].issue_number == 9999
+
+
+def test_intake_remediated_does_not_paper_over_broken_body(tmp_path: Path) -> None:
+    """Suppression of the label-source skip must NOT bypass the local check.
+    If the body is still malformed (e.g. body-edit didn't actually fix it),
+    the issue still drops via the local_check path.
+    """
+    issues = [{"number": 1545, "title": "Edit didn't fix it"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_BAD_BODY, [NEEDS_GROOMING_LABEL]),
+        intake_remediated_numbers={1545},
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    assert result.skipped[0].source == "local_check"
+
+
 # ── Local-check-skip path ───────────────────────────────────────────────────
 
 

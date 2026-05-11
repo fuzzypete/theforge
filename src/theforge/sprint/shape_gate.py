@@ -317,6 +317,7 @@ def apply_shape_gate(
     force: bool = False,
     fetch_detail=_fetch_issue_detail,
     llm_caller=None,
+    intake_remediated_numbers: "set[int] | frozenset[int] | None" = None,
 ) -> ShapeGateResult:
     """Partition issues into runnable vs skipped before preflight runs.
 
@@ -333,7 +334,16 @@ def apply_shape_gate(
 
     ``force=True`` returns every input issue as runnable but still populates
     ``skipped`` so the CLI can surface a prominent warning listing reasons.
+
+    ``intake_remediated_numbers`` lists issues whose bodies this run just
+    authoritatively edited via intake remediation. The async ``needs-grooming``
+    relabeler workflow may not have caught up by re-exec time; for these
+    issues the label is treated as async-stale and the live local check is
+    trusted instead. Without this suppression, a sprint that successfully
+    remediates an issue and then re-execs (source-pull mid-run) drops the
+    just-remediated issue on the post-re-exec gate pass.
     """
+    remediated = frozenset(intake_remediated_numbers or ())
     effective_mode = _resolve_classifier(classifier_mode, llm_caller=llm_caller)
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
@@ -384,7 +394,7 @@ def apply_shape_gate(
             llm_caller=llm_caller,
         )
 
-        if NEEDS_GROOMING_LABEL in labels:
+        if NEEDS_GROOMING_LABEL in labels and number not in remediated:
             codes = _blocking_codes(local) or ["needs_grooming_label"]
             skipped.append(
                 SkippedIssue(
