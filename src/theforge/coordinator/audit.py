@@ -11,7 +11,19 @@ from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
 
 from .audit_render import build_agent_entries, build_reviews
+from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
+from .audit_substrate import MIGRATION_HELPERS
 from .state import CoordinatorResult, CoordinatorState
+
+# Per-run audit-record schema version and the reader-side migration registry
+# are owned by audit_substrate (the reader). They are re-exported here so
+# the writer module exposes a single, authoritative pair: bumping
+# ``SCHEMA_VERSION`` requires a matching ``MIGRATION_HELPERS`` entry on the
+# runtime path, not a writer-local copy. See ADR-0002 §"Schema versioning is
+# load-bearing".
+MAX_KNOWN_VERSION = max(MIGRATION_HELPERS.keys()) if MIGRATION_HELPERS else 0
+
+__all_schema_exports__ = ("SCHEMA_VERSION", "MIGRATION_HELPERS", "MAX_KNOWN_VERSION")
 
 
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
@@ -460,7 +472,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
 
     return {
         "forge_version": "0.1.0",
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "run_id": state.run_id,
         "task": {
             "name": task.name,
