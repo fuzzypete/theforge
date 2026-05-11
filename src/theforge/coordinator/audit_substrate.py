@@ -142,6 +142,22 @@ CREATE INDEX IF NOT EXISTS idx_readiness_events_kind ON readiness_events(kind);
 CREATE INDEX IF NOT EXISTS idx_readiness_events_issue ON readiness_events(issue_ref);
 CREATE INDEX IF NOT EXISTS idx_readiness_events_action ON readiness_events(action);
 CREATE INDEX IF NOT EXISTS idx_readiness_events_staleness ON readiness_events(staleness_verdict);
+CREATE TABLE IF NOT EXISTS shape_verdict_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    base_branch_sha TEXT,
+    run_id TEXT,
+    sprint_name TEXT,
+    milestone TEXT,
+    source TEXT,
+    emitted_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_verdict ON shape_verdict_events(verdict);
+CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_issue ON shape_verdict_events(issue_id);
+CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_milestone ON shape_verdict_events(milestone);
+CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_run ON shape_verdict_events(run_id);
 """
 
 
@@ -1326,6 +1342,75 @@ def iter_readiness_events(conn: sqlite3.Connection, *, kind: str | None = None) 
     else:
         cur = conn.execute("SELECT raw_json FROM readiness_events ORDER BY event_id DESC")
     for row in cur:
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def record_shape_verdict_event(project_root: Path, event: dict) -> int:
+    """Insert a shape-gate verdict row into the audit substrate.
+
+    Each event captures the verdict assigned to a single issue at sprint
+    entry so refusal-economics queries (verdict distribution per milestone,
+    per-issue verdict trajectory) can run against the substrate without
+    re-deriving from YAML/log surfaces. Returns the inserted row's
+    ``event_id``. Raises :class:`SubstrateError` on missing required keys
+    or I/O failure so callers can decide whether to swallow (sprint gate
+    treats this as observability, not gating).
+    """
+    required = {"issue_id", "verdict"}
+    missing = required - set(event)
+    if missing:
+        raise SubstrateError(f"shape verdict event missing required keys: {sorted(missing)}")
+    raw_json = _canonical_json(event)
+    emitted_at = event.get("emitted_at") or _now_iso()
+    conn = create_or_open(project_root)
+    try:
+        cur = conn.execute(
+            "INSERT INTO shape_verdict_events "
+            "(issue_id, verdict, base_branch_sha, run_id, sprint_name, "
+            "milestone, source, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(event["issue_id"]),
+                str(event["verdict"]),
+                event.get("base_branch_sha"),
+                event.get("run_id"),
+                event.get("sprint_name"),
+                event.get("milestone"),
+                event.get("source"),
+                emitted_at,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def iter_shape_verdict_events(
+    conn: sqlite3.Connection,
+    *,
+    issue_id: str | None = None,
+    verdict: str | None = None,
+) -> Iterable[dict]:
+    """Yield shape-verdict event dicts (parsed from raw_json), oldest first."""
+    sql = "SELECT raw_json FROM shape_verdict_events"
+    clauses: list[str] = []
+    params: list = []
+    if issue_id is not None:
+        clauses.append("issue_id = ?")
+        params.append(issue_id)
+    if verdict is not None:
+        clauses.append("verdict = ?")
+        params.append(verdict)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, tuple(params)):
         raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
         try:
             yield json.loads(raw)
