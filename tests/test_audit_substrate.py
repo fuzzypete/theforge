@@ -702,6 +702,87 @@ class TestIndexedDimensions:
         ]
 
 
+class TestRecordLevelVerdict:
+    """ADR-0002 §3: verdict at record level, not only per-cycle."""
+
+    def test_record_verdict_populated_from_final_cycle(self, tmp_path: Path) -> None:
+        rec = _make_record(
+            run_id="r1",
+            reviews=[
+                {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+                {"cycle": 2, "verdict": "APPROVE"},
+            ],
+        )
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute("SELECT verdict FROM audit_records WHERE run_id='r1'").fetchone()
+        finally:
+            conn.close()
+        assert row[0] == "APPROVE"
+
+    def test_record_verdict_null_when_no_reviews(self, tmp_path: Path) -> None:
+        rec = _make_record(run_id="r1", reviews=[])
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute("SELECT verdict FROM audit_records WHERE run_id='r1'").fetchone()
+        finally:
+            conn.close()
+        assert row[0] is None
+
+    def test_record_verdict_groupby_serves_from_audit_records(self, tmp_path: Path) -> None:
+        """COUNT/GROUP BY verdict runs at record granularity without joining reviews."""
+        records = [
+            _make_record(
+                run_id="r1",
+                slug="a",
+                reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+            ),
+            _make_record(
+                run_id="r2",
+                slug="b",
+                reviews=[
+                    {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+                    {"cycle": 2, "verdict": "APPROVE"},
+                ],
+            ),
+            _make_record(
+                run_id="r3",
+                slug="c",
+                reviews=[{"cycle": 1, "verdict": "REQUEST_CHANGES"}],
+            ),
+        ]
+        conn = sub.create_or_open(tmp_path)
+        try:
+            for rec in records:
+                sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            rows = [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT verdict, COUNT(*) FROM audit_records "
+                    "WHERE verdict IS NOT NULL GROUP BY verdict ORDER BY verdict"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rows == [("APPROVE", 2), ("REQUEST_CHANGES", 1)]
+
+    def test_record_verdict_index_exists(self, tmp_path: Path) -> None:
+        conn = sub.create_or_open(tmp_path)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='audit_records'"
+            ).fetchall()
+        finally:
+            conn.close()
+        names = {r[0] for r in rows}
+        assert "idx_audit_records_verdict" in names
+
+
 class TestRecordSchemaMigration:
     """Issue #1522: reader-side per-record schema-version dispatch seam."""
 
@@ -723,6 +804,56 @@ class TestRecordSchemaMigration:
         rec = {"schema_version": sub.CURRENT_RECORD_SCHEMA_VERSION, "task": {"slug": "x"}}
         out = sub._migrate_record(rec, from_version=sub.CURRENT_RECORD_SCHEMA_VERSION)
         assert out is rec
+
+    @pytest.mark.parametrize(
+        "reader",
+        ["iter_records", "tail_records", "iter_escalation_records", "has_review_approve"],
+    )
+    def test_all_readers_route_through_migration_seam(
+        self, tmp_path: Path, monkeypatch, reader: str
+    ) -> None:
+        """Every reader consults record_schema_version via _migrate_record."""
+        rec_v1 = _make_record(
+            run_id="r1",
+            slug="demo",
+            reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+        )
+        rec_v1.pop("schema_version", None)
+        rec_v2 = _make_record(
+            run_id="r2",
+            slug="demo",
+            reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+        )
+        rec_v2["schema_version"] = 2
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec_v1, provenance="native")
+            sub.upsert_run_record(conn, rec_v2, provenance="native")
+            conn.commit()
+        finally:
+            conn.close()
+
+        seen_versions: list[int] = []
+        original = sub._migrate_record
+
+        def tracking(record: dict, *, from_version: int) -> dict:
+            seen_versions.append(from_version)
+            return original(record, from_version=from_version)
+
+        monkeypatch.setattr(sub, "_migrate_record", tracking)
+        conn = sub.create_or_open(tmp_path)
+        try:
+            if reader == "iter_records":
+                list(sub.iter_records(conn))
+            elif reader == "tail_records":
+                sub.tail_records(conn, 10)
+            elif reader == "iter_escalation_records":
+                list(sub.iter_escalation_records(conn))
+            elif reader == "has_review_approve":
+                list(sub.has_review_approve_in_substrate(conn, "demo"))
+        finally:
+            conn.close()
+        assert sorted(seen_versions) == [1, 2]
 
     def test_iter_records_routes_through_migration(self, tmp_path: Path, monkeypatch) -> None:
         rec_v1 = _make_record(run_id="r1")

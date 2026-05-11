@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS audit_records (
     milestone TEXT,
     issue_id INTEGER,
     dev_model TEXT,
+    verdict TEXT,
     raw_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_records_slug ON audit_records(slug);
@@ -146,6 +147,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE audit_records ADD COLUMN milestone TEXT",
         "ALTER TABLE audit_records ADD COLUMN issue_id INTEGER",
         "ALTER TABLE audit_records ADD COLUMN dev_model TEXT",
+        "ALTER TABLE audit_records ADD COLUMN verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
     ):
@@ -160,6 +162,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_audit_records_milestone ON audit_records(milestone)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_issue_id ON audit_records(issue_id)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_dev_model ON audit_records(dev_model)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_verdict ON audit_records(verdict)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_final_phase ON audit_records(final_phase)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_outcome ON audit_records(outcome_success)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_record_schema_version "
@@ -487,7 +490,34 @@ def _flat_fields(record: dict) -> dict:
         "milestone": milestone,
         "issue_id": issue_id,
         "dev_model": _derive_dev_model(record),
+        "verdict": _derive_record_verdict(record),
     }
+
+
+def _derive_record_verdict(record: dict) -> str | None:
+    """Return the run-level verdict for indexed record-level verdict queries.
+
+    ADR-0002 §3 names ``verdict`` as a record-level query dimension distinct
+    from ``reviews.verdict`` (which is per-cycle). The run-level value is the
+    verdict of the final review cycle — the verdict that actually decided the
+    run's outcome. Returns ``None`` when no reviews were recorded.
+    """
+    reviews = record.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return None
+    last: dict | None = None
+    last_cycle = -1
+    for idx, rev in enumerate(reviews, start=1):
+        if not isinstance(rev, dict):
+            continue
+        cycle = rev.get("cycle") if isinstance(rev.get("cycle"), int) else idx
+        if cycle >= last_cycle:
+            last_cycle = cycle
+            last = rev
+    if last is None:
+        return None
+    verdict = last.get("verdict")
+    return verdict if isinstance(verdict, str) and verdict else None
 
 
 def _derive_dev_model(record: dict) -> str | None:
@@ -632,6 +662,7 @@ def upsert_run_record(
         flat["milestone"],
         flat["issue_id"],
         flat["dev_model"],
+        flat["verdict"],
         raw_json,
     )
     conn.execute(
@@ -639,8 +670,8 @@ def upsert_run_record(
         "(run_id, slug, started_at, finished_at, total_cost_usd, final_phase, "
         "outcome_success, branch, landing_status, provenance, source_path, "
         "source_mtime, complexity_score, record_schema_version, milestone, "
-        "issue_id, dev_model, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "issue_id, dev_model, verdict, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(run_id) DO UPDATE SET "
         "slug=excluded.slug, started_at=excluded.started_at, "
         "finished_at=excluded.finished_at, total_cost_usd=excluded.total_cost_usd, "
@@ -651,7 +682,8 @@ def upsert_run_record(
         "complexity_score=excluded.complexity_score, "
         "record_schema_version=excluded.record_schema_version, "
         "milestone=excluded.milestone, issue_id=excluded.issue_id, "
-        "dev_model=excluded.dev_model, raw_json=excluded.raw_json",
+        "dev_model=excluded.dev_model, verdict=excluded.verdict, "
+        "raw_json=excluded.raw_json",
         params,
     )
     # Rewrite reviews for this run_id.

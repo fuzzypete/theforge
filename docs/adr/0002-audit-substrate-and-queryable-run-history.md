@@ -150,7 +150,7 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 
 **Landed in #1522 (substrate-side reader dispatch):**
 
-- `audit_records` gains indexed columns `record_schema_version`, `milestone`, `issue_id`, `dev_model`, plus indexes on `final_phase` and `outcome_success`, satisfying the minimum-query dimensions named in clause 3. Missing source fields populate as NULL; existing rows pick up the new columns on the next `forge audits rebuild`.
+- `audit_records` gains indexed columns `record_schema_version`, `milestone`, `issue_id`, `dev_model`, and `verdict` (run-level, derived from the final review cycle), plus indexes on `final_phase` and `outcome_success`, satisfying the minimum-query dimensions named in clause 3. The new `verdict` column is distinct from `reviews.verdict` (per-cycle) so `COUNT/GROUP BY` queries at record granularity no longer require joining `reviews`. Missing source fields populate as NULL; existing rows pick up the new columns on the next `forge audits rebuild`.
 - New per-run records are written at `schema_version=2` (`CURRENT_RECORD_SCHEMA_VERSION` in `audit_substrate.py`). Pre-slice records without a `schema_version` field are read as version 1.
 - `audit_substrate._migrate_record(record, from_version=...)` is the reader-side seam. It is a no-op today (no breaking field changes have shipped) but every reader (`iter_records`, `tail_records`, `iter_escalation_records`, `has_review_approve_in_substrate`) now consults the indexed `record_schema_version` and routes the parsed record through it. Future breaking changes register translations there.
 
