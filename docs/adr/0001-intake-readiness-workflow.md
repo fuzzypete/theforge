@@ -1,10 +1,11 @@
 # ADR-0001: Intake Readiness Workflow
 
-- **Status:** Proposed
-- **Date:** 2026-05-10
+- **Status:** Accepted
+- **Date:** 2026-05-10 (proposed) / 2026-05-11 (accepted)
 - **Deciders:** Peter Wickersham (project lead), with iterative review by Claude and Codex
 - **Affected milestones:** v0.11.x (implementation), v0.12+ (dependency)
 - **Related issues:** #1034, #367, #1450, #1469, #1033
+- **Implementation slices (v0.11.0):** #1509, #1510, #1511, #1512, #1513
 
 ---
 
