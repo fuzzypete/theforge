@@ -28,7 +28,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-SUBSTRATE_SCHEMA_VERSION = 2
+SUBSTRATE_SCHEMA_VERSION = 3
+# Current per-record schema version. Records pre-dating the indexed-dimensions
+# slice (#1522) are treated as version 1. The reader-side migration helper
+# (`_migrate_record`) is the seam future breaking changes hang off — today it
+# is a no-op because no breaking field rename/removal has shipped.
+CURRENT_RECORD_SCHEMA_VERSION = 2
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -83,6 +88,11 @@ CREATE TABLE IF NOT EXISTS audit_records (
     source_path TEXT,
     source_mtime REAL,
     complexity_score INTEGER,
+    record_schema_version INTEGER NOT NULL DEFAULT 1,
+    milestone TEXT,
+    issue_id INTEGER,
+    dev_model TEXT,
+    verdict TEXT,
     raw_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_records_slug ON audit_records(slug);
@@ -133,11 +143,33 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     for stmt in (
+        "ALTER TABLE audit_records ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE audit_records ADD COLUMN milestone TEXT",
+        "ALTER TABLE audit_records ADD COLUMN issue_id INTEGER",
+        "ALTER TABLE audit_records ADD COLUMN dev_model TEXT",
+        "ALTER TABLE audit_records ADD COLUMN verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
     ):
         try:
             conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
+    # Indexes on columns added by ALTER TABLE above. Must run after the
+    # ALTER statements so legacy substrates don't fail with
+    # ``no such column`` on first open.
+    for idx_stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_milestone ON audit_records(milestone)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_issue_id ON audit_records(issue_id)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_dev_model ON audit_records(dev_model)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_verdict ON audit_records(verdict)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_final_phase ON audit_records(final_phase)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_outcome ON audit_records(outcome_success)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_record_schema_version "
+        "ON audit_records(record_schema_version)",
+    ):
+        try:
+            conn.execute(idx_stmt)
         except sqlite3.OperationalError:
             pass
     conn.execute(
@@ -417,6 +449,33 @@ def _flat_fields(record: dict) -> dict:
     ):
         landing_status = "landed"
 
+    raw_record_version = record.get("schema_version")
+    if isinstance(raw_record_version, bool):
+        record_schema_version = 1
+    elif isinstance(raw_record_version, int):
+        record_schema_version = raw_record_version
+    elif isinstance(raw_record_version, float):
+        record_schema_version = int(raw_record_version)
+    else:
+        record_schema_version = 1
+
+    milestone = record.get("milestone")
+    if not isinstance(milestone, str) or not milestone:
+        task_milestone = task.get("milestone") if isinstance(task, dict) else None
+        milestone = task_milestone if isinstance(task_milestone, str) and task_milestone else None
+
+    raw_issue = task.get("github_issue") if isinstance(task, dict) else None
+    if isinstance(raw_issue, bool):
+        issue_id: int | None = None
+    elif isinstance(raw_issue, int):
+        issue_id = raw_issue
+    elif isinstance(raw_issue, float):
+        issue_id = int(raw_issue)
+    elif isinstance(raw_issue, str) and raw_issue.lstrip("#").strip().isdigit():
+        issue_id = int(raw_issue.lstrip("#").strip())
+    else:
+        issue_id = None
+
     return {
         "slug": task.get("slug"),
         "started_at": timing.get("started_at"),
@@ -427,7 +486,101 @@ def _flat_fields(record: dict) -> dict:
         "branch": workspace.get("branch"),
         "landing_status": landing_status,
         "complexity_score": complexity_score,
+        "record_schema_version": record_schema_version,
+        "milestone": milestone,
+        "issue_id": issue_id,
+        "dev_model": _derive_dev_model(record),
+        "verdict": _derive_record_verdict(record),
     }
+
+
+def _derive_record_verdict(record: dict) -> str | None:
+    """Return the run-level verdict for indexed record-level verdict queries.
+
+    ADR-0002 §3 names ``verdict`` as a record-level query dimension distinct
+    from ``reviews.verdict`` (which is per-cycle). The run-level value is the
+    verdict of the final review cycle — the verdict that actually decided the
+    run's outcome. Returns ``None`` when no reviews were recorded.
+    """
+    reviews = record.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return None
+    last: dict | None = None
+    last_cycle = -1
+    for idx, rev in enumerate(reviews, start=1):
+        if not isinstance(rev, dict):
+            continue
+        cycle = rev.get("cycle") if isinstance(rev.get("cycle"), int) else idx
+        if cycle >= last_cycle:
+            last_cycle = cycle
+            last = rev
+    if last is None:
+        return None
+    verdict = last.get("verdict")
+    return verdict if isinstance(verdict, str) and verdict else None
+
+
+def _derive_dev_model(record: dict) -> str | None:
+    """Return the canonical dev model identity recorded for this run.
+
+    Mirrors the `cost.agents` parsing logic in :func:`_derive_escalation` so
+    the indexed `dev_model` column matches the model the adaptive router
+    treats as authoritative (the one that actually ran).
+    """
+    cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+    agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
+    for entry in agents:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("phase") != "dev" and entry.get("role") != "dev":
+            continue
+        provider = (entry.get("provider") or "").strip()
+        model = (entry.get("model") or "").strip()
+        cli = (entry.get("cli") or "").strip()
+        if model and provider:
+            transport = "cli" if cli else "api"
+            return f"{provider}/{model}/{transport}"
+        if entry.get("name"):
+            return str(entry["name"])
+    return None
+
+
+# ── Per-record schema migration ──────────────────────────────────────────
+
+
+def _migrate_record(record: dict, *, from_version: int) -> dict:
+    """Bring an older per-run record up to ``CURRENT_RECORD_SCHEMA_VERSION``.
+
+    Today this is a no-op: no breaking field rename or removal has shipped,
+    so version-1 records remain fully readable. The function exists as the
+    seam future breaking changes hang off — when a new version introduces
+    a structural change, add a branch here that translates the older shape
+    into the newer one before the reader parses it. Reader paths must call
+    this with ``from_version`` taken from the indexed
+    ``record_schema_version`` column rather than parsing ``raw_json``
+    speculatively.
+    """
+    if from_version >= CURRENT_RECORD_SCHEMA_VERSION:
+        return record
+    # No structural migrations registered yet. Future versions register
+    # here in chained `if from_version < N` branches.
+    return record
+
+
+def _load_migrated(raw_json: str, record_schema_version: int | None) -> dict | None:
+    """Parse ``raw_json`` and route through :func:`_migrate_record`.
+
+    Returns ``None`` when ``raw_json`` cannot be decoded so callers can
+    skip rather than abort the iteration.
+    """
+    try:
+        record = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    ver = record_schema_version if isinstance(record_schema_version, int) else 1
+    return _migrate_record(record, from_version=ver)
 
 
 def _extract_reviews(record: dict) -> list[tuple[int, str | None, int | None, int | None]]:
@@ -505,14 +658,20 @@ def upsert_run_record(
         source_path,
         source_mtime,
         flat["complexity_score"],
+        flat["record_schema_version"],
+        flat["milestone"],
+        flat["issue_id"],
+        flat["dev_model"],
+        flat["verdict"],
         raw_json,
     )
     conn.execute(
         "INSERT INTO audit_records "
         "(run_id, slug, started_at, finished_at, total_cost_usd, final_phase, "
         "outcome_success, branch, landing_status, provenance, source_path, "
-        "source_mtime, complexity_score, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "source_mtime, complexity_score, record_schema_version, milestone, "
+        "issue_id, dev_model, verdict, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(run_id) DO UPDATE SET "
         "slug=excluded.slug, started_at=excluded.started_at, "
         "finished_at=excluded.finished_at, total_cost_usd=excluded.total_cost_usd, "
@@ -520,7 +679,11 @@ def upsert_run_record(
         "branch=excluded.branch, landing_status=excluded.landing_status, "
         "provenance=excluded.provenance, source_path=excluded.source_path, "
         "source_mtime=excluded.source_mtime, "
-        "complexity_score=excluded.complexity_score, raw_json=excluded.raw_json",
+        "complexity_score=excluded.complexity_score, "
+        "record_schema_version=excluded.record_schema_version, "
+        "milestone=excluded.milestone, issue_id=excluded.issue_id, "
+        "dev_model=excluded.dev_model, verdict=excluded.verdict, "
+        "raw_json=excluded.raw_json",
         params,
     )
     # Rewrite reviews for this run_id.
@@ -762,7 +925,7 @@ def has_review_approve_in_substrate(
     semantics.
     """
     sql = (
-        "SELECT a.raw_json FROM audit_records a "
+        "SELECT a.raw_json, a.record_schema_version FROM audit_records a "
         "JOIN reviews r ON r.run_id = a.run_id "
         "WHERE a.slug = ? AND r.verdict = 'APPROVE'"
     )
@@ -770,39 +933,46 @@ def has_review_approve_in_substrate(
     if require_landed:
         sql += " AND a.landing_status = 'landed'"
     for row in conn.execute(sql, params):
-        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
-        try:
-            yield json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is not None:
+            yield record
 
 
 def iter_records(conn: sqlite3.Connection, *, order_by_started: bool = True) -> Iterable[dict]:
     """Iterate raw_json dicts for all audit records."""
-    sql = "SELECT raw_json FROM audit_records"
+    sql = "SELECT raw_json, record_schema_version FROM audit_records"
     if order_by_started:
         sql += " ORDER BY started_at ASC"
     for row in conn.execute(sql):
-        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
-        try:
-            yield json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is not None:
+            yield record
 
 
 def tail_records(conn: sqlite3.Connection, limit: int) -> list[dict]:
     """Return the most-recent ``limit`` records ordered by started_at DESC."""
     rows = conn.execute(
-        "SELECT raw_json FROM audit_records ORDER BY COALESCE(started_at, '') DESC LIMIT ?",
+        "SELECT raw_json, record_schema_version FROM audit_records "
+        "ORDER BY COALESCE(started_at, '') DESC LIMIT ?",
         (max(0, int(limit)),),
     ).fetchall()
     out: list[dict] = []
     for row in rows:
-        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
-        try:
-            out.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is not None:
+            out.append(record)
     return out
 
 
@@ -926,14 +1096,17 @@ def iter_escalation_records(conn: sqlite3.Connection) -> Iterable[dict]:
     view :func:`derive_assignment_history` uses preflight assignments
     instead, which is the *intended* dev model rather than the executed one.
     """
-    rows = conn.execute("SELECT raw_json FROM audit_records ORDER BY COALESCE(started_at, '') ASC")
+    rows = conn.execute(
+        "SELECT raw_json, record_schema_version FROM audit_records "
+        "ORDER BY COALESCE(started_at, '') ASC"
+    )
     for row in rows:
-        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
-        try:
-            record = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is None:
             continue
         derived = _derive_escalation(record)
         if derived is not None:

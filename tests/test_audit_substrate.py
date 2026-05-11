@@ -532,3 +532,384 @@ class TestRebuildPreservesLegacyRows:
             conn.close()
         assert len(legacy_after) == 1, "legacy row was dropped by runtime rebuild"
         assert native_after == 1
+
+
+class TestIndexedDimensions:
+    """Issue #1522: indexed columns for ADR-0002 query obligations."""
+
+    def _record_with(
+        self,
+        *,
+        run_id: str = "r1",
+        slug: str = "demo",
+        milestone: str | None = None,
+        github_issue: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        cli: str = "",
+        schema_version: int | None = 2,
+    ) -> dict:
+        rec = _make_record(run_id=run_id, slug=slug)
+        if schema_version is not None:
+            rec["schema_version"] = schema_version
+        else:
+            rec.pop("schema_version", None)
+        if milestone is not None:
+            rec["milestone"] = milestone
+        if github_issue is not None:
+            rec["task"]["github_issue"] = github_issue
+        if provider or model:
+            rec["cost"]["agents"] = [
+                {
+                    "phase": "dev",
+                    "provider": provider or "",
+                    "model": model or "",
+                    "cli": cli,
+                }
+            ]
+        return rec
+
+    def test_indexed_columns_populated_from_record(self, tmp_path: Path) -> None:
+        rec = self._record_with(
+            milestone="v0.11",
+            github_issue=1522,
+            provider="anthropic",
+            model="opus",
+            cli="claude",
+            schema_version=2,
+        )
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute(
+                "SELECT record_schema_version, milestone, issue_id, dev_model "
+                "FROM audit_records WHERE run_id = 'r1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row[0] == 2
+        assert row[1] == "v0.11"
+        assert row[2] == 1522
+        assert row[3] == "anthropic/opus/cli"
+
+    def test_missing_optional_dimensions_store_null(self, tmp_path: Path) -> None:
+        rec = self._record_with(schema_version=None)
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute(
+                "SELECT record_schema_version, milestone, issue_id, dev_model "
+                "FROM audit_records WHERE run_id = 'r1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        # Pre-slice record (no schema_version) is treated as version 1.
+        assert row[0] == 1
+        assert row[1] is None
+        assert row[2] is None
+        assert row[3] is None
+
+    def test_github_issue_string_form_coerces_to_int(self, tmp_path: Path) -> None:
+        rec = self._record_with(run_id="r2", slug="s2")
+        rec["task"]["github_issue"] = "#1234"
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute("SELECT issue_id FROM audit_records WHERE run_id = 'r2'").fetchone()
+        finally:
+            conn.close()
+        assert row[0] == 1234
+
+    def test_indexes_exist_for_new_dimensions(self, tmp_path: Path) -> None:
+        conn = sub.create_or_open(tmp_path)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='audit_records'"
+            ).fetchall()
+        finally:
+            conn.close()
+        names = {r[0] for r in rows}
+        assert "idx_audit_records_milestone" in names
+        assert "idx_audit_records_issue_id" in names
+        assert "idx_audit_records_dev_model" in names
+        assert "idx_audit_records_final_phase" in names
+        assert "idx_audit_records_outcome" in names
+
+    def test_refusal_economics_groupby_milestone(self, tmp_path: Path) -> None:
+        """ADR-0002 §3 example: SUM cost GROUP BY milestone runs without parsing JSON."""
+        records = [
+            _make_record(run_id="r1", slug="a", cost=1.0),
+            _make_record(run_id="r2", slug="b", cost=2.0),
+            _make_record(run_id="r3", slug="c", cost=4.0),
+        ]
+        records[0]["milestone"] = "v0.11"
+        records[1]["milestone"] = "v0.11"
+        records[2]["milestone"] = "v0.12"
+        conn = sub.create_or_open(tmp_path)
+        try:
+            for rec in records:
+                sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            rows = [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT milestone, SUM(total_cost_usd) FROM audit_records "
+                    "WHERE milestone IS NOT NULL GROUP BY milestone ORDER BY milestone"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rows == [("v0.11", 3.0), ("v0.12", 4.0)]
+
+    def test_dev_model_queryable_by_index(self, tmp_path: Path) -> None:
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(
+                conn,
+                self._record_with(
+                    run_id="r1",
+                    provider="anthropic",
+                    model="sonnet",
+                    cli="claude",
+                ),
+                provenance="native",
+            )
+            sub.upsert_run_record(
+                conn,
+                self._record_with(
+                    run_id="r2",
+                    provider="openai",
+                    model="gpt-5",
+                ),
+                provenance="native",
+            )
+            conn.commit()
+            rows = [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT dev_model, COUNT(*) FROM audit_records "
+                    "WHERE dev_model IS NOT NULL GROUP BY dev_model ORDER BY dev_model"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rows == [
+            ("anthropic/sonnet/cli", 1),
+            ("openai/gpt-5/api", 1),
+        ]
+
+
+class TestRecordLevelVerdict:
+    """ADR-0002 §3: verdict at record level, not only per-cycle."""
+
+    def test_record_verdict_populated_from_final_cycle(self, tmp_path: Path) -> None:
+        rec = _make_record(
+            run_id="r1",
+            reviews=[
+                {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+                {"cycle": 2, "verdict": "APPROVE"},
+            ],
+        )
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute("SELECT verdict FROM audit_records WHERE run_id='r1'").fetchone()
+        finally:
+            conn.close()
+        assert row[0] == "APPROVE"
+
+    def test_record_verdict_null_when_no_reviews(self, tmp_path: Path) -> None:
+        rec = _make_record(run_id="r1", reviews=[])
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute("SELECT verdict FROM audit_records WHERE run_id='r1'").fetchone()
+        finally:
+            conn.close()
+        assert row[0] is None
+
+    def test_record_verdict_groupby_serves_from_audit_records(self, tmp_path: Path) -> None:
+        """COUNT/GROUP BY verdict runs at record granularity without joining reviews."""
+        records = [
+            _make_record(
+                run_id="r1",
+                slug="a",
+                reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+            ),
+            _make_record(
+                run_id="r2",
+                slug="b",
+                reviews=[
+                    {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+                    {"cycle": 2, "verdict": "APPROVE"},
+                ],
+            ),
+            _make_record(
+                run_id="r3",
+                slug="c",
+                reviews=[{"cycle": 1, "verdict": "REQUEST_CHANGES"}],
+            ),
+        ]
+        conn = sub.create_or_open(tmp_path)
+        try:
+            for rec in records:
+                sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            rows = [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT verdict, COUNT(*) FROM audit_records "
+                    "WHERE verdict IS NOT NULL GROUP BY verdict ORDER BY verdict"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rows == [("APPROVE", 2), ("REQUEST_CHANGES", 1)]
+
+    def test_record_verdict_index_exists(self, tmp_path: Path) -> None:
+        conn = sub.create_or_open(tmp_path)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='audit_records'"
+            ).fetchall()
+        finally:
+            conn.close()
+        names = {r[0] for r in rows}
+        assert "idx_audit_records_verdict" in names
+
+
+class TestRecordSchemaMigration:
+    """Issue #1522: reader-side per-record schema-version dispatch seam."""
+
+    def test_pre_slice_record_treated_as_v1(self, tmp_path: Path) -> None:
+        rec = _make_record(run_id="r1")
+        rec.pop("schema_version", None)
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            row = conn.execute(
+                "SELECT record_schema_version FROM audit_records WHERE run_id='r1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row[0] == 1
+
+    def test_migrate_record_is_noop_for_current_version(self) -> None:
+        rec = {"schema_version": sub.CURRENT_RECORD_SCHEMA_VERSION, "task": {"slug": "x"}}
+        out = sub._migrate_record(rec, from_version=sub.CURRENT_RECORD_SCHEMA_VERSION)
+        assert out is rec
+
+    @pytest.mark.parametrize(
+        "reader",
+        ["iter_records", "tail_records", "iter_escalation_records", "has_review_approve"],
+    )
+    def test_all_readers_route_through_migration_seam(
+        self, tmp_path: Path, monkeypatch, reader: str
+    ) -> None:
+        """Every reader consults record_schema_version via _migrate_record."""
+        rec_v1 = _make_record(
+            run_id="r1",
+            slug="demo",
+            reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+        )
+        rec_v1.pop("schema_version", None)
+        rec_v2 = _make_record(
+            run_id="r2",
+            slug="demo",
+            reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+        )
+        rec_v2["schema_version"] = 2
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec_v1, provenance="native")
+            sub.upsert_run_record(conn, rec_v2, provenance="native")
+            conn.commit()
+        finally:
+            conn.close()
+
+        seen_versions: list[int] = []
+        original = sub._migrate_record
+
+        def tracking(record: dict, *, from_version: int) -> dict:
+            seen_versions.append(from_version)
+            return original(record, from_version=from_version)
+
+        monkeypatch.setattr(sub, "_migrate_record", tracking)
+        conn = sub.create_or_open(tmp_path)
+        try:
+            if reader == "iter_records":
+                list(sub.iter_records(conn))
+            elif reader == "tail_records":
+                sub.tail_records(conn, 10)
+            elif reader == "iter_escalation_records":
+                list(sub.iter_escalation_records(conn))
+            elif reader == "has_review_approve":
+                list(sub.has_review_approve_in_substrate(conn, "demo"))
+        finally:
+            conn.close()
+        assert sorted(seen_versions) == [1, 2]
+
+    def test_iter_records_routes_through_migration(self, tmp_path: Path, monkeypatch) -> None:
+        rec_v1 = _make_record(run_id="r1")
+        rec_v1.pop("schema_version", None)
+        rec_v2 = _make_record(run_id="r2")
+        rec_v2["schema_version"] = 2
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec_v1, provenance="native")
+            sub.upsert_run_record(conn, rec_v2, provenance="native")
+            conn.commit()
+        finally:
+            conn.close()
+
+        seen_versions: list[int] = []
+        original = sub._migrate_record
+
+        def tracking(record: dict, *, from_version: int) -> dict:
+            seen_versions.append(from_version)
+            return original(record, from_version=from_version)
+
+        monkeypatch.setattr(sub, "_migrate_record", tracking)
+        conn = sub.create_or_open(tmp_path)
+        try:
+            list(sub.iter_records(conn))
+        finally:
+            conn.close()
+        # Both rows must have been routed through the helper; versions taken
+        # from the indexed column rather than re-parsed from raw_json.
+        assert sorted(seen_versions) == [1, 2]
+
+
+class TestRebuildBackfillsNewColumns:
+    """Existing audit_records rows pick up the new columns on next rebuild."""
+
+    def test_rebuild_populates_indexed_dimensions(self, tmp_path: Path) -> None:
+        rec = _make_record(run_id="r1", slug="demo")
+        rec["milestone"] = "v0.11"
+        rec["task"]["github_issue"] = 1522
+        rec["cost"]["agents"] = [
+            {
+                "phase": "dev",
+                "provider": "anthropic",
+                "model": "opus",
+                "cli": "claude",
+            }
+        ]
+        rec["schema_version"] = 2
+        _write_runs(tmp_path, [rec])
+        sub.rebuild_from_runs(tmp_path)
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            row = conn.execute(
+                "SELECT milestone, issue_id, dev_model, record_schema_version "
+                "FROM audit_records WHERE run_id='r1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row == ("v0.11", 1522, "anthropic/opus/cli", 2)
