@@ -460,16 +460,16 @@ def _run_review_pool(
                 )
                 break
             _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data)
+            write_trace(
+                workspace_path
+                / ".forge/traces"
+                / f"{_cycle_num}-{pool_attempt}-review-{name}-retry{_retry_num}.txt",
+                _retry_result.output,
+            )
             if _retried is not None:
                 _log(f"  ✓ {name} retry {_retry_num} succeeded")
                 parsed_results[i] = _retried
                 state.review_agent_results.append(_retry_result)
-                write_trace(
-                    workspace_path
-                    / ".forge/traces"
-                    / f"{_cycle_num}-{pool_attempt}-review-{name}-retry{_retry_num}.txt",
-                    _retry_result.output,
-                )
                 break
             else:
                 _log_verbose(
