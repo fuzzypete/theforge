@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -548,23 +549,52 @@ def _derive_dev_model(record: dict) -> str | None:
 # ── Per-record schema migration ──────────────────────────────────────────
 
 
+def _migrate_v1_to_v2(record: dict) -> dict:
+    """No-op: v1 → v2 introduced no breaking field rename or removal.
+
+    The seam exists so future structural changes register a chained
+    ``MIGRATION_HELPERS[N] = _migrate_vN_to_vN+1`` entry. The writer-side
+    schema-drift guard (tests/test_audit_schema_guard.py) asserts against
+    this same registry so that a SCHEMA_VERSION bump cannot land without a
+    runtime migration.
+    """
+    return record
+
+
+# Reader-side migration registry. Keys are the FROM version; each helper
+# translates a record at version N into the shape expected at version N+1.
+# ``_migrate_record`` chains these from the record's persisted version up to
+# ``CURRENT_RECORD_SCHEMA_VERSION``. The CI guard asserts
+# ``max(MIGRATION_HELPERS) == CURRENT_RECORD_SCHEMA_VERSION - 1`` so that
+# bumping the version requires both a writer-side shape change AND a
+# reader-side translation entry in the same PR. See ADR-0002 §"Schema
+# versioning is load-bearing".
+MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
+    1: _migrate_v1_to_v2,
+}
+
+
 def _migrate_record(record: dict, *, from_version: int) -> dict:
     """Bring an older per-run record up to ``CURRENT_RECORD_SCHEMA_VERSION``.
 
-    Today this is a no-op: no breaking field rename or removal has shipped,
-    so version-1 records remain fully readable. The function exists as the
-    seam future breaking changes hang off — when a new version introduces
-    a structural change, add a branch here that translates the older shape
-    into the newer one before the reader parses it. Reader paths must call
-    this with ``from_version`` taken from the indexed
-    ``record_schema_version`` column rather than parsing ``raw_json``
-    speculatively.
+    Applies ``MIGRATION_HELPERS[from_version]``, ``MIGRATION_HELPERS[from_version+1]``,
+    … until the record reaches the current version. Reader paths must call
+    this with ``from_version`` taken from the indexed ``record_schema_version``
+    column rather than parsing ``raw_json`` speculatively.
     """
-    if from_version >= CURRENT_RECORD_SCHEMA_VERSION:
-        return record
-    # No structural migrations registered yet. Future versions register
-    # here in chained `if from_version < N` branches.
-    return record
+    version = from_version
+    migrated = record
+    while version < CURRENT_RECORD_SCHEMA_VERSION:
+        helper = MIGRATION_HELPERS.get(version)
+        if helper is None:
+            # No registered translator for this step — return what we have
+            # and let downstream parsing surface any incompatibility. The
+            # CI guard prevents this state from shipping; reaching it at
+            # runtime means a malformed/forward-version record.
+            return migrated
+        migrated = helper(migrated)
+        version += 1
+    return migrated
 
 
 def _load_migrated(raw_json: str, record_schema_version: int | None) -> dict | None:

@@ -24,12 +24,13 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
-from theforge.coordinator.audit import (
-    MAX_KNOWN_VERSION,
-    MIGRATION_HELPERS,
-    SCHEMA_VERSION,
-    generate_audit_log,
+from theforge.coordinator import audit as audit_writer
+from theforge.coordinator import audit_substrate
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.audit_substrate import (
+    CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION,
 )
+from theforge.coordinator.audit_substrate import MIGRATION_HELPERS
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.task import TaskStory
 
@@ -159,17 +160,55 @@ def test_audit_record_schema_unchanged(tmp_path: Path) -> None:
 def test_migration_helpers_cover_current_version() -> None:
     """Bumping ``SCHEMA_VERSION`` must add a matching ``MIGRATION_HELPERS`` entry.
 
-    See ADR-0002 §"Schema versioning is load-bearing". Reaching version K
-    from v1 requires helpers for keys 1..K-1, so ``max(MIGRATION_HELPERS)``
-    must equal ``SCHEMA_VERSION - 1``.
+    The registry asserted here is the same one the reader-side migration
+    dispatch (``audit_substrate._migrate_record``) iterates over, so a
+    forgotten helper fails this guard AND breaks runtime migration of older
+    records — not just the unit test. See ADR-0002 §"Schema versioning is
+    load-bearing".
     """
     assert MIGRATION_HELPERS, "MIGRATION_HELPERS must contain at least one entry"
-    assert MAX_KNOWN_VERSION == max(MIGRATION_HELPERS.keys())
-    assert MAX_KNOWN_VERSION == SCHEMA_VERSION - 1, (
+    max_known = max(MIGRATION_HELPERS.keys())
+    assert max_known == SCHEMA_VERSION - 1, (
         f"SCHEMA_VERSION={SCHEMA_VERSION} but MIGRATION_HELPERS only covers "
-        f"up to version {MAX_KNOWN_VERSION}. Add "
+        f"up to version {max_known}. Add "
         f"MIGRATION_HELPERS[{SCHEMA_VERSION - 1}] = _migrate_v"
-        f"{SCHEMA_VERSION - 1}_to_v{SCHEMA_VERSION} so readers can lift "
-        f"older records to the current shape. "
+        f"{SCHEMA_VERSION - 1}_to_v{SCHEMA_VERSION} in audit_substrate.py so "
+        "readers lift older records to the current shape. "
         'See ADR-0002 §"Schema versioning is load-bearing".'
     )
+
+
+def test_writer_and_reader_share_migration_registry() -> None:
+    """The writer's re-exported registry must be the reader's runtime registry.
+
+    Prevents the failure mode where MIGRATION_HELPERS becomes a writer-local
+    copy that satisfies the guard while ``audit_substrate._migrate_record``
+    still returns older records unchanged. See ADR-0002 §"Schema versioning
+    is load-bearing".
+    """
+    assert audit_writer.MIGRATION_HELPERS is audit_substrate.MIGRATION_HELPERS
+    assert audit_writer.SCHEMA_VERSION == audit_substrate.CURRENT_RECORD_SCHEMA_VERSION
+
+
+def test_migrate_record_dispatches_through_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_migrate_record`` must apply ``MIGRATION_HELPERS`` entries in chain.
+
+    Proves the registry the guard asserts against is the same code path
+    used at runtime when a reader loads an older record.
+    """
+    called: list[int] = []
+
+    def fake_v1_to_v2(record: dict) -> dict:
+        called.append(1)
+        return {**record, "migrated_v2": True}
+
+    fake_registry = {1: fake_v1_to_v2}
+    monkeypatch.setattr(audit_substrate, "MIGRATION_HELPERS", fake_registry)
+
+    out = audit_substrate._migrate_record({"marker": "untouched"}, from_version=1)
+
+    assert called == [1]
+    assert out["migrated_v2"] is True
+    assert out["marker"] == "untouched"
