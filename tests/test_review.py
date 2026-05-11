@@ -101,6 +101,82 @@ class TestParseReviewOutput:
         assert result.verdict == "REQUEST_CHANGES"
         assert len(result.parse_errors) > 0
 
+    def test_yaml_syntax_error_tagged_as_yaml_syntax(self):
+        """Operator-facing: a parser-layer rejection must be tagged YAML_SYNTAX,
+        not lumped with schema/contract failures."""
+        from theforge.schemas import YAML_SYNTAX
+
+        result = parse_review_output("this is not yaml: [[[")
+        assert result.parse_errors
+        stages = {e.stage for e in result.parse_errors}
+        assert stages == {YAML_SYNTAX}
+
+    def test_non_mapping_root_tagged_as_structure(self):
+        from theforge.schemas import STRUCTURE
+
+        # A bare scalar parses as YAML but isn't a mapping.
+        result = parse_review_output("just a string")
+        assert result.parse_errors
+        assert result.parse_errors[0].stage == STRUCTURE
+
+    def test_schema_field_errors_tagged_as_schema_validation(self):
+        """Type/required-field rejections come from the schema layer, not parser."""
+        from theforge.schemas import SCHEMA_VALIDATION
+
+        # Valid YAML, valid mapping, but verdict is wrong type.
+        result = parse_review_output(
+            "```yaml\n"
+            "verdict: MAYBE\n"
+            "summary: ''\n"
+            "findings: []\n"
+            "story_compliance:\n"
+            "  matches_spec: true\n"
+            "test_coverage:\n"
+            "  adequate: true\n"
+            "```\n"
+        )
+        assert result.parse_errors
+        assert all(e.stage == SCHEMA_VALIDATION for e in result.parse_errors)
+
+    def test_contract_cross_validation_tagged_distinctly(self):
+        """APPROVE + P1 and APPROVE + empty ac_verification are contract
+        cross-checks — operators remediate at the prompt/contract layer, not
+        the parser. Stage must distinguish them from YAML_SYNTAX."""
+        from theforge.schemas import CONTRACT_CROSS_VALIDATION, YAML_SYNTAX
+
+        # APPROVE with a P1 finding is a contract contradiction.
+        result = parse_review_output(
+            "```yaml\n"
+            "verdict: APPROVE\n"
+            "summary: 'looks good'\n"
+            "findings:\n"
+            "  - severity: P1\n"
+            "    file: src/x.py\n"
+            "    line: 1\n"
+            "    description: 'blocker'\n"
+            "    suggestion: 'fix it'\n"
+            "story_compliance:\n"
+            "  matches_spec: true\n"
+            "test_coverage:\n"
+            "  adequate: true\n"
+            "ac_verification:\n"
+            "  - criterion: 'AC1'\n"
+            "    status: VERIFIED\n"
+            "    evidence: 'ev'\n"
+            "```\n"
+        )
+        stages = {e.stage for e in result.parse_errors}
+        assert CONTRACT_CROSS_VALIDATION in stages
+        assert YAML_SYNTAX not in stages
+
+    def test_parse_error_str_carries_stage_tag(self):
+        """Rendered form embeds the stage so log/audit consumers that emit
+        the string (not the dataclass) still surface the classification."""
+        from theforge.schemas import YAML_SYNTAX
+
+        result = parse_review_output("not yaml: [[[")
+        assert any(str(e).startswith(f"[{YAML_SYNTAX}]") for e in result.parse_errors)
+
     def test_yaml_with_extra_prose(self):
         text = (
             "Here is my review:\n\n"
@@ -636,15 +712,28 @@ class TestMergeReviewResultsDedup:
         assert set(merged.findings[0].reviewers) == {"reviewer-a", "reviewer-b"}
 
     def test_all_parse_errors_propagated(self):
-        r1 = _make_review_result("REQUEST_CHANGES", parse_errors=["bad yaml"])
-        r2 = _make_review_result("REQUEST_CHANGES", parse_errors=["bad yaml"])
+        from theforge.schemas import YAML_SYNTAX, ParseError
+
+        r1 = _make_review_result(
+            "REQUEST_CHANGES",
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message="bad yaml")],
+        )
+        r2 = _make_review_result(
+            "REQUEST_CHANGES",
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message="bad yaml")],
+        )
         merged = merge_review_results([r1, r2], ["a", "b"])
         assert merged.parse_errors  # propagated for retry loop
 
     def test_mixed_valid_and_parse_error(self):
         finding = _rf("P1", "foo.py", 1, "Bug")
         valid = _make_review_result("REQUEST_CHANGES", findings=[finding])
-        invalid = _make_review_result("REQUEST_CHANGES", parse_errors=["bad"])
+        from theforge.schemas import YAML_SYNTAX, ParseError
+
+        invalid = _make_review_result(
+            "REQUEST_CHANGES",
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message="bad")],
+        )
         merged = merge_review_results([valid, invalid], ["a", "b"])
         assert not merged.parse_errors
         assert len(merged.findings) == 1

@@ -52,6 +52,29 @@ def _serialize_review_result(rr: object) -> dict | None:
     return _yaml_safe(dataclasses.asdict(rr))  # type: ignore[arg-type,return-value]
 
 
+def _deserialize_parse_errors(raw: object) -> list:
+    """Reconstruct ParseError instances from sidecar data.
+
+    Backward-compat: bare strings in older sidecars are rehydrated with the
+    SCHEMA_VALIDATION stage so they remain typed without losing information.
+    """
+    from theforge.schemas import SCHEMA_VALIDATION, ParseError  # noqa: PLC0415
+
+    if not raw:
+        return []
+    out: list = []
+    for entry in raw:
+        if isinstance(entry, ParseError):
+            out.append(entry)
+        elif isinstance(entry, dict):
+            stage = entry.get("stage") or SCHEMA_VALIDATION
+            message = entry.get("message") or ""
+            out.append(ParseError(stage=stage, message=message))
+        else:
+            out.append(ParseError(stage=SCHEMA_VALIDATION, message=str(entry)))
+    return out
+
+
 def _deserialize_review_result(data: object) -> object | None:
     """Reconstruct a ReviewResult/ReviewFinding/ACVerification graph from sidecar data."""
     if not isinstance(data, dict):
@@ -91,7 +114,7 @@ def _deserialize_review_result(data: object) -> object | None:
         story_mismatches=list(data.get("story_mismatches") or []),
         test_adequate=bool(data.get("test_adequate", False)),
         test_gaps=list(data.get("test_gaps") or []),
-        parse_errors=list(data.get("parse_errors") or []),
+        parse_errors=_deserialize_parse_errors(data.get("parse_errors")),
         raw_yaml=dict(data.get("raw_yaml") or {}),
         ac_verification=tuple(ac_verification),
         sanitization_audit=dict(data.get("sanitization_audit") or {}),

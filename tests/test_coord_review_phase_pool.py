@@ -548,6 +548,67 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_operator_log_classifies_rejection_stage(
+        self,
+        mock_shell,
+        mock_engine_agent,
+        mock_preflight,
+        mock_pool,
+        mock_review_agent,
+        tmp_path,
+        capsys,
+    ):
+        """Operator-facing retry log must name the validation stage that rejected
+        the output (YAML_SYNTAX / SCHEMA_VALIDATION / CONTRACT_CROSS_VALIDATION),
+        not just "parse failed". The spec's RCA workflow depends on this
+        distinction to pick the right remediation surface."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_engine_agent.return_value = _make_agent_result()
+
+        # APPROVE with empty ac_verification — valid YAML, valid types, but a
+        # contract cross-check failure. Pre-fix this would have been logged
+        # identically to a YAML syntax error.
+        cross_validation_output = (
+            "```yaml\n"
+            "verdict: APPROVE\n"
+            'summary: "ok"\n'
+            "findings: []\n"
+            "story_compliance:\n"
+            "  matches_spec: true\n"
+            "  mismatches: []\n"
+            "test_coverage:\n"
+            "  adequate: true\n"
+            "  gaps: []\n"
+            "ac_verification: []\n"
+            "```\n"
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=cross_validation_output, profile_name="review")
+        ]
+        mock_review_agent.return_value = _make_agent_result(output=cross_validation_output)
+
+        run_task(config, task)
+        captured = capsys.readouterr()
+        log_output = captured.out + captured.err
+
+        assert "CONTRACT_CROSS_VALIDATION" in log_output, (
+            "operator-facing retry log must surface the stage tag; got:\n" + log_output
+        )
+        assert "YAML_SYNTAX" not in log_output, (
+            "schema/contract failure must not be conflated with YAML_SYNTAX"
+        )
+
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_schema_error_also_retried(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):

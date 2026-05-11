@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 
 import yaml
 
-from .schemas import repair_review_yaml, validate_review_yaml
+from .schemas import (
+    STRUCTURE,
+    YAML_SYNTAX,
+    ParseError,
+    repair_review_yaml,
+    validate_review_yaml,
+)
 
 
 def _coerce_line(value: object) -> int | None:
@@ -71,7 +77,7 @@ class ReviewResult:
     story_mismatches: list[str]
     test_adequate: bool
     test_gaps: list[str]
-    parse_errors: list[str]  # non-empty if parsing/validation failed
+    parse_errors: list[ParseError]  # non-empty if parsing/validation failed
     raw_yaml: dict  # the parsed YAML data
     ac_verification: tuple[ACVerification, ...] = ()  # per-AC verification table
     sanitization_audit: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -252,7 +258,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
             story_mismatches=[],
             test_adequate=False,
             test_gaps=[],
-            parse_errors=[f"YAML parse error: {e}"],
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message=str(e))],
             raw_yaml={},
         )
 
@@ -265,7 +271,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
             story_mismatches=[],
             test_adequate=False,
             test_gaps=[],
-            parse_errors=["Root element is not a mapping"],
+            parse_errors=[ParseError(stage=STRUCTURE, message="Root element is not a mapping")],
             raw_yaml={},
         )
 
@@ -787,16 +793,16 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
     import logging as _logging
 
     valid: list[tuple[str, ReviewResult]] = []
-    excluded_errors: list[str] = []
+    excluded_errors: list[ParseError] = []
     for name, r in zip(names, results):
         if r.parse_errors:
             _logging.getLogger(__name__).warning(
                 "REVIEW merge: excluding %s due to parse errors: %s",
                 name,
-                "; ".join(r.parse_errors),
+                "; ".join(str(e) for e in r.parse_errors),
             )
             for e in r.parse_errors:
-                excluded_errors.append(f"[{name}] {e}")
+                excluded_errors.append(ParseError(stage=e.stage, message=f"[{name}] {e.message}"))
         else:
             valid.append((name, r))
 
@@ -810,7 +816,13 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
             story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
-            parse_errors=excluded_errors or ["All reviewers failed to produce valid output"],
+            parse_errors=excluded_errors
+            or [
+                ParseError(
+                    stage=STRUCTURE,
+                    message="All reviewers failed to produce valid output",
+                )
+            ],
             raw_yaml={},
         )
 
