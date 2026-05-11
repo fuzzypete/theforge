@@ -67,15 +67,37 @@ def test_detect_mismatch_returns_none_when_versions_match(tmp_path: Path) -> Non
     assert detect_mismatch(cwd=tmp_path, sub=_sub(version="0.10.0rc12")) is None
 
 
-def test_detect_mismatch_warns_on_version_divergence(tmp_path: Path) -> None:
+def test_detect_mismatch_warns_on_editable_version_divergence(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "theforge"\nversion = "0.11.0.dev"\n'
     )
-    warning = detect_mismatch(cwd=tmp_path, sub=_sub(version="0.10.0rc12"))
+    sub = _sub(
+        version="0.10.0rc12",
+        editable=True,
+        source_root="/some/other/theforge",
+    )
+    warning = detect_mismatch(cwd=tmp_path, sub=sub)
     assert warning is not None
     assert "0.10.0rc12" in warning
     assert "0.11.0.dev" in warning
     assert "--force" in warning
+    # Remediation must not nudge the operator toward editable-main, which
+    # contradicts the dogfood model.
+    assert "pip install -e" not in warning
+
+
+def test_detect_mismatch_silent_for_released_substrate_on_newer_checkout(
+    tmp_path: Path,
+) -> None:
+    """Documented dogfood happy path: released RC orchestrating a newer
+    checkout. A non-editable substrate cannot import the patient's source, so
+    a version-string difference is not incoherence and must not warn.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "theforge"\nversion = "0.10.0.dev0"\n'
+    )
+    sub = _sub(version="0.10.0rc14", editable=False)
+    assert detect_mismatch(cwd=tmp_path, sub=sub) is None
 
 
 def test_detect_mismatch_returns_none_when_no_pyproject(tmp_path: Path) -> None:

@@ -181,16 +181,21 @@ def format_provenance_lines(sub: Substrate | None = None) -> list[str]:
 
 
 def detect_mismatch(cwd: Path | None = None, sub: Substrate | None = None) -> str | None:
-    """Return a one-line warning when CWD's theforge checkout disagrees with the
-    binary's reported version. Returns None when no checkout context applies or
-    the versions agree.
+    """Return a one-line warning when the running substrate's code path is
+    incoherent with the theforge checkout in CWD. Returns None on the documented
+    dogfood happy path (a released RC orchestrating a newer checkout).
 
-    The check is deliberately conservative: it only fires when the CWD is itself
-    a theforge source tree (pyproject.toml ``name = "theforge"``) AND its declared
-    version differs from the running package version. This catches the dominant
-    failure mode (operator runs ``forge sprint`` from theforge's own repo while
-    the installed runtime is a different version) without false-positiving on
-    operators using forge against unrelated projects.
+    The warning fires only when ``sub.editable`` is True — i.e., the running
+    ``forge`` is itself resolving package code out of a source tree — and that
+    source tree's version disagrees with the checkout in CWD. That shape means
+    the operator's ``forge`` is executing code that doesn't match the checkout
+    they're operating on (stale build of this checkout, or an editable install
+    of a *different* theforge repo shadowing this one).
+
+    A non-editable substrate (released wheel) cannot reach into the checkout's
+    source at runtime, so version-string drift between a released RC and a
+    newer dev checkout is the *correct* shape of the dogfood model — not
+    incoherence — and is intentionally silent.
     """
     if sub is None:
         sub = detect_substrate()
@@ -208,6 +213,13 @@ def detect_mismatch(cwd: Path | None = None, sub: Substrate | None = None) -> st
     if 'name = "theforge"' not in text:
         return None
 
+    # Released (non-editable) substrate orchestrating a newer-version theforge
+    # checkout is the documented dogfood model — the orchestrator runtime
+    # never imports the patient's source, so a version-string difference is
+    # expected. Stay silent.
+    if not sub.editable:
+        return None
+
     src_version: str | None = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -222,14 +234,14 @@ def detect_mismatch(cwd: Path | None = None, sub: Substrate | None = None) -> st
     if src_version == sub.version:
         return None
 
-    # If editable and source_root is the same as cwd, the version matches by
-    # definition (importlib reads the same pyproject) — but a stale build can
-    # diverge. Either way, we surface the warning.
+    source_note = f" editable source @ {sub.source_root};" if sub.source_root else ""
     return (
-        f"[forge] WARNING: substrate version {sub.version} (binary: {sub.binary}) "
-        f"does not match this checkout's pyproject version {src_version} "
-        f"(cwd: {cwd}). Editable installs may need `pip install -e .` to refresh; "
-        "released installs may need re-cutting. Pass --force to bypass."
+        f"[forge] WARNING: substrate version {sub.version} (binary: {sub.binary});"
+        f"{source_note} does not match this checkout's pyproject version "
+        f"{src_version} (cwd: {cwd}). The editable install resolving as `forge` "
+        f"is out of sync with this checkout — either a stale build of this tree "
+        f"or an editable install of a different theforge repo is shadowing it. "
+        f"Pass --force to bypass."
     )
 
 
