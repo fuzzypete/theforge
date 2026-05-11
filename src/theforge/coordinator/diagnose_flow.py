@@ -16,6 +16,7 @@ fix-ready for a subsequent ``forge sprint`` run.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ from theforge.diagnose_types import (
     DiagnoseResult,
     DiagnoseState,
     DiagnosisArtifact,
+    InspectedFile,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
@@ -63,6 +65,71 @@ def _generate_run_id() -> str:
 
 
 # ── Issue I/O via gh CLI ──────────────────────────────────────────────
+
+
+# ── Baseline capture ──────────────────────────────────────────────────
+
+
+def _capture_base_sha(project_root: Path) -> str:
+    """Return the current HEAD SHA of the repo at ``project_root``.
+
+    Empty string when ``project_root`` is not a git checkout — the diagnose
+    flow still proceeds; the staleness check downstream simply has no
+    baseline to compare against.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _hash_file_at_sha(path: str, sha: str, project_root: Path) -> str:
+    """Return the sha256 hex digest of ``path`` at git ``sha``.
+
+    Falls back to hashing the working-tree file when the path is not
+    tracked at that SHA (returns "" when neither lookup succeeds). Empty
+    return signals an inspected file we cannot baseline — the staleness
+    check treats those as informational only.
+    """
+    if not sha or not path:
+        return ""
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{sha}:{path}"],
+            capture_output=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        return hashlib.sha256(proc.stdout).hexdigest()
+    fs_path = project_root / path
+    try:
+        return hashlib.sha256(fs_path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _baseline_inspected_files(
+    files: tuple[InspectedFile, ...], sha: str, project_root: Path
+) -> tuple[InspectedFile, ...]:
+    """Hash each inspected file against the baseline SHA."""
+    if not files:
+        return ()
+    return tuple(
+        InspectedFile(path=f.path, content_sha256=_hash_file_at_sha(f.path, sha, project_root))
+        for f in files
+    )
 
 
 def _gh_fetch_issue(number: int, project_root: Path) -> dict:
@@ -188,6 +255,10 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "location": state.landed_location,
         },
         "sub_investigations": list(state.sub_investigations),
+        "baseline": {
+            "sha": state.baseline_sha,
+            "captured_at": state.baseline_captured_at,
+        },
         "error": state.error,
     }
     if state.artifact is not None:
@@ -214,6 +285,11 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         "fix_success_criterion": artifact.fix_success_criterion,
         "partial": artifact.partial,
         "notes": artifact.notes,
+        "baseline_sha": artifact.baseline_sha,
+        "baseline_captured_at": artifact.baseline_captured_at,
+        "inspected_files": [
+            {"path": f.path, "content_sha256": f.content_sha256} for f in artifact.inspected_files
+        ],
     }
 
 
@@ -346,6 +422,12 @@ def run_diagnose_flow(
 
     state.issue_title = str(issue.get("title", ""))
     state.issue_body = str(issue.get("body", ""))
+    # Capture baseline SHA at the moment the diagnosis is anchored. Done
+    # post-FETCH so a fetch failure doesn't burn a baseline timestamp; done
+    # pre-INVESTIGATE so the agent runs against (and the staleness check
+    # later compares against) one known commit.
+    state.baseline_sha = _capture_base_sha(project_root)
+    state.baseline_captured_at = _now_iso()
     issue_state = str(issue.get("state", "OPEN")).upper()
     if issue_state != "OPEN":
         state.error = f"Issue #{issue_number} is {issue_state.lower()}; refusing to diagnose"
@@ -407,6 +489,19 @@ def run_diagnose_flow(
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
+    # Anchor the artifact to the baseline SHA captured at FETCH time, and
+    # hash each agent-reported inspected file against that SHA so a later
+    # `forge groom` can detect when the diagnosis has gone stale relative
+    # to the current base branch.
+    inspected_with_hashes = _baseline_inspected_files(
+        artifact.inspected_files, state.baseline_sha, project_root
+    )
+    artifact = dataclasses.replace(
+        artifact,
+        baseline_sha=state.baseline_sha,
+        baseline_captured_at=state.baseline_captured_at,
+        inspected_files=inspected_with_hashes,
+    )
     state.artifact = artifact
 
     # If essential fields are missing OR the run breached its budget/timeout

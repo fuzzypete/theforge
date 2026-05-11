@@ -112,11 +112,14 @@ CREATE TABLE IF NOT EXISTS readiness_events (
     bug_diagnosis_state TEXT,
     refusal_reason TEXT,
     emitted_at TEXT NOT NULL,
-    raw_json TEXT NOT NULL
+    raw_json TEXT NOT NULL,
+    staleness_verdict TEXT,
+    diagnosis_baseline_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_readiness_events_kind ON readiness_events(kind);
 CREATE INDEX IF NOT EXISTS idx_readiness_events_issue ON readiness_events(issue_ref);
 CREATE INDEX IF NOT EXISTS idx_readiness_events_action ON readiness_events(action);
+CREATE INDEX IF NOT EXISTS idx_readiness_events_staleness ON readiness_events(staleness_verdict);
 """
 
 
@@ -129,6 +132,14 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE audit_records ADD COLUMN complexity_score INTEGER")
     except sqlite3.OperationalError:
         pass
+    for stmt in (
+        "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
+        "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     conn.execute(
         "INSERT INTO meta(key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1039,8 +1050,9 @@ def record_readiness_event(project_root: Path, event: dict) -> int:
         cur = conn.execute(
             "INSERT INTO readiness_events "
             "(kind, issue_ref, issue_type, pre_verdict, post_verdict, action, "
-            "applied, bug_diagnosis_state, refusal_reason, emitted_at, raw_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "applied, bug_diagnosis_state, refusal_reason, emitted_at, raw_json, "
+            "staleness_verdict, diagnosis_baseline_sha) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(event["kind"]),
                 str(event["issue_ref"]),
@@ -1053,6 +1065,8 @@ def record_readiness_event(project_root: Path, event: dict) -> int:
                 event.get("refusal_reason"),
                 emitted_at,
                 raw_json,
+                event.get("staleness_verdict"),
+                event.get("diagnosis_baseline_sha"),
             ),
         )
         conn.commit()

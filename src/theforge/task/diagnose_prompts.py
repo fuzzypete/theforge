@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import yaml
 
-from theforge.diagnose_types import DiagnosisArtifact, Hypothesis
+from theforge.diagnose_types import DiagnosisArtifact, Hypothesis, InspectedFile
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
 You are an investigative diagnosis agent.  A symptom bug has been reported but
@@ -66,6 +66,14 @@ fix_success_criterion: |
 notes: |
   Optional — any caveats, unresolved threads, or partial-investigation
   context the operator should see.
+inspected_files:
+  # REQUIRED. List every file path you read or grepped during the
+  # investigation, one repo-relative path per entry. This anchors the
+  # diagnosis to a baseline so a later `forge groom` can detect when the
+  # diagnosis has gone stale because one of these files was changed by
+  # an intervening commit.
+  - "<repo-relative path to a file you inspected>"
+  - "<repo-relative path to another file you inspected>"
 ```
 """
 
@@ -145,6 +153,24 @@ def parse_diagnose_output(
                 )
             )
 
+    raw_inspected = parsed.get("inspected_files") or []
+    inspected: list[InspectedFile] = []
+    if isinstance(raw_inspected, list):
+        seen: set[str] = set()
+        for entry in raw_inspected:
+            if isinstance(entry, str):
+                path = entry.strip()
+                digest = ""
+            elif isinstance(entry, dict):
+                path = str(entry.get("path", "")).strip()
+                digest = str(entry.get("content_sha256", "")).strip()
+            else:
+                continue
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            inspected.append(InspectedFile(path=path, content_sha256=digest))
+
     return DiagnosisArtifact(
         issue_number=issue_number,
         observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
@@ -155,4 +181,5 @@ def parse_diagnose_output(
         fix_success_criterion=str(parsed.get("fix_success_criterion", "")).strip(),
         partial=partial,
         notes=str(parsed.get("notes", "")).strip(),
+        inspected_files=tuple(inspected),
     )
