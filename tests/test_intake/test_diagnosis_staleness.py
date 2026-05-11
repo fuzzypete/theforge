@@ -158,6 +158,50 @@ def test_unchanged_when_base_advanced_but_inspected_files_match(tmp_path: Path):
     assert report.changed_files == ()
 
 
+def test_stale_when_inspected_file_deleted_since_baseline(tmp_path: Path):
+    """Deletion is a material change: a path with a baseline digest that
+    is positively absent at current must surface as STALE rather than be
+    silently classified as untracked (which would let a confirmed-cause
+    diagnosis proceed even though its evidence has been removed)."""
+    _git_init(tmp_path)
+    base_sha = _commit_file(tmp_path, "src/a.py", "hello\n", "v1")
+    body = _bug_body_with_baseline(sha=base_sha, files=[("src/a.py", _sha256("hello\n"))])
+    # Advance base by deleting the inspected file.
+    subprocess.run(["git", "rm", "-q", "src/a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "remove a.py"], cwd=tmp_path, check=True)
+    report = evaluate_staleness(body, project_root=tmp_path)
+    assert report.state is StalenessState.STALE
+    assert "src/a.py" in report.changed_files
+    assert "src/a.py" not in report.untracked_files
+
+
+def test_groom_refuses_confirmed_cause_when_inspected_file_deleted(tmp_path: Path):
+    """End-to-end: a confirmed-cause bug whose inspected file was removed
+    by a later commit must be refused by groom — same refusal path as a
+    content-change, since hash-equality treats deletion as material."""
+    _git_init(tmp_path)
+    base_sha = _commit_file(tmp_path, "src/a.py", "hello\n", "v1")
+    body = _bug_body_with_baseline(
+        sha=base_sha, files=[("src/a.py", _sha256("hello\n"))], cause_known=True
+    )
+    subprocess.run(["git", "rm", "-q", "src/a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "remove a.py"], cwd=tmp_path, check=True)
+
+    fetch = lambda _n, _r: {"title": "bug", "body": body, "labels": ["bug"]}  # noqa: E731
+    result = run_groom(
+        "1497",
+        project_root=tmp_path,
+        fetch_issue=fetch,
+        edit_issue_body=lambda *_a: True,
+    )
+    assert result.action is GroomAction.REFUSED
+    assert result.staleness is not None and result.staleness.is_stale
+    assert "src/a.py" in result.staleness.changed_files
+    ev = result.as_event()
+    assert ev["staleness_verdict"] == "stale"
+    assert "src/a.py" in ev["stale_files"]
+
+
 def test_no_baseline_for_legacy_diagnosis(tmp_path: Path):
     body = "## Diagnosis\n\n### Observed symptom\n\nLegacy diagnosis without baseline.\n"
     report = evaluate_staleness(body, project_root=tmp_path)

@@ -17,6 +17,7 @@ import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from theforge.diagnose_types import (
     BaselineMetadata,
@@ -68,12 +69,53 @@ def _current_head(project_root: Path) -> str:
     return proc.stdout.strip()
 
 
-def _hash_current(path: str, project_root: Path) -> str:
+def _hash_at_sha(
+    path: str, sha: str, project_root: Path
+) -> tuple[str, Literal["present", "absent", "unknown"]]:
+    """Return ``(hex_digest, presence)`` for ``path`` at git ``sha``.
+
+    Presence is ``"present"`` when git successfully returned the blob,
+    ``"absent"`` when git confirmed the path does not exist at that commit
+    (a positive deletion signal — treated as a material change by callers),
+    and ``"unknown"`` when git itself is unavailable / errored / there is no
+    sha to query, in which case callers should not flip the staleness verdict.
+    Falls back to the working tree only when git lookup is inconclusive.
+    """
+    if sha:
+        try:
+            proc = subprocess.run(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                capture_output=True,
+                cwd=str(project_root),
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None:
+            if proc.returncode == 0:
+                try:
+                    show = subprocess.run(
+                        ["git", "show", f"{sha}:{path}"],
+                        capture_output=True,
+                        cwd=str(project_root),
+                        timeout=10,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    show = None
+                if show is not None and show.returncode == 0:
+                    return hashlib.sha256(show.stdout).hexdigest(), "present"
+            else:
+                # git is reachable and the path is positively absent at sha.
+                return "", "absent"
     fs_path = project_root / path
     try:
-        return hashlib.sha256(fs_path.read_bytes()).hexdigest()
+        return hashlib.sha256(fs_path.read_bytes()).hexdigest(), "present"
+    except FileNotFoundError:
+        # No git answer and no working-tree file — treat as a real absence
+        # so deletions surface as material changes.
+        return "", "absent"
     except OSError:
-        return ""
+        return "", "unknown"
 
 
 def evaluate_staleness(
@@ -128,11 +170,18 @@ def _diff_inspected(
     untracked: list[str] = []
     for f in metadata.inspected_files:
         baseline_digest = (f.content_sha256 or "").lower()
-        current_digest = _hash_current(f.path, project_root).lower()
+        current_digest, presence = _hash_at_sha(f.path, current_sha, project_root)
+        # Deletion is a material change: a path with a baseline digest that
+        # is positively absent at the current SHA must surface as STALE,
+        # not get hidden in untracked_files (which would let groom promote
+        # a confirmed-cause diagnosis whose evidence has been removed).
+        if baseline_digest and presence == "absent":
+            changed.append(f.path)
+            continue
         if not baseline_digest or not current_digest:
             untracked.append(f.path)
             continue
-        if current_digest != baseline_digest:
+        if current_digest.lower() != baseline_digest:
             changed.append(f.path)
         else:
             unchanged.append(f.path)
