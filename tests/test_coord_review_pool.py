@@ -331,3 +331,86 @@ class TestReviewerDemotion:
         assert merged is not None
         assert [r.profile_name for r in successful] == ["r2"]
         assert mock_pool.call_args_list[1].kwargs["profiles"] == [r2]
+
+
+class TestRetryTraceFiles:
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_failed_retry_writes_trace_file(
+        self, mock_pool, mock_run_agent, _mock_log_agent_result, tmp_path
+    ):
+        """Retry attempts that fail to parse must still be written to disk."""
+        reviewer = _make_review_profile("r1")
+        config = _make_pool_config(tmp_path, [reviewer], reviewer)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Initial pool call returns unparseable output
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1")
+        ]
+        # Retry via run_agent also returns unparseable output
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1"
+        )
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=1,
+        )
+
+        # _cycle_num = state.review_cycle + 1 = 1, pool_attempt = 0
+        trace_file = workspace / ".forge" / "traces" / "1-0-review-r1-retry1.txt"
+        assert trace_file.exists(), (
+            "Failed retry must write trace file regardless of parse outcome"
+        )
+        assert trace_file.read_text(encoding="utf-8") == PARSE_ERROR_OUTPUT
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_successful_retry_also_writes_trace_file(
+        self, mock_pool, mock_run_agent, _mock_log_agent_result, tmp_path
+    ):
+        """Successful retries must continue to write trace files (regression guard)."""
+        reviewer = _make_review_profile("r1")
+        config = _make_pool_config(tmp_path, [reviewer], reviewer)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="r1"
+        )
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=1,
+        )
+
+        trace_file = workspace / ".forge" / "traces" / "1-0-review-r1-retry1.txt"
+        assert trace_file.exists(), "Successful retry must also write trace file"
+        assert trace_file.read_text(encoding="utf-8") == APPROVE_REVIEW
