@@ -467,6 +467,110 @@ def test_full_execution_refuses_to_clobber_venv_resident_forge(tmp_path: Path) -
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",
 )
+def test_script_isolates_running_source_from_git_checkouts() -> None:
+    """The script performs ``git checkout`` mid-run; bash continues reading
+    its source by byte offset from the on-disk file. If the checked-out
+    branch carries a divergent copy of ``scripts/cut-rc.sh``, bash executes
+    whatever bytes land at the current offset in the swapped file (silent
+    corruption per byte, per branch). The fix: copy the launching source to
+    a temp path before any git operation runs and re-exec from there, so
+    the running interpreter reads from a source no git operation can reach.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+
+    self_copy_guard = re.search(r'if\s+\[\[\s+"\$\{CUT_RC_SELF_COPY:-\}"\s*!=\s*"1"\s+\]\]', body)
+    assert self_copy_guard is not None, (
+        "cut-rc.sh must guard against self-mutation by re-execing from a temp copy "
+        "(expected CUT_RC_SELF_COPY sentinel guarding initial entry)"
+    )
+    assert re.search(r"_self_copy=.*mktemp", body), (
+        "cut-rc.sh must mktemp a temp copy of itself before re-exec"
+    )
+    assert re.search(r'cat\s+"\$0"\s*>\s*"\$_self_copy"', body), (
+        "cut-rc.sh must copy its launching source ($0) into the temp file"
+    )
+    assert re.search(r'exec\s+bash\s+"\$_self_copy"\s+"\$@"', body), (
+        "cut-rc.sh must re-exec bash against the temp copy with original args"
+    )
+
+    # The slurp/re-exec must precede the first git operation. Find both
+    # offsets and assert ordering.
+    self_copy_pos = body.find("CUT_RC_SELF_COPY")
+    first_git_op = re.search(r"^\s*(run\s+)?git\s+(checkout|pull|fetch|push)", body, re.MULTILINE)
+    assert first_git_op is not None
+    assert self_copy_pos < first_git_op.start(), (
+        "Self-copy/re-exec guard must precede the first git operation in the script"
+    )
+
+
+def test_running_interpreter_survives_swapping_on_disk_script(tmp_path: Path) -> None:
+    """End-to-end proof: launch the script, then while it is running have a
+    git checkout swap the on-disk source for a divergent copy. The running
+    interpreter must still execute the launching version's bytes — not the
+    swapped-in bytes — because it is reading from a temp copy.
+    """
+    # Build a tiny test harness script that mirrors the self-copy idiom and
+    # demonstrably survives an on-disk overwrite mid-run. The harness uses
+    # the same guard pattern as cut-rc.sh so a regression in the pattern
+    # surfaces here too.
+    launcher = tmp_path / "harness.sh"
+    launcher.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            if [[ "${HARNESS_SELF_COPY:-}" != "1" ]]; then
+                _self_copy="$(mktemp -t harness.XXXXXX)"
+                cat "$0" > "$_self_copy"
+                chmod +x "$_self_copy"
+                export HARNESS_SELF_COPY=1
+                export HARNESS_SELF_COPY_PATH="$_self_copy"
+                exec bash "$_self_copy" "$@"
+            fi
+            trap 'rm -f "$HARNESS_SELF_COPY_PATH"' EXIT
+            echo "PRE_SWAP"
+            # Overwrite our own on-disk source with a divergent script.
+            cat > "$1" <<'SWAPPED'
+            #!/usr/bin/env bash
+            echo "SWAPPED_BYTES_EXECUTED"
+            exit 99
+            SWAPPED
+            # Pad the swap so its byte length differs from the original
+            # (the original failure mode depended on offset alignment).
+            for _ in $(seq 1 50); do echo "# pad" >> "$1"; done
+            echo "POST_SWAP"
+            exit 0
+            """
+        )
+    )
+    launcher.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(launcher), str(launcher)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, (
+        f"harness should complete normally (rc=0); got rc={proc.returncode}.\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert "PRE_SWAP" in proc.stdout
+    assert "POST_SWAP" in proc.stdout, (
+        "Running interpreter did not continue executing launching version's bytes "
+        "after on-disk source was swapped — self-copy idiom is broken.\n"
+        f"stdout:\n{proc.stdout}"
+    )
+    assert "SWAPPED_BYTES_EXECUTED" not in proc.stdout, (
+        "Running interpreter executed bytes from the swapped-in file — "
+        "self-copy guard is not preventing self-mutation."
+    )
+
+
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
 def test_dry_run_does_not_emit_default_env_pip_install(tmp_path: Path) -> None:
     """In ``--dry-run`` mode, no echoed install command may target bare
     ``pip``; every install must go through the isolated venv's pip.
