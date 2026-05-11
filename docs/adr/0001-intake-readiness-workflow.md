@@ -232,7 +232,7 @@ Explicitly deferred to later milestones, not lost:
   2. `forge shape` MVP (classification, internal clarification Q&A)
   3. `forge groom` MVP (readiness repair for typed issues)
   4. Mid-sprint workflow documented and exercised
-  5. Inline remediation posture documented; default flipped to off
+  5. Inline remediation posture documented; dogfood `forge.yaml` override removed
 - **v0.12.0+:** full #1450 router (auto-invoke producers, complete verdict taxonomy),
   `forge triage` (#1033), `forge shape` multi-issue decomposition. Autonomy work
   in this milestone *depends on* v0.11.x intake-readiness slice being usable.
