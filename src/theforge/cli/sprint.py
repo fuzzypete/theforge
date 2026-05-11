@@ -355,6 +355,7 @@ def _emit_all_skipped_audit(
 
     from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
     from theforge.sprint.manifest import ResolvedSprint, SprintResult
+    from theforge.sprint.shape_gate import skipped_issue_state_fields
     from theforge.sprint.story_state import SprintStoryState, StoryOutcome
 
     # Build a canonical SprintStoryState containing every shape-gate-skipped
@@ -368,23 +369,14 @@ def _emit_all_skipped_audit(
         if sk_num is None:
             continue
         sk_slug = f"issue-{sk_num}"
-        sk_codes = sk_dict.get("reason_codes") or []
-        sk_reason = (
-            ", ".join(sk_codes)
-            if sk_codes
-            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
-        )
+        sk_reason, sk_detail = skipped_issue_state_fields(sk)
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
             outcome=StoryOutcome.SKIPPED,
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",
-            detail={
-                "shape_gate_source": sk_dict.get("source"),
-                "shape_gate_codes": list(sk_codes),
-                "final_outcome": "SKIPPED",
-            },
+            detail=sk_detail,
         )
     canonical_counts = story_state.counts()
     manifest = ResolvedSprint(

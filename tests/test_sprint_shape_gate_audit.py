@@ -67,6 +67,8 @@ def test_sprint_audit_writes_skipped_issues(tmp_path: Path) -> None:
             "source": "local_check",
             "title": "Too big",
             "detail": "",
+            "verdict": "needs_operator_action",
+            "verdict_description": "",
         }
     ]
 

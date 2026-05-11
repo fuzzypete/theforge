@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from theforge.shape_check._mapping import map_shape
 from theforge.shape_check.types import Reason, ShapeResult
+from theforge.shape_check.verdict import derive_verdict
 
 FUZZY_CODES: frozenset[str] = frozenset(
     {"too_many_behavioral_clusters", "no_observable_done_state"}
@@ -22,7 +23,12 @@ LlmCaller = Callable[[str, tuple[Reason, ...]], ShapeResult]
 
 def _rebuild(reasons: tuple[Reason, ...]) -> ShapeResult:
     shape, action = map_shape(reasons)
-    return ShapeResult(shape=shape, reasons=reasons, suggested_action=action)
+    return ShapeResult(
+        shape=shape,
+        reasons=reasons,
+        suggested_action=action,
+        verdict=derive_verdict(reasons),
+    )
 
 
 def _strip_fuzzy(result: ShapeResult) -> ShapeResult:

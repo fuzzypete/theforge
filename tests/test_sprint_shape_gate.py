@@ -57,7 +57,7 @@ def test_stale_bot_comment_does_not_affect_runnable_issue(tmp_path: Path) -> Non
             fetch_detail=_fake_detail(_RUNNABLE_BODY, ["enhancement"]),
         )
 
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     assert result.skipped == []
 
 
@@ -129,7 +129,9 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
         fetch_detail=_fake_detail(_RUNNABLE_BODY, ["enhancement"]),
     )
 
-    assert result.runnable == issues
+    assert len(result.runnable) == 1
+    assert result.runnable[0]["number"] == 99
+    assert result.runnable[0]["shape_verdict"] == "runnable"
     assert result.skipped == []
 
 
@@ -210,7 +212,7 @@ def test_reopened_issue_with_lastEditedAt_after_reopen_comment_is_runnable(
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
 
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     assert result.skipped == []
 
 
@@ -338,7 +340,7 @@ def test_reopened_issue_with_body_edit_after_reopen_is_runnable(tmp_path: Path) 
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
 
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     assert result.skipped == []
 
 
@@ -366,7 +368,7 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
     )
 
     # Force: every input issue is runnable...
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     # ...but the skipped list is still populated so the CLI can warn.
     assert len(result.skipped) == 1
     assert result.skipped[0].issue_number == 2
@@ -400,7 +402,7 @@ def test_force_override_keeps_reopened_stale_contract_warning(tmp_path: Path) ->
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch, force=True)
 
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     assert len(result.skipped) == 1
     assert result.skipped[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
 
@@ -450,7 +452,7 @@ def test_fetch_failure_leaves_issue_runnable(tmp_path: Path) -> None:
         fetch_detail=lambda _n, _r: None,
     )
 
-    assert result.runnable == issues
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
     assert result.skipped == []
 
 

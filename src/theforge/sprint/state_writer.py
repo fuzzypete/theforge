@@ -249,6 +249,8 @@ def write_bootstrap_state(
     # which issues were rejected by the gate until SprintStateWriter.init()
     # registers them several minutes later, after preflight. They are
     # rendered as terminal `skipped` rows with the gate reason in `reason`.
+    from .shape_gate import skipped_issue_state_fields  # noqa: PLC0415
+
     for sk in skipped_issues or []:
         sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
         sk_num = sk_dict.get("issue_number")
@@ -257,12 +259,7 @@ def write_bootstrap_state(
         sk_slug = f"issue-{sk_num}"
         if sk_slug in seen_slugs:
             continue
-        sk_codes = sk_dict.get("reason_codes") or []
-        sk_reason = (
-            ", ".join(sk_codes)
-            if sk_codes
-            else (sk_dict.get("detail") or sk_dict.get("source") or "shape-gate")
-        )
+        sk_reason, sk_detail = skipped_issue_state_fields(sk)
         stories.append(
             {
                 "slug": sk_slug,
@@ -275,11 +272,7 @@ def write_bootstrap_state(
                 "blocked_by": [],
                 "complexity": None,
                 "complexity_score": None,
-                "detail": {
-                    "shape_gate_source": sk_dict.get("source"),
-                    "shape_gate_codes": list(sk_codes),
-                    "final_outcome": "SKIPPED",
-                },
+                "detail": sk_detail,
                 "reason": sk_reason,
                 "canonical_ref": f"issue:{sk_num}",
                 "depends_on": [],

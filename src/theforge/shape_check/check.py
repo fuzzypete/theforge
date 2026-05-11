@@ -22,6 +22,7 @@ from theforge.shape_check.heuristics import (
     check_untriaged_finding,
 )
 from theforge.shape_check.types import Reason, ShapeResult
+from theforge.shape_check.verdict import derive_verdict
 
 DEFAULT_CLASSIFIER = "heuristic"
 
@@ -88,6 +89,11 @@ def check(
 
     reasons_t = tuple(deduped)
     shape, action = map_shape(reasons_t)
-    heuristic_result = ShapeResult(shape=shape, reasons=reasons_t, suggested_action=action)
+    heuristic_result = ShapeResult(
+        shape=shape,
+        reasons=reasons_t,
+        suggested_action=action,
+        verdict=derive_verdict(reasons_t),
+    )
 
     return classify(classifier_mode, body, heuristic_result, llm_caller=llm_caller)

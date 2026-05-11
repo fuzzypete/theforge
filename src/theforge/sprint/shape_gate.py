@@ -20,8 +20,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..shape_check import Shape, ShapeResult, check
-from ..shape_check.types import Severity
+from ..shape_check import Shape, ShapeResult, ShapeVerdict, check
+from ..shape_check.types import VERDICT_DESCRIPTIONS, Severity
 from .reopen_context import analyze_reopen_contract, format_reopen_stale_detail
 
 NEEDS_GROOMING_LABEL = "needs-grooming"
@@ -45,6 +45,8 @@ class SkippedIssue:
     source: str  # "label" or "local_check"
     title: str = ""
     detail: str = ""
+    verdict: str = ShapeVerdict.NEEDS_OPERATOR_ACTION.value
+    verdict_description: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -53,6 +55,8 @@ class SkippedIssue:
             "source": self.source,
             "title": self.title,
             "detail": self.detail,
+            "verdict": self.verdict,
+            "verdict_description": self.verdict_description,
         }
 
 
@@ -60,6 +64,36 @@ class SkippedIssue:
 class ShapeGateResult:
     runnable: list[dict] = field(default_factory=list)
     skipped: list[SkippedIssue] = field(default_factory=list)
+
+
+def skipped_issue_state_fields(skipped: object) -> tuple[str, dict]:
+    """Return ``(reason, detail)`` for registering a SkippedIssue in canonical state.
+
+    Centralizes the verdict-preferred reason resolution and the per-story
+    ``detail`` shape so every caller (state_writer.write_bootstrap_state,
+    cli.sprint._emit_all_skipped_audit, sprint.runner skipped registration)
+    surfaces the typed verdict identifier consistently. forge sprint-status
+    reads the canonical ``reason`` for the DETAIL column, so divergence here
+    silently regresses the AC that verdicts appear in operator surfaces.
+    """
+    sk_dict = skipped.as_dict() if hasattr(skipped, "as_dict") else dict(skipped)
+    codes = sk_dict.get("reason_codes") or []
+    verdict = sk_dict.get("verdict")
+    verdict_desc = sk_dict.get("verdict_description") or ""
+    if verdict:
+        reason = verdict
+    elif codes:
+        reason = ", ".join(codes)
+    else:
+        reason = sk_dict.get("detail") or sk_dict.get("source") or "shape-gate"
+    detail = {
+        "shape_gate_source": sk_dict.get("source"),
+        "shape_gate_codes": list(codes),
+        "shape_verdict": verdict,
+        "shape_verdict_description": verdict_desc,
+        "final_outcome": "SKIPPED",
+    }
+    return reason, detail
 
 
 def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
@@ -292,6 +326,11 @@ def apply_shape_gate(
 
         if NEEDS_GROOMING_LABEL in labels:
             codes = _blocking_codes(local) or ["needs_grooming_label"]
+            verdict = (
+                local.verdict
+                if local.verdict is not ShapeVerdict.RUNNABLE
+                else ShapeVerdict.NEEDS_OPERATOR_ACTION
+            )
             skipped.append(
                 SkippedIssue(
                     issue_number=number,
@@ -302,11 +341,14 @@ def apply_shape_gate(
                         local,
                         fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
                     ),
+                    verdict=verdict.value,
+                    verdict_description=VERDICT_DESCRIPTIONS[verdict],
                 )
             )
             continue
 
         if reopen_state.has_stale_body:
+            verdict = ShapeVerdict.NEEDS_OPERATOR_ACTION
             skipped.append(
                 SkippedIssue(
                     issue_number=number,
@@ -314,12 +356,42 @@ def apply_shape_gate(
                     source="local_check",
                     title=title_short,
                     detail=format_reopen_stale_detail(reopen_state),
+                    verdict=verdict.value,
+                    verdict_description=VERDICT_DESCRIPTIONS[verdict],
+                )
+            )
+            continue
+
+        # diagnosis_cause_unknown is admissible (Shape.RUNNABLE) but not
+        # implementation-runnable per ADR-0001 — surface it via skipped so
+        # only the runnable verdict proceeds to dev. The verdict is the
+        # routing signal here; map_shape's binary view is intentionally not.
+        if local.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
+            codes = [r.code for r in local.reasons] or ["diagnosis_cause_unknown"]
+            skipped.append(
+                SkippedIssue(
+                    issue_number=number,
+                    reason_codes=tuple(codes),
+                    source="local_check",
+                    title=title_short,
+                    detail=_skip_detail(
+                        local,
+                        fallback="bug investigation-ready; confirmed cause not yet identified",
+                        include_advisory_when_no_blocking=True,
+                    ),
+                    verdict=ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
+                    verdict_description=VERDICT_DESCRIPTIONS[ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN],
                 )
             )
             continue
 
         if local.shape is not Shape.RUNNABLE:
             codes = _blocking_codes(local) or [r.code for r in local.reasons]
+            verdict = (
+                local.verdict
+                if local.verdict is not ShapeVerdict.RUNNABLE
+                else ShapeVerdict.NEEDS_OPERATOR_ACTION
+            )
             skipped.append(
                 SkippedIssue(
                     issue_number=number,
@@ -331,11 +403,17 @@ def apply_shape_gate(
                         fallback=f"local shape check: {local.suggested_action.value}",
                         include_advisory_when_no_blocking=True,
                     ),
+                    verdict=verdict.value,
+                    verdict_description=VERDICT_DESCRIPTIONS[verdict],
                 )
             )
             continue
 
-        runnable.append(issue)
+        # Runnable: attach the verdict to the dict so downstream audit/summary
+        # can render it (instrumentation per CONVENTIONS rule 6).
+        issue_with_verdict = dict(issue)
+        issue_with_verdict["shape_verdict"] = ShapeVerdict.RUNNABLE.value
+        runnable.append(issue_with_verdict)
 
     if force:
         # Escape hatch: caller wants to run every input issue. Skip list is
@@ -354,5 +432,8 @@ def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
         codes = ", ".join(entry.reason_codes) or "<no codes>"
         title = f" — {entry.title}" if entry.title else ""
         detail = f" [{entry.detail}]" if entry.detail else ""
-        lines.append(f"  - #{entry.issue_number} ({entry.source}): {codes}{title}{detail}")
+        verdict = f" verdict={entry.verdict}" if entry.verdict else ""
+        lines.append(
+            f"  - #{entry.issue_number} ({entry.source}):{verdict} {codes}{title}{detail}"
+        )
     return "\n".join(lines)
