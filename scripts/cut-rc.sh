@@ -300,6 +300,14 @@ if [[ "$NO_INSTALL" == false ]]; then
         INVENV_LAUNCHER_DIR=""
         CURRENT_FORGE="$(command -v forge 2>/dev/null || true)"
         if [[ -n "$CURRENT_FORGE" && "$CURRENT_FORGE" != "$MANAGED_LAUNCHER" ]]; then
+            PYENV_ROOT="${PYENV_ROOT:-${HOME}/.pyenv}"
+            if [[ "$CURRENT_FORGE" == "${PYENV_ROOT}/shims/forge" ]] \
+               && command -v pyenv >/dev/null 2>&1; then
+                PYENV_FORGE="$(pyenv which forge 2>/dev/null || true)"
+                if [[ -n "$PYENV_FORGE" && "$PYENV_FORGE" != "$CURRENT_FORGE" ]]; then
+                    CURRENT_FORGE="$PYENV_FORGE"
+                fi
+            fi
             CURRENT_FORGE_DIR="$(dirname "$CURRENT_FORGE")"
             if [[ -f "${CURRENT_FORGE_DIR}/activate" \
                   || -f "${CURRENT_FORGE_DIR}/../pyvenv.cfg" \

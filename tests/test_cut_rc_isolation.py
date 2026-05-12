@@ -835,6 +835,87 @@ def test_venv_resident_forge_with_different_theforge_proceeds_with_note(
     assert "deactivate" not in combined.lower()
 
 
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_pyenv_shim_resolves_to_real_launcher_before_vetting(tmp_path: Path) -> None:
+    """A pyenv shim directory may contain generic ``forge``, ``python``, and
+    ``activate`` shims. That must not make the shim itself the launcher being
+    vetted; resolve through ``pyenv which forge`` and inspect the real console
+    script instead.
+    """
+    script_copy, env, fake_home, fake_venv = _build_cut_rc_fixture(
+        tmp_path, installed_theforge_version="0.10.0rc12"
+    )
+
+    pyenv_root = fake_home / ".pyenv"
+    pyenv_shims = pyenv_root / "shims"
+    pyenv_shims.mkdir(parents=True)
+    real_forge = fake_venv / "bin" / "forge"
+    real_python = fake_venv / "bin" / "python"
+
+    pyenv_shim_body = textwrap.dedent(
+        f"""\
+        #!/bin/sh
+        exec "{real_forge}" "$@"
+        """
+    )
+    (pyenv_shims / "forge").write_text(pyenv_shim_body)
+    (pyenv_shims / "forge").chmod(0o755)
+    (pyenv_shims / "python").write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            exec "{real_python}" "$@"
+            """
+        )
+    )
+    (pyenv_shims / "python").chmod(0o755)
+    # This generic pyenv shim was the false-positive trigger: the old
+    # heuristic treated ~/.pyenv/shims as a venv bin/ because activate existed.
+    (pyenv_shims / "activate").write_text("#!/bin/sh\nexit 0\n")
+    (pyenv_shims / "activate").chmod(0o755)
+
+    shim_bin = tmp_path / "shim_bin"
+    pyenv_cmd = shim_bin / "pyenv"
+    pyenv_cmd.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            if [ "$1" = "which" ] && [ "$2" = "forge" ]; then
+                echo "{real_forge}"
+                exit 0
+            fi
+            exit 1
+            """
+        )
+    )
+    pyenv_cmd.chmod(0o755)
+
+    env["PYENV_ROOT"] = str(pyenv_root)
+    env["PATH"] = f"{pyenv_shims}:{fake_home}/.local/bin:{shim_bin}:/usr/bin:/bin"
+
+    repo = tmp_path / "fake_repo"
+    proc = subprocess.run(
+        ["bash", str(script_copy), "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, (
+        "cut-rc.sh must resolve pyenv shims to the real forge launcher before "
+        f"applying the theforge-console-script vetting check. Output:\n{combined}"
+    )
+    assert "does not look" not in combined
+    assert "0.10.0rc12" in combined
+    assert (fake_home / ".local" / "bin" / "forge").is_symlink()
+
+
 @pytest.mark.skipif(
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",
