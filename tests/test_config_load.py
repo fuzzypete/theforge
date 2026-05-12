@@ -109,6 +109,38 @@ class TestLoadConfig:
         assert config.retry.max_dev_transport_retries == 2
         assert config.retry.max_review_cycles == 4
 
+    def test_review_pool_transient_retry_quorum_fields_loaded(self, tmp_path):
+        config_path = _write_config(
+            {
+                "retry": {
+                    "max_review_transport_retries": 4,
+                    "review_transport_retry_backoff_seconds": 2.5,
+                    "review_quorum_threshold": 3,
+                    "review_transient_failure_codes": ["custom_code", "rate_limit"],
+                    "review_transient_output_patterns": ["Boom", "kapow"],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.retry.max_review_transport_retries == 4
+        assert config.retry.review_transport_retry_backoff_seconds == 2.5
+        assert config.retry.review_quorum_threshold == 3
+        assert config.retry.review_transient_failure_codes == ("custom_code", "rate_limit")
+        # Patterns are normalized to lowercase for case-insensitive matching.
+        assert config.retry.review_transient_output_patterns == ("boom", "kapow")
+
+    def test_review_pool_transient_retry_quorum_defaults(self, tmp_path):
+        config_path = _write_config({"retry": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.max_review_transport_retries == 2
+        assert config.retry.review_transport_retry_backoff_seconds == 8.0
+        assert config.retry.review_quorum_threshold == 2
+        assert "rate_limit" in config.retry.review_transient_failure_codes
+        assert any(
+            "rate limit" in p for p in config.retry.review_transient_output_patterns
+        )
+
     def test_auto_model_escalation_defaults_false(self, tmp_path):
         config_path = _write_config({"retry": {}}, tmp_path)
         config = load_config(config_path)
