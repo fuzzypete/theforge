@@ -408,10 +408,9 @@ if [[ "$NO_INSTALL" == false ]]; then
                 echo "         scripts/cut-rc.sh --resume $VERSION $RC_NUM" >&2
                 exit 1
             fi
-            # The in-venv probe vetted what plain `forge` resolves to; the env
-            # bin precedes $MANAGED_LAUNCHER_DIR on PATH. Don't require the
-            # symlink to win — it's installed and reachable; PATH ordering is
-            # the operator's call.
+            # The in-venv probe vetted what plain `forge` resolves to, but
+            # the RC cut contract requires plain `forge` itself to run the
+            # just-cut candidate before we print the dogfood ladder below.
         fi
 
         PLAIN_OUTPUT=$(forge version 2>&1 || echo "")
@@ -419,16 +418,20 @@ if [[ "$NO_INSTALL" == false ]]; then
         if [[ "$PLAIN_VERSION" != *"$RC_VERSION"* ]]; then
             if [[ -n "$INVENV_LAUNCHER_VERSION" \
                   && "$PLAIN_VERSION" == *"$INVENV_LAUNCHER_VERSION"* ]]; then
-                # Symlink is in place; plain `forge` still runs the env's
-                # theforge==<old version> because PATH puts the env bin first.
-                # This is the documented dogfood state — not an error; just
-                # tell the operator how to switch over.
-                echo "    managed launcher : $MANAGED_LAUNCHER -> $RC_ENV_FORGE"
-                echo "    forge version    : $PLAIN_VERSION (env install at $INVENV_LAUNCHER_DIR; shadows symlink)"
-                echo "    note: to make plain \`forge\` track $RC_TAG, either reorder PATH"
-                echo "          so $MANAGED_LAUNCHER_DIR precedes $INVENV_LAUNCHER_DIR,"
-                echo "          or \`pip install theforge==$RC_VERSION\` in that env."
-                echo "    ✓ $RC_TAG symlink installed; substrate is isolated."
+                echo "" >&2
+                echo "Error: plain \`forge version\` reports '$PLAIN_VERSION'," >&2
+                echo "       but the cut RC is $RC_VERSION." >&2
+                echo "       The managed launcher symlink was installed:" >&2
+                echo "         $MANAGED_LAUNCHER -> $RC_ENV_FORGE" >&2
+                echo "       but it is shadowed by the Python environment at:" >&2
+                echo "         $INVENV_LAUNCHER_DIR" >&2
+                echo "" >&2
+                echo "       Make plain \`forge\` track $RC_TAG by either reordering PATH" >&2
+                echo "       so $MANAGED_LAUNCHER_DIR precedes $INVENV_LAUNCHER_DIR," >&2
+                echo "       or \`pip install theforge==$RC_VERSION\` in that env, then resume" >&2
+                echo "       this cut (the tag is already on origin):" >&2
+                echo "         scripts/cut-rc.sh --resume $VERSION $RC_NUM" >&2
+                exit 1
             else
                 echo "" >&2
                 echo "Error: plain \`forge version\` reports '$PLAIN_VERSION'," >&2

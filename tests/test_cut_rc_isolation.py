@@ -793,20 +793,21 @@ def test_venv_resident_forge_with_comment_only_theforge_mention_refuses(
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",
 )
-def test_venv_resident_forge_with_different_theforge_proceeds_with_note(
+def test_venv_resident_forge_with_different_theforge_fails_before_ladder(
     tmp_path: Path,
 ) -> None:
     """When plain ``forge`` lives in a Python env that has ``theforge``
-    pip-installed at a DIFFERENT version (older RC, dev install, etc.),
-    the script must proceed, emit a one-line takeover note pointing the
-    operator at ``python -m theforge`` for the displaced install, and
-    land the symlink.
+    pip-installed at a DIFFERENT version (older RC, dev install, etc.), the
+    script may install the managed symlink but must not complete the cut or
+    print the bare-``forge`` dogfood ladder. Plain ``forge`` is the candidate
+    selector for dogfood/dev, so a shadowed older install is a hard failure.
     """
     script_copy, env, fake_home, fake_venv = _build_cut_rc_fixture(
         tmp_path, installed_theforge_version="0.10.0rc12"
     )
 
     repo = tmp_path / "fake_repo"
+    rc_env_forge = repo / ".forge" / "rc-envs" / "v0.99.0rc0" / "bin" / "forge"
     proc = subprocess.run(
         ["bash", str(script_copy), "0.99.0", "0"],
         cwd=str(repo),
@@ -816,21 +817,21 @@ def test_venv_resident_forge_with_different_theforge_proceeds_with_note(
         timeout=60,
     )
     combined = proc.stdout + proc.stderr
-    assert proc.returncode == 0, (
-        "cut-rc.sh must proceed (with a note) when the in-venv forge is a "
-        f"different theforge version. Output:\n{combined}"
+    assert proc.returncode != 0, (
+        "cut-rc.sh must fail when plain forge still resolves to a different "
+        f"theforge version after repointing. Output:\n{combined}"
     )
     managed_launcher = fake_home / ".local" / "bin" / "forge"
     assert managed_launcher.is_symlink()
-    # Takeover note must mention the displaced version and how to reach it.
+    assert managed_launcher.resolve() == rc_env_forge
+    # Diagnostic must mention the shadowing version and remediation, but the
+    # dogfood ladder must not print because bare `forge sprint` would target
+    # the wrong binary.
     assert "0.10.0rc12" in combined
-    assert "-m theforge" in combined
-    assert str(fake_venv / "bin" / "python") in combined
-    # Because fake_venv/bin precedes ~/.local/bin on PATH, plain `forge` still
-    # resolves to the env launcher (which reports 0.10.0rc12). The script must
-    # surface that shadowing and tell the operator how to switch, without
-    # erroring out and without recommending "uninstall" / "deactivate".
-    assert "shadow" in combined.lower() or "precedes" in combined.lower()
+    assert "shadow" in combined.lower()
+    assert "--resume" in combined
+    assert "Test ladder" not in combined
+    assert "forge sprint" not in combined
     assert "uninstall" not in combined.lower()
     assert "deactivate" not in combined.lower()
 
@@ -847,7 +848,7 @@ def test_pyenv_shim_resolves_to_real_launcher_before_vetting(tmp_path: Path) -> 
     script instead.
     """
     script_copy, env, fake_home, fake_venv = _build_cut_rc_fixture(
-        tmp_path, installed_theforge_version="0.10.0rc12"
+        tmp_path, installed_theforge_version="0.99.0rc0"
     )
 
     pyenv_root = fake_home / ".pyenv"
@@ -918,7 +919,7 @@ def test_pyenv_shim_resolves_to_real_launcher_before_vetting(tmp_path: Path) -> 
         f"applying the theforge-console-script vetting check. Output:\n{combined}"
     )
     assert "does not look" not in combined
-    assert "0.10.0rc12" in combined
+    assert "0.99.0rc0" in combined
     assert (fake_home / ".local" / "bin" / "forge").is_symlink()
 
 
