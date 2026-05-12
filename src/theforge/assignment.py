@@ -246,6 +246,73 @@ def _promote_tier(tier: str) -> str:
     return _TIER_ORDER[min(idx + 1, len(_TIER_ORDER) - 1)]
 
 
+def _reviewer_health_rationale(
+    agents: list[AgentDef],
+    selected: list[AgentDef],
+    tier: str,
+    *,
+    exclude_model: str | None,
+    unhealthy_models: set[str] | None,
+) -> str:
+    """Return a rationale suffix describing how provider-health shaped selection.
+
+    Returns the empty string when no health signal applied to this selection.
+
+    Two cases must always surface:
+    - **deprioritized**: an unhealthy candidate was passed over in favor of a
+      healthy alternative.  Computed from agents present in the candidate
+      space (tier ladder, not self-excluded by model) but absent from
+      ``selected``.
+    - **fallback**: a reviewer in ``selected`` is itself in
+      ``unhealthy_models``.  This case includes the no-alternative
+      self-review fallback, where ``_select_reviewers`` re-admits the
+      self-excluded model as the last resort — that selection must still
+      be flagged so the operator can tell forced fallback from a clean
+      pick.  The fallback check therefore consults the actual selected
+      set rather than re-applying the self-exclusion filter.
+    """
+    if not unhealthy_models:
+        return ""
+
+    selected_names = {a.name for a in selected}
+
+    # Any selected reviewer that is itself unhealthy was a forced fallback —
+    # surface it regardless of whether self-exclusion would have removed it
+    # from the candidate pool.  This is the no-alternative case the operator
+    # needs to see (issue #1574, review iter 1).
+    fell_back = sorted(n for n in unhealthy_models if n in selected_names)
+
+    # Deprioritized: unhealthy candidates that were in the routing-visible
+    # pool (tier ladder, self-exclusion applied) but not selected.  These
+    # are the picks the router actively avoided in favor of a healthy
+    # alternative.
+    descending_tiers = ["strong", "mid", "cheap"]
+    deprioritized_set: set[str] = set()
+    seen: set[str] = set()
+    for t in descending_tiers:
+        for a in agents:
+            if a.tier != t or a.name in seen:
+                continue
+            seen.add(a.name)
+            if exclude_model is not None and a.model == exclude_model:
+                continue
+            if a.name in unhealthy_models and a.name not in selected_names:
+                deprioritized_set.add(a.name)
+    deprioritized = sorted(deprioritized_set)
+
+    parts: list[str] = []
+    if deprioritized:
+        parts.append(f"health-deprioritized: {', '.join(deprioritized)}")
+    if fell_back:
+        parts.append(
+            f"health-fallback: {', '.join(fell_back)} "
+            f"(no healthy alternative at tier {tier} or below)"
+        )
+    if not parts:
+        return ""
+    return f" [{'; '.join(parts)}]"
+
+
 def _select_reviewers(
     agents: list[AgentDef],
     tier: str,
@@ -253,6 +320,7 @@ def _select_reviewers(
     prefer_cross_provider: bool,
     exclude_model: str | None = None,
     secrets: dict[str, str] | None = None,
+    unhealthy_models: set[str] | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -261,6 +329,12 @@ def _select_reviewers(
     If prefer_cross_provider, greedily pick from different providers.
     If exclude_model is set, agents with that model are excluded; they are
     only included as a last resort when no other candidates are available.
+    If unhealthy_models is set, agents whose name appears in the set are
+    deprioritized: they are excluded when at least one healthy alternative
+    exists in the candidate pool, and only included as a last resort.  This
+    keeps the router from re-picking a model that has just returned a
+    provider-shape failure (capacity, rate-limit, 5xx) within the recent
+    health window.
     """
     # Build candidate list spanning the full tier ladder (strong → mid → cheap).
     # Stronger reviewers are always preferred (listed first), but the pool descends
@@ -305,6 +379,14 @@ def _select_reviewers(
             preferred = [a for a in agents if a.model != exclude_model]
         if preferred:
             candidates = preferred
+
+    # Deprioritize models that recently returned provider-shape failures.
+    # Falling back to an unhealthy model is allowed only when no healthy
+    # alternative remains in the candidate pool.
+    if unhealthy_models:
+        healthy = [a for a in candidates if a.name not in unhealthy_models]
+        if healthy:
+            candidates = healthy
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -679,11 +761,18 @@ def assign_models(
     sprint_promotions: dict[str, str] | None = None,
     secrets: dict[str, str] | None = None,
     model_profiles: dict | None = None,
+    unhealthy_models: set[str] | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
     Returns an AssignmentDecision with model profiles for each phase.
     explicit_profiles keys: "preflight", "planner", "dev", "code_review", "plan_review"
+
+    ``unhealthy_models`` is the set of agent names whose latest provider-shape
+    failure (capacity, rate-limit, 5xx, quota) is still within the health
+    window.  Reviewer selection deprioritizes them in favor of any same-tier
+    or adjacent-tier healthy alternative; with no healthy alternative, the
+    selection proceeds and surfaces the health context in the rationale.
     """
     if not agents:
         raise ValueError("assign_models requires a non-empty agents pool")
@@ -900,6 +989,7 @@ def assign_models(
             assignment_config.prefer_cross_provider,
             exclude_model=planner_model,
             secrets=secrets,
+            unhealthy_models=unhealthy_models,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -910,9 +1000,12 @@ def assign_models(
             if len(plan_reviewers) < n
             else ""
         )
+        health_note = _reviewer_health_rationale(
+            agents, selected, tier, exclude_model=planner_model, unhealthy_models=unhealthy_models
+        )
         rationale["plan_review"] = (
             f"{len(plan_reviewers)} reviewer(s), tier {tier}, "
-            f"providers {providers}{score_note}{shortfall_note}"
+            f"providers {providers}{score_note}{shortfall_note}{health_note}"
         )
 
     # ── Code reviewers ─────────────────────────────────────────────────
@@ -947,6 +1040,7 @@ def assign_models(
             assignment_config.prefer_cross_provider,
             exclude_model=dev_model,
             secrets=secrets,
+            unhealthy_models=unhealthy_models,
         )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -957,9 +1051,12 @@ def assign_models(
             if len(code_reviewers) < n
             else ""
         )
+        health_note = _reviewer_health_rationale(
+            agents, selected, tier, exclude_model=dev_model, unhealthy_models=unhealthy_models
+        )
         rationale["code_review"] = (
             f"{len(code_reviewers)} reviewer(s), tier {tier}, "
-            f"providers {providers}{score_note}{shortfall_note}"
+            f"providers {providers}{score_note}{shortfall_note}{health_note}"
         )
 
     decision = AssignmentDecision(
