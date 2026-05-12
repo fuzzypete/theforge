@@ -701,6 +701,11 @@ class TestAuditReviewPoolFields:
                 allowed_tools=[],
             ),
         )
+        # Allow single-success quorum to preserve the legacy degraded path
+        # under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -721,7 +726,7 @@ class TestAuditReviewPoolFields:
             ),
             AgentResult(
                 success=False,
-                output="",
+                output="ValueError: hard crash",
                 session_id=None,
                 cost_usd=0.0,
                 exit_code=1,
@@ -777,6 +782,11 @@ class TestAuditReviewPoolFields:
                 allowed_tools=[],
             ),
         )
+        # Allow single-success quorum to preserve the legacy degraded path
+        # under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -796,7 +806,7 @@ class TestAuditReviewPoolFields:
             ),
             AgentResult(
                 success=False,
-                output="",
+                output="ValueError: hard crash",
                 session_id=None,
                 cost_usd=0.0,
                 exit_code=1,
@@ -850,6 +860,11 @@ class TestAuditReviewPoolFields:
                 allowed_tools=[],
             ),
         )
+        # Allow single-success quorum to preserve the legacy degraded path
+        # under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -870,7 +885,7 @@ class TestAuditReviewPoolFields:
             ),
             AgentResult(
                 success=False,
-                output="",
+                output="ValueError: hard crash",
                 session_id=None,
                 cost_usd=0.0,
                 exit_code=1,

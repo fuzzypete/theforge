@@ -229,6 +229,15 @@ class ReviewCycleMetadata:
     synthesized: bool  # whether synthesis ran
     parse_retries: int = 0  # parse/schema retry count for this cycle
     failed_detail: dict[str, str] = field(default_factory=dict)  # profile → "exit=N"
+    # Per-profile count of transient transport retries attempted this cycle.
+    transient_retries: dict[str, int] = field(default_factory=dict)
+    # Per-profile outcome: succeeded, transient_retried_then_succeeded,
+    # transient_retried_then_failed, hard_failed.
+    transient_outcomes: dict[str, str] = field(default_factory=dict)
+    # Effective quorum threshold for this cycle (after collapse to panel size).
+    quorum_threshold: int = 0
+    # Whether the effective threshold was met (i.e. synthesis proceeded).
+    quorum_met: bool = False
 
 
 @dataclass(frozen=True)

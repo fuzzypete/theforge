@@ -414,3 +414,332 @@ class TestRetryTraceFiles:
         trace_file = workspace / ".forge" / "traces" / "1-0-review-r1-retry1.txt"
         assert trace_file.exists(), "Successful retry must also write trace file"
         assert trace_file.read_text(encoding="utf-8") == APPROVE_REVIEW
+
+
+class TestTransientRetryClassifier:
+    def test_failure_code_rate_limit_is_transient(self, tmp_path):
+        from theforge.coordinator.review_pool import _is_transient_review_failure
+
+        config = _make_pool_config(
+            tmp_path, [_make_review_profile("r1")], _make_review_profile("r1")
+        )
+        result = _make_agent_result(success=False, output="boom", profile_name="r1")
+        result = result.__class__(**{**result.__dict__, "failure_code": "rate_limit"})
+        assert _is_transient_review_failure(result, config) is True
+
+    def test_failure_code_provider_internal_error_is_transient(self, tmp_path):
+        from theforge.coordinator.review_pool import _is_transient_review_failure
+
+        config = _make_pool_config(
+            tmp_path, [_make_review_profile("r1")], _make_review_profile("r1")
+        )
+        result = _make_agent_result(success=False, output="boom", profile_name="r1")
+        result = result.__class__(**{**result.__dict__, "failure_code": "provider_internal_error"})
+        assert _is_transient_review_failure(result, config) is True
+
+    def test_failure_code_connection_reset_is_transient(self, tmp_path):
+        from theforge.coordinator.review_pool import _is_transient_review_failure
+
+        config = _make_pool_config(
+            tmp_path, [_make_review_profile("r1")], _make_review_profile("r1")
+        )
+        result = _make_agent_result(success=False, output="boom", profile_name="r1")
+        result = result.__class__(**{**result.__dict__, "failure_code": "connection_reset"})
+        assert _is_transient_review_failure(result, config) is True
+
+    def test_exit1_empty_output_is_transient(self, tmp_path):
+        from theforge.coordinator.review_pool import _is_transient_review_failure
+
+        config = _make_pool_config(
+            tmp_path, [_make_review_profile("r1")], _make_review_profile("r1")
+        )
+        result = _make_agent_result(success=False, output="", profile_name="r1")
+        assert _is_transient_review_failure(result, config) is True
+
+    def test_successful_result_not_transient(self, tmp_path):
+        from theforge.coordinator.review_pool import _is_transient_review_failure
+
+        config = _make_pool_config(
+            tmp_path, [_make_review_profile("r1")], _make_review_profile("r1")
+        )
+        result = _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1")
+        assert _is_transient_review_failure(result, config) is False
+
+    def test_hard_failure_with_real_output_not_transient(self, tmp_path):
+        from theforge.coordinator.review_pool import _is_transient_review_failure
+
+        config = _make_pool_config(
+            tmp_path, [_make_review_profile("r1")], _make_review_profile("r1")
+        )
+        result = _make_agent_result(
+            success=False, output="ValueError: bad spec format", profile_name="r1"
+        )
+        assert _is_transient_review_failure(result, config) is False
+
+
+class TestTransientRetry:
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_transient_retry_succeeds_within_budget(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=2,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="r1"
+        )
+
+        meta = _meta()
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is not None
+        assert sorted(r.profile_name for r in successful) == ["r1", "r2"]
+        assert failed == []
+        assert meta.transient_retries.get("r1") == 1
+        assert meta.transient_outcomes["r1"] == "transient_retried_then_succeeded"
+        assert meta.transient_outcomes["r2"] == "succeeded"
+        assert meta.quorum_met is True
+        assert meta.quorum_threshold == 2
+        assert mock_run_agent.call_count == 1
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_transient_retry_exhausts_budget_records_failed_outcome(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        r3 = _make_review_profile("r3")
+        r4 = _make_review_profile("r4")
+        config = _make_pool_config(tmp_path, [r1, r2, r3, r4], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=2,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r3"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r4"),
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=False, output="", profile_name="r1"
+        )
+
+        meta = _meta()
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        # Quorum met (3 of 4 succeeded ≥ threshold 2) — proceed without escalation
+        assert merged is not None
+        assert state.phase != Phase.ESCALATE
+        assert sorted(r.profile_name for r in successful) == ["r2", "r3", "r4"]
+        assert [r.profile_name for r in failed] == ["r1"]
+        assert meta.transient_retries["r1"] == 2
+        assert meta.transient_outcomes["r1"] == "transient_retried_then_failed"
+        assert meta.quorum_met is True
+        assert mock_run_agent.call_count == 2
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_quorum_unmet_escalates(self, mock_pool, mock_run_agent, _mock_log, tmp_path):
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        r3 = _make_review_profile("r3")
+        r4 = _make_review_profile("r4")
+        config = _make_pool_config(tmp_path, [r1, r2, r3, r4], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=0,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="ValueError: nope", profile_name="r1"),
+            _make_agent_result(success=False, output="ValueError: nope", profile_name="r2"),
+            _make_agent_result(success=False, output="ValueError: nope", profile_name="r3"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r4"),
+        ]
+
+        meta = _meta()
+        _successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert "Quorum unmet" in state.error
+        assert len(failed) == 3
+        assert meta.quorum_met is False
+        assert meta.quorum_threshold == 2
+        assert mock_run_agent.call_count == 0
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_panel_size_one_collapses_threshold(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        """Single-reviewer panel: threshold collapses to 1; success still proceeds."""
+        r1 = _make_review_profile("solo")
+        config = _make_pool_config(tmp_path, [r1], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=0,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="solo")
+        ]
+
+        meta = _meta()
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is not None
+        assert meta.quorum_threshold == 1
+        assert meta.quorum_met is True
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_panel_size_one_transient_fail_escalates(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        """Panel of 1 with no successful reviewers still escalates (collapsed threshold=1)."""
+        r1 = _make_review_profile("solo")
+        config = _make_pool_config(tmp_path, [r1], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=1,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="solo")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=False, output="", profile_name="solo"
+        )
+
+        meta = _meta()
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert meta.quorum_threshold == 1
+        assert meta.quorum_met is False
+        assert meta.transient_outcomes["solo"] == "transient_retried_then_failed"
