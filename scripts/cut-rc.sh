@@ -253,7 +253,7 @@ if [[ "$NO_INSTALL" == false ]]; then
     fi
     run python3 -m venv "$RC_ENV_DIR"
     run "$RC_ENV_PIP" install --upgrade pip
-    run "$RC_ENV_PIP" install "git+https://github.com/fuzzypete/theforge.git@${RC_TAG}#egg=theforge[all]"
+    run "$RC_ENV_PIP" install "theforge[all] @ git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
     if [[ "$DRY_RUN" == false ]]; then
         INSTALLED_OUTPUT=$("$RC_ENV_FORGE" version 2>&1 || echo "")
         INSTALLED_VERSION=$(echo "$INSTALLED_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1)
@@ -435,7 +435,7 @@ else
     echo "==> Skipping verification install (--no-install)."
     echo "    To verify manually in an isolated venv:"
     echo "      python3 -m venv \"$RC_ENV_DIR\""
-    echo "      \"$RC_ENV_PIP\" install git+https://github.com/fuzzypete/theforge.git@${RC_TAG}#egg=theforge[all]"
+    echo "      \"$RC_ENV_PIP\" install \"theforge[all] @ git+https://github.com/fuzzypete/theforge.git@${RC_TAG}\""
     echo "      \"$RC_ENV_FORGE\" version"
     echo "      ln -snf \"$RC_ENV_FORGE\" \"$MANAGED_LAUNCHER\""
 fi
