@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 from unittest.mock import patch
 
+import yaml
 from coord_test_helpers import (
     APPROVE_REVIEW,
     _make_agent_result,
@@ -17,6 +18,7 @@ from coord_test_helpers import (
     _shell_with_gate,
 )
 
+from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.review_phase import _maybe_enter_p2_cleanup
 from theforge.coordinator.state import CoordinatorState, Phase, RetryReason
@@ -152,6 +154,88 @@ class TestMaybeEnterP2Cleanup:
         config = _make_config(tmp_path)
         assert config.retry.p2_cleanup_enabled is True
 
+    def test_new_p2_after_carry_does_not_extend_loop(self, tmp_path):
+        """Loop is bound to the carried P2 set; new P2s do not extend it.
+
+        Reviewer no longer raises the original carried P2s, but raises a
+        brand-new one. The cleanup loop must exit (action=exit_clean)
+        rather than follow the new advisory finding.
+        """
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.budget.max_iterations = 4
+        state.p2_cleanup_iterations = 1
+        state.p2_cleanup_active = True
+        # Carry set captured at first entry — none of these descriptions
+        # appear in the next review.
+        state.p2_cleanup_carry_keys = [
+            ["src/old.py", 1, "Original P2 A"],
+            ["src/old.py", 2, "Original P2 B"],
+        ]
+
+        # The new review surfaces an entirely different P2 (new finding).
+        new_review = ReviewResult(
+            verdict="APPROVE",
+            summary="ok",
+            findings=[
+                ReviewFinding(
+                    severity="P2",
+                    file="src/new.py",
+                    line=99,
+                    description="Brand new advisory",
+                    suggestion=None,
+                )
+            ],
+            story_matches=True,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+
+        entered = _maybe_enter_p2_cleanup(state, config, new_review)
+
+        assert entered is False
+        assert state.p2_cleanup_active is False
+        assert state.p2_cleanup_audit[-1]["action"] == "exit_clean"
+
+    def test_carry_keys_capture_only_initial_p2_set(self, tmp_path):
+        """First entry captures the carry set; subsequent passes do not extend it."""
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.budget.max_iterations = 4
+
+        first = _approve_with_p2_review(n=2)
+        _maybe_enter_p2_cleanup(state, config, first)
+        captured = list(state.p2_cleanup_carry_keys)
+        assert len(captured) == 2
+
+        # Subsequent pass surfaces the original set PLUS a new P2;
+        # carry keys must not grow.
+        second = ReviewResult(
+            verdict="APPROVE",
+            summary="ok",
+            findings=[
+                *first.findings,
+                ReviewFinding(
+                    severity="P2",
+                    file="src/extra.py",
+                    line=42,
+                    description="Late-breaking advisory",
+                    suggestion=None,
+                ),
+            ],
+            story_matches=True,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _maybe_enter_p2_cleanup(state, config, second)
+        assert list(state.p2_cleanup_carry_keys) == captured
+
     def test_respects_cap_when_set(self, tmp_path):
         """AC: operator may cap the number of cleanup iterations."""
         config = _make_config(tmp_path)
@@ -160,15 +244,48 @@ class TestMaybeEnterP2Cleanup:
         )
         state = CoordinatorState()
         state.budget.max_iterations = 4
-        # First cleanup pass already dispatched.
+        # First cleanup pass already dispatched with the same P2 set still
+        # outstanding (carry_keys mirror the review we're about to evaluate).
         state.p2_cleanup_iterations = 1
         state.p2_cleanup_active = True
+        state.p2_cleanup_carry_keys = [
+            ["src/file0.py", 0, "P2 issue 0"],
+            ["src/file1.py", 1, "P2 issue 1"],
+        ]
 
         entered = _maybe_enter_p2_cleanup(state, config, _approve_with_p2_review())
 
         assert entered is False
         assert state.p2_cleanup_active is False
         assert state.p2_cleanup_audit[-1]["action"] == "skip_cap"
+
+
+class TestP2CleanupConfigLoading:
+    """forge.yaml retry.p2_cleanup_* keys must reach RetryPolicy via load_config."""
+
+    def _write_yaml(self, tmp_path, retry_data: dict):
+        config_path = tmp_path / "forge.yaml"
+        config_path.write_text(yaml.dump({"retry": retry_data}), encoding="utf-8")
+        return config_path
+
+    def test_defaults_when_keys_absent(self, tmp_path):
+        config_path = self._write_yaml(tmp_path, {})
+        with patch("importlib.import_module"):
+            cfg = load_config(config_path)
+        assert cfg.retry.p2_cleanup_enabled is True
+        assert cfg.retry.p2_cleanup_max_iterations == 0
+
+    def test_yaml_disables_cleanup(self, tmp_path):
+        config_path = self._write_yaml(tmp_path, {"p2_cleanup_enabled": False})
+        with patch("importlib.import_module"):
+            cfg = load_config(config_path)
+        assert cfg.retry.p2_cleanup_enabled is False
+
+    def test_yaml_caps_cleanup_iterations(self, tmp_path):
+        config_path = self._write_yaml(tmp_path, {"p2_cleanup_max_iterations": 3})
+        with patch("importlib.import_module"):
+            cfg = load_config(config_path)
+        assert cfg.retry.p2_cleanup_max_iterations == 3
 
 
 class TestP2CleanupLoop:
@@ -248,6 +365,51 @@ class TestP2CleanupLoop:
         # Audit recorded the skip.
         actions = [entry["action"] for entry in result.state.p2_cleanup_audit]
         assert actions == ["skip_disabled"]
+
+    @patch("theforge.coordinator.review_phase._human_review")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_interactive_mode_runs_cleanup_before_hitl(
+        self, mock_shell, mock_dev, mock_pool, mock_human_review, tmp_path
+    ):
+        """Interactive APPROVE with open P2s + remaining budget runs cleanup,
+        not the HITL prompt (the human is asked only when cleanup terminates).
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Polished.")
+
+        # Reviewer flips clean after the cleanup dev pass.
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [
+                    _make_agent_result(success=True, output=APPROVE_WITH_P2, profile_name="review")
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        # When cleanup completes cleanly the interactive flow surfaces to the
+        # operator on the *second* review; HITL must not run before cleanup.
+        mock_human_review.return_value = ("approve", None)
+
+        result = run_from_review(config, task, workspace, interactive=True)
+
+        assert result.success is True
+        assert result.state.p2_cleanup_iterations == 1
+        # Exactly one HITL call — and it followed the cleanup dev pass.
+        assert mock_human_review.call_count == 1
+        # First REVIEW (with P2s) must NOT have called HITL — verified
+        # implicitly by cleanup dispatching a dev iteration before HITL ran.
+        assert mock_dev.call_count == 1
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")

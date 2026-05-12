@@ -297,6 +297,45 @@ def _open_p2_findings(parsed_review: ReviewResult) -> list[ReviewFinding]:
     return [f for f in parsed_review.findings if f.severity == "P2"]
 
 
+def _p2_finding_key(f: ReviewFinding) -> tuple[str, int | None, str]:
+    """Return a stable fingerprint for a P2 finding."""
+    return (f.file or "", f.line, (f.description or "").strip())
+
+
+def _build_carry_findings(
+    parsed_review: ReviewResult,
+    carry_keys: list[tuple[str, int | None, str]],
+) -> list[ReviewFinding]:
+    """Filter the current P2 findings to those still in the carried set."""
+    if not carry_keys:
+        return []
+    carry_set = {tuple(key) for key in carry_keys}
+    return [
+        f for f in parsed_review.findings if f.severity == "P2" and _p2_finding_key(f) in carry_set
+    ]
+
+
+def _carry_handoff(findings: list[ReviewFinding]) -> str:
+    """Render carried P2 findings as a dev-agent handoff body."""
+    if not findings:
+        return "No specific findings provided."
+    lines: list[str] = ["## Carried P2 Findings"]
+    for f in findings:
+        loc = f" (line {f.line})" if f.line is not None else ""
+        lines.append(f"\n### [P2] `{f.file}`{loc}")
+        lines.append(f"**Issue:** {f.description}")
+        if f.suggestion:
+            lines.append(f"**Fix:** {f.suggestion}")
+    return "\n".join(lines)
+
+
+def _clear_p2_cleanup_state(state: CoordinatorState) -> None:
+    """Reset cleanup tracking when the loop exits (clean, regression, cap, etc.)."""
+    state.p2_cleanup_active = False
+    state.p2_cleanup_findings = []
+    state.p2_cleanup_carry_keys = []
+
+
 def _maybe_enter_p2_cleanup(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -305,46 +344,60 @@ def _maybe_enter_p2_cleanup(
     """Decide whether to re-enter DEV for advisory P2 cleanup after APPROVE.
 
     Mutates state when entering cleanup: sets retry_reason=P2_CLEANUP,
-    p2_cleanup_active=True, captures p2_cleanup_findings, and appends an
-    audit entry. Returns True to signal the caller should return RETRY_DEV
-    instead of DONE.
+    p2_cleanup_active=True, captures p2_cleanup_findings filtered to the
+    originally carried P2 set, and appends an audit entry. Returns True to
+    signal the caller should return RETRY_DEV instead of DONE.
+
+    On first entry the current P2 findings are fingerprinted and stored as
+    state.p2_cleanup_carry_keys; on subsequent passes only those carried
+    findings still raised by the reviewer keep the loop running. New P2
+    findings raised after carry capture are recorded but do not extend the
+    loop — preventing an unbounded "follow every new advisory" pattern.
 
     Returns False when:
       - the feature is disabled,
-      - the review has no open P2 findings,
+      - no carried P2 findings remain (or none existed),
       - the dev iteration budget for this cycle is exhausted, or
       - the configured cleanup-iteration cap has been reached.
     """
-    p2s = _open_p2_findings(parsed_review)
+    current_p2s = _open_p2_findings(parsed_review)
+    if not state.p2_cleanup_active:
+        # First evaluation post-APPROVE — capture the carry set from the
+        # P2 findings raised by THIS review.
+        carry_keys = [list(_p2_finding_key(f)) for f in current_p2s]
+    else:
+        carry_keys = list(state.p2_cleanup_carry_keys)
+    remaining_carried = _build_carry_findings(parsed_review, carry_keys)
     audit_base = {
         "review_cycle": state.review_cycle,
         "dev_iteration": state.dev_iteration,
-        "p2_count": len(p2s),
+        "p2_count": len(current_p2s),
+        "carried_p2_count": len(carry_keys),
+        "remaining_carried_p2_count": len(remaining_carried),
         "budget_remaining": state.budget.remaining(),
         "cleanup_iterations": state.p2_cleanup_iterations,
     }
     if not config.retry.p2_cleanup_enabled:
         state.p2_cleanup_audit.append({"action": "skip_disabled", **audit_base})
-        state.p2_cleanup_active = False
+        _clear_p2_cleanup_state(state)
         return False
-    if not p2s:
-        state.p2_cleanup_audit.append(
-            {
-                "action": "exit_clean" if state.p2_cleanup_active else "skip_no_p2",
-                **audit_base,
-            }
-        )
-        state.p2_cleanup_active = False
+    if not remaining_carried:
+        # Either the original review had no P2s, or every carried P2 was
+        # resolved by a prior cleanup pass. Either way we exit the loop.
+        action = "exit_clean" if state.p2_cleanup_active else "skip_no_p2"
+        state.p2_cleanup_audit.append({"action": action, **audit_base})
+        _clear_p2_cleanup_state(state)
         return False
     if state.budget.remaining() <= 0:
         state.p2_cleanup_audit.append({"action": "skip_budget", **audit_base})
-        state.p2_cleanup_active = False
+        _clear_p2_cleanup_state(state)
         return False
     cap = config.retry.p2_cleanup_max_iterations
     if cap > 0 and state.p2_cleanup_iterations >= cap:
         state.p2_cleanup_audit.append({"action": "skip_cap", **audit_base})
-        state.p2_cleanup_active = False
+        _clear_p2_cleanup_state(state)
         return False
+    state.p2_cleanup_carry_keys = carry_keys
     state.p2_cleanup_findings = [
         {
             "severity": f.severity,
@@ -353,14 +406,14 @@ def _maybe_enter_p2_cleanup(
             "description": f.description,
             "suggestion": f.suggestion,
         }
-        for f in p2s
+        for f in remaining_carried
     ]
     action = "continue" if state.p2_cleanup_iterations > 0 else "enter"
     state.p2_cleanup_active = True
     state.p2_cleanup_iterations += 1
     state.retry_reason = RetryReason.P2_CLEANUP
     state.human_feedback = None
-    state.last_review_findings = review_to_dev_handoff(parsed_review)
+    state.last_review_findings = _carry_handoff(remaining_carried)
     state.p2_cleanup_audit.append({"action": action, **audit_base})
     return True
 
@@ -442,6 +495,7 @@ def _handle_interactive_review_decision(
     review_elapsed: float,
     run_id: str,
     exhausted_cycles: bool,
+    history_already_appended: bool = False,
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     """Handle the HUMAN_REVIEW decision flow for an interactive session.
 
@@ -473,7 +527,8 @@ def _handle_interactive_review_decision(
     state.human_review_feedback = feedback
 
     if decision == "approve":
-        _append_cycle_history(state, parsed_review)
+        if not history_already_appended:
+            _append_cycle_history(state, parsed_review)
         if exhausted_cycles:
             _approve_msg = (
                 f"Task '{task.name}' completed. "
@@ -529,7 +584,8 @@ def _handle_interactive_review_decision(
         )
 
     if decision == "extend":
-        _append_cycle_history(state, parsed_review)
+        if not history_already_appended:
+            _append_cycle_history(state, parsed_review)
         state.budget.reset_cycle()
         state.review_cycle = 0
         state.human_review_extra_cycles += 1
@@ -551,7 +607,8 @@ def _handle_interactive_review_decision(
         return _ReviewOutcome.RETRY_DEV, None, config
 
     # decision == "reject"
-    _append_cycle_history(state, parsed_review)
+    if not history_already_appended:
+        _append_cycle_history(state, parsed_review)
     state.budget.reset_cycle()
     state.last_review_findings = None
     state.retry_reason = RetryReason.REJECT
@@ -1319,6 +1376,40 @@ def _run_review_phase(
             f"  ✓ REVIEW   {_verdict_label}  {_p1_count} P1  {_p2_count} P2"
             f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
         )
+        _append_cycle_history(state, parsed_review)
+        # ── P2 cleanup (post-APPROVE advisory iterations) ──────────────
+        # Default behaviour in both interactive and non-interactive modes:
+        # when the review left open P2s and dev iteration budget remains,
+        # re-enter DEV with the carried P2 list. Budget exhaustion, no
+        # remaining carried P2s, an iteration cap, or p2_cleanup_enabled=
+        # false all fall through to the existing approve handler.
+        if _maybe_enter_p2_cleanup(state, config, parsed_review):
+            _entry = state.p2_cleanup_audit[-1]
+            _log(
+                f"  ↻ P2 CLEANUP  entering dev iteration "
+                f"({_entry['remaining_carried_p2_count']} carried P2(s), "
+                f"budget_remaining={_entry['budget_remaining']})"
+            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="REVIEW",
+                    outcome="approve_p2_cleanup",
+                    cost_usd=round(_review_cost, 6),
+                    duration_s=round(_review_elapsed, 2),
+                )
+                logger._safe_emit(
+                    "p2_cleanup",
+                    action=_entry["action"],
+                    p2_count=_entry["p2_count"],
+                    carried_p2_count=_entry["carried_p2_count"],
+                    remaining_carried_p2_count=_entry["remaining_carried_p2_count"],
+                    review_cycle=_entry["review_cycle"],
+                    dev_iteration=_entry["dev_iteration"],
+                    budget_remaining=_entry["budget_remaining"],
+                )
+            return _ReviewOutcome.RETRY_DEV, None, config
+        # Cleanup was either skipped or terminated.
         if interactive:
             return _handle_interactive_review_decision(
                 state,
@@ -1334,40 +1425,9 @@ def _run_review_phase(
                 review_elapsed=_review_elapsed,
                 run_id=run_id,
                 exhausted_cycles=False,
+                history_already_appended=True,
             )
         else:
-            _append_cycle_history(state, parsed_review)
-            # ── P2 cleanup (post-APPROVE advisory iterations) ──────────
-            # Re-enter DEV when the review left open P2s and dev iteration
-            # budget remains. Budget exhaustion (or disabled config) falls
-            # through to the DONE return — P2s are advisory, never blocking.
-            if _maybe_enter_p2_cleanup(state, config, parsed_review):
-                _entry = state.p2_cleanup_audit[-1]
-                _log(
-                    f"  ↻ P2 CLEANUP  entering dev iteration "
-                    f"({_entry['p2_count']} open P2(s), "
-                    f"budget_remaining={_entry['budget_remaining']})"
-                )
-                if logger:
-                    logger._safe_emit(
-                        "phase_end",
-                        phase="REVIEW",
-                        outcome="approve_p2_cleanup",
-                        cost_usd=round(_review_cost, 6),
-                        duration_s=round(_review_elapsed, 2),
-                    )
-                    logger._safe_emit(
-                        "p2_cleanup",
-                        action=_entry["action"],
-                        p2_count=_entry["p2_count"],
-                        review_cycle=_entry["review_cycle"],
-                        dev_iteration=_entry["dev_iteration"],
-                        budget_remaining=_entry["budget_remaining"],
-                    )
-                return _ReviewOutcome.RETRY_DEV, None, config
-            # Cleanup was either skipped or terminated; ensure flag cleared
-            # so subsequent paths do not see stale state.
-            state.p2_cleanup_active = False
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(
@@ -1409,7 +1469,7 @@ def _run_review_phase(
                 "cleanup_iterations": state.p2_cleanup_iterations,
             }
         )
-        state.p2_cleanup_active = False
+        _clear_p2_cleanup_state(state)
     _is_persistent_p1 = False
     if config.models is not None and len(state.review_results) >= 2:
         _prev_result = state.review_results[-2]

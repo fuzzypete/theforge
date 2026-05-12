@@ -684,6 +684,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_dev_iterations_cap=int(retry_data.get("max_dev_iterations_cap", 0)),
         max_review_cycles_cap=int(retry_data.get("max_review_cycles_cap", 0)),
         review_zero_findings_stop=int(retry_data.get("review_zero_findings_stop", 0)),
+        p2_cleanup_enabled=bool(retry_data.get("p2_cleanup_enabled", True)),
+        p2_cleanup_max_iterations=int(retry_data.get("p2_cleanup_max_iterations", 0)),
     )
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)

@@ -481,8 +481,14 @@ class CoordinatorState:
     # > 0; counts against the dev budget either way.
     p2_cleanup_iterations: int = 0
     # P2 findings (as dicts: file/line/description/suggestion) handed to the
-    # dev agent on the next cleanup pass. Repopulated each cleanup entry.
+    # dev agent on the next cleanup pass. Filtered each cleanup pass to the
+    # subset of p2_cleanup_carry_keys still raised by the latest reviewer.
     p2_cleanup_findings: list[dict] = field(default_factory=list)
+    # Stable fingerprints (file, line, description) of the original P2 set
+    # captured at first cleanup entry. The cleanup loop only considers these
+    # carried findings; new P2s raised by the reviewer after the carry is
+    # captured do not extend the loop. Cleared when cleanup exits.
+    p2_cleanup_carry_keys: list[list] = field(default_factory=list)
     # Audit trail for cleanup decisions: one entry per cleanup transition with
     # action ("enter" | "continue" | "exit_clean" | "exit_budget" | "exit_cap"
     # | "exit_regression" | "skip_disabled" | "skip_no_p2" | "skip_budget"
