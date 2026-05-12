@@ -75,6 +75,41 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
 
 
+def _record_provider_health_failures(config: ForgeConfig, results: list[Any]) -> None:
+    """Persist a provider-health record for each pool result that failed with
+    a provider-shape signature (capacity / rate-limit / 5xx / quota).
+
+    Runtime failures (parse errors, schema rejections, code crashes) are not
+    recorded — only signals that mean "the provider itself is currently
+    refusing this model" so the adaptive router can deprioritize the model
+    for the duration of the health window.
+    """
+    from theforge.provider_health import (  # noqa: PLC0415
+        ProviderHealthRecord,
+        append_provider_health_record,
+        classify_provider_shape_failure,
+        utcnow_iso,
+    )
+
+    path = config.project_root / ".forge" / "provider_health.yaml"
+    for r in results:
+        signature = classify_provider_shape_failure(r)
+        if signature is None:
+            continue
+        append_provider_health_record(
+            path,
+            ProviderHealthRecord(
+                model=r.profile_name,
+                signature=signature,
+                timestamp=utcnow_iso(),
+            ),
+        )
+        _log_verbose(
+            f"  provider-health: recorded {signature} failure for {r.profile_name} "
+            f"(exit={r.exit_code})"
+        )
+
+
 def _emit_review_git_context(
     logger: Any | None,
     *,
@@ -310,6 +345,7 @@ def _run_review_pool(
     )
     _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
     _cycle_num = state.review_cycle + 1
+    _record_provider_health_failures(config, pool_results)
     for r in pool_results:
         state.review_agent_results.append(r)
         state.review_durations.append(_per_agent_dur)

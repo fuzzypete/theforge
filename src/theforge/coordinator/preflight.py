@@ -1010,6 +1010,16 @@ def _apply_preflight_config(
     _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
     _model_profiles = _load_profiles(_profiles_path)
 
+    from theforge.provider_health import (  # noqa: PLC0415
+        load_provider_health as _load_provider_health,
+    )
+    from theforge.provider_health import (
+        unhealthy_models as _unhealthy_models,
+    )
+
+    _health_path = config.project_root / ".forge" / "provider_health.yaml"
+    _unhealthy = _unhealthy_models(_load_provider_health(_health_path))
+
     from theforge.config import ModelProfile as _ModelProfile  # noqa: PLC0415
 
     _explicit: dict[str, object] = {}
@@ -1061,6 +1071,7 @@ def _apply_preflight_config(
         sprint_promotions=state.sprint_promotions,
         secrets=config.secrets,
         model_profiles=_model_profiles,
+        unhealthy_models=_unhealthy if _unhealthy else None,
     )
 
     # Splice the full explicit pools back into the decision so audit and
