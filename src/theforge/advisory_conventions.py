@@ -16,6 +16,12 @@ from .config import ForgeConfig
 _LINE_COUNT_RULES = frozenset({"max_module_lines", "max_test_file_lines"})
 _DETAIL_RE = re.compile(r"^(?P<file>.+) has (?P<line_count>\d+) lines \(limit (?P<limit>\d+)\)$")
 
+# Shape-gate-compatible runnable type label. Auto-filed findings must carry a
+# recognized type label or sprint intake refuses to dispatch them — see
+# shape_check.heuristics.check_missing_type. ``task`` is the appropriate type
+# for an operator-driven refactor of an oversized module.
+_RUNNABLE_TYPE_LABEL = "task"
+
 
 def advisory_artifact_path(config: ForgeConfig) -> Path:
     """Return the local rolling advisory artifact path."""
@@ -167,6 +173,70 @@ def _entry_percent_over(entry: dict[str, Any]) -> float | None:
     return (gap / limit) * 100.0
 
 
+def _render_issue_body(entry: dict[str, Any], percent_over: float) -> str:
+    """Render a sprint-runnable issue body for an advisory convention finding.
+
+    The body conforms to the ``task``-shape contract enforced by
+    ``shape_check``: a non-empty ``## Acceptance criteria`` section whose
+    bullets contain observable verbs, no ``## Design`` heading, and an
+    ``Implementation target:`` line that opts the body out of the
+    file-path-based implementation-plan check.
+    """
+    rule = entry["rule"]
+    file = entry["file"]
+    line_count = entry["line_count"]
+    limit = entry["limit"]
+    gap = entry["gap"]
+    pct = f"{percent_over:.0f}%"
+    audit_yaml = yaml.safe_dump(
+        {
+            "rule": rule,
+            "file": file,
+            "detail": entry["detail"],
+            "line_count": line_count,
+            "limit": limit,
+            "gap": gap,
+            "blocking": False,
+            "last_run_id": entry.get("last_run_id"),
+            "last_story_slug": entry.get("last_story_slug"),
+        },
+        sort_keys=False,
+    ).strip()
+
+    lines = [
+        "## Summary",
+        "",
+        (
+            f"Advisory convention `{rule}` is exceeded by `{file}`: "
+            f"{line_count} lines vs the configured limit of {limit} "
+            f"(gap of {gap} lines, {pct} over). Refactor the module to bring "
+            "it under the limit by extracting cohesive subunits into sibling "
+            "modules without changing observable behavior."
+        ),
+        "",
+        f"Implementation target: {file}",
+        "",
+        "## Acceptance criteria",
+        "",
+        (
+            f"- Re-running the convention check reports `{file}` at no more "
+            f"than {limit} lines (currently {line_count})."
+        ),
+        "- `make gate` passes after the refactor.",
+        (
+            f"- Existing imports of symbols defined in `{file}` continue to "
+            "resolve; no public name is removed without a re-export."
+        ),
+        "",
+        "## Audit excerpt",
+        "",
+        "```yaml",
+        audit_yaml,
+        "```",
+    ]
+    return "\n".join(lines)
+
+
 def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, Any] | None:
     issue_cfg = config.conventions_advisory.issue_filing
     if not issue_cfg.enabled:
@@ -178,34 +248,7 @@ def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, A
         return None
 
     title = f"Advisory convention debt: {entry['rule']} in {entry['file']}"
-    body_lines = [
-        "## Advisory convention violation",
-        "",
-        f"- Rule: `{entry['rule']}`",
-        f"- File: `{entry['file']}`",
-        f"- Detail: {entry['detail']}",
-        f"- Last observed run: `{entry.get('last_run_id') or 'unknown'}`",
-    ]
-    if entry.get("last_story_slug"):
-        body_lines.append(f"- Observed while running: `{entry['last_story_slug']}`")
-    body_lines.extend(
-        [
-            "",
-            "## Audit excerpt",
-            "",
-            "```yaml",
-            yaml.safe_dump(
-                {
-                    "rule": entry["rule"],
-                    "file": entry["file"],
-                    "detail": entry["detail"],
-                    "blocking": False,
-                },
-                sort_keys=False,
-            ).strip(),
-            "```",
-        ]
-    )
+    body = _render_issue_body(entry, percent_over)
     command = [
         "gh",
         "issue",
@@ -213,7 +256,9 @@ def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, A
         "--title",
         title,
         "--body",
-        "\n".join(body_lines),
+        body,
+        "--label",
+        _RUNNABLE_TYPE_LABEL,
         "--label",
         issue_cfg.label,
     ]
