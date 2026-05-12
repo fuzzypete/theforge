@@ -853,8 +853,14 @@ def test_pyenv_shim_resolves_to_real_launcher_before_vetting(tmp_path: Path) -> 
     pyenv_root = fake_home / ".pyenv"
     pyenv_shims = pyenv_root / "shims"
     pyenv_shims.mkdir(parents=True)
-    real_forge = fake_venv / "bin" / "forge"
-    real_python = fake_venv / "bin" / "python"
+    pyenv_bin = pyenv_root / "versions" / "3.12.12" / "bin"
+    pyenv_bin.mkdir(parents=True)
+    real_forge = pyenv_bin / "forge"
+    real_python = pyenv_bin / "python"
+    real_forge.write_bytes((fake_venv / "bin" / "forge").read_bytes())
+    real_forge.chmod(0o755)
+    real_python.write_bytes((fake_venv / "bin" / "python").read_bytes())
+    real_python.chmod(0o755)
 
     pyenv_shim_body = textwrap.dedent(
         f"""\
