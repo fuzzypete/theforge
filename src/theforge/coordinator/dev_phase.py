@@ -547,6 +547,30 @@ def _run_dev_phase(
             state.dev_prompt_injected_finding_ids.append([])
             state.retry_reason = None
             state.human_feedback = None
+        case RetryReason.P2_CLEANUP:
+            prompt = build_fix_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                allowed_tools=config.dev_profile.allowed_tools,
+                review_findings=state.last_review_findings or "No specific findings provided.",
+                gate_command=_gate_cmd,
+                test_command=_test_cmd,
+                gate_skipped=_is_gate_skip(task.gate_override),
+                iteration=state.dev_iteration,
+                cycle_history=state.cycle_history or None,
+                escalation_note=state.escalation_note,
+                plan_output=state.plan_structured
+                if state.plan_structured is not None
+                else state.plan_output,
+                prior_open_p1s=None,
+                classified_p1s=None,
+                surviving_families=None,
+                conventions=config.conventions_soft,
+                advisory_p2_only=True,
+            )
+            state.dev_prompt_injected_finding_ids.append([])
+            state.escalation_note = None
         case RetryReason.REVIEW_CHANGES | RetryReason.EXTEND if state.last_review_findings:
             carry_forward_p1s = _prior_open_p1s_for_dev_prompt(state)
             current_cycle_p1s = _current_cycle_p1s_for_dev_prompt(state)

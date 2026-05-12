@@ -270,6 +270,12 @@ class RetryPolicy:
     # Stop the review loop early when this many consecutive iterations produce
     # zero new findings. 0 disables early termination.
     review_zero_findings_stop: int = 0
+    # After APPROVE with open P2 findings, the coordinator re-enters DEV to
+    # address them as advisory cleanup until the dev iteration budget is
+    # exhausted. Enabled by default. p2_cleanup_max_iterations=0 means
+    # "no separate cap — use whatever remains of the per-cycle dev budget".
+    p2_cleanup_enabled: bool = True
+    p2_cleanup_max_iterations: int = 0
 
 
 @dataclass(frozen=True)

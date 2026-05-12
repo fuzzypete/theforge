@@ -87,6 +87,7 @@ class RetryReason(str, Enum):
     TIMEOUT_RESUME = "timeout_resume"
     CONVENTION_VIOLATIONS = "convention_violations"
     MAX_ITERATIONS_NO_SUBMIT = "max_iterations_no_submit"
+    P2_CLEANUP = "p2_cleanup"
 
 
 # ── Disposition enum ──────────────────────────────────────────────────
@@ -468,6 +469,32 @@ class CoordinatorState:
     validate_already_complete: bool = False
     validate_already_complete_commits: list[dict] = field(default_factory=list)
     validate_already_complete_reason: str | None = None
+    # ── P2 cleanup (post-APPROVE advisory iterations) ─────────────────────────
+    # Set True when the coordinator re-enters DEV after an APPROVE that left
+    # open P2 findings; cleared on cleanup-clean APPROVE, REQUEST_CHANGES
+    # regression, or budget exhaustion. While True, the engine does NOT reset
+    # the per-cycle dev budget on RETRY_DEV (cleanup iterations count against
+    # the same pool as the original cycle).
+    p2_cleanup_active: bool = False
+    # Number of post-APPROVE cleanup dev iterations dispatched this run.
+    # Counts against config.retry.p2_cleanup_max_iterations when that cap is
+    # > 0; counts against the dev budget either way.
+    p2_cleanup_iterations: int = 0
+    # P2 findings (as dicts: file/line/description/suggestion) handed to the
+    # dev agent on the next cleanup pass. Filtered each cleanup pass to the
+    # subset of p2_cleanup_carry_keys still raised by the latest reviewer.
+    p2_cleanup_findings: list[dict] = field(default_factory=list)
+    # Stable fingerprints (file, line, description) of the original P2 set
+    # captured at first cleanup entry. The cleanup loop only considers these
+    # carried findings; new P2s raised by the reviewer after the carry is
+    # captured do not extend the loop. Cleared when cleanup exits.
+    p2_cleanup_carry_keys: list[list] = field(default_factory=list)
+    # Audit trail for cleanup decisions: one entry per cleanup transition with
+    # action ("enter" | "continue" | "exit_clean" | "exit_budget" | "exit_cap"
+    # | "exit_regression" | "skip_disabled" | "skip_no_p2" | "skip_budget"
+    # | "skip_cap"), pre-pass P2 count, post-pass P2 count, budget remaining,
+    # review_cycle, and dev_iteration at the decision point.
+    p2_cleanup_audit: list[dict] = field(default_factory=list)
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.
