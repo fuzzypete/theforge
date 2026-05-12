@@ -251,6 +251,49 @@ class RetryPolicy:
     max_plan_review_transport_retries: int = (
         2  # per-reviewer retries on transient plan-review transport/provider failure
     )
+    # Per-reviewer retries on transient review-pool transport/provider failure.
+    max_review_transport_retries: int = 2
+    # Initial backoff (seconds) for review-pool transient retry; doubled per retry.
+    review_transport_retry_backoff_seconds: float = 8.0
+    # Minimum successful reviewers required to proceed to synthesis without
+    # escalating; collapses to 1 when the panel size is 1.
+    review_quorum_threshold: int = 2
+    # Failure-code identifiers (from AgentResult.failure_code) that mark a
+    # review-pool failure as transient/retryable.
+    review_transient_failure_codes: tuple[str, ...] = (
+        "rate_limit",
+        "provider_internal_error",
+        "connection_reset",
+    )
+    # Substrings (matched case-insensitively against agent output) treated as
+    # transient signatures for the review pool.
+    review_transient_output_patterns: tuple[str, ...] = (
+        "429",
+        "rate limit",
+        "rate-limited",
+        "resource_exhausted",
+        "resource exhausted",
+        "quota exceeded",
+        "quota_exceeded",
+        "500",
+        "502",
+        "503",
+        "504",
+        "internal error",
+        "server error",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "connection reset",
+        "connection-reset",
+        "econnreset",
+        "connection aborted",
+        "connection refused",
+        "peer closed connection",
+        "temporarily unavailable",
+        "try again later",
+        "timeout awaiting headers",
+    )
     max_plan_regen_attempts: int = 3  # plan review rejection → regen cycles before escalating
     demotion_threshold: int = 2  # parse failures per reviewer per run before exclusion; 0 disables
     plan_escalation_threshold: int = (

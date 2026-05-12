@@ -676,6 +676,25 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_plan_review_transport_retries=int(
             retry_data.get("max_plan_review_transport_retries", 2)
         ),
+        max_review_transport_retries=int(retry_data.get("max_review_transport_retries", 2)),
+        review_transport_retry_backoff_seconds=float(
+            retry_data.get("review_transport_retry_backoff_seconds", 8.0)
+        ),
+        review_quorum_threshold=int(retry_data.get("review_quorum_threshold", 2)),
+        review_transient_failure_codes=tuple(
+            str(code)
+            for code in retry_data.get(
+                "review_transient_failure_codes",
+                ("rate_limit", "provider_internal_error", "connection_reset"),
+            )
+        ),
+        review_transient_output_patterns=tuple(
+            str(p).lower()
+            for p in retry_data.get(
+                "review_transient_output_patterns",
+                RetryPolicy.__dataclass_fields__["review_transient_output_patterns"].default,
+            )
+        ),
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),

@@ -286,6 +286,74 @@ class TestCoordinatorMultiModelReview:
         # run_agent called for DEV only (no synthesis for pool of 1; preflight mocked separately)
         assert mock_agent.call_count == 1
 
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_transient_reviewer_crash_retries_and_meets_quorum(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_pool,
+        mock_review_agent,
+        tmp_path,
+    ):
+        """Phase-boundary seam: transient crash in a 4-reviewer panel is retried, then
+        partial-failure quorum lets synthesis proceed without escalating."""
+        profiles = [
+            _make_review_profile("r1"),
+            _make_review_profile("r2"),
+            _make_review_profile("r3"),
+            _make_review_profile("r4"),
+        ]
+        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    review_quorum_threshold=2,
+                    max_review_transport_retries=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        # DEV + synthesis (pool of 4 → synthesis runs)
+        mock_dev_agent.side_effect = [
+            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
+        ]
+        # r1 crashes transiently (exit=1 + empty output); retries also fail.
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r3"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r4"),
+        ]
+        mock_review_agent.return_value = _make_agent_result(
+            success=False, output="", profile_name="r1"
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Retries actually fired
+        assert mock_review_agent.call_count == 2
+        # Audit captures retry + quorum metadata
+        meta = result.state.review_cycle_metadata[-1]
+        assert meta.transient_retries["r1"] == 2
+        assert meta.transient_outcomes["r1"] == "transient_retried_then_failed"
+        assert meta.quorum_met is True
+
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
@@ -296,6 +364,11 @@ class TestCoordinatorMultiModelReview:
         """1 of 2 reviewers succeeds → single output used directly (no synthesis)."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
         config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
+        # Allow single-success quorum so the legacy "degrade to single" path
+        # remains exercised under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -354,6 +427,10 @@ class TestCoordinatorMultiModelReview:
         tight_profile = _make_review_profile("tight", budget_usd=0.10)
         normal_profile = _make_review_profile("normal", budget_usd=5.00)
         config = _make_pool_config(tmp_path, [tight_profile, normal_profile], SYNTHESIS_PROFILE)
+        # Threshold=1 so the remaining reviewer meets quorum after budget exclusion.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
