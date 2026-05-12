@@ -5,6 +5,7 @@ import datetime as dt
 import subprocess
 from unittest.mock import patch
 
+import pytest
 import yaml
 from coord_test_helpers import _make_config
 
@@ -179,6 +180,54 @@ def test_auto_filed_issue_passes_sprint_intake_shape_check(tmp_path):
 
     # Drive the actual sprint-intake shape check against the rendered body to
     # prove this auto-filed issue would be dispatched, not skipped.
+    result = check(title, body, labels)
+    assert result.shape is Shape.RUNNABLE, [
+        (r.code, r.severity.name, r.detail) for r in result.reasons
+    ]
+
+
+@pytest.mark.parametrize("configured_label", ["bug", "enhancement", "epic", "task", "TASK"])
+def test_auto_filed_issue_drops_recognized_type_filing_label(tmp_path, configured_label):
+    """A configured filing label that is itself a recognized type label
+    must not produce an issue with multiple type labels — sprint intake's
+    ``check_missing_type`` rejects that as missing_type and forge would
+    refuse to run the issue it just filed."""
+    config = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            issue_filing=AdvisoryIssueFilingConfig(
+                enabled=True,
+                threshold_percent=25.0,
+                label=configured_label,
+            )
+        ),
+    )
+    observed_at = dt.datetime(2026, 5, 2, 18, 45, tzinfo=dt.timezone.utc)
+    gh_result = subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=0,
+        stdout="https://github.com/example/repo/issues/300\n",
+        stderr="",
+    )
+
+    with patch("theforge.advisory_conventions.subprocess.run", return_value=gh_result) as mock_run:
+        update_advisory_violations(
+            config,
+            [_violation()],
+            observed_at=observed_at,
+            run_id="run-collide",
+            story_slug="story-collide",
+        )
+
+    assert mock_run.call_count == 1
+    title, body, labels = _gh_create_kwargs(mock_run.call_args)
+
+    # Exactly one recognized type label, and it is the runnable one.
+    recognized = {"bug", "enhancement", "epic", "task"}
+    type_labels = [lbl for lbl in labels if lbl.lower() in recognized]
+    assert type_labels == ["task"], labels
+
+    # The shape gate must still classify the result as RUNNABLE.
     result = check(title, body, labels)
     assert result.shape is Shape.RUNNABLE, [
         (r.code, r.severity.name, r.detail) for r in result.reasons

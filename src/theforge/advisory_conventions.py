@@ -16,11 +16,18 @@ from .config import ForgeConfig
 _LINE_COUNT_RULES = frozenset({"max_module_lines", "max_test_file_lines"})
 _DETAIL_RE = re.compile(r"^(?P<file>.+) has (?P<line_count>\d+) lines \(limit (?P<limit>\d+)\)$")
 
-# Shape-gate-compatible runnable type label. Auto-filed findings must carry a
-# recognized type label or sprint intake refuses to dispatch them — see
-# shape_check.heuristics.check_missing_type. ``task`` is the appropriate type
-# for an operator-driven refactor of an oversized module.
+# Shape-gate-compatible runnable type label. Auto-filed findings must carry
+# exactly one recognized type label or sprint intake refuses to dispatch them
+# — see shape_check.heuristics.check_missing_type. ``task`` is the appropriate
+# type for an operator-driven refactor of an oversized module; the rendered
+# body is task-shaped (Summary + AC), so any other type label (``bug``,
+# ``enhancement``, ``epic``) would either conflict with ``task`` (multiple
+# type labels → missing_type BLOCKING) or demand a body shape we do not
+# render (e.g. ``bug`` requires a complete Diagnosis section). Recognized
+# type labels supplied via ``issue_filing.label`` are therefore dropped from
+# the gh invocation; the resulting issue carries only ``task``.
 _RUNNABLE_TYPE_LABEL = "task"
+_RECOGNIZED_TYPE_LABELS = frozenset({"bug", "enhancement", "epic", "task"})
 
 
 def advisory_artifact_path(config: ForgeConfig) -> Path:
@@ -173,6 +180,25 @@ def _entry_percent_over(entry: dict[str, Any]) -> float | None:
     return (gap / limit) * 100.0
 
 
+def _resolve_issue_labels(configured_label: str) -> list[str]:
+    """Return the labels to attach to an auto-filed advisory issue.
+
+    Always includes the runnable type label. The configured filing label is
+    appended only when it is not itself a recognized type label — a
+    second type label would either conflict with ``task`` (sprint intake's
+    ``check_missing_type`` rejects multi-type issues) or demand a body
+    shape this module does not render (``bug`` requires Diagnosis). Dropping
+    the conflicting label is preferred over refusing to file: the audit
+    trail still attributes the issue to the advisory finding via title and
+    body, and the operator can re-label after triage.
+    """
+    labels: list[str] = [_RUNNABLE_TYPE_LABEL]
+    normalized = configured_label.strip()
+    if normalized and normalized.lower() not in _RECOGNIZED_TYPE_LABELS:
+        labels.append(normalized)
+    return labels
+
+
 def _render_issue_body(entry: dict[str, Any], percent_over: float) -> str:
     """Render a sprint-runnable issue body for an advisory convention finding.
 
@@ -249,19 +275,10 @@ def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, A
 
     title = f"Advisory convention debt: {entry['rule']} in {entry['file']}"
     body = _render_issue_body(entry, percent_over)
-    command = [
-        "gh",
-        "issue",
-        "create",
-        "--title",
-        title,
-        "--body",
-        body,
-        "--label",
-        _RUNNABLE_TYPE_LABEL,
-        "--label",
-        issue_cfg.label,
-    ]
+    labels = _resolve_issue_labels(issue_cfg.label)
+    command = ["gh", "issue", "create", "--title", title, "--body", body]
+    for label in labels:
+        command.extend(["--label", label])
     if issue_cfg.milestone:
         command.extend(["--milestone", issue_cfg.milestone])
     proc = subprocess.run(
@@ -279,6 +296,7 @@ def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, A
         "title": title,
         "url": issue_url,
         "label": issue_cfg.label,
+        "labels_applied": labels,
         "milestone": issue_cfg.milestone,
         "filed_at": entry["last_seen"],
     }
