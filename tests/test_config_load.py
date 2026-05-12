@@ -137,9 +137,7 @@ class TestLoadConfig:
         assert config.retry.review_transport_retry_backoff_seconds == 8.0
         assert config.retry.review_quorum_threshold == 2
         assert "rate_limit" in config.retry.review_transient_failure_codes
-        assert any(
-            "rate limit" in p for p in config.retry.review_transient_output_patterns
-        )
+        assert any("rate limit" in p for p in config.retry.review_transient_output_patterns)
 
     def test_auto_model_escalation_defaults_false(self, tmp_path):
         config_path = _write_config({"retry": {}}, tmp_path)
