@@ -7,7 +7,10 @@ from .conventions import render_conventions_block
 from .story import TaskStory
 
 
-def _build_task_framing(surviving_families: list[dict] | None) -> tuple[str, int]:
+def _build_task_framing(
+    surviving_families: list[dict] | None,
+    advisory_p2_only: bool = False,
+) -> tuple[str, int]:
     """Build the first numbered task item(s) for the 'Your Task' section.
 
     Returns (framing_text, next_step_number) so callers can number subsequent
@@ -15,7 +18,22 @@ def _build_task_framing(surviving_families: list[dict] | None) -> tuple[str, int
 
     When surviving families are present the framing switches from
     'fix each P1 finding' to 'reconsider approach for persistent issues'.
+
+    When ``advisory_p2_only`` is set (post-APPROVE P2 cleanup pass), the
+    framing emphasises that the review already approved the work and that
+    these findings are advisory improvements, not blockers — partial cleanup
+    is acceptable and the agent should not redesign the implementation.
     """
+    if advisory_p2_only:
+        text = (
+            "1. **Advisory cleanup pass.** The review already APPROVED the "
+            "implementation; these P2 findings are improvements, not blockers. "
+            "Address what is clearly worth fixing and skip findings whose fix "
+            "would require unrelated refactoring. Do NOT redesign the "
+            "implementation. Do NOT introduce regressions. If a finding looks "
+            "wrong, leaving it untouched is acceptable."
+        )
+        return text, 2
     if surviving_families:
         n = len(surviving_families)
         family_labels = "; ".join(
@@ -52,6 +70,7 @@ def build_fix_prompt(
     classified_p1s: list | None = None,  # list[FindingRecord]
     surviving_families: list[dict] | None = None,
     conventions: list[str] | None = None,
+    advisory_p2_only: bool = False,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -233,7 +252,9 @@ def build_fix_prompt(
 
             {review_findings}""")
 
-    _task_framing, _commit_step = _build_task_framing(surviving_families)
+    _task_framing, _commit_step = _build_task_framing(
+        surviving_families, advisory_p2_only=advisory_p2_only
+    )
     _handoff_step = _commit_step + 1
 
     return dedent(f"""\

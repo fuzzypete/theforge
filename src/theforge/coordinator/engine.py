@@ -609,8 +609,12 @@ def _coordinator_loop(
                 state=state,
                 message=f"Stopped at --until {stop_phase.name.lower()}",
             )
-        # RETRY_DEV — reset per-cycle budget counter and loop back
-        state.budget.reset_cycle()
+        # RETRY_DEV — reset per-cycle budget counter and loop back.
+        # Exception: P2 cleanup iterations after APPROVE keep accumulating
+        # against the existing cycle budget so cleanup cannot exceed the
+        # configured dev iteration pool.
+        if not state.p2_cleanup_active:
+            state.budget.reset_cycle()
 
 
 def run_task(

@@ -292,6 +292,79 @@ class _ReviewOutcome(Enum):
     RETRY_DEV = auto()
 
 
+def _open_p2_findings(parsed_review: ReviewResult) -> list[ReviewFinding]:
+    """Return the P2 findings raised by the current review pass."""
+    return [f for f in parsed_review.findings if f.severity == "P2"]
+
+
+def _maybe_enter_p2_cleanup(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    parsed_review: ReviewResult,
+) -> bool:
+    """Decide whether to re-enter DEV for advisory P2 cleanup after APPROVE.
+
+    Mutates state when entering cleanup: sets retry_reason=P2_CLEANUP,
+    p2_cleanup_active=True, captures p2_cleanup_findings, and appends an
+    audit entry. Returns True to signal the caller should return RETRY_DEV
+    instead of DONE.
+
+    Returns False when:
+      - the feature is disabled,
+      - the review has no open P2 findings,
+      - the dev iteration budget for this cycle is exhausted, or
+      - the configured cleanup-iteration cap has been reached.
+    """
+    p2s = _open_p2_findings(parsed_review)
+    audit_base = {
+        "review_cycle": state.review_cycle,
+        "dev_iteration": state.dev_iteration,
+        "p2_count": len(p2s),
+        "budget_remaining": state.budget.remaining(),
+        "cleanup_iterations": state.p2_cleanup_iterations,
+    }
+    if not config.retry.p2_cleanup_enabled:
+        state.p2_cleanup_audit.append({"action": "skip_disabled", **audit_base})
+        state.p2_cleanup_active = False
+        return False
+    if not p2s:
+        state.p2_cleanup_audit.append(
+            {
+                "action": "exit_clean" if state.p2_cleanup_active else "skip_no_p2",
+                **audit_base,
+            }
+        )
+        state.p2_cleanup_active = False
+        return False
+    if state.budget.remaining() <= 0:
+        state.p2_cleanup_audit.append({"action": "skip_budget", **audit_base})
+        state.p2_cleanup_active = False
+        return False
+    cap = config.retry.p2_cleanup_max_iterations
+    if cap > 0 and state.p2_cleanup_iterations >= cap:
+        state.p2_cleanup_audit.append({"action": "skip_cap", **audit_base})
+        state.p2_cleanup_active = False
+        return False
+    state.p2_cleanup_findings = [
+        {
+            "severity": f.severity,
+            "file": f.file,
+            "line": f.line,
+            "description": f.description,
+            "suggestion": f.suggestion,
+        }
+        for f in p2s
+    ]
+    action = "continue" if state.p2_cleanup_iterations > 0 else "enter"
+    state.p2_cleanup_active = True
+    state.p2_cleanup_iterations += 1
+    state.retry_reason = RetryReason.P2_CLEANUP
+    state.human_feedback = None
+    state.last_review_findings = review_to_dev_handoff(parsed_review)
+    state.p2_cleanup_audit.append({"action": action, **audit_base})
+    return True
+
+
 # ── Review-phase helpers ──────────────────────────────────────────────
 
 
@@ -1264,6 +1337,37 @@ def _run_review_phase(
             )
         else:
             _append_cycle_history(state, parsed_review)
+            # ── P2 cleanup (post-APPROVE advisory iterations) ──────────
+            # Re-enter DEV when the review left open P2s and dev iteration
+            # budget remains. Budget exhaustion (or disabled config) falls
+            # through to the DONE return — P2s are advisory, never blocking.
+            if _maybe_enter_p2_cleanup(state, config, parsed_review):
+                _entry = state.p2_cleanup_audit[-1]
+                _log(
+                    f"  ↻ P2 CLEANUP  entering dev iteration "
+                    f"({_entry['p2_count']} open P2(s), "
+                    f"budget_remaining={_entry['budget_remaining']})"
+                )
+                if logger:
+                    logger._safe_emit(
+                        "phase_end",
+                        phase="REVIEW",
+                        outcome="approve_p2_cleanup",
+                        cost_usd=round(_review_cost, 6),
+                        duration_s=round(_review_elapsed, 2),
+                    )
+                    logger._safe_emit(
+                        "p2_cleanup",
+                        action=_entry["action"],
+                        p2_count=_entry["p2_count"],
+                        review_cycle=_entry["review_cycle"],
+                        dev_iteration=_entry["dev_iteration"],
+                        budget_remaining=_entry["budget_remaining"],
+                    )
+                return _ReviewOutcome.RETRY_DEV, None, config
+            # Cleanup was either skipped or terminated; ensure flag cleared
+            # so subsequent paths do not see stale state.
+            state.p2_cleanup_active = False
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(
@@ -1290,6 +1394,22 @@ def _run_review_phase(
             )
 
     # ── REQUEST_CHANGES (blocking P1s present) ───────────────────
+    # If we were in P2 cleanup and this review brought back blocking P1s,
+    # the cleanup pass regressed. Exit cleanup so the engine resets the
+    # per-cycle budget normally for the upcoming blocking-fix cycle.
+    if state.p2_cleanup_active:
+        state.p2_cleanup_audit.append(
+            {
+                "action": "exit_regression",
+                "review_cycle": state.review_cycle,
+                "dev_iteration": state.dev_iteration,
+                "p2_count": _p2_count,
+                "p1_count": _p1_count,
+                "budget_remaining": state.budget.remaining(),
+                "cleanup_iterations": state.p2_cleanup_iterations,
+            }
+        )
+        state.p2_cleanup_active = False
     _is_persistent_p1 = False
     if config.models is not None and len(state.review_results) >= 2:
         _prev_result = state.review_results[-2]
