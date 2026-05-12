@@ -200,6 +200,36 @@ def test_assign_models_falls_back_to_unhealthy_when_no_alternative():
     assert "health-" in rationale, rationale
 
 
+def test_assign_models_self_review_only_unhealthy_candidate_surfaces_fallback():
+    """No-alternative path: only candidate is unhealthy AND same model as dev.
+
+    `_select_reviewers` re-admits the self-excluded model when nothing else
+    is available.  The rationale must surface health-fallback so the operator
+    can distinguish a forced pick from a clean one (issue-1574 iter 1).
+    """
+    agents = [
+        AgentDef(
+            name="openai-gpt-5.5",
+            provider="openai",
+            model="gpt-5.5",
+            budget_usd=2.0,
+            timeout_seconds=600,
+            tier="strong",
+        ),
+    ]
+    decision = assign_models(
+        agents,
+        _cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False),
+        complexity="large",  # HIGH → dev tier strong → dev=gpt-5.5
+        unhealthy_models={"openai-gpt-5.5"},
+    )
+    assert decision.dev.model == "gpt-5.5"
+    assert decision.code_reviewers[0].model == "gpt-5.5"
+    rationale = decision.rationale["code_review"]
+    assert "health-fallback" in rationale, rationale
+    assert "openai-gpt-5.5" in rationale
+
+
 def test_assign_models_no_health_signal_no_rationale_note():
     agents = _agents_two_strong()
     decision = assign_models(agents, _cfg(), complexity="medium", unhealthy_models=None)

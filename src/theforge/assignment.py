@@ -257,18 +257,37 @@ def _reviewer_health_rationale(
     """Return a rationale suffix describing how provider-health shaped selection.
 
     Returns the empty string when no health signal applied to this selection.
-    When unhealthy candidates were deprioritized, names them.  When the
-    selection had to fall back to an unhealthy model because no healthy
-    alternative existed, surfaces that explicitly so the operator can tell
-    the difference between "router avoided the flapping model" and "router
-    had no choice".
+
+    Two cases must always surface:
+    - **deprioritized**: an unhealthy candidate was passed over in favor of a
+      healthy alternative.  Computed from agents present in the candidate
+      space (tier ladder, not self-excluded by model) but absent from
+      ``selected``.
+    - **fallback**: a reviewer in ``selected`` is itself in
+      ``unhealthy_models``.  This case includes the no-alternative
+      self-review fallback, where ``_select_reviewers`` re-admits the
+      self-excluded model as the last resort — that selection must still
+      be flagged so the operator can tell forced fallback from a clean
+      pick.  The fallback check therefore consults the actual selected
+      set rather than re-applying the self-exclusion filter.
     """
     if not unhealthy_models:
         return ""
-    # Which unhealthy agents were in the candidate space at all (same set the
-    # selector considered: full tier ladder, authed, not self).
+
+    selected_names = {a.name for a in selected}
+
+    # Any selected reviewer that is itself unhealthy was a forced fallback —
+    # surface it regardless of whether self-exclusion would have removed it
+    # from the candidate pool.  This is the no-alternative case the operator
+    # needs to see (issue #1574, review iter 1).
+    fell_back = sorted(n for n in unhealthy_models if n in selected_names)
+
+    # Deprioritized: unhealthy candidates that were in the routing-visible
+    # pool (tier ladder, self-exclusion applied) but not selected.  These
+    # are the picks the router actively avoided in favor of a healthy
+    # alternative.
     descending_tiers = ["strong", "mid", "cheap"]
-    in_pool: list[str] = []
+    deprioritized_set: set[str] = set()
     seen: set[str] = set()
     for t in descending_tiers:
         for a in agents:
@@ -277,13 +296,10 @@ def _reviewer_health_rationale(
             seen.add(a.name)
             if exclude_model is not None and a.model == exclude_model:
                 continue
-            if a.name in unhealthy_models:
-                in_pool.append(a.name)
-    if not in_pool:
-        return ""
-    selected_names = {a.name for a in selected}
-    fell_back = sorted(n for n in in_pool if n in selected_names)
-    deprioritized = sorted(n for n in in_pool if n not in selected_names)
+            if a.name in unhealthy_models and a.name not in selected_names:
+                deprioritized_set.add(a.name)
+    deprioritized = sorted(deprioritized_set)
+
     parts: list[str] = []
     if deprioritized:
         parts.append(f"health-deprioritized: {', '.join(deprioritized)}")
