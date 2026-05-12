@@ -309,9 +309,14 @@ if [[ "$NO_INSTALL" == false ]]; then
                 fi
             fi
             CURRENT_FORGE_DIR="$(dirname "$CURRENT_FORGE")"
+            CURRENT_FORGE_IS_PYENV_VERSION=false
+            if [[ "$CURRENT_FORGE" == "${PYENV_ROOT}/versions/"*/bin/forge ]]; then
+                CURRENT_FORGE_IS_PYENV_VERSION=true
+            fi
             if [[ -f "${CURRENT_FORGE_DIR}/activate" \
                   || -f "${CURRENT_FORGE_DIR}/../pyvenv.cfg" \
-                  || -f "${CURRENT_FORGE_DIR}/activate.fish" ]]; then
+                  || -f "${CURRENT_FORGE_DIR}/activate.fish" \
+                  || "$CURRENT_FORGE_IS_PYENV_VERSION" == true ]]; then
                 CURRENT_FORGE_PY=""
                 if [[ -x "${CURRENT_FORGE_DIR}/python" ]]; then
                     CURRENT_FORGE_PY="${CURRENT_FORGE_DIR}/python"
