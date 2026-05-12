@@ -141,7 +141,7 @@ def _outcome_to_status(outcome: str) -> str:
         return "skipped"
     if outcome == "OPERATOR_ACTION":
         return "operator-action"
-    if outcome in ("ESCALATE", "MERGE_FAILED"):
+    if outcome == "ESCALATE":
         return "failed"
     return "failed"
 
