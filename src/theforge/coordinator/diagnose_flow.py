@@ -387,7 +387,8 @@ def run_diagnose_flow(
 
     # Budget guard — if the agent cost exceeded the configured budget, mark
     # the result as partial regardless of whether the agent reported success.
-    if state.agent_cost_usd > config.diagnose.budget_usd * 1.05:
+    budget_exceeded = state.agent_cost_usd > config.diagnose.budget_usd * 1.05
+    if budget_exceeded:
         partial = True
 
     # ── PARSE ─────────────────────────────────────────────────────────
@@ -412,7 +413,10 @@ def run_diagnose_flow(
     if not artifact.is_complete() or partial:
         artifact = dataclasses.replace(artifact, partial=True)
         state.artifact = artifact
-        state.transition(DiagnosePhase.TIMEOUT_PARTIAL, _now_iso())
+        partial_phase = (
+            DiagnosePhase.BUDGET_EXCEEDED if budget_exceeded else DiagnosePhase.TIMEOUT_PARTIAL
+        )
+        state.transition(partial_phase, _now_iso())
         if interactive and confirm_landing is None:
             confirm_landing = _stdin_confirm
         if interactive and confirm_landing is not None:
