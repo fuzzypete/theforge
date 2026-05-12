@@ -263,32 +263,32 @@ def _select_reviewers(
     If exclude_model is set, agents with that model are excluded; they are
     only included as a last resort when no other candidates are available.
     """
-    # Build candidate list: prefer strong, fall back to requested tier
-    # Filter by auth availability — skip agents whose API key is missing
-    strong = [a for a in _agents_by_tier(agents, "strong") if _has_auth(a, secrets)]
-    tier_agents = (
-        [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
-        if tier != "strong"
-        else []
-    )
-    # Merge: strong first, then same-tier, deduplicated
+    # Build candidate list spanning the full tier ladder (strong → mid → cheap).
+    # Stronger reviewers are always preferred (listed first), but the pool descends
+    # past the requested tier so a panel of N can still be filled when the
+    # requested tier's authed-provider diversity is too narrow after
+    # self-exclusion / cross-provider filtering.  Without the descent, a
+    # strong-tier request would degenerate to strong-only, producing fewer
+    # eyes for higher-risk stories than a mid-tier request sees — see issue
+    # #1542.
+    descending_tiers = ["strong", "mid", "cheap"]
     seen_names: set[str] = set()
     candidates: list[AgentDef] = []
-    for a in strong + tier_agents:
-        if a.name not in seen_names:
-            candidates.append(a)
-            seen_names.add(a.name)
+    for t in descending_tiers:
+        for a in _agents_by_tier(agents, t):
+            if _has_auth(a, secrets) and a.name not in seen_names:
+                candidates.append(a)
+                seen_names.add(a.name)
 
     # If no authed candidates exist, fall back to unauthed agents so the pool
     # is never empty (mirrors the fallback logic in assign_models for dev/planner).
     if not candidates:
-        strong_any = _agents_by_tier(agents, "strong")
-        tier_any = _agents_by_tier(agents, tier) if tier != "strong" else []
         seen_names = set()
-        for a in strong_any + tier_any:
-            if a.name not in seen_names:
-                candidates.append(a)
-                seen_names.add(a.name)
+        for t in descending_tiers:
+            for a in _agents_by_tier(agents, t):
+                if a.name not in seen_names:
+                    candidates.append(a)
+                    seen_names.add(a.name)
 
     if not candidates:
         return []
@@ -901,8 +901,15 @@ def assign_models(
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         score_note = f", complexity score {score}" if score is not None else ""
+        shortfall_note = (
+            f" [WARNING: requested {n}, only {len(plan_reviewers)} available "
+            f"after candidate-pool exhaustion (self-exclusion + cross-provider filter)]"
+            if len(plan_reviewers) < n
+            else ""
+        )
         rationale["plan_review"] = (
-            f"{len(plan_reviewers)} reviewer(s), tier {tier}, providers {providers}{score_note}"
+            f"{len(plan_reviewers)} reviewer(s), tier {tier}, "
+            f"providers {providers}{score_note}{shortfall_note}"
         )
 
     # ── Code reviewers ─────────────────────────────────────────────────
@@ -941,8 +948,15 @@ def assign_models(
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         score_note = f", complexity score {score}" if score is not None else ""
+        shortfall_note = (
+            f" [WARNING: requested {n}, only {len(code_reviewers)} available "
+            f"after candidate-pool exhaustion (self-exclusion + cross-provider filter)]"
+            if len(code_reviewers) < n
+            else ""
+        )
         rationale["code_review"] = (
-            f"{len(code_reviewers)} reviewer(s), tier {tier}, providers {providers}{score_note}"
+            f"{len(code_reviewers)} reviewer(s), tier {tier}, "
+            f"providers {providers}{score_note}{shortfall_note}"
         )
 
     decision = AssignmentDecision(
