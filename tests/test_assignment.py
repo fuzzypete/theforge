@@ -1245,3 +1245,107 @@ def test_set_cap_records_preferred_snapshot_in_audit():
     # Audit must never carry the word "budget" in its top-level keys
     assert "budget" not in audit
     assert "budget_cap_usd" not in audit
+
+
+# ── test_reviewer_count_honors_target_via_tier_descent (issue #1542) ──
+
+
+def test_high_score_panel_descends_tier_ladder_when_strong_provider_pool_narrow():
+    """HIGH-score story whose strong tier post-self-exclusion has one provider
+    must still fill its requested panel by descending to lower tiers.
+
+    Regression for #1542: previously `_select_reviewers` built candidates as
+    strong+[] when tier=='strong', so removing the dev model from a
+    same-provider strong pool collapsed the panel to whatever the single
+    remaining provider supplied (often 1). Mid-target stories saw strong∪mid
+    and ended up with wider panels than higher-risk strong-target stories.
+    """
+    agents = [
+        # Two strong agents but same provider after self-exclusion
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gpt-strong", "openai", "gpt-5", 7.0, 1200, "strong"),
+        # Lower-tier alternatives at distinct providers
+        AgentDef("gemini-mid", "google", "gemini-pro", 4.0, 900, "mid"),
+        AgentDef("haiku", "anthropic", "haiku", 1.0, 600, "cheap"),
+    ]
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=3,
+        prefer_cross_provider=True,
+        max_cost_per_story_usd=1000.0,
+    )
+
+    # HIGH complexity, score 8 → dev tier strong → opus (cheapest anthropic strong?)
+    # Actually cheapest strong is gpt-strong (7.0) — dev picks gpt-strong.
+    # Reviewer pool excludes gpt-5; previously collapsed to 1, must now fill 3.
+    decision = assign_models(agents, cfg, "large", complexity_score=8)
+
+    # Requested n for score=8 is max_reviewers=3. The descent should make
+    # at least 2 reviewers available (opus + gemini-mid + haiku exclude dev).
+    assert len(decision.code_reviewers) >= 2, (
+        f"HIGH-score panel collapsed to {len(decision.code_reviewers)} reviewer(s); "
+        f"rationale: {decision.rationale.get('code_review')}"
+    )
+    # The dev model must never appear in reviewers (self-exclusion holds).
+    dev_model = decision.dev.model
+    assert all(r.model != dev_model for r in decision.code_reviewers)
+
+
+def test_high_score_panel_not_smaller_than_mid_score_panel_same_pool():
+    """Asymmetry guard: a score-8 story must not yield fewer reviewers than a
+    score-5 story drawn from the same agent pool. The bug at #1542 was exactly
+    this inversion."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gpt-strong", "openai", "gpt-5", 7.0, 1200, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+        AgentDef("gemini-mid", "google", "gemini-pro", 4.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=3,
+        prefer_cross_provider=True,
+        max_cost_per_story_usd=1000.0,
+    )
+
+    mid_score = assign_models(agents, cfg, "medium", complexity_score=5)
+    high_score = assign_models(agents, cfg, "large", complexity_score=8)
+
+    assert len(high_score.code_reviewers) >= len(mid_score.code_reviewers), (
+        f"Inverted panel sizes: mid-score={len(mid_score.code_reviewers)} "
+        f"vs high-score={len(high_score.code_reviewers)}. "
+        f"high rationale: {high_score.rationale.get('code_review')}"
+    )
+
+
+def test_reviewer_shortfall_emits_warning_in_rationale():
+    """When the candidate pool genuinely cannot satisfy n, the rationale must
+    record an explicit shortfall warning rather than silently truncating."""
+    # Only two agents both at strong tier, same provider — n=3 cannot be honored
+    # cross-provider even with descent.
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(
+        min_reviewers=3,
+        max_reviewers=3,
+        prefer_cross_provider=True,
+        max_cost_per_story_usd=1000.0,
+    )
+    decision = assign_models(agents, cfg, "large", complexity_score=8)
+
+    assert len(decision.code_reviewers) < 3
+    assert "WARNING" in decision.rationale["code_review"]
+    assert "requested 3" in decision.rationale["code_review"]
+
+
+def test_reviewer_panel_full_no_shortfall_warning():
+    """When the panel is fully populated, the rationale must NOT mention a shortfall."""
+    agents = _make_agents_cross_provider()
+    cfg = _make_cfg(min_reviewers=2, max_reviewers=2, prefer_cross_provider=True)
+
+    decision = assign_models(agents, cfg, "medium")
+
+    assert len(decision.code_reviewers) == 2
+    assert "WARNING" not in decision.rationale["code_review"]
