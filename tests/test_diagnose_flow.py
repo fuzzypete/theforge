@@ -465,7 +465,7 @@ class TestDiagnoseFlow:
         # confident "fix-ready" landing — even when the YAML happens to be
         # structurally complete.
         assert not result.success
-        assert result.state.phase == DiagnosePhase.TIMEOUT_PARTIAL
+        assert result.state.phase == DiagnosePhase.BUDGET_EXCEEDED
         audit_files = list((tmp_path / ".forge" / "audits").glob("diagnose-issue-8-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[0].read_text())
