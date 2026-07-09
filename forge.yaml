@@ -13,9 +13,12 @@ models:
     - openai/gpt-5.5              # OpenAI's recommended coding model; overlay entry below
     # - deepseek/deepseek-reasoner  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Re-enable when adaptive routing can decide reviewer fitness automatically.
-    - google/gemini-3.1-pro-preview  # still the only Google pro tier (never GA'd, no 3.5 Pro exists, no shutdown date as of 2026-07-07).
-                                     # Repoint risk: Google killed gemini-3-pro-preview with ~3 weeks notice; provider-health (#1579) is the mitigation.
-                                     # Registry story for v0.11: add stable gemini-3.5-flash ($1.50/$9, beats 3.1-pro on coding per Google).
+    # - google/gemini-3.1-pro-preview  # benched 2026-07-09: reviewer completed without calling submit_review
+    #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
+    #                                      Same fitness criterion as deepseek above: re-enable when adaptive
+    #                                      routing can decide reviewer fitness automatically.
+    #                                      Still the only Google pro tier (never GA'd). Registry story for
+    #                                      v0.11: add stable gemini-3.5-flash ($1.50/$9) as the Google re-entry.
   custom:
     # GPT-5.5 — user-declared registry overlay (shipped #1184, v0.10.0).
     # #1355 (overlay bypassed by AGENT_REGISTRY direct-readers) fixed during the
