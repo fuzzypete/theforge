@@ -387,8 +387,10 @@ def run_watch_loop(
 ) -> int:
     """Drive the watch redraw loop.
 
-    Returns 0 on clean exit (Ctrl-C or max_frames reached) and non-zero when
-    the underlying sprint snapshot cannot be read on the first frame.
+    Returns 0 on clean exit (Ctrl-C or max_frames reached). Transient read
+    failures (e.g. during preflight or DAG-build before state files are written)
+    are tolerated: the loop shows a waiting message and continues polling rather
+    than exiting. The loop only terminates on Ctrl-C or when max_frames is reached.
 
     Redraws are in-place: after the first frame we record the line count and
     on each subsequent frame issue ``CURSOR_UP(n) + CARRIAGE_RETURN +
@@ -436,30 +438,18 @@ def run_watch_loop(
                 stale_after_seconds=stale_after_seconds,
             )
 
-            if frame == 0 and not snapshot_ok:
-                # First frame failed: forward the snapshot's diagnostic that
-                # render_frame captured. There is no in-place redraw region
-                # yet, so printing to stderr is safe. (Mid-loop captures stay
-                # discarded so they can't scroll past the CURSOR_UP region.)
-                if captured_err:
-                    sys.stderr.write(captured_err)
-                    if not captured_err.endswith("\n"):
-                        sys.stderr.write("\n")
-                    sys.stderr.flush()
-                else:
-                    print(
-                        "forge status --watch: failed to read sprint state.",
-                        file=sys.stderr,
-                    )
-                return 1
+            if not body:
+                # No content yet — sprint is in preflight or DAG-build phase
+                # and state files have not been written. Show a waiting message
+                # so the operator knows the watch is alive, then keep polling.
+                body = "Waiting for sprint to initialize...\n"
 
-            if body is not None:
-                if frame == 0:
-                    sys.stdout.write(body)
-                else:
-                    sys.stdout.write(CURSOR_UP(prev_lines) + CARRIAGE_RETURN + CLEAR_BELOW + body)
-                sys.stdout.flush()
-                prev_lines = body.count("\n")
+            if frame == 0:
+                sys.stdout.write(body)
+            else:
+                sys.stdout.write(CURSOR_UP(prev_lines) + CARRIAGE_RETURN + CLEAR_BELOW + body)
+            sys.stdout.flush()
+            prev_lines = body.count("\n")
 
             frame += 1
             if max_frames is not None and frame >= max_frames:

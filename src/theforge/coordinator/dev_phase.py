@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
+from theforge.config import ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile
 from theforge.config.types import StuckDetectionConfig
 from theforge.coordinator.context_scope import plan_file_list
@@ -547,6 +547,30 @@ def _run_dev_phase(
             state.dev_prompt_injected_finding_ids.append([])
             state.retry_reason = None
             state.human_feedback = None
+        case RetryReason.P2_CLEANUP:
+            prompt = build_fix_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                allowed_tools=config.dev_profile.allowed_tools,
+                review_findings=state.last_review_findings or "No specific findings provided.",
+                gate_command=_gate_cmd,
+                test_command=_test_cmd,
+                gate_skipped=_is_gate_skip(task.gate_override),
+                iteration=state.dev_iteration,
+                cycle_history=state.cycle_history or None,
+                escalation_note=state.escalation_note,
+                plan_output=state.plan_structured
+                if state.plan_structured is not None
+                else state.plan_output,
+                prior_open_p1s=None,
+                classified_p1s=None,
+                surviving_families=None,
+                conventions=config.conventions_soft,
+                advisory_p2_only=True,
+            )
+            state.dev_prompt_injected_finding_ids.append([])
+            state.escalation_note = None
         case RetryReason.REVIEW_CHANGES | RetryReason.EXTEND if state.last_review_findings:
             carry_forward_p1s = _prior_open_p1s_for_dev_prompt(state)
             current_cycle_p1s = _current_cycle_p1s_for_dev_prompt(state)
@@ -835,11 +859,20 @@ def _run_dev_phase(
             if not state.dev_escalated:
                 _old_model = config.dev_profile.model
                 if config.retry.auto_model_escalation and config.models is not None:
-                    _curr_key = _find_registry_key_for_profile(config.dev_profile)
+                    _registry = config.model_registry or None
+                    _curr_key = _find_registry_key_for_profile(
+                        config.dev_profile, registry=_registry
+                    )
                     if _curr_key is not None:
-                        _next_key = _escalate_dev_model(_curr_key, config.models)
+                        _next_key = _escalate_dev_model(
+                            _curr_key, config.models, registry=_registry
+                        )
                         if _next_key is not None:
-                            _next_info = MODEL_REGISTRY[_next_key]
+                            from theforge.config.models import (  # noqa: PLC0415
+                                _resolve_model_info,
+                            )
+
+                            _next_info = _resolve_model_info(_next_key, registry=_registry)
                             _new_dev = apply_model_info(config.dev_profile, _next_info)
                             config.dev_profile = _new_dev
                             state.dev_escalated = True

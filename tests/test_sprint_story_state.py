@@ -55,6 +55,60 @@ def test_transition_terminal_to_terminal_correction_allowed() -> None:
     assert state.get("a").outcome is StoryOutcome.FAILED
 
 
+def test_landed_done_is_immutable_against_non_done_terminal() -> None:
+    """A confirmed-landed DONE cannot be overwritten by a later FAILED.
+
+    This is the guard against a merged story being re-dispatched into a stale
+    worktree after a process restart and clobbering its real DONE outcome.
+    """
+    state = SprintStoryState()
+    state.register("a", "p", outcome=StoryOutcome.RUNNING)
+    state.transition("a", outcome=StoryOutcome.DONE, landed=True)
+    # A bogus later FAILED (e.g. a redispatch WORKSPACE failure) is rejected.
+    state.transition("a", outcome=StoryOutcome.FAILED)
+    assert state.get("a").outcome is StoryOutcome.DONE
+    # MERGE_FAILED is likewise rejected.
+    state.transition("a", outcome=StoryOutcome.MERGE_FAILED)
+    assert state.get("a").outcome is StoryOutcome.DONE
+
+
+def test_landed_done_rejects_cost_usd_from_rejected_transition() -> None:
+    """A rejected FAILED transition must not clobber the landed DONE's cost.
+
+    Reproduces the sprint-summary bug where a re-dispatched story's round-2
+    failure ($0.0) overwrote round-1's recorded cost ($0.33) even though the
+    landed-immutability guard correctly kept the outcome at DONE.
+    """
+    state = SprintStoryState()
+    state.register("a", "p", outcome=StoryOutcome.RUNNING)
+    state.transition("a", outcome=StoryOutcome.DONE, landed=True, cost_usd=0.33)
+    state.transition("a", outcome=StoryOutcome.FAILED, cost_usd=0.0)
+    entry = state.get("a")
+    assert entry.outcome is StoryOutcome.DONE
+    assert entry.cost_usd == 0.33
+
+
+def test_unlanded_done_still_permits_terminal_correction() -> None:
+    """The legitimate 'queued PR failed to land' path is NOT marked landed and
+    must still be correctable from DONE to a failure outcome."""
+    state = SprintStoryState()
+    state.register("a", "p", outcome=StoryOutcome.DONE)
+    # No landed marker → terminal-to-terminal correction remains permitted.
+    state.transition("a", outcome=StoryOutcome.MERGE_FAILED)
+    assert state.get("a").outcome is StoryOutcome.MERGE_FAILED
+
+
+def test_landed_done_allows_done_to_done_updates() -> None:
+    """A landed DONE can still receive DONE-preserving field updates."""
+    state = SprintStoryState()
+    state.register("a", "p", outcome=StoryOutcome.DONE)
+    state.transition("a", outcome=StoryOutcome.DONE, landed=True, cost_usd=0.33)
+    state.transition("a", outcome=StoryOutcome.DONE, cost_usd=0.5)
+    entry = state.get("a")
+    assert entry.outcome is StoryOutcome.DONE
+    assert entry.cost_usd == 0.5
+
+
 def test_counts_project_from_same_map_as_stories() -> None:
     state = SprintStoryState()
     state.register("a", "pa", outcome=StoryOutcome.DONE)

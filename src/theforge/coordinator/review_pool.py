@@ -53,6 +53,123 @@ if TYPE_CHECKING:
 _log = _cu._log
 _log_verbose = _cu._log_verbose
 
+
+def _is_transient_review_failure(result: Any, config: ForgeConfig) -> bool:
+    """Return True when a failed review-pool invocation looks transient/retryable.
+
+    Treats three signatures as transient:
+    - failure_code matches a configured transient code
+    - output text matches a configured transient signature substring
+    - the spec's exit=1-with-no-model-output case (success=False and empty output)
+    """
+    if result.success:
+        return False
+    failure_code = (getattr(result, "failure_code", None) or "").lower()
+    transient_codes = {c.lower() for c in config.retry.review_transient_failure_codes}
+    if failure_code in transient_codes:
+        return True
+    output = (result.output or "").strip()
+    if not output:
+        return True
+    lower = output.lower()
+    return any(pattern in lower for pattern in config.retry.review_transient_output_patterns)
+
+
+def _resolve_prompt_for_reviewer(review_prompts: str | list[str], index: int) -> str:
+    """Return the per-reviewer prompt. Shared string fans out to every reviewer."""
+    if isinstance(review_prompts, list):
+        return review_prompts[index]
+    return review_prompts
+
+
+def _retry_transient_review_failures(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    pool: list,
+    pool_results: list,
+    review_prompts: str | list[str],
+    workspace_path: Path,
+    *,
+    cycle_num: int,
+    pool_attempt: int,
+    meta: ReviewCycleMetadata,
+    stop_event: "threading.Event | None" = None,
+) -> list:
+    """Retry per-reviewer transient transport failures with exponential backoff.
+
+    Returns updated pool_results (same order as ``pool``). Each retry's
+    AgentResult is appended to state.review_agent_results and a trace + log
+    artifact is written. meta.transient_retries and meta.transient_outcomes
+    are populated for every reviewer (including those that did not need a
+    retry — they record the ``succeeded``/``hard_failed`` outcome).
+    """
+    max_retries = config.retry.max_review_transport_retries
+    backoff_base = config.retry.review_transport_retry_backoff_seconds
+    updated = list(pool_results)
+
+    for index, (profile, result) in enumerate(zip(pool, updated)):
+        if result.success:
+            meta.transient_outcomes[profile.name] = "succeeded"
+            continue
+        if not _is_transient_review_failure(result, config):
+            meta.transient_outcomes[profile.name] = "hard_failed"
+            continue
+        if max_retries <= 0:
+            meta.transient_outcomes[profile.name] = "hard_failed"
+            continue
+
+        retry_count = 0
+        current = result
+        per_reviewer_prompt = _resolve_prompt_for_reviewer(review_prompts, index)
+        while retry_count < max_retries and _is_transient_review_failure(current, config):
+            retry_count += 1
+            backoff = backoff_base * (2 ** (retry_count - 1))
+            _log(
+                f"  ↻ {profile.name} transient transport failure "
+                f"(retry {retry_count}/{max_retries}) in {backoff:.0f}s"
+            )
+            if backoff > 0:
+                time.sleep(backoff)
+            retried = run_agent(
+                prompt=per_reviewer_prompt,
+                profile=profile,
+                working_dir=workspace_path,
+                quiet=True,
+                secrets=config.secrets,
+                session_id=current.session_id if profile.mode == "cli" else None,
+                stop_event=stop_event,
+            )
+            if retried.session_id:
+                state.reviewer_session_ids[profile.name] = retried.session_id
+            state.review_agent_results.append(retried)
+            log_agent_result(retried, f"REVIEW/{retried.profile_name}")
+            _trace_name = (
+                f"{cycle_num}-{pool_attempt}-review-{profile.name}"
+                f"-transport-retry{retry_count}.txt"
+            )
+            write_trace(
+                workspace_path / ".forge/traces" / _trace_name,
+                retried.output,
+            )
+            _write_log_artifact(
+                state.log_dir,
+                f"review-cycle-{cycle_num}/{profile.name}-transport-retry{retry_count}.yaml",
+                retried.output or "",
+            )
+            current = retried
+
+        meta.transient_retries[profile.name] = retry_count
+        if current.success:
+            meta.transient_outcomes[profile.name] = "transient_retried_then_succeeded"
+            _log(f"  ✓ {profile.name} transient retry {retry_count} succeeded")
+        else:
+            meta.transient_outcomes[profile.name] = "transient_retried_then_failed"
+            _log(f"  ✗ {profile.name} transient retries exhausted")
+        updated[index] = current
+
+    return updated
+
+
 # ── Lazy runner slots ─────────────────────────────────────────────────
 # None until first call; tests may replace with mocks before calling
 # run_task. _ensure_runners() skips any slot that is already non-None.
@@ -73,6 +190,41 @@ def _ensure_runners() -> None:
         run_agent_pool = _r.run_agent_pool
     if log_agent_result is None:
         log_agent_result = _r.log_agent_result
+
+
+def _record_provider_health_failures(config: ForgeConfig, results: list[Any]) -> None:
+    """Persist a provider-health record for each pool result that failed with
+    a provider-shape signature (capacity / rate-limit / 5xx / quota).
+
+    Runtime failures (parse errors, schema rejections, code crashes) are not
+    recorded — only signals that mean "the provider itself is currently
+    refusing this model" so the adaptive router can deprioritize the model
+    for the duration of the health window.
+    """
+    from theforge.provider_health import (  # noqa: PLC0415
+        ProviderHealthRecord,
+        append_provider_health_record,
+        classify_provider_shape_failure,
+        utcnow_iso,
+    )
+
+    path = config.project_root / ".forge" / "provider_health.yaml"
+    for r in results:
+        signature = classify_provider_shape_failure(r)
+        if signature is None:
+            continue
+        append_provider_health_record(
+            path,
+            ProviderHealthRecord(
+                model=r.profile_name,
+                signature=signature,
+                timestamp=utcnow_iso(),
+            ),
+        )
+        _log_verbose(
+            f"  provider-health: recorded {signature} failure for {r.profile_name} "
+            f"(exit={r.exit_code})"
+        )
 
 
 def _emit_review_git_context(
@@ -310,6 +462,7 @@ def _run_review_pool(
     )
     _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
     _cycle_num = state.review_cycle + 1
+    _record_provider_health_failures(config, pool_results)
     for r in pool_results:
         state.review_agent_results.append(r)
         state.review_durations.append(_per_agent_dur)
@@ -326,6 +479,24 @@ def _run_review_pool(
             f"review-cycle-{_cycle_num}/{r.profile_name}.yaml",
             r.output or "",
         )
+
+    # ── Transient transport retry ─────────────────────────────────────
+    # Re-invoke each reviewer whose initial result has a transient transport
+    # signature (rate limit / 5xx / connection reset / empty-output crash) up
+    # to the configured budget with exponential backoff before counting the
+    # reviewer as failed.
+    pool_results = _retry_transient_review_failures(
+        state,
+        config,
+        pool,
+        pool_results,
+        review_prompts,
+        workspace_path,
+        cycle_num=_cycle_num,
+        pool_attempt=pool_attempt,
+        meta=meta,
+        stop_event=stop_event,
+    )
 
     # Per-profile budget enforcement BEFORE synthesis — exclude over-budget
     # reviewers from this cycle's results rather than killing the whole run.
@@ -369,11 +540,26 @@ def _run_review_pool(
         for r in failed_results
     }
 
-    if not successful:
+    quorum_threshold = min(config.retry.review_quorum_threshold, pool_size)
+    if quorum_threshold < 1:
+        quorum_threshold = 1
+    meta.quorum_threshold = quorum_threshold
+    meta.quorum_met = len(successful) >= quorum_threshold
+
+    if not meta.quorum_met:
         state.phase = Phase.ESCALATE
         failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
-        state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
+        state.error = (
+            f"Quorum unmet: {len(successful)}/{pool_size} succeeded "
+            f"< threshold {quorum_threshold}; failed: {failed_desc}"
+        )
         return successful, failed_results, None, [], []
+
+    if failed_results:
+        _log(
+            f"Panel quorum met ({len(successful)}/{pool_size} reviewers succeeded "
+            f"≥ quorum threshold {quorum_threshold}) — proceeding to synthesis"
+        )
 
     _synthesis_path = (
         workspace_path / ".forge/traces" / f"{_cycle_num}-{pool_attempt}-synthesis.txt"
@@ -424,9 +610,14 @@ def _run_review_pool(
         # Capture original AgentResult for this reviewer (session_id + raw output)
         _original_result = successful[i]
         for _retry_num in range(1, max_review_parse_retries + 1):
-            _error_desc = "; ".join(parsed.parse_errors)
+            _error_desc = "; ".join(str(e) for e in parsed.parse_errors)
+            # Stage breakdown lets operators distinguish parser-layer failures
+            # from schema/contract-layer failures without parsing the message.
+            _stages = sorted({e.stage for e in parsed.parse_errors})
+            _stage_tag = ",".join(_stages) if _stages else "UNKNOWN"
             _log(
-                f"  ↻ {name} parse failed (retry {_retry_num}/{max_review_parse_retries}): "
+                f"  ↻ {name} rejected at {_stage_tag} "
+                f"(retry {_retry_num}/{max_review_parse_retries}): "
                 f"{_error_desc[:120]}"
             )
             # Build corrective prompt — mode-specific to avoid re-review
@@ -466,21 +657,22 @@ def _run_review_pool(
                 )
                 break
             _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data)
+            write_trace(
+                workspace_path
+                / ".forge/traces"
+                / f"{_cycle_num}-{pool_attempt}-review-{name}-retry{_retry_num}.txt",
+                _retry_result.output,
+            )
             if _retried is not None:
                 _log(f"  ✓ {name} retry {_retry_num} succeeded")
                 parsed_results[i] = _retried
                 state.review_agent_results.append(_retry_result)
-                write_trace(
-                    workspace_path
-                    / ".forge/traces"
-                    / f"{_cycle_num}-{pool_attempt}-review-{name}-retry{_retry_num}.txt",
-                    _retry_result.output,
-                )
                 break
             else:
+                _retry_errors = parse_review_output(_retry_result.output).parse_errors
                 _log_verbose(
-                    f"  {name} retry {_retry_num} still has parse errors: "
-                    f"{parse_review_output(_retry_result.output).parse_errors}"
+                    f"  {name} retry {_retry_num} still rejected: "
+                    f"{[str(e) for e in _retry_errors]}"
                 )
                 parsed = ReviewResult(
                     verdict="REQUEST_CHANGES",
@@ -490,7 +682,7 @@ def _run_review_pool(
                     story_mismatches=[],
                     test_adequate=False,
                     test_gaps=[],
-                    parse_errors=[_error_desc],
+                    parse_errors=_retry_errors or list(parsed.parse_errors),
                     raw_yaml={},
                 )
 

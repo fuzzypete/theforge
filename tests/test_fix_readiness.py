@@ -17,6 +17,7 @@ import pytest
 from theforge.shape_check import Shape, check
 from theforge.shape_check.heuristics import (
     REQUIRED_DIAGNOSIS_TOKENS,
+    cause_assertion_state,
     check_bug_missing_diagnosis,
     derive_fix_ready,
     diagnosis_completeness,
@@ -107,36 +108,195 @@ class TestCheckBugMissingDiagnosis:
 
 class TestDeriveFixReady:
     def test_unknown_type_returns_none(self) -> None:
-        signal, warnings = derive_fix_ready(None, DIAGNOSIS_BODY)
+        signal, investigation_ready, warnings = derive_fix_ready(None, DIAGNOSIS_BODY)
         assert signal is None
+        assert investigation_ready is False
         assert warnings and "type unknown" in warnings[0]
 
     def test_feature_always_fix_ready(self) -> None:
         # No diagnosis section needed for non-bug types per AC: "Features are
         # always fix-ready (no diagnosis required for new functionality)."
-        signal, warnings = derive_fix_ready("enhancement", "## What\nDo a thing.")
+        signal, investigation_ready, warnings = derive_fix_ready(
+            "enhancement", "## What\nDo a thing."
+        )
         assert signal is True
+        assert investigation_ready is False
         assert warnings == []
 
     def test_task_type_always_fix_ready(self) -> None:
-        signal, warnings = derive_fix_ready("task", "## What\nDo it.")
+        signal, investigation_ready, warnings = derive_fix_ready("task", "## What\nDo it.")
         assert signal is True
+        assert investigation_ready is False
         assert warnings == []
 
     def test_bug_with_diagnosis_is_fix_ready(self) -> None:
-        signal, warnings = derive_fix_ready("bug", DIAGNOSIS_BODY)
+        signal, investigation_ready, warnings = derive_fix_ready("bug", DIAGNOSIS_BODY)
         assert signal is True
+        assert investigation_ready is False
         assert warnings == []
 
     def test_bug_without_diagnosis_is_not_fix_ready(self) -> None:
-        signal, warnings = derive_fix_ready("bug", "## What\nprose only")
+        signal, investigation_ready, warnings = derive_fix_ready("bug", "## What\nprose only")
         assert signal is False
+        assert investigation_ready is False
         assert warnings and "not fix-ready" in warnings[0]
 
     def test_required_tokens_documented(self) -> None:
         # Guard against drift between docstring and implementation.
         assert "observed symptom" in REQUIRED_DIAGNOSIS_TOKENS
         assert "fix-success criterion" in REQUIRED_DIAGNOSIS_TOKENS
+
+
+# Diagnosis body that's complete except confirmed-cause is a non-assertion phrase.
+# This is the v0.10 admissible "investigation-ready" intake state — the operator
+# documented every other slot honestly, including that the cause is not yet known.
+def _investigation_ready_body(cause_value: str) -> str:
+    return textwrap.dedent(
+        f"""\
+        ## Diagnosis
+
+        - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
+        - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
+        - **Ruled out.** Workspace creation actually succeeds (verified in logs).
+        - **Confirmed cause.** {cause_value}
+        - **Affected code path.** sprint.runner._is_already_merged.
+        - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.
+        """
+    )
+
+
+class TestCauseAssertionState:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "unknown",
+            "Unknown",
+            "not yet identified",
+            "not yet known",
+            "not yet determined",
+            "pending investigation",
+            "still pending investigation",
+            "under investigation",
+            "TBD",
+            "tbd",
+            "to be determined",
+            "to be investigated",
+            "undetermined",
+            "unconfirmed",
+            "unidentified",
+            "investigation ongoing",
+            "investigation in progress",
+            "?",
+            "???",
+            "cause is unknown",
+            "cause remains unknown",
+        ],
+    )
+    def test_non_assertion_values_recognized(self, value: str) -> None:
+        body = _investigation_ready_body(value)
+        assert cause_assertion_state(body) == "non_asserted"
+
+    def test_specific_cause_is_asserted(self) -> None:
+        assert cause_assertion_state(DIAGNOSIS_BODY) == "asserted"
+
+    def test_no_diagnosis_section_is_missing(self) -> None:
+        assert cause_assertion_state("## What\nprose only") == "missing"
+
+    def test_section_without_cause_field_is_missing(self) -> None:
+        body = "## Diagnosis\n- Observed symptom: x.\n- Evidence: y.\n"
+        assert cause_assertion_state(body) == "missing"
+
+    def test_non_assertion_prefix_with_trailing_prose(self) -> None:
+        # Operators may add tailing context after the non-assertion phrase.
+        body = _investigation_ready_body("unknown — first cycle's job is to find it")
+        assert cause_assertion_state(body) == "non_asserted"
+
+
+class TestInvestigationReadyDerivation:
+    def test_non_assertion_cause_passes_gate_as_investigation_ready(self) -> None:
+        body = _investigation_ready_body("not yet identified")
+        signal, investigation_ready, warnings = derive_fix_ready("bug", body)
+        assert signal is True
+        assert investigation_ready is True
+        assert warnings and "investigation-ready" in warnings[0]
+
+    def test_specific_cause_remains_implementation_ready(self) -> None:
+        signal, investigation_ready, warnings = derive_fix_ready("bug", DIAGNOSIS_BODY)
+        assert signal is True
+        assert investigation_ready is False
+        assert warnings == []
+
+    def test_check_pipeline_admits_investigation_ready_bug(self) -> None:
+        # The discipline's spirit — refuse symptom-only bugs — must hold while
+        # the new admissibility — accept honest non-assertion — also holds.
+        body = _investigation_ready_body("unknown")
+        result = check("Bug: foo", body, ["bug"])
+        assert result.shape is Shape.RUNNABLE
+        # Advisory-only reasons (e.g. diagnosis_cause_unknown) are compatible
+        # with admission; only blocking reasons would contradict RUNNABLE.
+        assert all(r.severity.value == "advisory" for r in result.reasons)
+
+    def test_shape_gate_admits_investigation_ready_bug(self, tmp_path: Path) -> None:
+        body = _investigation_ready_body("pending investigation")
+        issues = [{"number": 101, "title": "Investigation-ready bug"}]
+
+        def fetch(_number, _root):
+            return {
+                "title": "Investigation-ready bug",
+                "body": body,
+                "labels": ["bug"],
+            }
+
+        result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
+        assert [i["number"] for i in result.runnable] == [i["number"] for i in issues]
+        assert result.skipped == []
+
+    def test_github_source_propagates_investigation_ready(self, tmp_path: Path) -> None:
+        body = _investigation_ready_body("unknown")
+        issue_data = json.dumps(
+            {
+                "title": "Investigation-ready bug",
+                "body": body,
+                "state": "OPEN",
+                "labels": [{"name": "bug"}],
+            }
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=0, stdout="[]", stderr=""),
+            ]
+            task = GitHubIssueSource().fetch("123", tmp_path)
+        assert task.fix_ready is True
+        assert task.investigation_ready is True
+        assert task.readiness_warnings and any(
+            "investigation-ready" in w for w in task.readiness_warnings
+        )
+
+    def test_file_source_propagates_investigation_ready(self, tmp_path: Path) -> None:
+        body = _investigation_ready_body("not yet identified")
+        story = tmp_path / "bug.md"
+        story.write_text(
+            "---\nname: B\nslug: b\ntype: bug\n---\n" + body,
+            encoding="utf-8",
+        )
+        task = _build_task_from_story(story)
+        assert task.fix_ready is True
+        assert task.investigation_ready is True
+
+    def test_implementation_ready_bug_does_not_set_investigation_ready(
+        self, tmp_path: Path
+    ) -> None:
+        # Symmetric fix: a bug asserting a specific cause must continue to pass
+        # the gate and route to implementation, with investigation_ready=False.
+        story = tmp_path / "bug.md"
+        story.write_text(
+            "---\nname: B\nslug: b\ntype: bug\n---\n" + DIAGNOSIS_BODY,
+            encoding="utf-8",
+        )
+        task = _build_task_from_story(story)
+        assert task.fix_ready is True
+        assert task.investigation_ready is False
 
 
 class TestGitHubFixReadyPropagation:

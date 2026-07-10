@@ -99,6 +99,74 @@ def test_label_skip_falls_back_to_label_detail_when_live_check_is_runnable(
     assert entry.detail == "issue carries 'needs-grooming' label"
 
 
+# ── Intake-remediated label suppression (re-exec carry) ─────────────────────
+
+
+def test_intake_remediated_issue_with_stale_grooming_label_runs(tmp_path: Path) -> None:
+    """If a sprint just remediated an issue's body, the post-re-exec gate
+    must trust the local re-check over the async-lagging ``needs-grooming``
+    label that the GH labeler workflow has not yet reconciled.
+    """
+    issues = [{"number": 1545, "title": "Just-remediated"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_RUNNABLE_BODY, [NEEDS_GROOMING_LABEL, "enhancement"]),
+        intake_remediated_numbers={1545},
+    )
+
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
+    assert result.skipped == []
+
+
+def test_intake_remediated_set_does_not_rescue_unrelated_issues(tmp_path: Path) -> None:
+    """The suppression is per-issue: a remediated issue is rescued, an
+    unrelated needs-grooming issue is still skipped on the same call.
+    """
+    issues = [
+        {"number": 1545, "title": "Just-remediated"},
+        {"number": 9999, "title": "Stale label, not remediated"},
+    ]
+
+    def fetch(number, _project_root):
+        return {
+            "title": f"#{number}",
+            "body": _RUNNABLE_BODY,
+            "labels": [NEEDS_GROOMING_LABEL, "enhancement"],
+        }
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=fetch,
+        intake_remediated_numbers={1545},
+    )
+
+    assert [i["number"] for i in result.runnable] == [1545]
+    assert len(result.skipped) == 1
+    assert result.skipped[0].issue_number == 9999
+
+
+def test_intake_remediated_does_not_paper_over_broken_body(tmp_path: Path) -> None:
+    """Suppression of the label-source skip must NOT bypass the local check.
+    If the body is still malformed (e.g. body-edit didn't actually fix it),
+    the issue still drops via the local_check path.
+    """
+    issues = [{"number": 1545, "title": "Edit didn't fix it"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_BAD_BODY, [NEEDS_GROOMING_LABEL]),
+        intake_remediated_numbers={1545},
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    assert result.skipped[0].source == "local_check"
+
+
 # ── Local-check-skip path ───────────────────────────────────────────────────
 
 
@@ -135,14 +203,18 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
     assert result.skipped == []
 
 
-def test_reopened_issue_with_stale_body_is_skipped(tmp_path: Path) -> None:
+def test_reopened_issue_with_stale_body_is_advisory_not_blocking(tmp_path: Path) -> None:
+    """A reopened bug whose body predates the reopen event is no longer
+    refused at sprint entry; the rule is downgraded to a non-blocking
+    advisory because the underlying check verifies only timeline-event
+    ordering, not body content."""
     issues = [{"number": 55, "title": "Reopened"}]
 
     def fetch(_number, _project_root):
         return {
             "title": "Reopened",
             "body": _RUNNABLE_BODY,
-            "labels": ["bug"],
+            "labels": ["enhancement"],
             "state": "OPEN",
             "comments": [
                 {
@@ -162,14 +234,14 @@ def test_reopened_issue_with_stale_body_is_skipped(tmp_path: Path) -> None:
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
 
-    assert result.runnable == []
-    assert len(result.skipped) == 1
-    entry = result.skipped[0]
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    entry = result.advisories[0]
     assert entry.reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
-    # Detail must surface the clearance signal: edit the body so its
-    # lastEditedAt is newer than the reopen-comment timestamp.
-    assert "lastEditedAt" in entry.detail
-    assert "or pass --force" in entry.detail
+    # Honest framing: no instruction to "reconcile the body before sprinting".
+    assert "reconcile the body before sprinting" not in entry.detail
+    assert "postdates the last body edit" in entry.detail
 
 
 def test_reopened_issue_with_lastEditedAt_after_reopen_comment_is_runnable(
@@ -216,16 +288,17 @@ def test_reopened_issue_with_lastEditedAt_after_reopen_comment_is_runnable(
     assert result.skipped == []
 
 
-def test_reopened_issue_lastEditedAt_between_two_comments_still_skipped(
+def test_reopened_issue_lastEditedAt_between_two_comments_still_flagged(
     tmp_path: Path,
 ) -> None:
-    """Two post-reopen comments + body edit between them must still skip.
+    """Two post-reopen comments + body edit between them must still flag.
 
     The contract is defined against the *most recent* reopen-context
     comment. If the body edit reconciles an earlier comment but predates a
     later operator comment, the body is still stale relative to the newest
-    context, and the gate must keep firing until the body's lastEditedAt
-    is newer than the latest comment.
+    context, and the advisory must keep firing until the body's
+    lastEditedAt is newer than the latest comment. The finding is
+    non-blocking (advisory channel), so the issue still runs.
     """
     issues = [{"number": 61, "title": "Stale vs. latest comment"}]
 
@@ -261,9 +334,10 @@ def test_reopened_issue_lastEditedAt_between_two_comments_still_skipped(
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
 
-    assert result.runnable == []
-    assert len(result.skipped) == 1
-    entry = result.skipped[0]
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    entry = result.advisories[0]
     assert entry.reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
     # The detail must reference the *latest* comment's timestamp, not the
     # earlier one — otherwise an operator might think editing past the
@@ -271,10 +345,11 @@ def test_reopened_issue_lastEditedAt_between_two_comments_still_skipped(
     assert "2026-05-04T09:00:00Z" in entry.detail
 
 
-def test_reopened_issue_lastEditedAt_before_comment_still_skipped(
+def test_reopened_issue_lastEditedAt_before_comment_still_flagged(
     tmp_path: Path,
 ) -> None:
-    """A body edit that predates the reopen comment does not clear the gate."""
+    """A body edit that predates the reopen comment does not clear the
+    advisory; the finding is non-blocking, so the issue still runs."""
     issues = [{"number": 60, "title": "Stale despite older edit"}]
 
     def fetch(_number, _project_root):
@@ -303,9 +378,10 @@ def test_reopened_issue_lastEditedAt_before_comment_still_skipped(
 
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch)
 
-    assert result.runnable == []
-    assert len(result.skipped) == 1
-    assert result.skipped[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
+    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    assert result.advisories[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
 
 
 def test_reopened_issue_with_body_edit_after_reopen_is_runnable(tmp_path: Path) -> None:
@@ -375,7 +451,10 @@ def test_force_override_returns_all_issues_runnable_but_keeps_skipped_list(
     assert result.skipped[0].source == "label"
 
 
-def test_force_override_keeps_reopened_stale_contract_warning(tmp_path: Path) -> None:
+def test_force_override_preserves_reopened_stale_contract_advisory(tmp_path: Path) -> None:
+    """Under --force the reopen advisory remains visible (advisory channel),
+    matching the prior force-mode behavior of preserving the warning while
+    still running every issue."""
     issues = [{"number": 57, "title": "Reopened"}]
 
     def fetch(_number, _project_root):
@@ -403,8 +482,9 @@ def test_force_override_keeps_reopened_stale_contract_warning(tmp_path: Path) ->
     result = apply_shape_gate(issues, tmp_path, fetch_detail=fetch, force=True)
 
     assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
-    assert len(result.skipped) == 1
-    assert result.skipped[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    assert result.advisories[0].reason_codes == (REOPENED_STALE_CONTRACT_CODE,)
 
 
 # ── Mixed sprint ───────────────────────────────────────────────────────────

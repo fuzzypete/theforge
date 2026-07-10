@@ -113,13 +113,20 @@ def append_reopen_context(story_text: str, state: ReopenContractState) -> str:
 
 
 def format_reopen_stale_detail(state: ReopenContractState) -> str:
-    """Render the operator-facing stale-contract refusal detail."""
+    """Render the operator-facing reopen-context advisory detail.
+
+    The check this string accompanies verifies only timestamp ordering of
+    GitHub timeline events — it cannot determine whether the body's content
+    has incorporated the reopen comment. The message must therefore frame
+    this as advisory information for operator/reviewer awareness, not a
+    semantic claim about body content.
+    """
     when = state.reopen_comment_at or state.reopened_at or "unknown time"
     author = state.reopen_comment_author or state.reopened_by or "unknown author"
     return (
-        f"issue reopened with new context in the comment from {when} by {author}; "
-        f"edit the issue body (its lastEditedAt must be newer than {when}) "
-        "or pass --force"
+        f"reopen comment from {when} by {author} postdates the last body edit; "
+        "the reopen context is included in the story for dev/review — "
+        "verify the body reflects it if needed"
     )
 
 

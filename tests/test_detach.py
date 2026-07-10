@@ -6,8 +6,6 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from theforge import detach
 
 # ── PID file helpers ──────────────────────────────────────────────────
@@ -141,54 +139,101 @@ class TestSuppressAppNap:
             detach.suppress_app_nap()
 
 
-# ── Daemonize run (no actual fork in tests) ───────────────────────────
+# ── Daemonize run (Popen re-exec model — no fork) ─────────────────────
 
 
 class TestDaemonizeRun:
-    def test_grandchild_writes_pid_and_redirects(self, tmp_path):
-        """Simulate grandchild path (both forks return 0 = child) without actually forking."""
-        mock_fd = MagicMock()
-        mock_fd.fileno.return_value = 99
+    """daemonize_run spawns a fresh interpreter via subprocess.Popen and
+    exits the parent. We patch Popen and sys.exit so the test doesn't
+    actually fork or terminate the test runner.
+    """
 
-        # fork() returning 0 means "we are the child"
+    def _run_and_capture(self, tmp_path, *, popen_pid: int = 4242):
+        proc = MagicMock()
+        proc.pid = popen_pid
         with (
-            patch("theforge.detach.os.fork", return_value=0),
-            patch("theforge.detach.os.setsid"),
-            patch("theforge.detach.os.dup2"),
-            patch("theforge.detach.os.waitpid"),
-            patch("theforge.detach.os.devnull", "/dev/null"),
-            patch("theforge.detach.os.open", side_effect=[10, 11]) as mock_os_open,
-            patch("theforge.detach.os.close"),
-            patch("theforge.detach.write_pid") as mock_write_pid,
+            patch("theforge.detach.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("theforge.detach.sys.exit") as mock_exit,
+        ):
+            detach.daemonize_run("run123", "my-slug", tmp_path)
+        return mock_popen, mock_exit
+
+    def test_spawns_python_via_theforge_cli(self, tmp_path):
+        mock_popen, _ = self._run_and_capture(tmp_path)
+        args, kwargs = mock_popen.call_args
+        cmd = args[0]
+        assert cmd[0] == sys.executable
+        assert cmd[1:3] == ["-m", "theforge.cli"]
+
+    def test_sets_detached_env_sentinel(self, tmp_path):
+        mock_popen, _ = self._run_and_capture(tmp_path)
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["FORGE_DETACHED"] == "1"
+        assert env["FORGE_DETACHED_RUN_ID"] == "run123"
+        assert env["FORGE_DETACHED_SLUG"] == "my-slug"
+
+    def test_uses_start_new_session_and_close_fds(self, tmp_path):
+        mock_popen, _ = self._run_and_capture(tmp_path)
+        kw = mock_popen.call_args.kwargs
+        assert kw["start_new_session"] is True
+        assert kw["close_fds"] is True
+
+    def test_writes_pid_file_with_child_pid(self, tmp_path):
+        self._run_and_capture(tmp_path, popen_pid=9876)
+        pid_file = tmp_path / ".forge" / "runs" / "run123.pid"
+        assert pid_file.exists()
+        lines = pid_file.read_text().splitlines()
+        assert int(lines[0]) == 9876
+        assert lines[1] == "my-slug"
+
+    def test_parent_exits_zero(self, tmp_path):
+        _, mock_exit = self._run_and_capture(tmp_path)
+        mock_exit.assert_called_once_with(0)
+
+    def test_does_not_call_os_fork(self, tmp_path):
+        """Regression: fork must not be invoked — that was the macOS crash."""
+        with (
+            patch("theforge.detach.subprocess.Popen", return_value=MagicMock(pid=1)),
+            patch("theforge.detach.sys.exit"),
             patch(
-                "builtins.open",
-                return_value=MagicMock(
-                    __enter__=lambda s: mock_fd,
-                    __exit__=MagicMock(return_value=False),
-                    fileno=lambda: 99,
-                    write=MagicMock(),
-                    flush=MagicMock(),
-                ),
-            ),
-            patch.object(sys, "stdin", MagicMock(fileno=MagicMock(return_value=0))),
-            patch.object(
-                sys, "stdout", MagicMock(fileno=MagicMock(return_value=1), flush=MagicMock())
-            ),
-            patch.object(
-                sys, "stderr", MagicMock(fileno=MagicMock(return_value=2), flush=MagicMock())
+                "theforge.detach.os.fork",
+                side_effect=AssertionError("os.fork must not be called"),
             ),
         ):
-            # The second fork also returns 0 — grandchild path
             detach.daemonize_run("run123", "my-slug", tmp_path)
 
-        mock_write_pid.assert_called_once_with("run123", "my-slug", tmp_path)
-        log_path = tmp_path / ".forge" / "logs" / "my-slug" / "run-run123.log"
-        assert mock_os_open.call_args_list[1].args[0] == str(log_path)
 
-    def test_raises_on_no_fork(self, tmp_path):
-        with patch("theforge.detach.os.fork", side_effect=AttributeError):
-            with pytest.raises(RuntimeError, match="os.fork"):
-                detach.daemonize_run("run123", "slug", tmp_path)
+class TestIsDetachedChild:
+    def test_false_when_unset(self, monkeypatch):
+        monkeypatch.delenv("FORGE_DETACHED", raising=False)
+        assert detach.is_detached_child() is False
+
+    def test_true_when_one(self, monkeypatch):
+        monkeypatch.setenv("FORGE_DETACHED", "1")
+        assert detach.is_detached_child() is True
+
+    def test_false_for_other_values(self, monkeypatch):
+        monkeypatch.setenv("FORGE_DETACHED", "0")
+        assert detach.is_detached_child() is False
+
+
+class TestSetupDetachedChild:
+    def test_writes_pid_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("FORGE_PREV_RUN_ID", raising=False)
+        detach.setup_detached_child("run123", "my-slug", tmp_path)
+        pid_file = tmp_path / ".forge" / "runs" / "run123.pid"
+        assert pid_file.exists()
+        lines = pid_file.read_text().splitlines()
+        assert int(lines[0]) == os.getpid()
+        assert lines[1] == "my-slug"
+
+    def test_writes_redirect_when_prev_run_id_set(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("FORGE_PREV_RUN_ID", "old-run-1")
+        detach.setup_detached_child("run123", "my-slug", tmp_path)
+        redirect = tmp_path / ".forge" / "runs" / "old-run-1.redirect"
+        assert redirect.exists()
+        # Env var consumed.
+        assert "FORGE_PREV_RUN_ID" not in os.environ
 
 
 # ── Terminal marker (.ended) ──────────────────────────────────────────

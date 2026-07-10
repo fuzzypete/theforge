@@ -45,6 +45,35 @@ def build_dev_prompt(
     The orchestrator fills ALL placeholders. The agent makes zero process decisions.
     """
     feedback_section = ""
+    if getattr(task, "investigation_ready", False):
+        feedback_section += dedent("""\
+
+            ## ⚠ Investigation-Ready Bug — Cause Not Yet Confirmed
+
+            This bug's Diagnosis section explicitly states the cause is not yet
+            identified (e.g. "unknown", "not yet identified", "pending
+            investigation", "TBD"). It passed the shape gate as
+            *investigation-ready*, **not** implementation-ready.
+
+            Your first job is **cause discovery**, not hypothesized-cause
+            implementation:
+
+            1. Reproduce the observed symptom from the Diagnosis section before
+               making any code change.
+            2. Investigate the affected code path and verify the actual cause
+               with evidence (logs, failing test, instrumentation). Do **not**
+               treat the confirmed-cause field as an implementation target — it
+               is a non-assertion placeholder.
+            3. Only after you have a verified cause, write the fix. The fix
+               must demonstrably resolve the originally observed symptom (per
+               the fix-success criterion), not merely the cause you guessed.
+            4. Record the confirmed cause in your handoff so reviewers can
+               verify the symptom resolution against a real diagnosis.
+
+            Hypothesizing a cause and refuting it is the silent-contract-swap
+            failure mode this gate is designed to prevent — closing the bug as
+            ALREADY_DONE while the symptom remains live in the codebase.
+        """)
     if escalation_note:
         feedback_section += dedent(f"""\
 

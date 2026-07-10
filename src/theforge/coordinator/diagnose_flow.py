@@ -505,6 +505,23 @@ def run_diagnose_flow(
     )
     state.artifact = artifact
 
+    # Content floor — an artifact that parsed but carries no substantive field
+    # is a failure to diagnose, not a partial diagnosis. This is the shape a
+    # killed/timed-out agent emits (empty output still parses to a non-None
+    # all-empty dict). Landing it would pollute the issue body with
+    # structurally-complete-but-content-empty scaffolding and report "partial
+    # diagnosis landed" when there is nothing to review. Fail without mutating
+    # any operator-visible state.
+    if not artifact.has_substantive_content():
+        state.error = (
+            "INVESTIGATE produced no diagnosis: the investigative agent "
+            "terminated (timeout, budget, or empty completion) without emitting "
+            "any substantive content. Nothing landed; issue body left untouched."
+        )
+        state.transition(DiagnosePhase.FAILED, _now_iso())
+        write_diagnose_audit(state, project_root)
+        return DiagnoseResult(success=False, state=state, message=state.error)
+
     # If essential fields are missing OR the run breached its budget/timeout
     # envelope, treat as TIMEOUT_PARTIAL — return the partial work for operator
     # review rather than landing a misleading "fix-ready" artifact.

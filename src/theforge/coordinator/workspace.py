@@ -19,6 +19,7 @@ from theforge.task import TaskStory
 from . import util as _cu
 from .gate import _run_gate
 from .git_lock import FETCH_LOCK
+from .run_setup import _rebase_onto_main
 
 # Populated lazily on first call to _resolve_merge_conflicts.
 run_agent = None
@@ -727,6 +728,18 @@ def pull_base_branch(config: ForgeConfig) -> bool:
     return True
 
 
+def _rebase_reused_worktree(workspace_path: Path, base_branch: str) -> str | None:
+    """Rebase a reused worktree onto current base. Returns error message on failure."""
+    rebase_ok, rebase_err = _rebase_onto_main(str(workspace_path), base_branch, None)
+    if rebase_ok:
+        _cu._log(f"  rebased reused worktree onto origin/{base_branch}")
+        return None
+    return (
+        f"pre-dev rebase onto {base_branch} failed — conflicts must be resolved manually: "
+        f"{rebase_err}"
+    )
+
+
 def _create_workspace(
     config: ForgeConfig, task: TaskStory, *, no_pull: bool = False
 ) -> tuple[Path | None, str | None, str | None]:
@@ -751,6 +764,9 @@ def _create_workspace(
             _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
             if not no_pull:
                 _check_behind_origin(config)
+            rebase_err = _rebase_reused_worktree(workspace_path, config.workspace.base_branch)
+            if rebase_err is not None:
+                return None, None, rebase_err
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                 ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
@@ -784,6 +800,9 @@ def _create_workspace(
                 _cu._log(f"↻ WORKSPACE  reusing existing worktree (registered): {existing_wt}")
                 if not no_pull:
                     _check_behind_origin(config)
+                rebase_err = _rebase_reused_worktree(existing_wt, config.workspace.base_branch)
+                if rebase_err is not None:
+                    return None, None, rebase_err
                 if config.workspace.setup_command:
                     _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                     ok_s, out_s = _run_setup_split(config.workspace.setup_command, existing_wt)
@@ -812,6 +831,9 @@ def _create_workspace(
             )
             if not ok_add:
                 return None, None, f"Failed to reattach worktree: {add_out}"
+            rebase_err = _rebase_reused_worktree(workspace_path, config.workspace.base_branch)
+            if rebase_err is not None:
+                return None, None, rebase_err
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                 ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)

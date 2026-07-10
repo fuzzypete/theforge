@@ -87,6 +87,7 @@ class RetryReason(str, Enum):
     TIMEOUT_RESUME = "timeout_resume"
     CONVENTION_VIOLATIONS = "convention_violations"
     MAX_ITERATIONS_NO_SUBMIT = "max_iterations_no_submit"
+    P2_CLEANUP = "p2_cleanup"
 
 
 # ── Disposition enum ──────────────────────────────────────────────────
@@ -228,6 +229,15 @@ class ReviewCycleMetadata:
     synthesized: bool  # whether synthesis ran
     parse_retries: int = 0  # parse/schema retry count for this cycle
     failed_detail: dict[str, str] = field(default_factory=dict)  # profile → "exit=N"
+    # Per-profile count of transient transport retries attempted this cycle.
+    transient_retries: dict[str, int] = field(default_factory=dict)
+    # Per-profile outcome: succeeded, transient_retried_then_succeeded,
+    # transient_retried_then_failed, hard_failed.
+    transient_outcomes: dict[str, str] = field(default_factory=dict)
+    # Effective quorum threshold for this cycle (after collapse to panel size).
+    quorum_threshold: int = 0
+    # Whether the effective threshold was met (i.e. synthesis proceeded).
+    quorum_met: bool = False
 
 
 @dataclass(frozen=True)
@@ -317,6 +327,13 @@ class CoordinatorState:
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None
     preflight_criteria_checked: list[dict] = field(default_factory=list)
+    # Structured symptom-verification record for bug ALREADY_DONE verdicts.
+    # Keys: status ("verified_resolved" | "not_reproduced" | "not_feasible" |
+    # "not_attempted" | "" when absent), evidence (str), reproduces_now (bool|None).
+    # An empty dict means the preflight output did not contain the field — for
+    # bug-typed stories this is treated as missing symptom verification and
+    # downgrades ALREADY_DONE to PROCEED.
+    preflight_symptom_verification: dict = field(default_factory=dict)
     # Risk signals consulted when preflight agent failed and the coordinator
     # had to choose between conservative PROCEED and explicit escalation.
     # Empty list means no signals were detected (or preflight succeeded so
@@ -383,6 +400,25 @@ class CoordinatorState:
     # to compute git diff --name-only for changed-file correlation.
     escalate_decision: str | None = None  # "approve" | "reject" | "continue"
     escalate_reason: str | None = None  # human-readable escalation reason
+    # Structured escalation kind: "hygiene" (workspace mutation by a non-DEV phase),
+    # "content" (review or gate found a real problem), or None when there is no
+    # active escalation. Distinct from escalate_reason so resume can tell the two
+    # apart without parsing the human-readable string.
+    escalate_kind: str | None = None
+    # Captured at the moment a REVIEW workspace-hygiene escalation fires when the
+    # reviewer pool had already produced an APPROVE-consensus candidate for the
+    # current dev commit. Used by `forge sprint --resume` to replay the prior
+    # consensus instead of re-running the reviewer pool against an unchanged
+    # dev commit. None means either (a) no hygiene escalation occurred, or
+    # (b) the pool did not reach APPROVE consensus before the trip.
+    hygiene_escalation_dev_commit_sha: str | None = None
+    hygiene_escalation_prior_review: ReviewResult | None = None
+    hygiene_escalation_prior_approve_count: int | None = None
+    hygiene_escalation_total_count: int | None = None
+    # Audit record describing how the resume entry handled a prior hygiene
+    # escalation: replayed the consensus, ran a fresh review because the dev
+    # commit moved, or ran a fresh review because no prior consensus existed.
+    hygiene_resume_audit: dict | None = None
     story_validation_result: StoryValidationResult | None = None
     convention_violations: list[dict] = field(default_factory=list)
     plan_validation_findings: list[dict] = field(default_factory=list)
@@ -435,6 +471,39 @@ class CoordinatorState:
     # Per-phase hygiene gate audit entries. Each dict carries a "phase" key
     # ("PRE_DEV" / "PLAN" / "PLAN_REVIEW" / "REVIEW") plus phase-specific fields
     # (snapshot, modified, quarantined, quarantine_dir, offending_paths).
+    # Set by VALIDATE when the dev cycle determined no commits were needed and the
+    # handoff YAML documents this with all acceptance criteria MET and at least one
+    # cited commit present in base-branch history. Distinguishes the deliberate
+    # "work already complete" outcome from genuine missing-work failures.
+    validate_already_complete: bool = False
+    validate_already_complete_commits: list[dict] = field(default_factory=list)
+    validate_already_complete_reason: str | None = None
+    # ── P2 cleanup (post-APPROVE advisory iterations) ─────────────────────────
+    # Set True when the coordinator re-enters DEV after an APPROVE that left
+    # open P2 findings; cleared on cleanup-clean APPROVE, REQUEST_CHANGES
+    # regression, or budget exhaustion. While True, the engine does NOT reset
+    # the per-cycle dev budget on RETRY_DEV (cleanup iterations count against
+    # the same pool as the original cycle).
+    p2_cleanup_active: bool = False
+    # Number of post-APPROVE cleanup dev iterations dispatched this run.
+    # Counts against config.retry.p2_cleanup_max_iterations when that cap is
+    # > 0; counts against the dev budget either way.
+    p2_cleanup_iterations: int = 0
+    # P2 findings (as dicts: file/line/description/suggestion) handed to the
+    # dev agent on the next cleanup pass. Filtered each cleanup pass to the
+    # subset of p2_cleanup_carry_keys still raised by the latest reviewer.
+    p2_cleanup_findings: list[dict] = field(default_factory=list)
+    # Stable fingerprints (file, line, description) of the original P2 set
+    # captured at first cleanup entry. The cleanup loop only considers these
+    # carried findings; new P2s raised by the reviewer after the carry is
+    # captured do not extend the loop. Cleared when cleanup exits.
+    p2_cleanup_carry_keys: list[list] = field(default_factory=list)
+    # Audit trail for cleanup decisions: one entry per cleanup transition with
+    # action ("enter" | "continue" | "exit_clean" | "exit_budget" | "exit_cap"
+    # | "exit_regression" | "skip_disabled" | "skip_no_p2" | "skip_budget"
+    # | "skip_cap"), pre-pass P2 count, post-pass P2 count, budget remaining,
+    # review_cycle, and dev_iteration at the decision point.
+    p2_cleanup_audit: list[dict] = field(default_factory=list)
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.

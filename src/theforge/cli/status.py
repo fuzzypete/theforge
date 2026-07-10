@@ -19,16 +19,24 @@ _WATCH_SPRINT_STARTUP_POLL_SECONDS = 0.1
 
 
 def _follow_log_with_redirect(
-    log_path: Path, current_run_id: str, *, runs_dir: Path | None = None
-) -> tuple[str, Path] | None:
+    log_path: Path,
+    current_run_id: str,
+    *,
+    runs_dir: Path | None = None,
+    start_offset: int = 0,
+) -> tuple[str, Path, int] | None:
     """Stream log_path to stdout; poll ``runs_dir/<current_run_id>.redirect`` on EOF.
 
-    Returns (new_run_id, new_log_path) on redirect, None on sentinel EOF.
+    Returns (new_run_id, new_log_path, byte_offset) on redirect, None on sentinel EOF.
+    start_offset allows callers to continue reading from a known position, avoiding
+    duplicate output when a re-exec redirect resolves to the same log file.
     Runs indefinitely on real EOF (tail-f style); caller catches KeyboardInterrupt.
     """
     redirect_file = (runs_dir / f"{current_run_id}.redirect") if runs_dir else None
 
     with open(log_path) as fh:
+        if start_offset > 0:
+            fh.seek(start_offset)
         while True:
             pos = fh.tell()
             line = fh.readline()
@@ -36,7 +44,9 @@ def _follow_log_with_redirect(
                 if redirect_file is not None and redirect_file.exists():
                     try:
                         d = json.loads(redirect_file.read_text(encoding="utf-8"))
-                        return d["new_run_id"], Path(d["new_log"])
+                        new_run_id = d["new_run_id"]
+                        if new_run_id != current_run_id:
+                            return new_run_id, Path(d["new_log"]), fh.tell()
                     except (OSError, KeyError, ValueError, json.JSONDecodeError):
                         pass
                 time.sleep(0.1)
@@ -554,14 +564,17 @@ def cmd_logs(args: object) -> int:
 
     current_run_id = run_id
     current_log = log_path
+    current_offset = 0
     runs_dir = project_root / ".forge" / "runs"
     try:
         while True:
             print(f"[forge] Tailing {current_log} — Ctrl+C to stop", file=sys.stderr)
-            result = _follow_log_with_redirect(current_log, current_run_id, runs_dir=runs_dir)
+            result = _follow_log_with_redirect(
+                current_log, current_run_id, runs_dir=runs_dir, start_offset=current_offset
+            )
             if result is None:
                 break
-            new_run_id, new_log = result
+            new_run_id, new_log, redirect_offset = result
             print(
                 f"[forge] Run re-exec'd — following new run {new_run_id}",
                 file=sys.stderr,
@@ -578,6 +591,9 @@ def cmd_logs(args: object) -> int:
                 )
                 return 1
             current_run_id = new_run_id
+            # If re-exec reuses the same log file, continue from the current read
+            # position to avoid replaying already-printed lines from offset 0.
+            current_offset = redirect_offset if new_log == current_log else 0
             current_log = new_log
     except KeyboardInterrupt:
         pass

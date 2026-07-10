@@ -701,6 +701,11 @@ class TestAuditReviewPoolFields:
                 allowed_tools=[],
             ),
         )
+        # Allow single-success quorum to preserve the legacy degraded path
+        # under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -721,7 +726,7 @@ class TestAuditReviewPoolFields:
             ),
             AgentResult(
                 success=False,
-                output="",
+                output="ValueError: hard crash",
                 session_id=None,
                 cost_usd=0.0,
                 exit_code=1,
@@ -739,6 +744,118 @@ class TestAuditReviewPoolFields:
         assert set(cycle["pool_models"]) == {"opus", "codex"}
         assert cycle["successful"] == ["opus"]
         assert cycle["failed"] == ["codex"]
+        # Quorum + transient outcome metadata is emitted (here threshold=1
+        # collapses against the configured value so quorum is met).
+        assert cycle["quorum_threshold"] == 1
+        assert cycle["quorum_met"] is True
+        assert cycle["transient_outcomes"]["opus"] == "succeeded"
+        assert cycle["transient_outcomes"]["codex"] == "hard_failed"
+        assert "transient_retries" in cycle
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_audit_transient_retry_and_quorum_fields_emitted(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_pool,
+        mock_review_agent,
+        tmp_path,
+    ):
+        """Audit log emits per-reviewer retry counts/outcomes and quorum metadata."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    review_quorum_threshold=1,
+                    max_review_transport_retries=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = _make_agent_result(success=True, output="Done.")
+        # codex returns transient-shape failure (exit=1, empty output); retries
+        # also fail. opus succeeds → quorum_met=True at threshold=1.
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+        mock_review_agent.return_value = AgentResult(
+            success=False,
+            output="",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="codex",
+        )
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+        cycle = audit["reviews"][0]
+
+        assert cycle["quorum_threshold"] == 1
+        assert cycle["quorum_met"] is True
+        assert cycle["transient_retries"]["codex"] == 2
+        assert cycle["transient_outcomes"]["codex"] == "transient_retried_then_failed"
+        assert cycle["transient_outcomes"]["opus"] == "succeeded"
+        assert mock_review_agent.call_count == 2
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -777,6 +894,11 @@ class TestAuditReviewPoolFields:
                 allowed_tools=[],
             ),
         )
+        # Allow single-success quorum to preserve the legacy degraded path
+        # under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -796,7 +918,7 @@ class TestAuditReviewPoolFields:
             ),
             AgentResult(
                 success=False,
-                output="",
+                output="ValueError: hard crash",
                 session_id=None,
                 cost_usd=0.0,
                 exit_code=1,
@@ -850,6 +972,11 @@ class TestAuditReviewPoolFields:
                 allowed_tools=[],
             ),
         )
+        # Allow single-success quorum to preserve the legacy degraded path
+        # under the new quorum contract.
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -870,7 +997,7 @@ class TestAuditReviewPoolFields:
             ),
             AgentResult(
                 success=False,
-                output="",
+                output="ValueError: hard crash",
                 session_id=None,
                 cost_usd=0.0,
                 exit_code=1,

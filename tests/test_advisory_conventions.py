@@ -5,11 +5,13 @@ import datetime as dt
 import subprocess
 from unittest.mock import patch
 
+import pytest
 import yaml
 from coord_test_helpers import _make_config
 
 from theforge.advisory_conventions import load_advisory_summary, update_advisory_violations
 from theforge.config import AdvisoryConventionsConfig, AdvisoryIssueFilingConfig
+from theforge.shape_check import Shape, check
 
 
 def _violation(
@@ -127,6 +129,109 @@ def test_update_advisory_violations_files_issue_once_when_enabled(tmp_path):
     assert entry["issue"]["url"] == "https://github.com/example/repo/issues/123"
     assert entry["issue"]["label"] == "refactor-debt"
     assert entry["issue"]["milestone"] == "v0.12.0"
+
+
+def _gh_create_kwargs(call) -> tuple[str, str, list[str]]:
+    """Extract title, body, and label list from a captured ``gh issue create`` call."""
+    command = call.args[0]
+    assert command[:3] == ["gh", "issue", "create"]
+    title = command[command.index("--title") + 1]
+    body = command[command.index("--body") + 1]
+    labels = [command[i + 1] for i, arg in enumerate(command) if arg == "--label"]
+    return title, body, labels
+
+
+def test_auto_filed_issue_passes_sprint_intake_shape_check(tmp_path):
+    config = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            issue_filing=AdvisoryIssueFilingConfig(
+                enabled=True,
+                threshold_percent=25.0,
+                label="refactor-debt",
+            )
+        ),
+    )
+    observed_at = dt.datetime(2026, 5, 2, 18, 45, tzinfo=dt.timezone.utc)
+    gh_result = subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=0,
+        stdout="https://github.com/example/repo/issues/200\n",
+        stderr="",
+    )
+
+    with patch("theforge.advisory_conventions.subprocess.run", return_value=gh_result) as mock_run:
+        update_advisory_violations(
+            config,
+            [_violation()],
+            observed_at=observed_at,
+            run_id="run-shape",
+            story_slug="story-shape",
+        )
+
+    assert mock_run.call_count == 1
+    title, body, labels = _gh_create_kwargs(mock_run.call_args)
+
+    # The runnable type label must accompany the configured filing label, so
+    # sprint intake recognizes the issue as a runnable task rather than
+    # rejecting it for missing_type.
+    assert "task" in labels
+    assert "refactor-debt" in labels
+
+    # Drive the actual sprint-intake shape check against the rendered body to
+    # prove this auto-filed issue would be dispatched, not skipped.
+    result = check(title, body, labels)
+    assert result.shape is Shape.RUNNABLE, [
+        (r.code, r.severity.name, r.detail) for r in result.reasons
+    ]
+
+
+@pytest.mark.parametrize("configured_label", ["bug", "enhancement", "epic", "task", "TASK"])
+def test_auto_filed_issue_drops_recognized_type_filing_label(tmp_path, configured_label):
+    """A configured filing label that is itself a recognized type label
+    must not produce an issue with multiple type labels — sprint intake's
+    ``check_missing_type`` rejects that as missing_type and forge would
+    refuse to run the issue it just filed."""
+    config = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            issue_filing=AdvisoryIssueFilingConfig(
+                enabled=True,
+                threshold_percent=25.0,
+                label=configured_label,
+            )
+        ),
+    )
+    observed_at = dt.datetime(2026, 5, 2, 18, 45, tzinfo=dt.timezone.utc)
+    gh_result = subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=0,
+        stdout="https://github.com/example/repo/issues/300\n",
+        stderr="",
+    )
+
+    with patch("theforge.advisory_conventions.subprocess.run", return_value=gh_result) as mock_run:
+        update_advisory_violations(
+            config,
+            [_violation()],
+            observed_at=observed_at,
+            run_id="run-collide",
+            story_slug="story-collide",
+        )
+
+    assert mock_run.call_count == 1
+    title, body, labels = _gh_create_kwargs(mock_run.call_args)
+
+    # Exactly one recognized type label, and it is the runnable one.
+    recognized = {"bug", "enhancement", "epic", "task"}
+    type_labels = [lbl for lbl in labels if lbl.lower() in recognized]
+    assert type_labels == ["task"], labels
+
+    # The shape gate must still classify the result as RUNNABLE.
+    result = check(title, body, labels)
+    assert result.shape is Shape.RUNNABLE, [
+        (r.code, r.severity.name, r.detail) for r in result.reasons
+    ]
 
 
 def test_update_advisory_violations_disabled_filing_does_not_report_prior_issue_as_newly_filed(

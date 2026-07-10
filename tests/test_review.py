@@ -6,6 +6,7 @@ from theforge.review import (
     _best_individual_result,
     _coerce_line,
     _dedup_findings,
+    _sanitize_yaml_text,
     _try_parse_review,
     append_convention_retry_findings,
     convention_violations_to_review_findings,
@@ -137,6 +138,82 @@ class TestParseReviewOutput:
         assert result.verdict == "REQUEST_CHANGES"
         assert len(result.parse_errors) > 0
 
+    def test_yaml_syntax_error_tagged_as_yaml_syntax(self):
+        """Operator-facing: a parser-layer rejection must be tagged YAML_SYNTAX,
+        not lumped with schema/contract failures."""
+        from theforge.schemas import YAML_SYNTAX
+
+        result = parse_review_output("this is not yaml: [[[")
+        assert result.parse_errors
+        stages = {e.stage for e in result.parse_errors}
+        assert stages == {YAML_SYNTAX}
+
+    def test_non_mapping_root_tagged_as_structure(self):
+        from theforge.schemas import STRUCTURE
+
+        # A bare scalar parses as YAML but isn't a mapping.
+        result = parse_review_output("just a string")
+        assert result.parse_errors
+        assert result.parse_errors[0].stage == STRUCTURE
+
+    def test_schema_field_errors_tagged_as_schema_validation(self):
+        """Type/required-field rejections come from the schema layer, not parser."""
+        from theforge.schemas import SCHEMA_VALIDATION
+
+        # Valid YAML, valid mapping, but verdict is wrong type.
+        result = parse_review_output(
+            "```yaml\n"
+            "verdict: MAYBE\n"
+            "summary: ''\n"
+            "findings: []\n"
+            "story_compliance:\n"
+            "  matches_spec: true\n"
+            "test_coverage:\n"
+            "  adequate: true\n"
+            "```\n"
+        )
+        assert result.parse_errors
+        assert all(e.stage == SCHEMA_VALIDATION for e in result.parse_errors)
+
+    def test_contract_cross_validation_tagged_distinctly(self):
+        """APPROVE + P1 and APPROVE + empty ac_verification are contract
+        cross-checks — operators remediate at the prompt/contract layer, not
+        the parser. Stage must distinguish them from YAML_SYNTAX."""
+        from theforge.schemas import CONTRACT_CROSS_VALIDATION, YAML_SYNTAX
+
+        # APPROVE with a P1 finding is a contract contradiction.
+        result = parse_review_output(
+            "```yaml\n"
+            "verdict: APPROVE\n"
+            "summary: 'looks good'\n"
+            "findings:\n"
+            "  - severity: P1\n"
+            "    file: src/x.py\n"
+            "    line: 1\n"
+            "    description: 'blocker'\n"
+            "    suggestion: 'fix it'\n"
+            "story_compliance:\n"
+            "  matches_spec: true\n"
+            "test_coverage:\n"
+            "  adequate: true\n"
+            "ac_verification:\n"
+            "  - criterion: 'AC1'\n"
+            "    status: VERIFIED\n"
+            "    evidence: 'ev'\n"
+            "```\n"
+        )
+        stages = {e.stage for e in result.parse_errors}
+        assert CONTRACT_CROSS_VALIDATION in stages
+        assert YAML_SYNTAX not in stages
+
+    def test_parse_error_str_carries_stage_tag(self):
+        """Rendered form embeds the stage so log/audit consumers that emit
+        the string (not the dataclass) still surface the classification."""
+        from theforge.schemas import YAML_SYNTAX
+
+        result = parse_review_output("not yaml: [[[")
+        assert any(str(e).startswith(f"[{YAML_SYNTAX}]") for e in result.parse_errors)
+
     def test_yaml_with_extra_prose(self):
         text = (
             "Here is my review:\n\n"
@@ -182,6 +259,110 @@ class TestParseReviewOutput:
             "findings[0].observed": {"sanitized_chars": 2},
             "findings[0].expected": {"sanitized_chars": 1},
         }
+
+
+class TestSanitizeYamlText:
+    """Unit tests for _sanitize_yaml_text — apostrophe-in-single-quoted-scalar fix."""
+
+    def test_issue_1511_trace_line_fixed(self):
+        # Exact pattern from story #1511: LLM emitted criterion with unescaped apostrophe.
+        line = (
+            "  criterion: 'For features, stories, and docs: "
+            "ensures the body matches the type's required headings.'"
+        )
+        result = _sanitize_yaml_text(line)
+        import yaml
+
+        parsed = yaml.safe_load(result)
+        expected = (
+            "For features, stories, and docs: "
+            "ensures the body matches the type's required headings."
+        )
+        assert parsed["criterion"] == expected
+
+    def test_no_apostrophe_scalar_unchanged(self):
+        line = "  status: 'VERIFIED'\n"
+        assert _sanitize_yaml_text(line) == line
+
+    def test_doubled_apostrophe_already_valid_unchanged(self):
+        # 'it''s fine' is valid YAML single-quoted; must not be altered.
+        line = "  text: 'it''s fine'\n"
+        result = _sanitize_yaml_text(line)
+        import yaml
+
+        parsed = yaml.safe_load(result)
+        assert parsed["text"] == "it's fine"
+
+    def test_contraction_in_single_quoted_fixed(self):
+        line = "  summary: 'The system doesn't handle this case.'"
+        result = _sanitize_yaml_text(line)
+        import yaml
+
+        parsed = yaml.safe_load(result)
+        assert parsed["summary"] == "The system doesn't handle this case."
+
+    def test_existing_backslash_quote_fix_still_works(self):
+        text = 'description: \\"bad escape\\"'
+        result = _sanitize_yaml_text(text)
+        assert '\\"' not in result
+
+    def test_backtick_fix_still_works(self):
+        text = "description: use `foo.bar` here\n"
+        result = _sanitize_yaml_text(text)
+        assert "`" not in result
+
+    def test_non_scalar_line_not_affected(self):
+        # A line without a key: 'value' pattern should pass through unchanged.
+        line = "- item without quotes\n"
+        assert _sanitize_yaml_text(line) == line
+
+
+class TestParseReviewOutputApostrophe:
+    """End-to-end regression for issue #1511: apostrophe in single-quoted scalar."""
+
+    # Fixture reproduces the LLM emission failure from sprint 77a72be5ff30:
+    # unescaped apostrophe inside single-quoted YAML scalar ('type's name').
+    _ISSUE_1511_APOSTROPHE_YAML = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Review with possessive"
+findings:
+  - severity: P1
+    file: src/theforge/schemas.py
+    line: 10
+    observed: "Missing required field"
+    expected: "All schema-required fields must be present"
+    evidence: "src/theforge/schemas.py:10"
+    suggestion: "Add the field"
+story_compliance:
+  matches_spec: false
+  mismatches:
+    - "Story body does not match spec"
+test_coverage:
+  adequate: false
+  gaps:
+    - "No regression test"
+ac_verification:
+  - criterion: 'Ensures the story body matches the type's required headings.'
+    status: NOT_VERIFIED
+    evidence: 'No evidence found'
+```
+"""
+
+    def test_apostrophe_in_criterion_parses_successfully(self):
+        result = parse_review_output(self._ISSUE_1511_APOSTROPHE_YAML)
+        assert result.parse_errors == [], f"Unexpected parse errors: {result.parse_errors}"
+        assert result.verdict == "REQUEST_CHANGES"
+        assert len(result.findings) == 1
+        assert result.findings[0].severity == "P1"
+        assert len(result.ac_verification) == 1
+        assert "type's required headings" in result.ac_verification[0].criterion
+
+    def test_apostrophe_parse_preserves_content(self):
+        result = parse_review_output(self._ISSUE_1511_APOSTROPHE_YAML)
+        assert result.ac_verification[0].criterion == (
+            "Ensures the story body matches the type's required headings."
+        )
 
 
 class TestFindingsToMarkdown:
@@ -678,15 +859,28 @@ class TestMergeReviewResultsDedup:
         assert set(merged.findings[0].reviewers) == {"reviewer-a", "reviewer-b"}
 
     def test_all_parse_errors_propagated(self):
-        r1 = _make_review_result("REQUEST_CHANGES", parse_errors=["bad yaml"])
-        r2 = _make_review_result("REQUEST_CHANGES", parse_errors=["bad yaml"])
+        from theforge.schemas import YAML_SYNTAX, ParseError
+
+        r1 = _make_review_result(
+            "REQUEST_CHANGES",
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message="bad yaml")],
+        )
+        r2 = _make_review_result(
+            "REQUEST_CHANGES",
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message="bad yaml")],
+        )
         merged = merge_review_results([r1, r2], ["a", "b"])
         assert merged.parse_errors  # propagated for retry loop
 
     def test_mixed_valid_and_parse_error(self):
         finding = _rf("P1", "foo.py", 1, "Bug")
         valid = _make_review_result("REQUEST_CHANGES", findings=[finding])
-        invalid = _make_review_result("REQUEST_CHANGES", parse_errors=["bad"])
+        from theforge.schemas import YAML_SYNTAX, ParseError
+
+        invalid = _make_review_result(
+            "REQUEST_CHANGES",
+            parse_errors=[ParseError(stage=YAML_SYNTAX, message="bad")],
+        )
         merged = merge_review_results([valid, invalid], ["a", "b"])
         assert not merged.parse_errors
         assert len(merged.findings) == 1

@@ -20,7 +20,9 @@ from theforge.task import (
     parse_story_frontmatter,
 )
 
-_ALLOWED_TOP_LEVEL_KEYS = frozenset({"assignment", "models"})
+_ALLOWED_TOP_LEVEL_KEYS = frozenset(
+    {"assignment", "models", "intake", "conventions_advisory", "diagnose"}
+)
 
 
 @dataclass(frozen=True)
@@ -68,10 +70,28 @@ def _current_branch(repo_root: Path) -> str:
 
 
 def _issue_number_from_branch(branch: str) -> int | None:
-    """Extract an issue number from a story branch name like feat/issue-283."""
+    """Extract an issue number from a story branch name.
+
+    Accepts both bare `issue-N` components (as Forge sprint worktrees emit)
+    and descriptive `issue-N-summary` / `issue-N_summary` components (as
+    manual story branches typically use, e.g. `fix/issue-1377-guard-...`).
+    Returns the integer issue number from the first matching component, or
+    None if no component encodes one.
+    """
     for part in branch.split("/"):
-        if part.startswith("issue-") and part[6:].isdigit():
-            return int(part[6:])
+        if not part.startswith("issue-"):
+            continue
+        rest = part[6:]
+        digits = ""
+        for char in rest:
+            if char.isdigit():
+                digits += char
+                continue
+            break
+        if not digits:
+            continue
+        if len(digits) == len(rest) or rest[len(digits)] in ("-", "_"):
+            return int(digits)
     return None
 
 
@@ -98,6 +118,29 @@ def _matches_story_issue(frontmatter: dict[str, Any], issue_number: int) -> bool
         return int(raw_issue) == issue_number
     except (TypeError, ValueError):
         return False
+
+
+def _branch_has_story_context(repo_root: Path, branch: str) -> bool:
+    """Return whether the current branch represents a per-story context.
+
+    A story context exists when the branch encodes an issue number
+    (feat/issue-N, fix/issue-N, etc.) or when a local story file under the
+    repo root matches the branch by issue number or slug. The mutation guard
+    only applies in story contexts; non-story branches (main, release/*,
+    detached HEAD, ad-hoc maintenance branches) have no story to attribute
+    a mutation to and the guard must short-circuit.
+    """
+    if _issue_number_from_branch(branch) is not None:
+        return True
+    slug = _branch_slug(branch)
+    for story_path in _iter_local_story_paths(repo_root):
+        frontmatter = parse_story_frontmatter(story_path)
+        if not frontmatter:
+            continue
+        story_slug = frontmatter.get("slug")
+        if story_slug == slug or story_path.stem == slug:
+            return True
+    return False
 
 
 def _local_story_override_active(repo_root: Path, branch: str) -> bool:
@@ -170,6 +213,21 @@ def evaluate_forge_yaml_guard(repo_root: Path, *, base_branch: str) -> ForgeYaml
     """Evaluate the forge.yaml mutation guard for the current branch."""
     current_path = repo_root / "forge.yaml"
     if not current_path.exists():
+        return ForgeYamlGuardResult(ok=True)
+
+    # The mutation guard is per-story. If the current branch has no story
+    # context — no issue-N token in the name and no matching local story
+    # file — there is no story to attribute a mutation to and the guard
+    # must short-circuit. This covers detached HEAD (sprint baseline gate
+    # worktrees), the configured base branch itself, release branches,
+    # main, and any ad-hoc maintenance branch. Without this check,
+    # legitimate cross-branch divergence (release branch vs main) is
+    # misread as a forbidden story edit and blocks `make gate` runs on
+    # release branches and `cut-rc.sh`. Branch-detection failures must
+    # propagate so the caller surfaces them explicitly rather than
+    # fail-open through the guard.
+    current_branch = _current_branch(repo_root)
+    if not _branch_has_story_context(repo_root, current_branch):
         return ForgeYamlGuardResult(ok=True)
 
     diff_proc = subprocess.run(

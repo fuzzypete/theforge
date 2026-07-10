@@ -7,11 +7,53 @@ the orchestrator treats it as REQUEST_CHANGES.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 VALID_VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 VALID_SEVERITIES = ("P1", "P2")
 VALID_AC_VERIFICATION_STATUSES = ("VERIFIED", "PARTIAL", "NOT_VERIFIED")
+
+# ── Parse-error taxonomy ─────────────────────────────────────────────
+# Operator-facing logs and audit must distinguish which validation stage
+# rejected an agent's output. The stage identifies the remediation surface:
+# YAML_SYNTAX → parser/sanitizer; SCHEMA_VALIDATION → field shape/type;
+# CONTRACT_CROSS_VALIDATION → verdict-vs-findings or AC contract rules;
+# STRUCTURE → preconditions before schema validation (root is a mapping).
+
+YAML_SYNTAX = "YAML_SYNTAX"
+STRUCTURE = "STRUCTURE"
+SCHEMA_VALIDATION = "SCHEMA_VALIDATION"
+CONTRACT_CROSS_VALIDATION = "CONTRACT_CROSS_VALIDATION"
+
+VALID_PARSE_ERROR_STAGES = (
+    YAML_SYNTAX,
+    STRUCTURE,
+    SCHEMA_VALIDATION,
+    CONTRACT_CROSS_VALIDATION,
+)
+
+
+@dataclass(frozen=True)
+class ParseError:
+    """A single rejection reason tagged with the validation stage that produced it.
+
+    ``stage`` names the remediation surface — operators consume the stage to
+    decide whether to fix the parser (YAML_SYNTAX), the prompt/schema description
+    (SCHEMA_VALIDATION), or the contract rules themselves
+    (CONTRACT_CROSS_VALIDATION). ``message`` is the human-readable detail.
+    """
+
+    stage: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"[{self.stage}] {self.message}"
+
+    def __contains__(self, item: object) -> bool:
+        # Substring checks against the rendered form so legacy assertions like
+        # ``"APPROVE" in error`` continue to work after the structural refactor.
+        return isinstance(item, str) and item in str(self)
 
 
 def repair_review_yaml(data: Any) -> Any:
@@ -55,47 +97,57 @@ def repair_review_yaml(data: Any) -> Any:
     return data
 
 
-def validate_review_yaml(data: Any) -> list[str]:
+def validate_review_yaml(data: Any) -> list[ParseError]:
     """Validate review YAML structure. Returns list of errors (empty = valid).
+
+    Each returned :class:`ParseError` carries a ``stage`` tag identifying the
+    validation layer that produced it (``STRUCTURE``, ``SCHEMA_VALIDATION``, or
+    ``CONTRACT_CROSS_VALIDATION``) so operator-facing logs and audit can
+    distinguish parser/schema failures from contract-cross-check failures
+    without parsing the message string.
 
     Cross-validation rules:
     - APPROVE + any P1 → error (can't approve with blocking findings)
     - REQUEST_CHANGES + zero P1s → error (must justify the request)
     """
-    errors: list[str] = []
+    errors: list[ParseError] = []
 
     if not isinstance(data, dict):
-        return ["review output root must be a YAML mapping"]
+        return [ParseError(stage=STRUCTURE, message="review output root must be a YAML mapping")]
+
+    def _schema(msg: str) -> None:
+        errors.append(ParseError(stage=SCHEMA_VALIDATION, message=msg))
+
+    def _cross(msg: str) -> None:
+        errors.append(ParseError(stage=CONTRACT_CROSS_VALIDATION, message=msg))
 
     # ── verdict ───────────────────────────────────────────────────
     verdict = data.get("verdict")
     if verdict not in VALID_VERDICTS:
-        errors.append(f"verdict must be one of {VALID_VERDICTS}, got: {verdict!r}")
+        _schema(f"verdict must be one of {VALID_VERDICTS}, got: {verdict!r}")
 
     # ── summary ───────────────────────────────────────────────────
     summary = data.get("summary")
     if not isinstance(summary, str) or not summary.strip():
-        errors.append("summary must be a non-empty string")
+        _schema("summary must be a non-empty string")
 
     # ── findings ──────────────────────────────────────────────────
     findings = data.get("findings")
     if findings is None:
         findings = []
     if not isinstance(findings, list):
-        errors.append("findings must be a list")
+        _schema("findings must be a list")
         findings = []
 
     p1_count = 0
     for i, finding in enumerate(findings):
         if not isinstance(finding, dict):
-            errors.append(f"findings[{i}] must be a mapping")
+            _schema(f"findings[{i}] must be a mapping")
             continue
 
         severity = finding.get("severity")
         if severity not in VALID_SEVERITIES:
-            errors.append(
-                f"findings[{i}].severity must be one of {VALID_SEVERITIES}, got: {severity!r}"
-            )
+            _schema(f"findings[{i}].severity must be one of {VALID_SEVERITIES}, got: {severity!r}")
         if severity == "P1":
             p1_count += 1
             file_val = finding.get("file")  # None = null (architectural), "" = empty (error)
@@ -103,7 +155,7 @@ def validate_review_yaml(data: Any) -> list[str]:
             # P1 with file set must have a non-empty file path.
             # P1 with file: null is an architectural finding — no file required.
             if file_val is not None and not file_val:
-                errors.append(f"findings[{i}].file must be non-empty for P1 findings")
+                _schema(f"findings[{i}].file must be non-empty for P1 findings")
 
             # line may be null even when file is set: file-scope findings
             # (file existence, mode, whole-file state, structural hygiene) target
@@ -113,16 +165,16 @@ def validate_review_yaml(data: Any) -> list[str]:
         for prose_field in ("observed", "expected", "evidence"):
             value = finding.get(prose_field)
             if not isinstance(value, str) or not value.strip():
-                errors.append(f"findings[{i}].{prose_field} must be a non-empty string")
+                _schema(f"findings[{i}].{prose_field} must be a non-empty string")
 
     # ── Cross-validation: verdict vs findings ─────────────────────
     if verdict == "APPROVE" and p1_count > 0:
-        errors.append(
+        _cross(
             f"verdict is APPROVE but {p1_count} P1 finding(s) exist — "
             f"cannot approve with blocking findings"
         )
     if verdict == "REQUEST_CHANGES" and p1_count == 0:
-        errors.append(
+        _cross(
             "verdict is REQUEST_CHANGES but no P1 findings exist — "
             "must have at least one P1 to justify REQUEST_CHANGES"
         )
@@ -130,20 +182,20 @@ def validate_review_yaml(data: Any) -> list[str]:
     # ── story_compliance (accept spec_compliance for backward compat) ──
     spec = data.get("story_compliance") or data.get("spec_compliance")
     if spec is None:
-        errors.append("story_compliance section is required")
+        _schema("story_compliance section is required")
     elif not isinstance(spec, dict):
-        errors.append("story_compliance must be a mapping")
+        _schema("story_compliance must be a mapping")
     elif "matches_spec" not in spec:
-        errors.append("story_compliance.matches_spec is required (true/false)")
+        _schema("story_compliance.matches_spec is required (true/false)")
 
     # ── test_coverage ─────────────────────────────────────────────
     tests = data.get("test_coverage")
     if tests is None:
-        errors.append("test_coverage section is required")
+        _schema("test_coverage section is required")
     elif not isinstance(tests, dict):
-        errors.append("test_coverage must be a mapping")
+        _schema("test_coverage must be a mapping")
     elif "adequate" not in tests:
-        errors.append("test_coverage.adequate is required (true/false)")
+        _schema("test_coverage.adequate is required (true/false)")
 
     # ── ac_verification ───────────────────────────────────────────
     # Per-AC verification table. Each entry must declare the criterion text
@@ -156,24 +208,24 @@ def validate_review_yaml(data: Any) -> list[str]:
     if ac_v is None:
         ac_v = []
     if not isinstance(ac_v, list):
-        errors.append("ac_verification must be a list")
+        _schema("ac_verification must be a list")
         ac_v = []
     for i, entry in enumerate(ac_v):
         if not isinstance(entry, dict):
-            errors.append(f"ac_verification[{i}] must be a mapping")
+            _schema(f"ac_verification[{i}] must be a mapping")
             continue
         criterion = entry.get("criterion")
         if not isinstance(criterion, str) or not criterion.strip():
-            errors.append(f"ac_verification[{i}].criterion must be a non-empty string")
+            _schema(f"ac_verification[{i}].criterion must be a non-empty string")
         status = entry.get("status")
         if status not in VALID_AC_VERIFICATION_STATUSES:
-            errors.append(
+            _schema(
                 f"ac_verification[{i}].status must be one of "
                 f"{VALID_AC_VERIFICATION_STATUSES}, got: {status!r}"
             )
         evidence = entry.get("evidence")
         if not isinstance(evidence, str) or not evidence.strip():
-            errors.append(
+            _schema(
                 f"ac_verification[{i}].evidence must be a non-empty string "
                 f"(diff hunks + test pointers for VERIFIED, reason otherwise)"
             )
@@ -182,13 +234,13 @@ def validate_review_yaml(data: Any) -> list[str]:
 
     if verdict == "APPROVE":
         if not ac_v:
-            errors.append(
+            _cross(
                 "verdict is APPROVE but ac_verification is empty — "
                 "reviewers must enumerate each acceptance criterion (or symptom for bugs) "
                 "and mark it VERIFIED with evidence pointers"
             )
         elif non_verified_count > 0:
-            errors.append(
+            _cross(
                 f"verdict is APPROVE but {non_verified_count} ac_verification entry(ies) "
                 f"are PARTIAL or NOT_VERIFIED — cannot approve when any acceptance "
                 f"criterion is unverified"

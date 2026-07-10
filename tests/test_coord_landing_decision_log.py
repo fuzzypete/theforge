@@ -104,9 +104,16 @@ class TestMergePrAlreadyMergedShortCircuit:
             ]
         )
 
+        head_sha = "abc1234abc1234abc1234abc1234abc1234abc1"
+        (tmp_path / "test-task").mkdir(parents=True, exist_ok=True)
+
         def fake_run(cmd, **kw):
             if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "list"]:
                 return _ok(0, stdout=merged_pr_payload)
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rev-parse"]:
+                return _ok(0, stdout=f"{head_sha}\n")
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _ok(0, stdout=f'{{"commits": [{{"oid": "{head_sha}"}}]}}')
             return _ok(0, stdout="")
 
         with (

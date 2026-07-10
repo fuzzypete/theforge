@@ -446,13 +446,15 @@ def sweep_story_locks(
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 continue
+            # Unlink while still holding the flock so a concurrent acquirer
+            # cannot take the lock on the file we are about to remove.
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                continue
+            removed.append(lock_path)
         finally:
             fd.close()
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError:
-            continue
-        removed.append(lock_path)
 
     return removed
 

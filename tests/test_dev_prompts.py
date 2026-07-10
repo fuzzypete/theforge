@@ -130,6 +130,74 @@ class TestPlanObedienceFraming:
         assert "Follow it closely" in prompt
 
 
+class TestInvestigationReadyDevPromptRouting:
+    """Seam test: TaskStory.investigation_ready must change downstream dev-cycle
+    behavior. The dev prompt is the runtime consumer of the typed signal —
+    investigation-ready bugs are routed to cause discovery rather than
+    hypothesized-cause implementation.
+    """
+
+    def test_investigation_ready_inserts_cause_discovery_section(self, tmp_path):
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
+        task = TaskStory(
+            name="Bug: symptom only",
+            story_path=spec,
+            slug="bug",
+            type="bug",
+            fix_ready=True,
+            investigation_ready=True,
+        )
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            story_content="# Spec",
+            gate_command="make gate",
+        )
+        assert "Investigation-Ready Bug" in prompt
+        assert "cause discovery" in prompt.lower()
+        assert "not yet" in prompt.lower()
+        # Must explicitly tell the dev agent NOT to treat the confirmed-cause
+        # field as an implementation target.
+        assert "implementation target" in prompt
+        # Must reference the symptom-resolution gate the reviewer applies.
+        assert "fix-success criterion" in prompt
+
+    def test_implementation_ready_bug_omits_cause_discovery_section(self, tmp_path):
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
+        task = TaskStory(
+            name="Bug: known cause",
+            story_path=spec,
+            slug="bug",
+            type="bug",
+            fix_ready=True,
+            investigation_ready=False,
+        )
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            story_content="# Spec",
+            gate_command="make gate",
+        )
+        assert "Investigation-Ready Bug" not in prompt
+
+    def test_default_task_omits_cause_discovery_section(self, tmp_path):
+        # Backwards-compat: tasks with default investigation_ready=False (e.g.
+        # features, tasks) must not see the bug-cycle scaffolding.
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            story_content="# Spec",
+            gate_command="make gate",
+        )
+        assert "Investigation-Ready Bug" not in prompt
+
+
 def test_dev_prompt_includes_repository_context_pack(tmp_path):
     task = _make_task(tmp_path)
     from theforge.task.context_assembler import ContextManifestEntry, ContextPack

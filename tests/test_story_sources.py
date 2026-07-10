@@ -94,7 +94,7 @@ class TestGitHubIssueSource:
         assert task.depends_on == ["issue-12"]
         assert task.inferred_dependencies == ["issue-12"]
 
-    def test_fetch_ignores_body_prose_dependency_as_edge(self, tmp_path: Path) -> None:
+    def test_fetch_promotes_body_prose_dependency_to_edge(self, tmp_path: Path) -> None:
         issue_data = json.dumps(
             {
                 "title": "Fix the bug",
@@ -109,12 +109,68 @@ class TestGitHubIssueSource:
             ]
             task = GitHubIssueSource().fetch("42", tmp_path)
 
-        assert task.depends_on == []
-        assert task.inferred_dependencies == []
-        assert task.dependency_warnings == [
-            "blocked by #12",
-            "blocked by https://github.com/acme/repo/issues/7",
-        ]
+        assert task.depends_on == ["issue-7", "issue-12"]
+        assert task.inferred_dependencies == ["issue-7", "issue-12"]
+        assert task.dependency_warnings == []
+
+    def test_fetch_promotes_depends_on_prose_to_edge(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": "## Background\nDepends on: #265 for the schema change.",
+                "state": "OPEN",
+            }
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="preview unavailable"),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert task.depends_on == ["issue-265"]
+        assert task.inferred_dependencies == ["issue-265"]
+        assert task.dependency_warnings == []
+
+    def test_fetch_timeline_blockers_take_precedence_over_prose(self, tmp_path: Path) -> None:
+        """Native blocked_by relationships override body-derived dependencies."""
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": "Depends on #265",
+                "state": "OPEN",
+            }
+        )
+        timeline = json.dumps([{"event": "blocked_by", "blocking_issue": {"number": 12}}])
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=0, stdout=timeline, stderr=""),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert task.depends_on == ["issue-12"]
+        assert task.inferred_dependencies == ["issue-12"]
+
+    def test_fetch_merges_frontmatter_and_prose_when_timeline_empty(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": (
+                    "---\ndepends_on:\n  - issue-100\n---\n\nAlso depends on #200 for context."
+                ),
+                "state": "OPEN",
+            }
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="preview unavailable"),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert task.depends_on == ["issue-100", "issue-200"]
+        assert task.dependency_warnings == []
 
     def test_fetch_populates_depends_on_from_issue_frontmatter(self, tmp_path: Path) -> None:
         issue_data = json.dumps(
@@ -150,11 +206,13 @@ class TestGitHubIssueSource:
             ]
             task = GitHubIssueSource().fetch("42", tmp_path)
 
-        assert task.depends_on == []
-        assert task.inferred_dependencies == []
+        # Malformed frontmatter falls back to prose detection: the depends_on
+        # line is still honored as a scheduler edge, but the malformed-YAML
+        # warning remains visible to the operator.
+        assert task.depends_on == ["issue-12"]
+        assert task.inferred_dependencies == ["issue-12"]
         assert task.dependency_warnings
         assert "malformed YAML frontmatter" in task.dependency_warnings[0]
-        assert any("depends_on: issue-12" in warning for warning in task.dependency_warnings)
 
     def test_fetch_appends_reopen_comment_to_story_text(self, tmp_path: Path) -> None:
         issue_data = json.dumps(
@@ -218,9 +276,7 @@ class TestGitHubIssueSource:
             ),
         ],
     )
-    def test_prose_dependency_phrases_are_diagnostics_only(
-        self, body: str, expected: list
-    ) -> None:
+    def test_prose_dependency_phrases_extract_refs(self, body: str, expected: list) -> None:
         source = GitHubIssueSource()
         result = sorted(
             {ref for _phrase, refs in source._find_prose_dependency_phrases(body) for ref in refs}

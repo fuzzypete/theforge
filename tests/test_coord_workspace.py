@@ -473,6 +473,116 @@ class TestDaemonNoPull:
         assert kwargs.get("no_pull") is True
 
 
+class TestDaemonForce:
+    """Daemon correctly threads --force from CLI submit through to run_sprint."""
+
+    def test_daemon_sprint_args_includes_force(self, tmp_path):
+        import argparse
+
+        import theforge.cli.sprint as sprint_cli
+
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.touch()
+        (tmp_path / "forge.yaml").touch()
+
+        args = argparse.Namespace(
+            manifest=str(manifest_path),
+            config=None,
+            auto_merge=False,
+            interactive=False,
+            verbose=False,
+            no_notify=False,
+            resume=False,
+            detach=True,
+            fg=False,
+            no_pull=False,
+            force=True,
+        )
+
+        captured: dict = {}
+
+        def capture_submit(root, mpath, sprint_args):
+            captured.update(sprint_args)
+            return {"ok": True, "queued": "sprint", "position": 1}
+
+        with (
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.cli.sprint.load_config", return_value=MagicMock(project_root=tmp_path)
+            ),
+            patch("theforge.cli.sprint.parse_manifest_slugs", return_value=[]),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch("theforge.daemon.is_daemon_running", return_value=True),
+            patch("theforge.daemon.submit_sprint", side_effect=capture_submit),
+        ):
+            sprint_cli.cmd_sprint(args)
+
+        assert captured.get("force") is True
+
+    def test_daemon_execute_sprint_passes_force(self, tmp_path):
+        from theforge.daemon import DaemonServer
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.touch()
+
+        args = {
+            "auto_merge": False,
+            "notify": True,
+            "resume": False,
+            "no_pull": False,
+            "force": True,
+        }
+
+        with (
+            patch("theforge.config.load_config", return_value=mock_config),
+            patch("theforge.sprint.runner.parse_manifest_slugs", return_value=[]),
+            patch("theforge.sprint.lock.acquire_story_locks", return_value=([], [])),
+            patch("theforge.sprint.lock.release_story_locks"),
+            patch("theforge.sprint.run_sprint") as mock_rs,
+        ):
+            mock_rs.return_value = MagicMock(specs_failed=0)
+
+            daemon = object.__new__(DaemonServer)
+            daemon.forge_root = tmp_path
+
+            DaemonServer._execute_sprint(daemon, str(manifest_path), args, state_update_fn=None)
+
+        mock_rs.assert_called_once()
+        _, kwargs = mock_rs.call_args
+        assert kwargs.get("force") is True
+
+    def test_daemon_execute_sprint_defaults_force_false(self, tmp_path):
+        """Args without 'force' key must default to False (no implicit bypass)."""
+        from theforge.daemon import DaemonServer
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.touch()
+
+        args = {"auto_merge": False, "notify": True, "resume": False, "no_pull": False}
+
+        with (
+            patch("theforge.config.load_config", return_value=mock_config),
+            patch("theforge.sprint.runner.parse_manifest_slugs", return_value=[]),
+            patch("theforge.sprint.lock.acquire_story_locks", return_value=([], [])),
+            patch("theforge.sprint.lock.release_story_locks"),
+            patch("theforge.sprint.run_sprint") as mock_rs,
+        ):
+            mock_rs.return_value = MagicMock(specs_failed=0)
+
+            daemon = object.__new__(DaemonServer)
+            daemon.forge_root = tmp_path
+
+            DaemonServer._execute_sprint(daemon, str(manifest_path), args, state_update_fn=None)
+
+        _, kwargs = mock_rs.call_args
+        assert kwargs.get("force") is False
+
+
 # ── Deindex forge artifacts tests ─────────────────────────────────────
 
 

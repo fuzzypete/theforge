@@ -6,18 +6,33 @@ mutation. This module provides the mechanical enforcement: snapshot the tree
 before a phase, compare after, and either quarantine stray untracked files or
 fail loudly with the offending paths.
 
-Two layers:
+Three layers:
 
-1. ``check_phase_no_mutation``: invoked around PLAN / PLAN_REVIEW / REVIEW.
-   Any change to the porcelain set fails the phase. ``.forge/`` is gitignored,
-   so coordinator-driven artifact writes are naturally excluded.
+1. ``check_phase_no_mutation``: invoked around PLAN / PLAN_REVIEW. Any change
+   to the porcelain set fails the phase. ``.forge/`` is gitignored, so
+   coordinator-driven artifact writes are naturally excluded.
 
-2. ``enforce_pre_dev_hygiene``: invoked before DEV iteration 1. Unexpected
-   untracked paths are moved to ``.forge/quarantine/<run-id>/`` (audited, not
-   silently deleted) and DEV proceeds with a clean tree. If quarantine fails
-   or modifications to tracked files appear, DEV is rejected with a diagnostic
-   pointing at the offending paths instead of being handed to an agent that
-   will fail mysteriously.
+2. ``enforce_pre_dev_hygiene`` / ``enforce_pre_review_hygiene``: invoked
+   symmetrically before DEV iteration 1 and before each REVIEW cycle.
+   Unexpected untracked paths are moved to ``.forge/quarantine/<run-id>/``
+   (audited, not silently deleted) and the phase proceeds with a clean tree.
+   If quarantine fails, the phase is rejected with a diagnostic pointing at
+   the offending paths instead of being handed to an agent that will fail
+   mysteriously. REVIEW symmetry exists because stray pollution from a prior
+   interrupted iteration would otherwise be visible to reviewers (see issue
+   #1501).
+
+3. ``reconcile_post_review_mutations``: invoked AFTER the REVIEW pool returns.
+   Reviewer agents may improvise in the worktree (e.g. shell redirects writing
+   ``test_script.sh``, or accidentally editing a tracked file while exercising
+   the change). All reviewer-side mutations are mechanically reconciled: new
+   untracked paths are auto-quarantined; tracked-file mutations (modifications,
+   deletions, staged adds) are reverted back to HEAD via ``git reset`` +
+   ``git checkout HEAD --``. This way no reviewer-side filesystem effect can
+   invalidate an otherwise-sound review verdict (see issue #1497). Escalation
+   is reserved for the failure case where revert or quarantine itself fails
+   (filesystem error), so the consensus-capture / resume-replay machinery
+   (issue #1499) still has a real failsafe to ride on.
 
 Sanctioned scratch space (``.forge/tmp/<run-id>/``) is provisioned by
 ``ensure_scratch_dir``; ``.forge/`` is already gitignored so the directory is
@@ -109,8 +124,8 @@ def ensure_scratch_dir(workspace_path: Path, run_id: str) -> Path:
     return scratch
 
 
-def _quarantine_root(workspace_path: Path, run_id: str, iteration: int) -> Path:
-    return workspace_path / ".forge" / "quarantine" / run_id / f"iter-{iteration}"
+def _quarantine_root(workspace_path: Path, run_id: str, label: str) -> Path:
+    return workspace_path / ".forge" / "quarantine" / run_id / label
 
 
 def quarantine_paths(
@@ -144,20 +159,21 @@ def quarantine_paths(
     return moved, failed
 
 
-def enforce_pre_dev_hygiene(
+def _enforce_phase_entry_hygiene(
     workspace_path: Path,
     run_id: str,
     *,
-    iteration: int,
+    label: str,
+    phase_label: str,
 ) -> tuple[bool, str | None, dict]:
-    """Reject or sanitise the worktree before DEV starts.
+    """Quarantine unexpected untracked paths before a phase starts.
 
     Behaviour:
       - Untracked paths (status ``??``) outside the allow-list → quarantined
-        to ``.forge/quarantine/<run-id>/iter-<n>/``. Audit-trail preserved,
-        worktree returned to a clean baseline, DEV proceeds. This is the
+        to ``.forge/quarantine/<run-id>/<label>/``. Audit-trail preserved,
+        worktree returned to a clean baseline, the phase proceeds. This is the
         primary motivator: stray scratch at repo root that silently sabotages
-        dev runs (issue #1179).
+        agent runs (issues #1179, #1501).
       - Modified tracked files (status M/A/D/...) → audited and left in
         place. These are legitimate worktree-reuse state (work-in-progress
         from a prior interrupted run); validate-phase's auto-commit owns
@@ -198,17 +214,190 @@ def enforce_pre_dev_hygiene(
     if not untracked:
         return True, None, audit
 
-    quarantine_dir = _quarantine_root(workspace_path, run_id, iteration)
+    quarantine_dir = _quarantine_root(workspace_path, run_id, label)
     moved, failed = quarantine_paths(workspace_path, sorted(untracked), quarantine_dir)
     audit["quarantined"] = moved
     audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
     if failed:
         rendered = ", ".join(failed)
         diagnostic = (
-            "Unexpected untracked files in worktree before DEV could not be "
+            f"Unexpected untracked files in worktree before {phase_label} could not be "
             f"quarantined: {rendered}. Workspace hygiene gate refuses to hand a "
-            "dirty tree to the dev agent. Resolve manually before retrying."
+            f"dirty tree to the {phase_label.lower()} agent. Resolve manually before retrying."
         )
         return False, diagnostic, audit
 
     return True, None, audit
+
+
+def enforce_pre_dev_hygiene(
+    workspace_path: Path,
+    run_id: str,
+    *,
+    iteration: int,
+) -> tuple[bool, str | None, dict]:
+    """Reject or sanitise the worktree before DEV starts (see #1179)."""
+    return _enforce_phase_entry_hygiene(
+        workspace_path,
+        run_id,
+        label=f"iter-{iteration}",
+        phase_label="DEV",
+    )
+
+
+def _attempt_tracked_revert(workspace_path: Path, rel_path: str) -> None:
+    """Best-effort: restore ``rel_path`` to HEAD content via reset + checkout.
+
+    Subprocess return codes are intentionally ignored here — the caller
+    verifies success by re-reading the porcelain snapshot, not by trusting
+    these calls. ``git reset/checkout`` may legitimately exit nonzero (e.g.
+    path not in HEAD for a newly staged add, or .git/index.lock blocks the
+    operation); the snapshot is the source of truth.
+    """
+    for cmd in (
+        ["git", "reset", "-q", "HEAD", "--", rel_path],
+        ["git", "checkout", "-q", "HEAD", "--", rel_path],
+    ):
+        try:
+            subprocess.run(
+                cmd,
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # Snapshot will catch unresolved state below.
+            continue
+
+
+def reconcile_post_review_mutations(
+    workspace_path: Path,
+    before: set[str],
+    run_id: str,
+    cycle: int,
+) -> tuple[bool, str | None, list[str], dict]:
+    """Mechanically neutralize reviewer-side worktree mutations after REVIEW.
+
+    Issue #1497: REVIEW-phase reviewers occasionally improvise in the worktree
+    (e.g. ``cat <<EOF > test_script.sh``, or editing a tracked file while
+    exercising the change). No reviewer-side filesystem effect must invalidate
+    an otherwise-sound review verdict.
+
+    For each new porcelain entry since ``before``:
+      - Untracked paths (status ``??``) → quarantined to
+        ``.forge/quarantine/<run-id>/review-<cycle>-post/`` symmetrically
+        with pre-phase hygiene.
+      - Tracked changes (M/D/A/staged-anything) → best-effort
+        ``git reset HEAD -- <path>`` + ``git checkout HEAD -- <path>``,
+        then VERIFIED via a follow-up porcelain snapshot. Subprocess
+        return codes are not trusted; the snapshot is the source of truth.
+        Any path still showing tracked status after the revert attempt is
+        treated as a revert failure (e.g. .git/index.lock present, real
+        filesystem error) and triggers escalation. Newly-staged-adds, after
+        reset, surface as untracked and fold into the quarantine pass.
+
+    Returns ``(ok, diagnostic, offending_paths, audit)``. ``ok=False`` is
+    reserved for the failure case where revert or quarantine cannot resolve
+    the worktree to a clean state; that path still triggers the existing
+    consensus-capture + resume-replay escalation block in review_phase.
+
+    Audit dict keys: ``snapshot_after``, ``quarantined``, ``quarantine_dir``,
+    ``tracked_changes``, ``reverted``.
+    """
+    after = snapshot_porcelain(workspace_path)
+    new_entries = unexpected_entries(before, after)
+    audit: dict = {
+        "snapshot_after": sorted(after),
+        "quarantined": [],
+        "quarantine_dir": None,
+        "tracked_changes": [],
+        "reverted": [],
+    }
+    if not new_entries:
+        return True, None, [], audit
+
+    untracked_initial: list[str] = []
+    tracked_initial: list[str] = []
+    for entry in new_entries:
+        path = _path_of(entry)
+        if entry[:2] == "??":
+            untracked_initial.append(path)
+        else:
+            tracked_initial.append(path)
+    audit["tracked_changes"] = sorted(tracked_initial)
+
+    untracked_all: list[str] = list(untracked_initial)
+
+    if tracked_initial:
+        for path in sorted(tracked_initial):
+            _attempt_tracked_revert(workspace_path, path)
+
+        # Truth comes from re-snapshotting, not from subprocess return codes.
+        # Anything still showing tracked status is an unresolved revert
+        # (real filesystem/git failure — e.g. index.lock); newly untracked
+        # entries are staged-add residue we can quarantine.
+        post_revert = snapshot_porcelain(workspace_path)
+        post_revert_new = unexpected_entries(before, post_revert)
+        still_tracked: list[str] = []
+        residual_untracked: list[str] = []
+        for entry in post_revert_new:
+            p = _path_of(entry)
+            if entry[:2] == "??":
+                residual_untracked.append(p)
+            else:
+                still_tracked.append(p)
+
+        if still_tracked:
+            rendered = ", ".join(sorted(still_tracked))
+            diagnostic = (
+                f"Reviewer-introduced tracked changes could not be reverted "
+                f"after REVIEW: {rendered}. Workspace hygiene gate refuses to "
+                "treat the review as valid against an unresolved dirty tree."
+            )
+            return False, diagnostic, sorted(still_tracked), audit
+
+        audit["reverted"] = sorted(tracked_initial)
+        for p in residual_untracked:
+            if p not in untracked_all:
+                untracked_all.append(p)
+
+    if not untracked_all:
+        return True, None, [], audit
+
+    quarantine_dir = _quarantine_root(workspace_path, run_id, f"review-{cycle}-post")
+    moved, failed = quarantine_paths(workspace_path, sorted(untracked_all), quarantine_dir)
+    audit["quarantined"] = moved
+    audit["quarantine_dir"] = str(quarantine_dir.relative_to(workspace_path))
+    if failed:
+        rendered = ", ".join(failed)
+        diagnostic = (
+            f"Reviewer-introduced untracked paths could not be quarantined "
+            f"after REVIEW: {rendered}. Workspace hygiene gate refuses to "
+            "treat the review as valid against a still-dirty tree."
+        )
+        return False, diagnostic, failed, audit
+
+    return True, None, [], audit
+
+
+def enforce_pre_review_hygiene(
+    workspace_path: Path,
+    run_id: str,
+    *,
+    cycle: int,
+) -> tuple[bool, str | None, dict]:
+    """Reject or sanitise the worktree before REVIEW starts (see #1501).
+
+    Symmetric counterpart to ``enforce_pre_dev_hygiene``: stray untracked
+    paths inherited from a prior interrupted iteration, resume, or a
+    non-DEV phase that wrote where it shouldn't are quarantined before any
+    reviewer observes the tree, so reviewers evaluate the implementation
+    rather than stale pollution.
+    """
+    return _enforce_phase_entry_hygiene(
+        workspace_path,
+        run_id,
+        label=f"review-{cycle}",
+        phase_label="REVIEW",
+    )

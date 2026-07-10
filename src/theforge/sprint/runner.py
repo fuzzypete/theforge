@@ -172,6 +172,7 @@ def _run_intake_remediation_pass(
     config: ForgeConfig,
     tasks: list[TaskStory],
     log: Callable[[str], None],
+    force: bool = False,
 ) -> dict[str, IntakeOutcome]:
     """Run the intake remediation pass on the normalized task list.
 
@@ -187,15 +188,21 @@ def _run_intake_remediation_pass(
     auto_fix_enabled = auto_fix_raw if isinstance(auto_fix_raw, bool) else False
     auto_fix_mode = auto_fix_mode_raw if isinstance(auto_fix_mode_raw, str) else "comment"
     auto_fix_mode = auto_fix_mode or "comment"
-    if not grooming_enabled and not auto_fix_enabled:
+    if not grooming_enabled and not auto_fix_enabled and not force:
         return {}
-    log(
-        "Intake remediation gate: grooming="
-        f"{grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode}"
-    )
+    if force:
+        log(
+            "Intake remediation gate bypassed by --force "
+            f"(grooming={grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode})"
+        )
+    else:
+        log(
+            "Intake remediation gate: grooming="
+            f"{grooming_enabled} auto_fix={auto_fix_enabled} mode={auto_fix_mode}"
+        )
     agent_caller = None
     missing_agent_detail = "auto-fix enabled but no agent caller wired"
-    if auto_fix_enabled:
+    if auto_fix_enabled and not force:
         agent_caller, missing_agent_detail = _build_intake_agent_caller(
             config=config,
             log=log,
@@ -208,7 +215,140 @@ def _run_intake_remediation_pass(
         auto_fix_mode=auto_fix_mode,
         agent_caller=agent_caller,
         missing_agent_detail=missing_agent_detail,
+        force=force,
     )
+
+
+def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
+    """Return the agent cost recorded in an intake outcome's audit block.
+
+    Intake remediation agent calls spend sprint-authorized budget but live
+    outside CoordinatorState.total_cost. Sprint cost rollups must consult
+    this seam so reported sprint totals reflect actual spend.
+    """
+    agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
+    if not isinstance(agent, dict):
+        return 0.0
+    raw = agent.get("cost_usd")
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _intake_finding_codes(outcome: IntakeOutcome) -> list[str]:
+    """Stable-sorted list of unique blocking finding codes for an intake outcome."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for finding in outcome.findings:
+        code = finding.code
+        if code and code not in seen:
+            seen.add(code)
+            ordered.append(code)
+    return ordered
+
+
+def _intake_outcome_summary(outcome: IntakeOutcome) -> str:
+    """One-line operator-readable summary: '<codes> — <detail>'.
+
+    Carries enough information for an operator to know which intake rule fired
+    on the dropped story, the agent attempt status, and the rerun-gate result.
+    """
+    codes = _intake_finding_codes(outcome)
+    code_part = "[" + ", ".join(codes) + "]" if codes else ""
+    detail = outcome.detail or outcome.kind.value
+    if code_part and detail:
+        return f"{code_part} {detail}"
+    return code_part or detail
+
+
+def _intake_problem_lines(outcome: IntakeOutcome) -> list[str]:
+    """Human-readable per-finding descriptors: 'code (location): problem'."""
+    lines: list[str] = []
+    for finding in outcome.findings:
+        loc = finding.location or ""
+        head = f"{finding.code} ({loc})" if loc else finding.code
+        problem = (finding.problem or "").strip()
+        lines.append(f"{head}: {problem}" if problem else head)
+    return lines
+
+
+def _intake_error_type(outcome: IntakeOutcome) -> str:
+    """outcome_code-style classifier: dominant rule code, else the kind value."""
+    codes = _intake_finding_codes(outcome)
+    if codes:
+        return codes[0]
+    return outcome.kind.value
+
+
+def _intake_log_lines(outcome: IntakeOutcome, *, outcome_name: str, display_key: str) -> list[str]:
+    """Lines the runner emits to the sprint log for a non-PASSED intake outcome.
+
+    Operators must learn the rule code(s), the per-finding problem strings,
+    and the agent attempt details (whether the LLM ran, cost, model,
+    transport, whether the issue was edited or commented on) — without
+    consulting audit YAML or re-deriving with a Python snippet against
+    groom_check.
+    """
+    summary = _intake_outcome_summary(outcome)
+    lines: list[str] = []
+    if summary:
+        lines.append(f"  {outcome_name} {display_key}: {summary}")
+    else:
+        lines.append(f"  {outcome_name} {display_key}")
+    for problem_line in _intake_problem_lines(outcome):
+        lines.append(f"      - {problem_line}")
+    agent_summary = _intake_agent_summary(outcome)
+    if agent_summary:
+        lines.append(f"      auto-fix: {agent_summary}")
+    return lines
+
+
+def _intake_agent_summary(outcome: IntakeOutcome) -> str:
+    """One-line agent-attempt summary derived from outcome.audit.
+
+    Surfaces ``remediation_source`` plus the agent block fields (attempted,
+    cost_usd, model_used, transport_used) so the run log and forge status
+    DETAIL show whether the auto-fix actually tried and what it cost — not
+    just whether the rerun gate failed.
+    """
+    audit = outcome.audit or {}
+    parts: list[str] = []
+    source = audit.get("remediation_source")
+    if isinstance(source, str) and source and source != "none":
+        parts.append(f"source={source}")
+    agent = audit.get("agent")
+    if isinstance(agent, dict):
+        attempted = bool(agent.get("attempted"))
+        parts.append(f"agent_attempted={'yes' if attempted else 'no'}")
+        cost = agent.get("cost_usd")
+        if isinstance(cost, (int, float)) and cost > 0:
+            parts.append(f"cost=${float(cost):.4f}")
+        model = agent.get("model_used")
+        if isinstance(model, str) and model:
+            parts.append(f"model={model}")
+        transport = agent.get("transport_used")
+        if isinstance(transport, str) and transport:
+            parts.append(f"transport={transport}")
+    if audit.get("issue_updated") is True:
+        parts.append("issue_updated=true")
+    if audit.get("comment_posted") is True:
+        parts.append("comment_posted=true")
+    return ", ".join(parts)
+
+
+def _intake_audit_block(outcome: IntakeOutcome) -> dict:
+    """Structured intake_findings block surfaced into audit/summary YAML."""
+    return {
+        "kind": outcome.kind.value,
+        "detail": outcome.detail,
+        "codes": _intake_finding_codes(outcome),
+        "findings": [f.as_dict() for f in outcome.findings],
+        "agent_summary": _intake_agent_summary(outcome),
+        "audit": dict(outcome.audit),
+    }
 
 
 def _filter_normalized_for_intake(
@@ -1030,8 +1170,60 @@ def _terminal_story_model(result: CoordinatorResult) -> str | None:
     return None
 
 
-def _poll_queued_pr(pr_url: str, project_root: Path, timeout_seconds: int) -> dict[str, str]:
-    """Poll GitHub until a queued PR is merged, closed, or times out."""
+def _snapshot_last_known(
+    slug: str,
+    state_writer: "SprintStateWriter | None",
+) -> dict:
+    """Snapshot last-known telemetry for a slug from the canonical SprintStoryState.
+
+    The runner builds this snapshot at the moment a worker times out or raises
+    so failure rows can render the real phase/model/cost/elapsed instead of the
+    hollow defaults of a synthetic timeout CoordinatorState.
+    """
+    snapshot: dict = {
+        "last_phase": None,
+        "last_model": None,
+        "last_cost": None,
+        "last_started_at": None,
+    }
+    if state_writer is None:
+        return snapshot
+    entry = state_writer.story_state.get(slug)
+    if entry is None:
+        return snapshot
+    snapshot["last_phase"] = entry.phase
+    extras = entry.extras or {}
+    model = extras.get("current_model")
+    if isinstance(model, str) and model:
+        snapshot["last_model"] = model
+    if entry.cost_usd:
+        snapshot["last_cost"] = float(entry.cost_usd)
+    started_raw = extras.get("started_at")
+    if isinstance(started_raw, str) and started_raw:
+        try:
+            snapshot["last_started_at"] = datetime.datetime.fromisoformat(
+                started_raw.replace("Z", "+00:00")
+            )
+        except ValueError:
+            snapshot["last_started_at"] = None
+    return snapshot
+
+
+def _poll_queued_pr(
+    pr_url: str,
+    project_root: Path,
+    timeout_seconds: int,
+    base_branch: str | None = None,
+) -> dict[str, str]:
+    """Poll GitHub until a queued PR is merged, closed, or times out.
+
+    When ``base_branch`` is supplied, "merged" is only reported once GitHub
+    reports MERGED *and* the PR's merge commit is reachable on
+    ``origin/<base_branch>``. GitHub's auto-merge queue flips a PR to MERGED
+    several seconds before the merge commit propagates to the base ref;
+    releasing a collision-serialized dependent on the GitHub state alone
+    re-creates the race the collision DAG existed to prevent (issue #1402).
+    """
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
@@ -1048,13 +1240,81 @@ def _poll_queued_pr(pr_url: str, project_root: Path, timeout_seconds: int) -> di
         if proc.returncode == 0:
             state = proc.stdout.strip()
             if state == "MERGED":
-                return {"status": "merged"}
-            if state == "CLOSED":
+                if base_branch is None or _merge_visible_on_base(
+                    pr_url, project_root, base_branch
+                ):
+                    return {"status": "merged"}
+            elif state == "CLOSED":
                 return {"status": "closed"}
 
         if time.monotonic() >= deadline:
             return {"status": "timeout"}
         time.sleep(30)
+
+
+def _merge_visible_on_base(pr_url: str, project_root: Path, base_branch: str) -> bool:
+    """Return True when the PR's merge commit is reachable on origin/<base_branch>.
+
+    The collision detector serializes overlapping stories with `depends_on`
+    edges; the gating predicate that unblocks a dependent must match the
+    edge's purpose, which is to make the parent's diff visible to the
+    dependent's dev iteration. "PR auto-merge queued" or even GitHub's
+    `state == MERGED` happens before the merge commit reaches origin/<base>;
+    a dependent worktree created in that window is stale relative to the
+    parent's edits and rebases conflict on the shared file. Confirm origin
+    actually carries the merge commit before treating the parent as landed.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                pr_url,
+                "--json",
+                "mergeCommit",
+                "-q",
+                '.mergeCommit.oid? // ""',
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    merge_sha = proc.stdout.strip()
+    if not merge_sha:
+        return False
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", base_branch],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception:
+        return False
+    try:
+        ancestor = subprocess.run(
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                merge_sha,
+                f"origin/{base_branch}",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception:
+        return False
+    return ancestor.returncode == 0
 
 
 def _classify_and_record(
@@ -1072,8 +1332,20 @@ def _classify_and_record(
     """
     preflight_verdict = result.state.preflight_verdict
     landing_status = getattr(result, "landing_status", None)
+    validate_already_complete = getattr(result.state, "validate_already_complete", False)
+    # A confirmed-landed DONE is immutable for the rest of the sprint. Mark it
+    # so story_state.transition rejects any later non-DONE terminal overwrite
+    # (e.g. a bogus FAILED from a redispatch after a process restart).
+    is_landed = landing_status == "landed"
 
     if preflight_verdict == "ALREADY_DONE" and result.success:
+        outcome = StoryOutcome.ALREADY_DONE
+        merged_slugs.add(task.slug)
+        dag.mark_complete(task.slug)
+    elif validate_already_complete and result.success:
+        # VALIDATE determined the dev cycle correctly produced no commits
+        # because the work was already on the base branch. Treat this as a
+        # successful ALREADY_DONE-shaped outcome rather than FAILED.
         outcome = StoryOutcome.ALREADY_DONE
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
@@ -1101,7 +1373,10 @@ def _classify_and_record(
         dag.mark_skipped(task.slug)
 
     if story_state is not None:
-        story_state.transition(task.slug, outcome=outcome, cost_usd=result.state.total_cost)
+        _transition_fields: dict = {"cost_usd": result.state.total_cost}
+        if is_landed:
+            _transition_fields["landed"] = True
+        story_state.transition(task.slug, outcome=outcome, **_transition_fields)
 
     return outcome
 
@@ -1156,11 +1431,14 @@ def run_sprint(
     interactive: bool = False,
     notify: bool = False,
     resume: bool = False,
+    reexec: bool = False,
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
     run_id: str | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
+    entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
+    force: bool = False,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1183,6 +1461,12 @@ def run_sprint(
         interactive: If True, pause for human review at each story.
         resume: If True, triage each story to find the optimal re-entry point
             (skip_merged / review / dev / full) and carry forward prior costs.
+        reexec: True when this process was re-launched via ``os.execv`` after a
+            mid-sprint source change (workspace.pull_base_branch). Such a launch
+            keeps the original argv (no ``--resume``) but must be treated as
+            resume-equivalent for merged-state reconciliation: every manifest
+            story is triaged against merged state before dispatch so a story
+            whose PR already landed is never re-entered through WORKSPACE.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -1193,6 +1477,16 @@ def run_sprint(
         # Backward-compat: Path was passed — resolve via the shared helper so
         # tests can patch the boundary and query-mode behavior stays aligned.
         resolved = resolve_from_manifest(sprint, config.project_root)
+
+    # A re-exec'd launch (source changed mid-sprint) keeps the original argv and
+    # therefore never carries ``--resume``, but it MUST run the same merged-state
+    # reconciliation a resume would: triage every manifest story against merged
+    # state, exclude already-merged stories from preflight/dispatch, and pre-mark
+    # them complete in the DAG. Otherwise a story whose PR already landed in the
+    # prior (killed) generation is re-entered through WORKSPACE and its DONE
+    # outcome is overwritten with a bogus FAILED. Treat re-exec as
+    # resume-equivalent for all reconciliation/skip paths.
+    reconcile = resume or reexec
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
@@ -1212,6 +1506,20 @@ def run_sprint(
 
     total = len(task_entries)
     noun = "stories" if total != 1 else "story"
+    # Substrate provenance: name the runtime executing this sprint so the
+    # operator can never be confused about which install is in effect. See
+    # theforge.cli.substrate for the failure mode this closes.
+    try:
+        from theforge.cli.substrate import emit_provenance
+
+        emit_provenance(
+            cwd=config.project_root,
+            bypass_mismatch=bool(force),
+        )
+    except Exception:
+        # Provenance is operator-visible information, not a correctness gate;
+        # never let a detection failure block sprint start.
+        pass
     print(
         f'[sprint] "{resolved.name}"  {total} {noun}  budget=${resolved.budget_usd:.2f}'
         f"  parallel={max_parallel}",
@@ -1351,6 +1659,17 @@ def run_sprint(
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
+    # Entry-level intake remediation runs in the CLI before run_sprint and
+    # spends the same sprint-authorized budget; fold its agent cost into
+    # the sprint total so operator-visible accounting matches actual spend.
+    if entry_intake_outcomes:
+        _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
+        if _entry_intake_cost > 0.0:
+            accumulated_cost += _entry_intake_cost
+            _log(
+                f"Entry-intake remediation cost: ${_entry_intake_cost:.4f} "
+                "(rolled into sprint total)"
+            )
     prior_cost = 0.0
     results: list[tuple[str, CoordinatorResult]] = []
     if notify and config.notifications.backend not in ("ntfy", "none"):
@@ -1450,9 +1769,10 @@ def run_sprint(
     # Derive slug_to_spec from unified context mapping
     slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
 
-    # Resume mode: triage all stories and carry forward prior costs
+    # Resume mode (and re-exec, treated as resume-equivalent): triage all stories
+    # and carry forward prior costs.
     triages: dict[str, StoryTriage] = {}
-    if resume:
+    if reconcile:
         prior_cost = _read_prior_sprint_cost(config.project_root, _sprint_id)
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
@@ -1468,10 +1788,16 @@ def run_sprint(
     # resume-mode skip states, plus any cross-sprint depends_on slugs whose
     # branch is already merged to the base branch.
     pre_satisfied: set[str] = set(resolved.closed_dependency_slugs)
-    if resume:
+    # Slugs the reconcile triage classified as already-merged / to-skip. These
+    # must be excluded from every dispatch/spend path below (intake remediation,
+    # batch preflight) and pre-marked complete in the DAG, so a re-exec'd process
+    # never re-enters a merged story through WORKSPACE.
+    skip_slugs: set[str] = set()
+    if reconcile:
         for triage in triages.values():
             if triage.action in ("skip_merged", "skip"):
                 pre_satisfied.add(triage.slug)
+                skip_slugs.add(triage.slug)
 
     # Build DAG
     all_tasks = [ctx[0] for ctx in slug_to_context.values()]
@@ -1491,6 +1817,62 @@ def run_sprint(
 
         _update_state_phase(run_id, config.project_root, "intake-remediation")
 
+    # Per-story projection used by audit and summary writers when a slug never
+    # produces a CoordinatorResult (e.g., dropped at the intake gate, blocked
+    # by deps, or skipped pre-launch). Defined here — before the intake gate —
+    # so intake-dropped stories can populate it with their finding detail; the
+    # writers read from this dict to surface error/error_type/intake metadata
+    # that would otherwise be null in audit YAML and sprint summary YAML.
+    current_story_entries_by_ref: dict[str, dict] = {}
+
+    def _record_current_story_entry(
+        slug: str,
+        outcome: str,
+        *,
+        error: str | None = None,
+        error_type: str | None = None,
+        cost_usd: float = 0.0,
+        extras: dict | None = None,
+    ) -> None:
+        task_ctx = slug_to_context.get(slug)
+        if task_ctx is None:
+            return
+        task, _source, canonical_ref = task_ctx
+        display_key = (
+            f"Issue #{canonical_ref.split(':')[1]}"
+            if canonical_ref.startswith("issue:")
+            else canonical_ref
+        )
+        entry: dict = {
+            "path": display_key,
+            "slug": slug,
+            "outcome": outcome,
+            "verdict": None,
+            "cost_usd": cost_usd,
+            "story_run_id": run_id,
+            "preflight": None,
+            "preflight_original_verdict": None,
+            "preflight_source_run_id": None,
+            "error": error,
+            "error_type": error_type,
+            "outcome_code": error_type or outcome.lower(),
+            "merge": False,
+            "batch": 0,
+            "depends_on": list(getattr(task, "depends_on", None) or []),
+            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
+            "inferred_dependencies": {
+                "manifest": [
+                    dep
+                    for dep in (getattr(task, "depends_on", None) or [])
+                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
+                ],
+                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
+            },
+        }
+        if extras:
+            entry.update(extras)
+        current_story_entries_by_ref[canonical_ref] = entry
+
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
     # full normalized task list. When ``intake.auto_fix`` is enabled, semantic
@@ -1498,11 +1880,29 @@ def run_sprint(
     # patched without an LLM. Stories that still fail are dropped here and
     # never enter the preflight batch. When grooming and auto_fix are both
     # disabled, this is a near no-op (parity with pre-remediation behavior).
+    # Exclude reconcile-skipped (already-merged) stories from every spend/dispatch
+    # path. They stay in ``normalized.tasks`` so the DAG can be built and they can
+    # be pre-marked complete below, but they must not enter intake remediation or
+    # the batch preflight, where a re-exec'd merged story would be re-dispatched
+    # into its stale round-1 worktree. When ``reconcile`` is False, skip_slugs is
+    # empty and this is a no-op (no behavior change for plain fresh runs).
+    dispatch_tasks = [t for t in normalized.tasks if t.slug not in skip_slugs]
+
     intake_outcomes = _run_intake_remediation_pass(
         config=config,
-        tasks=normalized.tasks,
+        tasks=dispatch_tasks,
         log=_log,
+        force=force,
     )
+    # Intake remediation agent spend (auto_fix LLM rewrites) must roll up
+    # into the sprint total. Without this, sprint.total_cost_usd silently
+    # excludes every dollar spent on intake auto-fix attempts.
+    _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
+    if _intake_remediation_cost > 0.0:
+        accumulated_cost += _intake_remediation_cost
+        _log(
+            f"Intake remediation cost: ${_intake_remediation_cost:.4f} (rolled into sprint total)"
+        )
     if intake_outcomes:
         terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
         dropped_slugs_intake = {
@@ -1543,17 +1943,60 @@ def run_sprint(
                 if outcome.kind is IntakeOutcomeKind.DROPPED_SHAPE
                 else StoryOutcome.DROPPED_AFTER_FIX
             )
+            intake_codes = _intake_finding_codes(outcome)
+            intake_summary = _intake_outcome_summary(outcome)
+            intake_error_type = _intake_error_type(outcome)
+            intake_agent_summary = _intake_agent_summary(outcome)
+            intake_problem_lines = _intake_problem_lines(outcome)
+            intake_block = _intake_audit_block(outcome)
+            # Per-issue run-log line so operators reading the live sprint log
+            # learn the blocking rule code(s) and detail without having to open
+            # audit YAML or re-derive them with a Python snippet against
+            # groom_check.
+            task_ctx = slug_to_context.get(slug)
+            if task_ctx is not None:
+                _, _, canonical_ref = task_ctx
+                display_key = (
+                    f"Issue #{canonical_ref.split(':')[1]}"
+                    if canonical_ref.startswith("issue:")
+                    else canonical_ref
+                )
+            else:
+                display_key = slug
+            for log_line in _intake_log_lines(
+                outcome, outcome_name=outcome_value.name, display_key=display_key
+            ):
+                _log(log_line)
             _set_outcome(
                 slug,
                 outcome_value,
                 detail={
                     "intake_kind": outcome.kind.value,
                     "intake_findings": [f.as_dict() for f in outcome.findings],
+                    "intake_codes": intake_codes,
+                    "intake_summary": intake_summary,
+                    "intake_problem_lines": intake_problem_lines,
+                    "intake_agent_summary": intake_agent_summary,
                     "intake_detail": outcome.detail,
                     "intake_audit": dict(outcome.audit),
                 },
-                reason=outcome.detail or outcome.kind.value,
+                reason=intake_summary or outcome.detail or outcome.kind.value,
             )
+            # Mirror the structured detail into current_story_entries_by_ref so
+            # both audit YAML and sprint summary YAML carry the rule code,
+            # human-readable problem, and the structured intake_findings block —
+            # not just the bare SKIPPED outcome with error: null.
+            if outcome.kind in {
+                IntakeOutcomeKind.DROPPED_SHAPE,
+                IntakeOutcomeKind.DROPPED_AFTER_FIX,
+            }:
+                _record_current_story_entry(
+                    slug,
+                    outcome_value.name,
+                    error=intake_summary,
+                    error_type=intake_error_type,
+                    extras={"intake": intake_block},
+                )
         if dropped_slugs_intake:
             normalized = _filter_normalized_for_intake(normalized, dropped_slugs_intake)
 
@@ -1562,8 +2005,12 @@ def run_sprint(
 
         _update_state_phase(run_id, config.project_root, "preflight")
 
+    # Re-derive the filter here: ``normalized`` may have been re-bound by the
+    # intake drop above, and reconcile-skipped merged stories must never enter
+    # the preflight batch (WORKSPACE re-entry against their stale worktree).
+    preflight_tasks = [t for t in normalized.tasks if t.slug not in skip_slugs]
     preflight_states = run_batch_preflight(
-        normalized.tasks,
+        preflight_tasks,
         config,
         sprint_name=resolved.name,
         no_pull=no_pull,
@@ -1625,59 +2072,17 @@ def run_sprint(
     except ValueError as exc:
         raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
 
-    current_story_entries_by_ref: dict[str, dict] = {}
-
-    def _record_current_story_entry(
-        slug: str,
-        outcome: str,
-        *,
-        error: str | None = None,
-        error_type: str | None = None,
-    ) -> None:
-        task_ctx = slug_to_context.get(slug)
-        if task_ctx is None:
-            return
-        task, _source, canonical_ref = task_ctx
-        display_key = (
-            f"Issue #{canonical_ref.split(':')[1]}"
-            if canonical_ref.startswith("issue:")
-            else canonical_ref
-        )
-        current_story_entries_by_ref[canonical_ref] = {
-            "path": display_key,
-            "slug": slug,
-            "outcome": outcome,
-            "verdict": None,
-            "cost_usd": 0.0,
-            "story_run_id": run_id,
-            "preflight": None,
-            "preflight_original_verdict": None,
-            "preflight_source_run_id": None,
-            "error": error,
-            "error_type": error_type,
-            "outcome_code": error_type or outcome.lower(),
-            "merge": False,
-            "batch": 0,
-            "depends_on": list(getattr(task, "depends_on", None) or []),
-            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
-            "inferred_dependencies": {
-                "manifest": [
-                    dep
-                    for dep in (getattr(task, "depends_on", None) or [])
-                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
-                ],
-                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
-            },
-        }
-
     # Dependencies already satisfied outside this sprint still count as landed
     # for deferred integration ordering.
     merged_slugs.update(satisfied_slugs)
 
-    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG.
+    # Resume / re-exec: pre-mark skip_merged / skip stories as complete in DAG.
     # skip_merged stories are already merged and should satisfy dependencies
-    # immediately, but they still count as skipped in sprint aggregates.
-    if resume:
+    # immediately, but they still count as skipped in sprint aggregates. This is
+    # the block that actually removes a slug from dag.ready()/remaining(): without
+    # it a re-exec'd process would re-dispatch an already-merged story even though
+    # it was excluded from preflight above.
+    if reconcile:
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
@@ -1834,7 +2239,10 @@ def run_sprint(
             )
             _blocked_by = list(blocked_slugs.get(_slug, []))
             _drop_reason = _dropped_slugs.get(_slug)
-            _triage = triages.get(_canonical_ref) if resume else None
+            # reconcile (resume or re-exec): surface the merged/skip triage state
+            # in the initial live status file so `forge sprint-status` shows a
+            # re-exec'd merged story as done/skipped instead of waiting.
+            _triage = triages.get(_canonical_ref) if reconcile else None
             if _drop_reason == "preserved-escalated":
                 _status = "preserved"
                 _blocked_by = [f"preserved: {_drop_reason}"]
@@ -1918,11 +2326,30 @@ def run_sprint(
                 continue
             from .shape_gate import skipped_issue_state_fields  # noqa: PLC0415
 
+            # Typed-verdict reason/detail resolution is centralized in
+            # skipped_issue_state_fields; operator-action classification and
+            # intake enrichment layer on top of it here.
             _sk_reason, _sk_detail = skipped_issue_state_fields(_sk)
+            _sk_codes = _sk_dict.get("reason_codes") or []
+            _is_operator_action = "operator_action" in _sk_codes
+            _sk_outcome = (
+                StoryOutcome.OPERATOR_ACTION if _is_operator_action else StoryOutcome.SKIPPED
+            )
+            if _is_operator_action:
+                _sk_reason = "operator-action — operator deliverable"
+                _sk_detail["operator_action"] = True
+            _sk_detail["final_outcome"] = _sk_outcome.name
+            _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
+            if _sk_intake is not None:
+                _sk_detail["intake_kind"] = _sk_intake.kind.value
+                _sk_detail["intake_detail"] = _sk_intake.detail
+                _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
+                _sk_detail["intake_audit"] = dict(_sk_intake.audit)
+                _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _state_writer.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
-                outcome=StoryOutcome.SKIPPED,
+                outcome=_sk_outcome,
                 reason=_sk_reason,
                 detail=_sk_detail,
             )
@@ -1938,10 +2365,26 @@ def run_sprint(
             from .shape_gate import skipped_issue_state_fields  # noqa: PLC0415
 
             _sk_reason, _sk_detail = skipped_issue_state_fields(_sk)
+            _sk_codes = _sk_dict.get("reason_codes") or []
+            _is_operator_action = "operator_action" in _sk_codes
+            _sk_outcome = (
+                StoryOutcome.OPERATOR_ACTION if _is_operator_action else StoryOutcome.SKIPPED
+            )
+            if _is_operator_action:
+                _sk_reason = "operator-action — operator deliverable"
+                _sk_detail["operator_action"] = True
+            _sk_detail["final_outcome"] = _sk_outcome.name
+            _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
+            if _sk_intake is not None:
+                _sk_detail["intake_kind"] = _sk_intake.kind.value
+                _sk_detail["intake_detail"] = _sk_intake.detail
+                _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
+                _sk_detail["intake_audit"] = dict(_sk_intake.audit)
+                _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _story_state.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
-                outcome=StoryOutcome.SKIPPED,
+                outcome=_sk_outcome,
                 reason=_sk_reason,
                 detail=_sk_detail,
             )
@@ -1952,6 +2395,7 @@ def run_sprint(
     story_wait_started: set[str] = set()
     cost_lock = threading.Lock()
     story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
+    live_telemetry_snapshots: dict[str, dict] = {}
     batch_assignments: dict[str, int] = {}
     batch_number = 0
     worker_phases: dict[str, str] = {}
@@ -2084,6 +2528,7 @@ def run_sprint(
                             dep_pr_url,
                             config.project_root,
                             config.workspace.merge_wait_timeout_seconds,
+                            base_branch=config.workspace.base_branch,
                         )
                         if poll_result["status"] == "merged":
                             merged_slugs.add(dep)
@@ -2259,11 +2704,18 @@ def run_sprint(
                         _qp_pr_url,
                         config.project_root,
                         config.workspace.merge_wait_timeout_seconds,
+                        base_branch=config.workspace.base_branch,
                     )
                     if _qp_poll["status"] == "merged":
                         merged_slugs.add(_qp_slug)
                         dag.mark_complete(_qp_slug)
                         _qp_result.landing_status = "landed"
+                        # Record the confirmed-landed DONE with the immutability
+                        # marker. This is the code path most directly implicated
+                        # in the redispatch-after-restart bug: a queued PR merges
+                        # while another story occupies the only worker slot. The
+                        # marker guarantees this DONE cannot later be clobbered.
+                        _set_outcome(_qp_slug, StoryOutcome.DONE, landed=True)
                         del queued_prs[_qp_slug]
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
@@ -2353,7 +2805,15 @@ def run_sprint(
                     )
                     spec_str = slug_to_spec[slug]
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
-                    story_started_at = story_times.get(slug, (timed_out_at, timed_out_at))[0]
+                    snapshot = _snapshot_last_known(slug, _state_writer)
+                    last_phase = snapshot["last_phase"]
+                    if slug in story_times:
+                        story_started_at = story_times[slug][0]
+                    elif snapshot["last_started_at"] is not None:
+                        story_started_at = snapshot["last_started_at"]
+                    else:
+                        story_started_at = timed_out_at
+                    _phase_label = f" during phase {last_phase}" if last_phase else ""
                     _timeout_state = CoordinatorState(
                         phase=Phase.ESCALATE,
                         started_at=story_started_at.isoformat(),
@@ -2361,7 +2821,7 @@ def run_sprint(
                             config.project_root / config.workspace.path_pattern.format(slug=slug)
                         ),
                         log_dir=_make_story_log_dir(config, slug, resolved.name),
-                        error=f"Worker timeout (>{story_worker_timeouts[slug]}s)",
+                        error=(f"Worker timeout (>{story_worker_timeouts[slug]}s){_phase_label}"),
                         error_type="TimeoutError",
                     )
                     _timeout_result = CoordinatorResult(
@@ -2371,11 +2831,21 @@ def run_sprint(
                         message=f"Worker thread timed out after {story_worker_timeouts[slug]}s",
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
+                    live_telemetry_snapshots[slug] = snapshot
                     results.append((spec_str, _timeout_result))
                     _write_story_audit(
-                        config, slug_to_context[slug][0], _timeout_result, sprint_id=_sprint_id
+                        config,
+                        slug_to_context[slug][0],
+                        _timeout_result,
+                        sprint_id=_sprint_id,
+                        telemetry_snapshot=snapshot,
                     )
-                    _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
+                    _set_outcome(
+                        slug,
+                        StoryOutcome.FAILED,
+                        phase="ESCALATE",
+                        last_phase=last_phase,
+                    )
                     dag.mark_skipped(slug)
                 continue
 
@@ -2392,7 +2862,15 @@ def run_sprint(
                     stop_events.pop(slug, None)
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
-                    story_started_at = story_times.get(slug, (failed_at, failed_at))[0]
+                    snapshot = _snapshot_last_known(slug, _state_writer)
+                    last_phase = snapshot["last_phase"]
+                    if slug in story_times:
+                        story_started_at = story_times[slug][0]
+                    elif snapshot["last_started_at"] is not None:
+                        story_started_at = snapshot["last_started_at"]
+                    else:
+                        story_started_at = failed_at
+                    _phase_label = f" during phase {last_phase}" if last_phase else ""
                     _exc_state = CoordinatorState(
                         phase=Phase.ESCALATE,
                         started_at=story_started_at.isoformat(),
@@ -2400,7 +2878,7 @@ def run_sprint(
                             config.project_root / config.workspace.path_pattern.format(slug=slug)
                         ),
                         log_dir=_make_story_log_dir(config, slug, resolved.name),
-                        error=f"Worker exception: {exc}",
+                        error=f"Worker exception{_phase_label}: {exc}",
                         error_type=type(exc).__name__,
                     )
                     _exc_result = CoordinatorResult(
@@ -2410,11 +2888,21 @@ def run_sprint(
                         message=f"Worker thread raised {type(exc).__name__}: {exc}",
                     )
                     story_times[slug] = (story_started_at, failed_at)
+                    live_telemetry_snapshots[slug] = snapshot
                     results.append((spec_str, _exc_result))
                     _write_story_audit(
-                        config, slug_to_context[slug][0], _exc_result, sprint_id=_sprint_id
+                        config,
+                        slug_to_context[slug][0],
+                        _exc_result,
+                        sprint_id=_sprint_id,
+                        telemetry_snapshot=snapshot,
                     )
-                    _set_outcome(slug, StoryOutcome.FAILED, phase="ESCALATE")
+                    _set_outcome(
+                        slug,
+                        StoryOutcome.FAILED,
+                        phase="ESCALATE",
+                        last_phase=last_phase,
+                    )
                     dag.mark_skipped(slug)
                     continue
                 del active[slug]
@@ -2566,12 +3054,13 @@ def run_sprint(
                 pr_url,
                 config.project_root,
                 config.workspace.merge_wait_timeout_seconds,
+                base_branch=config.workspace.base_branch,
             )
             if poll_result["status"] == "merged":
                 merged_slugs.add(slug)
                 dag.mark_complete(slug)
                 result.landing_status = "landed"
-                _set_outcome(slug, StoryOutcome.DONE)
+                _set_outcome(slug, StoryOutcome.DONE, landed=True)
             else:
                 from ..coordinator.completion import (  # noqa: PLC0415
                     mark_merge_failed as _mark_mf,
@@ -2593,6 +3082,24 @@ def run_sprint(
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
     duration = (finished_at - started_at).total_seconds()
+
+    # Attribute intake remediation agent spend back to each story's canonical
+    # cost_usd so per-story sums (used by sprint-summary.yaml) match the
+    # SprintResult total. The dev/review cycle's transition() overwrites
+    # cost_usd with CoordinatorState.total_cost, so this attribution must
+    # happen after the work loop completes — never before.
+    def _bump_story_cost(slug: str, extra: float) -> None:
+        if extra <= 0.0:
+            return
+        entry = _story_state.get(slug)
+        if entry is None:
+            return
+        _story_state.transition(slug, cost_usd=entry.cost_usd + extra)
+
+    for _slug, _outcome in (intake_outcomes or {}).items():
+        _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
+    for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
+        _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
 
     final_cost = accumulated_cost + prior_cost
     # Banner, summary, notifications, and SprintResult all project from the
@@ -2699,6 +3206,7 @@ def run_sprint(
             canonical_ref: triage.action for canonical_ref, triage in triages.items()
         },
         run_id=run_id,
+        live_telemetry_snapshots=live_telemetry_snapshots,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -2727,6 +3235,7 @@ def run_sprint(
             current_story_entries_by_ref=current_story_entries_by_ref,
             story_state=_story_state,
             config=config,
+            live_telemetry_snapshots=live_telemetry_snapshots,
         )
 
     if _state_writer is not None:

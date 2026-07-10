@@ -455,16 +455,41 @@ def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
     return StuckDetectionConfig(**kwargs)
 
 
+def _resolve_project_root(config_path: Path) -> Path:
+    """Resolve the project root for a given forge.yaml path.
+
+    Forge-created worktrees live at ``<project_root>/.forge/worktrees/<slug>/``
+    and contain a synced ``forge.yaml`` but no ``.forge/.env``. When config is
+    loaded from such a worktree, the project-scoped secret store and other
+    project-level state belong to the parent checkout, not the worktree.
+    Detect that layout and walk up so secrets and project_root reference the
+    real project root.
+    """
+    parent = config_path.parent.resolve()
+    grandparent = parent.parent
+    great_grandparent = grandparent.parent
+    if (
+        grandparent.name == "worktrees"
+        and great_grandparent.name == ".forge"
+        and great_grandparent.parent != great_grandparent
+    ):
+        return great_grandparent.parent
+    return parent
+
+
 def load_config(config_path: Path) -> ForgeConfig:
     """Load forge.yaml and return a typed ForgeConfig.
 
-    The config file path is used to derive the project root (its parent directory).
+    The config file path is used to derive the project root (its parent directory),
+    except when ``config_path`` lives inside a forge-created worktree at
+    ``<root>/.forge/worktrees/<slug>/``, in which case the project root is
+    resolved to the parent checkout so project-scoped secrets remain accessible.
     Missing sections fall back to sensible defaults.
 
     Raises ValueError for invalid configurations (empty pool, duplicate names,
     unsupported CLI, missing synthesis profile when pool size > 1).
     """
-    project_root = config_path.parent.resolve()
+    project_root = _resolve_project_root(config_path)
 
     # Load project-scoped secrets before profile validation so _resolve_secret() works.
     env_path = project_root / ".forge" / ".env"
@@ -653,6 +678,25 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_plan_review_transport_retries=int(
             retry_data.get("max_plan_review_transport_retries", 2)
         ),
+        max_review_transport_retries=int(retry_data.get("max_review_transport_retries", 2)),
+        review_transport_retry_backoff_seconds=float(
+            retry_data.get("review_transport_retry_backoff_seconds", 8.0)
+        ),
+        review_quorum_threshold=int(retry_data.get("review_quorum_threshold", 2)),
+        review_transient_failure_codes=tuple(
+            str(code)
+            for code in retry_data.get(
+                "review_transient_failure_codes",
+                ("rate_limit", "provider_internal_error", "connection_reset"),
+            )
+        ),
+        review_transient_output_patterns=tuple(
+            str(p).lower()
+            for p in retry_data.get(
+                "review_transient_output_patterns",
+                RetryPolicy.__dataclass_fields__["review_transient_output_patterns"].default,
+            )
+        ),
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
@@ -661,6 +705,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_dev_iterations_cap=int(retry_data.get("max_dev_iterations_cap", 0)),
         max_review_cycles_cap=int(retry_data.get("max_review_cycles_cap", 0)),
         review_zero_findings_stop=int(retry_data.get("review_zero_findings_stop", 0)),
+        p2_cleanup_enabled=bool(retry_data.get("p2_cleanup_enabled", True)),
+        p2_cleanup_max_iterations=int(retry_data.get("p2_cleanup_max_iterations", 0)),
     )
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)
