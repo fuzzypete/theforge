@@ -310,6 +310,14 @@ class SprintStoryState:
         when a queued PR fails to land) are permitted because the canonical
         structure must reflect the final reality, but the story never leaves
         the terminal set.
+
+        Landed immutability: a terminal outcome that has been marked
+        ``landed=True`` (its PR was confirmed merged on the base branch) is
+        immutable — no later transition may overwrite it with a non-DONE
+        terminal outcome. This distinguishes a genuine "queued PR failed to
+        land" correction (which is never marked landed) from a spurious
+        redispatch-after-process-restart that would otherwise clobber a
+        confirmed-merged DONE with FAILED.
         """
         with self._lock:
             entry = self._stories.get(slug)
@@ -319,6 +327,15 @@ class SprintStoryState:
                 new_outcome = coerce_outcome(outcome)
                 if entry.outcome.is_terminal and not new_outcome.is_terminal:
                     # Reject: monotonicity invariant — once terminal, stay terminal.
+                    new_outcome = entry.outcome
+                elif (
+                    entry.outcome.is_terminal
+                    and entry.extras.get("landed")
+                    and new_outcome is not StoryOutcome.DONE
+                ):
+                    # Reject: a confirmed-landed DONE cannot be overwritten by a
+                    # non-DONE terminal (e.g. a bogus FAILED from a re-entry after
+                    # an unrelated process restart).
                     new_outcome = entry.outcome
                 entry.outcome = new_outcome
             for k, v in fields.items():

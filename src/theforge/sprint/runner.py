@@ -1330,6 +1330,10 @@ def _classify_and_record(
     preflight_verdict = result.state.preflight_verdict
     landing_status = getattr(result, "landing_status", None)
     validate_already_complete = getattr(result.state, "validate_already_complete", False)
+    # A confirmed-landed DONE is immutable for the rest of the sprint. Mark it
+    # so story_state.transition rejects any later non-DONE terminal overwrite
+    # (e.g. a bogus FAILED from a redispatch after a process restart).
+    is_landed = landing_status == "landed"
 
     if preflight_verdict == "ALREADY_DONE" and result.success:
         outcome = StoryOutcome.ALREADY_DONE
@@ -1362,7 +1366,10 @@ def _classify_and_record(
         dag.mark_skipped(task.slug)
 
     if story_state is not None:
-        story_state.transition(task.slug, outcome=outcome, cost_usd=result.state.total_cost)
+        _transition_fields: dict = {"cost_usd": result.state.total_cost}
+        if is_landed:
+            _transition_fields["landed"] = True
+        story_state.transition(task.slug, outcome=outcome, **_transition_fields)
 
     return outcome
 
@@ -1417,6 +1424,7 @@ def run_sprint(
     interactive: bool = False,
     notify: bool = False,
     resume: bool = False,
+    reexec: bool = False,
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
     run_id: str | None = None,
@@ -1446,6 +1454,12 @@ def run_sprint(
         interactive: If True, pause for human review at each story.
         resume: If True, triage each story to find the optimal re-entry point
             (skip_merged / review / dev / full) and carry forward prior costs.
+        reexec: True when this process was re-launched via ``os.execv`` after a
+            mid-sprint source change (workspace.pull_base_branch). Such a launch
+            keeps the original argv (no ``--resume``) but must be treated as
+            resume-equivalent for merged-state reconciliation: every manifest
+            story is triaged against merged state before dispatch so a story
+            whose PR already landed is never re-entered through WORKSPACE.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -1456,6 +1470,16 @@ def run_sprint(
         # Backward-compat: Path was passed — resolve via the shared helper so
         # tests can patch the boundary and query-mode behavior stays aligned.
         resolved = resolve_from_manifest(sprint, config.project_root)
+
+    # A re-exec'd launch (source changed mid-sprint) keeps the original argv and
+    # therefore never carries ``--resume``, but it MUST run the same merged-state
+    # reconciliation a resume would: triage every manifest story against merged
+    # state, exclude already-merged stories from preflight/dispatch, and pre-mark
+    # them complete in the DAG. Otherwise a story whose PR already landed in the
+    # prior (killed) generation is re-entered through WORKSPACE and its DONE
+    # outcome is overwritten with a bogus FAILED. Treat re-exec as
+    # resume-equivalent for all reconciliation/skip paths.
+    reconcile = resume or reexec
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
@@ -1685,9 +1709,10 @@ def run_sprint(
     # Derive slug_to_spec from unified context mapping
     slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
 
-    # Resume mode: triage all stories and carry forward prior costs
+    # Resume mode (and re-exec, treated as resume-equivalent): triage all stories
+    # and carry forward prior costs.
     triages: dict[str, StoryTriage] = {}
-    if resume:
+    if reconcile:
         prior_cost = _read_prior_sprint_cost(config.project_root, _sprint_id)
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
@@ -1703,10 +1728,16 @@ def run_sprint(
     # resume-mode skip states, plus any cross-sprint depends_on slugs whose
     # branch is already merged to the base branch.
     pre_satisfied: set[str] = set(resolved.closed_dependency_slugs)
-    if resume:
+    # Slugs the reconcile triage classified as already-merged / to-skip. These
+    # must be excluded from every dispatch/spend path below (intake remediation,
+    # batch preflight) and pre-marked complete in the DAG, so a re-exec'd process
+    # never re-enters a merged story through WORKSPACE.
+    skip_slugs: set[str] = set()
+    if reconcile:
         for triage in triages.values():
             if triage.action in ("skip_merged", "skip"):
                 pre_satisfied.add(triage.slug)
+                skip_slugs.add(triage.slug)
 
     # Build DAG
     all_tasks = [ctx[0] for ctx in slug_to_context.values()]
@@ -1782,9 +1813,17 @@ def run_sprint(
     # patched without an LLM. Stories that still fail are dropped here and
     # never enter the preflight batch. When grooming and auto_fix are both
     # disabled, this is a near no-op (parity with pre-remediation behavior).
+    # Exclude reconcile-skipped (already-merged) stories from every spend/dispatch
+    # path. They stay in ``normalized.tasks`` so the DAG can be built and they can
+    # be pre-marked complete below, but they must not enter intake remediation or
+    # the batch preflight, where a re-exec'd merged story would be re-dispatched
+    # into its stale round-1 worktree. When ``reconcile`` is False, skip_slugs is
+    # empty and this is a no-op (no behavior change for plain fresh runs).
+    dispatch_tasks = [t for t in normalized.tasks if t.slug not in skip_slugs]
+
     intake_outcomes = _run_intake_remediation_pass(
         config=config,
-        tasks=normalized.tasks,
+        tasks=dispatch_tasks,
         log=_log,
         force=force,
     )
@@ -1879,8 +1918,12 @@ def run_sprint(
         if dropped_slugs_intake:
             normalized = _filter_normalized_for_intake(normalized, dropped_slugs_intake)
 
+    # Re-derive the filter here: ``normalized`` may have been re-bound by the
+    # intake drop above, and reconcile-skipped merged stories must never enter
+    # the preflight batch (WORKSPACE re-entry against their stale worktree).
+    preflight_tasks = [t for t in normalized.tasks if t.slug not in skip_slugs]
     preflight_states = run_batch_preflight(
-        normalized.tasks,
+        preflight_tasks,
         config,
         sprint_name=resolved.name,
         no_pull=no_pull,
@@ -1942,10 +1985,13 @@ def run_sprint(
     # for deferred integration ordering.
     merged_slugs.update(satisfied_slugs)
 
-    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG.
+    # Resume / re-exec: pre-mark skip_merged / skip stories as complete in DAG.
     # skip_merged stories are already merged and should satisfy dependencies
-    # immediately, but they still count as skipped in sprint aggregates.
-    if resume:
+    # immediately, but they still count as skipped in sprint aggregates. This is
+    # the block that actually removes a slug from dag.ready()/remaining(): without
+    # it a re-exec'd process would re-dispatch an already-merged story even though
+    # it was excluded from preflight above.
+    if reconcile:
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
@@ -2101,7 +2147,10 @@ def run_sprint(
             )
             _blocked_by = list(blocked_slugs.get(_slug, []))
             _drop_reason = _dropped_slugs.get(_slug)
-            _triage = triages.get(_canonical_ref) if resume else None
+            # reconcile (resume or re-exec): surface the merged/skip triage state
+            # in the initial live status file so `forge sprint-status` shows a
+            # re-exec'd merged story as done/skipped instead of waiting.
+            _triage = triages.get(_canonical_ref) if reconcile else None
             if _drop_reason == "preserved-escalated":
                 _status = "preserved"
                 _blocked_by = [f"preserved: {_drop_reason}"]
@@ -2573,6 +2622,12 @@ def run_sprint(
                         merged_slugs.add(_qp_slug)
                         dag.mark_complete(_qp_slug)
                         _qp_result.landing_status = "landed"
+                        # Record the confirmed-landed DONE with the immutability
+                        # marker. This is the code path most directly implicated
+                        # in the redispatch-after-restart bug: a queued PR merges
+                        # while another story occupies the only worker slot. The
+                        # marker guarantees this DONE cannot later be clobbered.
+                        _set_outcome(_qp_slug, StoryOutcome.DONE, landed=True)
                         del queued_prs[_qp_slug]
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
@@ -2886,7 +2941,7 @@ def run_sprint(
                 merged_slugs.add(slug)
                 dag.mark_complete(slug)
                 result.landing_status = "landed"
-                _set_outcome(slug, StoryOutcome.DONE)
+                _set_outcome(slug, StoryOutcome.DONE, landed=True)
             else:
                 from ..coordinator.completion import (  # noqa: PLC0415
                     mark_merge_failed as _mark_mf,
