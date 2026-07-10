@@ -211,6 +211,14 @@ def _extract_review_payload(
             finding_data.get("evidence", ""),
             field_name=f"findings[{index}].evidence",
         )
+        raw_suggestion = finding_data.get("suggestion")
+        if raw_suggestion is None:
+            suggestion, suggestion_audit = None, {}
+        else:
+            suggestion, suggestion_audit = sanitize_llm_text(
+                raw_suggestion,
+                field_name=f"findings[{index}].suggestion",
+            )
         findings.append(
             ReviewFinding(
                 severity=finding_data.get("severity", "P2"),
@@ -219,11 +227,11 @@ def _extract_review_payload(
                 observed=observed,
                 expected=expected,
                 evidence=evidence,
-                suggestion=finding_data.get("suggestion"),
+                suggestion=suggestion,
             )
         )
         sanitization_audit = _merge_sanitization_audits(
-            sanitization_audit, observed_audit, expected_audit, evidence_audit
+            sanitization_audit, observed_audit, expected_audit, evidence_audit, suggestion_audit
         )
     return summary, findings, sanitization_audit
 
