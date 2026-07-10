@@ -107,6 +107,17 @@ def cmd_sprint(args: object) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     detach_to_background = not fg and not submit_to_daemon and not dry_run
 
+    # Capture the re-exec signal BEFORE the detach section runs. On the real
+    # coordinator re-exec path (workspace.pull_base_branch sets FORGE_PREV_RUN_ID
+    # then os.execv with the same argv), the re-exec'd process inherits
+    # FORGE_DETACHED=1, so it enters the is_detached_child() branch below and
+    # calls setup_detached_child(), which pops FORGE_PREV_RUN_ID (detach.py) to
+    # write the log-redirect sidecar. If we read _is_reexec() after that pop it
+    # always returns False, silently disabling the merged-story reconciliation in
+    # run_sprint. Snapshot it here so both manifest and query modes see the true
+    # signal regardless of the detach handoff.
+    reexec = _is_reexec()
+
     if detach_to_background:
         from theforge import detach as _detach_mod
 
@@ -184,6 +195,7 @@ def cmd_sprint(args: object) -> int:
             auto_merge=auto_merge,
             interactive=interactive,
             resume=resume,
+            reexec=reexec,
             no_pull=no_pull,
             force=force,
             _daemon=_daemon,
@@ -198,7 +210,8 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     slugs = parse_manifest_slugs(config, manifest_path)
-    reexec = _is_reexec()
+    # ``reexec`` was captured at the top of cmd_sprint, before setup_detached_child
+    # popped FORGE_PREV_RUN_ID — do not recompute it here (the env signal is gone).
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
     )
@@ -510,11 +523,17 @@ def _run_query_mode(
     resume: bool,
     no_pull: bool,
     force: bool = False,
+    reexec: bool = False,
     _daemon: object,
     _detach: object,
     _generate_run_id: object,
 ) -> int:
-    """Handle --milestone / --label / --issues query mode."""
+    """Handle --milestone / --label / --issues query mode.
+
+    ``reexec`` is captured by ``cmd_sprint`` before the detach handoff pops
+    FORGE_PREV_RUN_ID; it must be passed in, not recomputed here (the env signal
+    is already gone by the time this runs on the real re-exec path).
+    """
     from theforge.intake import IntakeOutcomeKind
     from theforge.sprint.dag import resolve_satisfied_dependencies
     from theforge.sprint.entry_intake import remediate_entry_skipped_issues
@@ -729,8 +748,9 @@ def _run_query_mode(
         return 0
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──
+    # ``reexec`` is threaded in from cmd_sprint (captured before the detach
+    # handoff popped FORGE_PREV_RUN_ID) — do not recompute it here.
     slugs = [task.slug for task, _src, _ref in resolved.stories]
-    reexec = _is_reexec()
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
     )

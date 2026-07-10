@@ -271,3 +271,161 @@ def test_queued_pr_poll_records_landed_done_and_blocks_later_failed(
     state = captured["state"]
     state.transition("feature-a", outcome=StoryOutcome.FAILED)
     assert state.get("feature-a").outcome is StoryOutcome.DONE
+
+
+def test_mid_loop_queued_pr_poll_records_landed_done_immutable(
+    tmp_path: Path,
+) -> None:
+    """The mid-loop queued-PR poll (``if not active and queued_prs``) records a
+    confirmed-merged story DONE with landed=True.
+
+    Setup: feature-b depends on feature-a; feature-a is approved with landing
+    deferred (queued auto-merge). Because StoryDAG.ready() gates hard deps on
+    _completed (set only by mark_complete), and a pending_integration story is
+    only mark_skipped, feature-b is NOT ready while feature-a is queued. So the
+    dependent-dispatch pre-check never consumes the queued PR — the mid-loop
+    branch does, calling _set_outcome(feature-a, DONE, landed=True).
+
+    feature-b succeeding is the proof feature-a was merged in the mid-loop (which
+    unblocks the dependent); had it only been handled at wrap-up, feature-b would
+    have been skipped for an unmet dependency.
+    """
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    spec_b = tmp_path / "feature-b.md"
+    spec_b.write_text(
+        "---\nname: Feature B\nslug: feature-b\ndepends_on: feature-a\n---\n# Feature B\nGo.",
+        encoding="utf-8",
+    )
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+    config = _make_config(tmp_path)
+
+    result_a = _make_coordinator_result(
+        success=True, cost=1.0, landing_status="pending_integration"
+    )
+    result_a.state.branch_name = "forge/feature-a"
+    result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    def _run_task(cfg, task, **kwargs):
+        return result_a if task.slug == "feature-a" else result_b
+
+    captured: dict = {}
+    real_transition = SprintStoryState.transition
+
+    def _spy_transition(self, slug, outcome=None, **fields):
+        if slug == "feature-a" and coerce_outcome(outcome) is StoryOutcome.DONE:
+            if fields.get("landed"):
+                captured["landed"] = True
+                captured["state"] = self
+        return real_transition(self, slug, outcome=outcome, **fields)
+
+    with (
+        patch("theforge.sprint.runner.run_task", side_effect=_run_task),
+        patch(
+            "theforge.coordinator.completion.land_story",
+            return_value=(
+                {"merge_queued": True, "pr_url": "https://github.com/o/r/pull/1572"},
+                "pending_integration",
+            ),
+        ),
+        patch(
+            "theforge.sprint.runner._poll_queued_pr",
+            return_value={"status": "merged"},
+        ),
+        patch.object(SprintStoryState, "transition", _spy_transition),
+    ):
+        result = run_sprint(config, manifest_path)
+
+    # The mid-loop poll recorded a landed DONE for feature-a...
+    assert captured.get("landed") is True
+    # ...and unblocked the dependent, so both stories succeeded (proves mid-loop,
+    # not wrap-up — a wrap-up-only merge would leave feature-b skipped).
+    assert result.specs_succeeded == 2
+
+    # The marker makes feature-a's DONE immutable against a later spurious FAILED.
+    state = captured["state"]
+    state.transition("feature-a", outcome=StoryOutcome.FAILED)
+    assert state.get("feature-a").outcome is StoryOutcome.DONE
+
+
+def test_cmd_sprint_detached_child_reexec_passes_reexec_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI-layer regression: on the real coordinator re-exec path the detached
+    child inherits FORGE_DETACHED=1 and FORGE_PREV_RUN_ID, enters the
+    is_detached_child() branch, and calls the REAL setup_detached_child() —
+    which pops FORGE_PREV_RUN_ID. cmd_sprint must have captured the re-exec
+    signal BEFORE that pop, so run_sprint still receives reexec=True.
+
+    This drives cmd_sprint end-to-end (not run_sprint directly) so it catches the
+    CLI-layer bug where _is_reexec() was read after setup_detached_child cleared
+    the env var, zeroing the signal on exactly the production path this fixes.
+    """
+    import argparse
+
+    from theforge import detach as _detach_mod
+    from theforge.cli import sprint as sprint_cli
+
+    manifest_path = _make_manifest(tmp_path, ["issue-1278.md"])
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+
+    fake_config = MagicMock()
+    fake_config.project_root = tmp_path
+    fake_config.project = "test"
+
+    args = argparse.Namespace(
+        manifest=str(manifest_path),
+        milestone=None,
+        label=None,
+        issues=None,
+        config=str(config_path),
+        base_branch=None,
+        name=None,
+        fg=False,
+        detach=False,
+        dry_run=False,
+        verbose=False,
+        auto_merge=False,
+        interactive=False,
+        resume=False,
+        no_pull=False,
+        parallel=None,
+        force=False,
+        no_notify=True,
+    )
+
+    # Simulate the real coordinator re-exec: a detached child whose parent set
+    # FORGE_PREV_RUN_ID just before os.execv (env survives execv).
+    monkeypatch.setenv("FORGE_DETACHED", "1")
+    monkeypatch.setenv("FORGE_DETACHED_RUN_ID", "child-run-id")
+    monkeypatch.setenv("FORGE_PREV_RUN_ID", "prev-run-id")
+
+    fake_result = MagicMock()
+    fake_result.specs_failed = 0
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=fake_config),
+        patch("theforge.cli.sprint.apply_base_branch_override", return_value=fake_config),
+        patch("theforge.cli.sprint._find_config", return_value=config_path),
+        patch("theforge.cli.sprint.parse_manifest_slugs", return_value=["issue-1278"]),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.reacquire_story_locks_in_daemon", return_value=[]),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", return_value=fake_result) as mock_run_sprint,
+        # Let the REAL setup_detached_child run so it actually pops
+        # FORGE_PREV_RUN_ID — the exact behavior that used to zero the signal.
+        patch.object(_detach_mod, "install_cleanup_handler"),
+        patch.object(_detach_mod, "write_run_ended"),
+        patch.object(_detach_mod, "remove_pid"),
+    ):
+        rc = sprint_cli.cmd_sprint(args)
+
+    assert rc == 0
+    # setup_detached_child popped FORGE_PREV_RUN_ID during the detach handoff...
+    assert os.environ.get("FORGE_PREV_RUN_ID") is None
+    # ...but cmd_sprint captured the signal first, so reexec reached run_sprint.
+    mock_run_sprint.assert_called_once()
+    assert mock_run_sprint.call_args.kwargs["reexec"] is True
