@@ -260,6 +260,53 @@ class TestParseReviewOutput:
             "findings[0].expected": {"sanitized_chars": 1},
         }
 
+    def test_parse_review_json_sanitizes_suggestion(self):
+        result = parse_review_json(
+            {
+                "verdict": "APPROVE",
+                "summary": "Safe summary",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "file": "src/batch.py",
+                        "line": 5,
+                        "observed": "finding text",
+                        "expected": "rule prose",
+                        "evidence": "src/batch.py:5",
+                        "suggestion": "Fix\x00 it\x07 like this",
+                    }
+                ],
+                "story_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+
+        assert result.findings[0].suggestion == "Fix it like this"
+        assert result.sanitization_audit["findings[0].suggestion"] == {"sanitized_chars": 2}
+
+    def test_parse_review_json_suggestion_missing_stays_none(self):
+        result = parse_review_json(
+            {
+                "verdict": "APPROVE",
+                "summary": "Safe summary",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "file": "src/batch.py",
+                        "line": 5,
+                        "observed": "finding text",
+                        "expected": "rule prose",
+                        "evidence": "src/batch.py:5",
+                    }
+                ],
+                "story_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+
+        assert result.findings[0].suggestion is None
+        assert "findings[0].suggestion" not in result.sanitization_audit
+
 
 class TestSanitizeYamlText:
     """Unit tests for _sanitize_yaml_text — apostrophe-in-single-quoted-scalar fix."""
