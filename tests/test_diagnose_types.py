@@ -100,6 +100,62 @@ class TestDiagnosisArtifact:
         # signal carried alongside complete YAML to flag budget/timeout exits.
         assert self._make(partial=True).is_complete()
 
+    def test_has_substantive_content_true_when_any_field_filled(self):
+        base = dict(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        for field_name in base:
+            if field_name == "hypotheses":
+                filled = self._make(**{**base, field_name: (Hypothesis("real", "confirmed", ""),)})
+            else:
+                filled = self._make(**{**base, field_name: "content"})
+            assert filled.has_substantive_content(), field_name
+
+    def test_has_substantive_content_false_for_all_empty(self):
+        empty = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="   ",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        assert not empty.has_substantive_content()
+
+    def test_has_substantive_content_false_for_blank_hypothesis_scaffold(self):
+        # parse_diagnose_output turns `hypotheses: [{}]` into a Hypothesis with
+        # blank statement/evidence and default status. A tuple of such blank
+        # bullets is scaffolding, not investigative content — it must not clear
+        # the content floor even though the hypotheses tuple is non-empty.
+        scaffold = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(Hypothesis(statement="", status="inconclusive", evidence=""),),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        assert not scaffold.has_substantive_content()
+        with pytest.raises(ValueError):
+            render_artifact_markdown(scaffold)
+
+    def test_has_substantive_content_true_when_hypothesis_has_evidence_only(self):
+        # A hypothesis with a blank statement but real evidence is still content.
+        h_evidence = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(Hypothesis(statement="", status="ruled_out", evidence="logs show X"),),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        assert h_evidence.has_substantive_content()
+
 
 class TestDiagnoseState:
     def test_default_phase_is_init(self):

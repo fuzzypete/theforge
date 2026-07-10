@@ -566,6 +566,46 @@ class TestDiagnoseFlow:
         loaded = yaml.safe_load(audit_files[0].read_text())
         assert loaded["final_phase"] == "FAILED"
 
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_blank_hypothesis_scaffold_fails_without_mutating_body(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test for the empty-scaffold variant: a killed agent can flush a
+        structurally-parseable block whose only content is a blank hypothesis
+        entry (`hypotheses: [{}]`). parse_diagnose_output turns that into a
+        non-empty hypotheses tuple of one blank bullet — but it carries no
+        investigative content, so the content floor must still reject it and
+        the flow must fail without touching the issue body."""
+        config = self._setup_config(tmp_path)
+        original_body = "Bug report: diagnose lands empty scaffolding.\n"
+        mock_fetch.return_value = {
+            "number": 1595,
+            "title": "broken diagnose",
+            "body": original_body,
+            "state": "OPEN",
+        }
+        scaffold_yaml = "```yaml\nhypotheses:\n  - {}\n```"
+        mock_agent.return_value = _fake_agent_result(scaffold_yaml, success=False)
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1595,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not mock_edit.called, "issue body must not be edited"
+        assert not mock_post.called, "no comment must be posted"
+        assert result.state.landed_location is None
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert "Partial diagnosis landed" not in result.message
+
 
 # ── DiagnoseState / phase transitions ─────────────────────────────────
 
