@@ -7,6 +7,8 @@ covers only the dataclasses and rendering/upsert helpers in isolation.
 
 from __future__ import annotations
 
+import pytest
+
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
     DiagnosePhase,
@@ -98,6 +100,62 @@ class TestDiagnosisArtifact:
         # signal carried alongside complete YAML to flag budget/timeout exits.
         assert self._make(partial=True).is_complete()
 
+    def test_has_substantive_content_true_when_any_field_filled(self):
+        base = dict(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        for field_name in base:
+            if field_name == "hypotheses":
+                filled = self._make(**{**base, field_name: (Hypothesis("real", "confirmed", ""),)})
+            else:
+                filled = self._make(**{**base, field_name: "content"})
+            assert filled.has_substantive_content(), field_name
+
+    def test_has_substantive_content_false_for_all_empty(self):
+        empty = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="   ",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        assert not empty.has_substantive_content()
+
+    def test_has_substantive_content_false_for_blank_hypothesis_scaffold(self):
+        # parse_diagnose_output turns `hypotheses: [{}]` into a Hypothesis with
+        # blank statement/evidence and default status. A tuple of such blank
+        # bullets is scaffolding, not investigative content — it must not clear
+        # the content floor even though the hypotheses tuple is non-empty.
+        scaffold = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(Hypothesis(statement="", status="inconclusive", evidence=""),),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        assert not scaffold.has_substantive_content()
+        with pytest.raises(ValueError):
+            render_artifact_markdown(scaffold)
+
+    def test_has_substantive_content_true_when_hypothesis_has_evidence_only(self):
+        # A hypothesis with a blank statement but real evidence is still content.
+        h_evidence = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(Hypothesis(statement="", status="ruled_out", evidence="logs show X"),),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+        )
+        assert h_evidence.has_substantive_content()
+
 
 class TestDiagnoseState:
     def test_default_phase_is_init(self):
@@ -184,6 +242,29 @@ class TestRenderArtifactMarkdown:
         assert "Operator review required" in md
 
     def test_empty_required_field_renders_placeholder(self):
+        # A partial artifact with *some* content renders explicit placeholders
+        # for its blank fields, so it is never silently shown as a confident,
+        # fully-populated section. At least one field must carry content — an
+        # all-empty artifact is refused (see test below).
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="it crashes",
+            reproduction_or_evidence="",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+            partial=True,
+        )
+        md = render_artifact_markdown(artifact)
+        assert "_(empty)_" in md
+        assert "_(none recorded)_" in md
+
+    def test_all_empty_artifact_refuses_to_render(self):
+        # Hardening: the renderer must never emit a Diagnosis section whose only
+        # content is its own headings. An all-empty artifact (the shape a
+        # killed/timed-out agent produces) is a failure to diagnose and must not
+        # be landed into operator-visible state.
         artifact = DiagnosisArtifact(
             issue_number=1,
             observed_symptom="",
@@ -194,11 +275,9 @@ class TestRenderArtifactMarkdown:
             fix_success_criterion="",
             partial=True,
         )
-        md = render_artifact_markdown(artifact)
-        # Empty fields render an explicit placeholder so a partial artifact
-        # is never silently rendered as a confident, blank fix-ready section.
-        assert "_(empty)_" in md
-        assert "_(none recorded)_" in md
+        assert not artifact.has_substantive_content()
+        with pytest.raises(ValueError):
+            render_artifact_markdown(artifact)
 
     def test_notes_section_only_emitted_when_non_empty(self):
         artifact = DiagnosisArtifact(
