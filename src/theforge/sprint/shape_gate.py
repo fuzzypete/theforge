@@ -220,33 +220,58 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
     }
 
 
+_TIMELINE_PER_PAGE = 100
+_TIMELINE_MAX_PAGES = 20  # safety cap: 2000 events, far beyond any real issue
+
+
 def _fetch_issue_timeline(number: int, project_root: Path | None) -> list[dict]:
-    """Return raw issue timeline events, or an empty list when unavailable."""
-    try:
-        proc = subprocess.run(
-            [
-                "gh",
-                "api",
-                "-H",
-                "Accept: application/vnd.github+json",
-                f"repos/{{owner}}/{{repo}}/issues/{number}/timeline?per_page=100",
-            ],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root) if project_root else None,
-            timeout=30,
+    """Return raw issue timeline events across all pages, or [] when unavailable.
+
+    Reopen-contract analysis depends on the full timeline: an issue with more
+    than one page of events could silently lose its reopen event to
+    truncation, so this follows pagination until a short page (or the empty
+    tail) signals the end rather than stopping at a single fixed page.
+    """
+    events: list[dict] = []
+    for page in range(1, _TIMELINE_MAX_PAGES + 1):
+        try:
+            proc = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    f"repos/{{owner}}/{{repo}}/issues/{number}/timeline"
+                    f"?per_page={_TIMELINE_PER_PAGE}&page={page}",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root) if project_root else None,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return events if page > 1 else []
+        if proc.returncode != 0:
+            return events if page > 1 else []
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return events if page > 1 else []
+        if not isinstance(data, list):
+            return events if page > 1 else []
+        page_events = [item for item in data if isinstance(item, dict)]
+        events.extend(page_events)
+        if len(page_events) < _TIMELINE_PER_PAGE:
+            break
+    else:
+        _log.warning(
+            "issue #%s timeline exceeded %s pages (%s events); "
+            "reopen analysis may be missing later events",
+            number,
+            _TIMELINE_MAX_PAGES,
+            len(events),
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-    if proc.returncode != 0:
-        return []
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
+    return events
 
 
 def _fetch_bot_reason_codes(number: int, project_root: Path | None) -> list[str]:

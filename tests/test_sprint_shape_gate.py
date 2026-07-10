@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,7 @@ from theforge.sprint.shape_gate import (
     ShapeGateResult,
     SkippedIssue,
     _fetch_bot_reason_codes,
+    _fetch_issue_timeline,
     apply_shape_gate,
     format_skipped_warning,
 )
@@ -613,6 +615,74 @@ def test_fetch_bot_reason_codes_returns_empty_on_gh_failure(tmp_path: Path) -> N
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="fail")
         assert _fetch_bot_reason_codes(42, tmp_path) == []
+
+
+# ── Timeline pagination (#1271) ────────────────────────────────────────────
+
+
+def test_fetch_issue_timeline_single_short_page_stops_after_one_call(
+    tmp_path: Path,
+) -> None:
+    page = [{"event": "labeled"}, {"event": "closed"}]
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(page), stderr="")
+        events = _fetch_issue_timeline(42, tmp_path)
+    assert events == page
+    assert mock_run.call_count == 1
+
+
+def test_fetch_issue_timeline_follows_pagination_beyond_first_page(
+    tmp_path: Path,
+) -> None:
+    first_page = [{"event": "commented", "id": i} for i in range(100)]
+    second_page = [{"event": "reopened", "id": 100}]
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(first_page), stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(second_page), stderr=""),
+        ]
+        events = _fetch_issue_timeline(42, tmp_path)
+    assert mock_run.call_count == 2
+    assert len(events) == 101
+    assert events[-1] == {"event": "reopened", "id": 100}
+
+
+def test_fetch_issue_timeline_stops_at_page_boundary_when_last_page_is_full(
+    tmp_path: Path,
+) -> None:
+    first_page = [{"event": "commented", "id": i} for i in range(100)]
+    second_page = [{"event": "reopened", "id": i} for i in range(100, 200)]
+    third_page: list[dict] = []
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(first_page), stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(second_page), stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(third_page), stderr=""),
+        ]
+        events = _fetch_issue_timeline(42, tmp_path)
+    assert mock_run.call_count == 3
+    assert len(events) == 200
+
+
+def test_fetch_issue_timeline_returns_empty_on_first_page_failure(
+    tmp_path: Path,
+) -> None:
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="fail")
+        assert _fetch_issue_timeline(42, tmp_path) == []
+
+
+def test_fetch_issue_timeline_returns_partial_data_on_later_page_failure(
+    tmp_path: Path,
+) -> None:
+    first_page = [{"event": "commented", "id": i} for i in range(100)]
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(first_page), stderr=""),
+            MagicMock(returncode=1, stdout="", stderr="fail"),
+        ]
+        events = _fetch_issue_timeline(42, tmp_path)
+    assert len(events) == 100
 
 
 # ── Sanity: result dataclass ───────────────────────────────────────────────
