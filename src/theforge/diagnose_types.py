@@ -70,6 +70,26 @@ class DiagnosisArtifact:
             and self.fix_success_criterion.strip()
         )
 
+    def has_substantive_content(self) -> bool:
+        """Return True when at least one required diagnosis field carries content.
+
+        Distinct from :meth:`is_complete`, which requires *every* field.  An
+        artifact with no substantive content is a failure to diagnose — not a
+        partial diagnosis — and must never be landed into operator-visible
+        state, because the only thing such a section would carry is its own
+        headings (structurally complete but content-empty).  ``notes`` is
+        deliberately excluded: an investigation that produced only a caveat and
+        no diagnosis content has still diagnosed nothing.
+        """
+        return bool(
+            self.observed_symptom.strip()
+            or self.reproduction_or_evidence.strip()
+            or self.hypotheses
+            or self.confirmed_cause.strip()
+            or self.affected_code_path.strip()
+            or self.fix_success_criterion.strip()
+        )
+
 
 @dataclass
 class DiagnoseState:
@@ -120,7 +140,18 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     Output format intentionally matches the headings expected by the shape gate
     (DIAGNOSIS_HEADING_PATTERN / DIAGNOSIS_REQUIRED_COMPONENTS in shape_check)
     so a landed artifact makes the issue fix-ready.
+
+    Raises ``ValueError`` when the artifact carries no substantive content.
+    Rendering an all-empty artifact would emit a Diagnosis section whose only
+    content is its own headings — structurally complete but content-empty — and
+    such scaffolding must never reach operator-visible state where a downstream
+    readiness check could be satisfied by the headings alone.
     """
+    if not artifact.has_substantive_content():
+        raise ValueError(
+            "refusing to render a Diagnosis section for an all-empty artifact: "
+            "no substantive content to land"
+        )
     lines: list[str] = ["## Diagnosis"]
     if artifact.partial:
         lines.append("")

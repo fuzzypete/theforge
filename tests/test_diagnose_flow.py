@@ -516,6 +516,56 @@ class TestDiagnoseFlow:
         assert loaded["agent"]["cost_usd"] >= config.diagnose.budget_usd
         assert loaded["artifact"]["partial"] is True
 
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_empty_artifact_from_killed_agent_fails_without_mutating_body(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test for the timeout/empty-output failure mode: an investigative
+        agent killed mid-run emits output that still parses to a non-None but
+        all-empty artifact. That is a failure to diagnose, not a partial
+        diagnosis — the flow must exit FAILED, land nothing, and leave the issue
+        body untouched. This exercises the PARSE→LAND boundary where the
+        content-floor guard lives."""
+        config = self._setup_config(tmp_path)
+        original_body = "Bug report: diagnose lands empty scaffolding.\n"
+        mock_fetch.return_value = {
+            "number": 1575,
+            "title": "broken diagnose",
+            "body": original_body,
+            "state": "OPEN",
+        }
+        # An empty-but-structurally-parseable YAML block — the shape a killed
+        # agent's flushed output takes.
+        empty_yaml = "```yaml\n{}\n```"
+        mock_agent.return_value = _fake_agent_result(empty_yaml, success=False)
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1575,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        # (a) no landing occurred
+        assert not mock_edit.called, "issue body must not be edited"
+        assert not mock_post.called, "no comment must be posted"
+        assert result.state.landed_location is None
+        assert result.state.landing_destination is None
+        # (b) final phase is FAILED (not TIMEOUT_PARTIAL)
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert "Partial diagnosis landed" not in result.message
+        # (c) audit still written so the operator can inspect the killed run
+        audit_files = list((tmp_path / ".forge" / "audits").glob("diagnose-issue-1575-*.yaml"))
+        assert audit_files, "expected an audit for the failed run"
+        loaded = yaml.safe_load(audit_files[0].read_text())
+        assert loaded["final_phase"] == "FAILED"
+
 
 # ── DiagnoseState / phase transitions ─────────────────────────────────
 
