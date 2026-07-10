@@ -631,6 +631,7 @@ def run_intake_remediation(
     fetch_detail: FetchIssueDetail = _default_fetch_detail,
     post_comment: PostIssueComment = _default_post_comment,
     edit_body: EditIssueBody = _default_edit_body,
+    force: bool = False,
 ) -> dict[str, IntakeOutcome]:
     """Run the intake remediation pass over the full normalized task list.
 
@@ -644,6 +645,20 @@ def run_intake_remediation(
     shape gate already filtered upstream in ``cli/sprint.py``.)
     """
     outcomes: dict[str, IntakeOutcome] = {}
+
+    if force:
+        # Operator override: --force is a uniform, single-layer bypass of
+        # intake gating. Skip every per-task remediation step (including the
+        # GH detail fetch) so no LLM auto-fix budget is spent and the issue
+        # progresses to preflight regardless of which gate rule would fire.
+        for task in tasks:
+            outcomes[task.slug] = IntakeOutcome(
+                slug=task.slug,
+                kind=IntakeOutcomeKind.PASSED,
+                detail="intake remediation bypassed by --force",
+                audit={"force_bypass": True},
+            )
+        return outcomes
 
     for task in tasks:
         slug = task.slug

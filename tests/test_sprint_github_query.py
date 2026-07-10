@@ -652,8 +652,12 @@ class TestClosedDependencySlugs:
         assert "issue-265" in resolved.closed_dependency_slugs
 
         tasks = [task for task, _src, _ref in resolved.stories]
-        assert tasks[0].depends_on == []
-        assert tasks[0].dependency_warnings == ["depends_on: issue-265"]
+        # Prose dependency declarations are now honored as scheduler edges,
+        # so issue-265 appears as a depends_on entry. Because the dep is
+        # already closed, the satisfied/closed_dependency_slugs path below
+        # is what unblocks issue-750.
+        assert tasks[0].depends_on == ["issue-265"]
+        assert tasks[0].dependency_warnings == []
         # resolve_satisfied_dependencies must not need a live gh call because
         # issue-265 is already in pre_satisfied from closed_dependency_slugs.
         satisfied = resolve_satisfied_dependencies(
@@ -670,7 +674,7 @@ class TestClosedDependencySlugs:
         normalized = normalize_dependency_plan(tasks, satisfied=satisfied)
         assert normalized.blocked == {}
 
-        # Prose-only references no longer create a DAG edge, so issue-750 is immediately ready.
+        # issue-265 is satisfied (closed), so issue-750 is immediately ready.
         dag = build_dag(normalized.tasks, satisfied=satisfied)
         ready_slugs = [t.slug for t in dag.ready()]
         assert "issue-750" in ready_slugs

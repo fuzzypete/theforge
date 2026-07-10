@@ -10,7 +10,15 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelInfo, ModelProfile, apply_model_info
+from theforge.config import (
+    AgentSpec,
+    ForgeConfig,
+    ModelInfo,
+    ModelProfile,
+    apply_model_info,
+    model_info_view,
+)
+from theforge.config.profiles import _apply_provider_fallback
 from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 
@@ -216,13 +224,25 @@ def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
     return list(dict.fromkeys(matched))
 
 
-def _build_pool_entries(model_keys: list[str]) -> list[tuple[int, str, ModelInfo]]:
-    """Build sorted (cost_rank, registry_key, ModelInfo) list from models."""
+def _build_pool_entries(
+    model_keys: list[str],
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> list[tuple[int, str, ModelInfo]]:
+    """Build sorted (cost_rank, registry_key, ModelInfo) list from models.
+
+    ``registry`` is the merged AgentSpec view (built-in + forge.yaml overlay)
+    from ``ForgeConfig.model_registry``. When None, only built-ins are visible
+    and custom-overlay model keys raise ValueError.
+    """
     from theforge.config.models import _resolve_model_info  # noqa: PLC0415
 
+    info_view = model_info_view(registry)
     entries: list[tuple[int, str, ModelInfo]] = []
     for key in model_keys:
-        info: ModelInfo = MODEL_REGISTRY.get(key) or _resolve_model_info(key)
+        info = info_view.get(key)
+        if info is None:
+            info = _resolve_model_info(key, registry=registry)
         entries.append((info.cost_rank, key, info))
     entries.sort(key=lambda x: (x[0], -x[2].capability))
     return entries
@@ -542,7 +562,65 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
         return []
 
 
-def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
+_VALID_SYMPTOM_VERIFICATION_STATUSES = frozenset(
+    {"verified_resolved", "not_reproduced", "not_feasible", "not_attempted"}
+)
+
+
+def _parse_preflight_symptom_verification(output: str) -> dict:
+    """Extract symptom_verification from preflight agent output.
+
+    Returns a normalized dict with keys:
+      - status: one of the valid status enum values, or "" when absent/invalid
+      - evidence: stripped string, "" when absent
+      - reproduces_now: bool | None — explicit signal that the symptom was
+        exercised against the current baseline (False = not reproduced =
+        symptom resolved); None when not asserted
+
+    Returns {} when the field is absent so the caller can distinguish "agent
+    did not address symptom" from "agent addressed and gave a status".
+    """
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    raw = parsed.get("symptom_verification")
+    if not isinstance(raw, dict):
+        return {}
+
+    status = str(raw.get("status", "")).strip().lower()
+    if status not in _VALID_SYMPTOM_VERIFICATION_STATUSES:
+        status = ""
+    evidence = str(raw.get("evidence") or "").strip()
+    reproduces_raw = raw.get("reproduces_now")
+    if isinstance(reproduces_raw, bool):
+        reproduces_now: bool | None = reproduces_raw
+    else:
+        reproduces_now = None
+    return {
+        "status": status,
+        "evidence": evidence,
+        "reproduces_now": reproduces_now,
+    }
+
+
+def _find_registry_info_for_profile(
+    profile: ModelProfile,
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> tuple[int, int]:
     """Return (cost_rank, capability) for a profile using the model registry.
 
     CLI profiles match by cli+model. API profiles match by provider+model against
@@ -551,22 +629,26 @@ def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
 
     Falls back to (2, 5) for unknown models.
     """
-    registry_key = _find_registry_key_for_profile(profile)
+    registry_key = _find_registry_key_for_profile(profile, registry=registry)
     if registry_key is None:
         return 2, 5
-    info = MODEL_REGISTRY[registry_key]
+    info = model_info_view(registry)[registry_key]
     return info.cost_rank, info.capability
 
 
-def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
-    """Return the MODEL_REGISTRY key for a profile, or None if unknown.
+def _find_registry_key_for_profile(
+    profile: ModelProfile,
+    *,
+    registry: dict[str, AgentSpec] | None = None,
+) -> str | None:
+    """Return the model registry key for a profile, or None if unknown.
 
     Matches by TransportSpec (single source of dispatch truth) plus model name.
     Falls back to cli/provider matching for profiles without an explicit
     transport.
     """
     profile_transport = profile.transport
-    for key, info in MODEL_REGISTRY.items():
+    for key, info in model_info_view(registry).items():
         if info.model != profile.model:
             continue
         if profile_transport is not None and info.transport is not None:
@@ -683,22 +765,25 @@ def _p1_findings_match(current: ReviewFinding, previous: ReviewFinding) -> bool:
 def _escalate_dev_model(
     current_model: str,
     available_models: list[str],
+    *,
+    registry: dict[str, AgentSpec] | None = None,
 ) -> str | None:
     """Return the next higher-capability dev-capable model, or None.
 
     Selects the lowest-capability model that is still higher than current
-    and has dev_capable=True in MODEL_REGISTRY.
+    and has ``dev_capable=True`` in the merged registry view.
     """
-    current_info = MODEL_REGISTRY.get(current_model)
+    info_view = model_info_view(registry)
+    current_info = info_view.get(current_model)
     if current_info is None:
         return None
 
     candidates = [
-        (key, MODEL_REGISTRY[key])
+        (key, info_view[key])
         for key in available_models
-        if key in MODEL_REGISTRY
-        and MODEL_REGISTRY[key].dev_capable
-        and MODEL_REGISTRY[key].capability > current_info.capability
+        if key in info_view
+        and info_view[key].dev_capable
+        and info_view[key].capability > current_info.capability
     ]
 
     if not candidates:
@@ -735,7 +820,8 @@ def _apply_complexity_adaptation(
     if norm is None:
         return config
 
-    pool_entries = _build_pool_entries(config.models)
+    _registry = config.model_registry or None
+    pool_entries = _build_pool_entries(config.models, registry=_registry)
     if not pool_entries:
         return config
 
@@ -762,6 +848,7 @@ def _apply_complexity_adaptation(
         target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
         if target_dev_info.model != config.dev_profile.model:
             new_dev = apply_model_info(config.dev_profile, target_dev_info)
+            new_dev = _apply_provider_fallback(new_dev, config.provider_fallbacks)
             new_config = _dc_replace(new_config, dev_profile=new_dev)
 
     # ── review_pool ────────────────────────────────────────────────
@@ -775,7 +862,11 @@ def _apply_complexity_adaptation(
         non_dev_reviewers = [p for p in config.review_pool if p.model != new_dev_model]
         review_candidates = non_dev_reviewers if non_dev_reviewers else list(config.review_pool)
 
-        mid_strong = [p for p in review_candidates if _find_registry_info_for_profile(p)[0] >= 2]
+        mid_strong = [
+            p
+            for p in review_candidates
+            if _find_registry_info_for_profile(p, registry=_registry)[0] >= 2
+        ]
 
         if norm == "LOW":
             # Single mid/strong reviewer, no synthesis
@@ -788,22 +879,28 @@ def _apply_complexity_adaptation(
             single = min(
                 candidate_pool,
                 key=lambda p: (
-                    _find_registry_info_for_profile(p)[0],
-                    -_find_registry_info_for_profile(p)[1],
+                    _find_registry_info_for_profile(p, registry=_registry)[0],
+                    -_find_registry_info_for_profile(p, registry=_registry)[1],
                 ),
             )
+            single = _apply_provider_fallback(single, config.provider_fallbacks)
             new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
         else:
             # MEDIUM/HIGH → all mid/strong reviewers + synthesis
             review_broader = mid_strong if mid_strong else review_candidates
+            review_broader = [
+                _apply_provider_fallback(p, config.provider_fallbacks) for p in review_broader
+            ]
             synthesis = config.synthesis_profile
             if synthesis is None:
                 synth_candidates = review_broader or [new_config.dev_profile]
                 strongest = max(
-                    synth_candidates, key=lambda p: _find_registry_info_for_profile(p)[1]
+                    synth_candidates,
+                    key=lambda p: _find_registry_info_for_profile(p, registry=_registry)[1],
                 )
                 synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
                 synthesis = _dc_replace(strongest, name="synthesis", budget_usd=synth_budget)
+                synthesis = _apply_provider_fallback(synthesis, config.provider_fallbacks)
             new_config = _dc_replace(
                 new_config, review_pool=review_broader, synthesis_profile=synthesis
             )
@@ -914,6 +1011,16 @@ def _apply_preflight_config(
     _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
     _model_profiles = _load_profiles(_profiles_path)
 
+    from theforge.provider_health import (  # noqa: PLC0415
+        load_provider_health as _load_provider_health,
+    )
+    from theforge.provider_health import (
+        unhealthy_models as _unhealthy_models,
+    )
+
+    _health_path = config.project_root / ".forge" / "provider_health.yaml"
+    _unhealthy = _unhealthy_models(_load_provider_health(_health_path))
+
     from theforge.config import ModelProfile as _ModelProfile  # noqa: PLC0415
 
     _explicit: dict[str, object] = {}
@@ -965,6 +1072,7 @@ def _apply_preflight_config(
         sprint_promotions=state.sprint_promotions,
         secrets=config.secrets,
         model_profiles=_model_profiles,
+        unhealthy_models=_unhealthy if _unhealthy else None,
     )
 
     # Splice the full explicit pools back into the decision so audit and

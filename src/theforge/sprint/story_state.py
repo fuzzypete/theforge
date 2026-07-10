@@ -59,6 +59,11 @@ class StoryOutcome(str, Enum):
     DROPPED_SHAPE = "dropped_shape"
     REMEDIATED = "remediated"
     DROPPED_AFTER_FIX = "dropped_after_fix"
+    # operator-action: deliberately not run because the deliverable is human
+    # action no dev agent can perform. Distinct from SKIPPED (generic skip) and
+    # from FAILED-bucket outcomes — operator paid $0 and the system correctly
+    # identified the issue as not its work.
+    OPERATOR_ACTION = "operator_action"
 
     @property
     def is_terminal(self) -> bool:
@@ -89,7 +94,11 @@ class StoryOutcome(str, Enum):
 
     @property
     def is_skipped(self) -> bool:
-        return self in {StoryOutcome.SKIPPED, StoryOutcome.PRESERVED}
+        return self in {
+            StoryOutcome.SKIPPED,
+            StoryOutcome.PRESERVED,
+            StoryOutcome.OPERATOR_ACTION,
+        }
 
 
 _TERMINAL_OUTCOMES = {
@@ -104,6 +113,7 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.DROPPED,
     StoryOutcome.DROPPED_SHAPE,
     StoryOutcome.DROPPED_AFTER_FIX,
+    StoryOutcome.OPERATOR_ACTION,
 }
 
 
@@ -123,6 +133,7 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.DROPPED_SHAPE: "failed",
     StoryOutcome.DROPPED_AFTER_FIX: "failed",
     StoryOutcome.REMEDIATED: "waiting",
+    StoryOutcome.OPERATOR_ACTION: "operator-action",
 }
 
 
@@ -145,6 +156,8 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "dropped_shape": StoryOutcome.DROPPED_SHAPE,
     "remediated": StoryOutcome.REMEDIATED,
     "dropped_after_fix": StoryOutcome.DROPPED_AFTER_FIX,
+    "operator_action": StoryOutcome.OPERATOR_ACTION,
+    "operator-action": StoryOutcome.OPERATOR_ACTION,
 }
 
 
@@ -314,17 +327,44 @@ class SprintStoryState:
         when a queued PR fails to land) are permitted because the canonical
         structure must reflect the final reality, but the story never leaves
         the terminal set.
+
+        Landed immutability: a terminal outcome that has been marked
+        ``landed=True`` (its PR was confirmed merged on the base branch) is
+        immutable — no later transition may overwrite it with a non-DONE
+        terminal outcome. This distinguishes a genuine "queued PR failed to
+        land" correction (which is never marked landed) from a spurious
+        redispatch-after-process-restart that would otherwise clobber a
+        confirmed-merged DONE with FAILED.
         """
         with self._lock:
             entry = self._stories.get(slug)
             if entry is None:
                 return None
+            outcome_rejected = False
             if outcome is not None:
                 new_outcome = coerce_outcome(outcome)
                 if entry.outcome.is_terminal and not new_outcome.is_terminal:
                     # Reject: monotonicity invariant — once terminal, stay terminal.
                     new_outcome = entry.outcome
+                    outcome_rejected = True
+                elif (
+                    entry.outcome.is_terminal
+                    and entry.extras.get("landed")
+                    and new_outcome is not StoryOutcome.DONE
+                ):
+                    # Reject: a confirmed-landed DONE cannot be overwritten by a
+                    # non-DONE terminal (e.g. a bogus FAILED from a re-entry after
+                    # an unrelated process restart).
+                    new_outcome = entry.outcome
+                    outcome_rejected = True
                 entry.outcome = new_outcome
+            if outcome_rejected:
+                # The outcome change was rejected by a monotonicity/landed guard.
+                # The accompanying fields (cost_usd, detail, etc.) describe the
+                # rejected round's attempt and must not clobber the settled
+                # entry's data — e.g. a round-2 failure's cost_usd=0.0 must not
+                # overwrite round-1's recorded cost on a landed DONE.
+                return entry
             for k, v in fields.items():
                 if k == "phase" and isinstance(v, (str, type(None))):
                     entry.phase = v  # type: ignore[assignment]

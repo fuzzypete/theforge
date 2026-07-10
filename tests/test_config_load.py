@@ -109,6 +109,36 @@ class TestLoadConfig:
         assert config.retry.max_dev_transport_retries == 2
         assert config.retry.max_review_cycles == 4
 
+    def test_review_pool_transient_retry_quorum_fields_loaded(self, tmp_path):
+        config_path = _write_config(
+            {
+                "retry": {
+                    "max_review_transport_retries": 4,
+                    "review_transport_retry_backoff_seconds": 2.5,
+                    "review_quorum_threshold": 3,
+                    "review_transient_failure_codes": ["custom_code", "rate_limit"],
+                    "review_transient_output_patterns": ["Boom", "kapow"],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.retry.max_review_transport_retries == 4
+        assert config.retry.review_transport_retry_backoff_seconds == 2.5
+        assert config.retry.review_quorum_threshold == 3
+        assert config.retry.review_transient_failure_codes == ("custom_code", "rate_limit")
+        # Patterns are normalized to lowercase for case-insensitive matching.
+        assert config.retry.review_transient_output_patterns == ("boom", "kapow")
+
+    def test_review_pool_transient_retry_quorum_defaults(self, tmp_path):
+        config_path = _write_config({"retry": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.max_review_transport_retries == 2
+        assert config.retry.review_transport_retry_backoff_seconds == 8.0
+        assert config.retry.review_quorum_threshold == 2
+        assert "rate_limit" in config.retry.review_transient_failure_codes
+        assert any("rate limit" in p for p in config.retry.review_transient_output_patterns)
+
     def test_auto_model_escalation_defaults_false(self, tmp_path):
         config_path = _write_config({"retry": {}}, tmp_path)
         config = load_config(config_path)
@@ -935,3 +965,128 @@ class TestValidationTestCommand:
         )
         with pytest.raises(ValueError, match="v0.8"):
             load_config(config_path)
+
+
+class TestCliPoolCrossProviderRotation:
+    """Issue #1468 — a CLI-only models: pool (claude/codex/gemini) loaded via
+    forge.yaml must, when fed through assign_models with prefer_cross_provider,
+    yield reviewers across all three CLI binaries. Before the fix, every CLI
+    agent collapsed to provider=None and only the first was selected as
+    cross-provider, with the rest excluded by the diversity check."""
+
+    def test_cli_only_pool_yields_distinct_effective_providers(self, tmp_path):
+        from theforge.assignment import assign_models
+
+        config_path = _write_config(
+            {
+                "models": [
+                    "claude/sonnet",
+                    "claude/opus",
+                    "openai/gpt-5.4-pro",
+                    "gemini-cli/gemini-2.5-pro",
+                ],
+                "budget_usd": 30.0,
+                "assignment": {
+                    "enabled": True,
+                    "min_reviewers": 3,
+                    "max_reviewers": 3,
+                    "prefer_cross_provider": True,
+                    "max_cost_per_story_usd": 1000.0,
+                },
+            },
+            tmp_path,
+        )
+        # The conftest scrub blocks `shutil.which("claude" | "codex" | "gemini")`
+        # so load_config's reviewer-auth cross-check would otherwise reject the
+        # whole pool. Pretend each CLI binary is installed for this test.
+        # codex/gemini route through `npx` per theforge.config.auth._NPX_CLIS,
+        # so the auth check is `shutil.which('npx')` for those — list npx too.
+        cli_bins = {
+            "claude": "/usr/bin/claude",
+            "codex": "/usr/bin/codex",
+            "gemini": "/usr/bin/gemini",
+            "npx": "/usr/bin/npx",
+        }
+        with patch(
+            "theforge.config.auth.shutil.which",
+            side_effect=lambda cmd, *a, **kw: cli_bins.get(Path(cmd).name),
+        ):
+            config = load_config(config_path)
+            decision = assign_models(config.agents, config.assignment, complexity="small")
+
+        # Sanity: the pool truly contains four CLI agents whose raw provider
+        # field is None (the bug condition).
+        assert len(config.agents) == 4
+        assert {a.cli for a in config.agents} == {"claude", "codex", "gemini"}
+        assert all(a.provider is None for a in config.agents)
+        # …but their effective providers are derived from the cli binary.
+        assert {a.effective_provider for a in config.agents} == {
+            "anthropic",
+            "openai",
+            "google",
+        }
+
+        assert len(decision.code_reviewers) == 3
+        # Each reviewer must come from a distinct CLI binary — i.e., a distinct
+        # effective provider — even though every agent's raw provider is None.
+        assert {r.cli for r in decision.code_reviewers} == {"claude", "codex", "gemini"}
+        # Rationale must surface the derived provider names, never the literal
+        # `None` that leaked through before the fix.
+        rationale = decision.rationale.get("code_review", "")
+        assert "None" not in rationale, rationale
+        for derived in ("anthropic", "openai", "google"):
+            assert derived in rationale, f"expected {derived!r} in rationale: {rationale}"
+
+
+class TestWorktreeProjectRootResolution:
+    """Forge-created worktrees must resolve project_root to the parent checkout
+    so project-scoped secrets (.forge/.env) remain accessible regardless of
+    whether config is loaded from the main checkout or a worktree.
+    """
+
+    def _write_main_checkout(self, root: Path, env_contents: str | None) -> None:
+        (root / "forge.yaml").write_text(yaml.dump({"project": "p"}), encoding="utf-8")
+        if env_contents is not None:
+            (root / ".forge").mkdir(parents=True, exist_ok=True)
+            (root / ".forge" / ".env").write_text(env_contents, encoding="utf-8")
+
+    def _make_worktree(self, root: Path, slug: str) -> Path:
+        wt = root / ".forge" / "worktrees" / slug
+        wt.mkdir(parents=True, exist_ok=True)
+        (wt / "forge.yaml").write_text(yaml.dump({"project": "p"}), encoding="utf-8")
+        return wt
+
+    def test_load_from_main_checkout_reads_secrets(self, tmp_path):
+        self._write_main_checkout(tmp_path, "SLACK_WEBHOOK_URL=https://hooks/x\nFOO=bar\n")
+        config = load_config(tmp_path / "forge.yaml")
+        assert config.secrets.get("SLACK_WEBHOOK_URL") == "https://hooks/x"
+        assert config.secrets.get("FOO") == "bar"
+        assert config.project_root == tmp_path.resolve()
+
+    def test_load_from_worktree_recovers_parent_secrets(self, tmp_path):
+        self._write_main_checkout(tmp_path, "SLACK_WEBHOOK_URL=https://hooks/x\nFOO=bar\n")
+        wt = self._make_worktree(tmp_path, "issue-1503")
+        config = load_config(wt / "forge.yaml")
+        assert config.secrets.get("SLACK_WEBHOOK_URL") == "https://hooks/x"
+        assert config.secrets.get("FOO") == "bar"
+        assert config.project_root == tmp_path.resolve()
+
+    def test_load_from_worktree_with_no_parent_env_returns_empty_secrets(self, tmp_path):
+        self._write_main_checkout(tmp_path, env_contents=None)
+        wt = self._make_worktree(tmp_path, "issue-1503")
+        config = load_config(wt / "forge.yaml")
+        assert config.secrets == {}
+        assert config.project_root == tmp_path.resolve()
+
+    def test_unrelated_directory_named_worktrees_not_treated_as_forge_worktree(self, tmp_path):
+        """Only the canonical .forge/worktrees/<slug>/ layout triggers walk-up.
+        A user project that happens to have a folder named worktrees should not
+        have its project_root silently relocated.
+        """
+        # <tmp>/something/worktrees/<slug>/forge.yaml — grandparent is "worktrees"
+        # but great-grandparent is "something", not ".forge".
+        odd = tmp_path / "something" / "worktrees" / "slug-x"
+        odd.mkdir(parents=True)
+        (odd / "forge.yaml").write_text(yaml.dump({"project": "p"}), encoding="utf-8")
+        config = load_config(odd / "forge.yaml")
+        assert config.project_root == odd.resolve()

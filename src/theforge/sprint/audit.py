@@ -353,6 +353,7 @@ def _write_sprint_audit(
     current_story_entries_by_ref: "dict[str, dict] | None" = None,
     triage_actions_by_ref: "dict[str, str] | None" = None,
     run_id: str | None = None,
+    live_telemetry_snapshots: "dict[str, dict] | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
@@ -363,6 +364,7 @@ def _write_sprint_audit(
     skipped_issues = skipped_issues or []
     current_story_entries_by_ref = current_story_entries_by_ref or {}
     triage_actions_by_ref = triage_actions_by_ref or {}
+    live_telemetry_snapshots = live_telemetry_snapshots or {}
 
     # Build per-spec entries
     spec_entries = []
@@ -484,6 +486,18 @@ def _write_sprint_audit(
                 entry["started_at"] = None
                 entry["finished_at"] = None
             entry["batch"] = batch_assignments.get(slug, 0)
+            snapshot = live_telemetry_snapshots.get(slug)
+            if snapshot:
+                last_cost = snapshot.get("last_cost")
+                if (
+                    not entry.get("cost_usd")
+                    and isinstance(last_cost, (int, float))
+                    and last_cost > 0
+                ):
+                    entry["cost_usd"] = round(float(last_cost), 4)
+                last_phase_val = snapshot.get("last_phase")
+                if last_phase_val:
+                    entry["last_phase"] = last_phase_val
         elif canonical_ref in current_story_entries_by_ref:
             entry = dict(current_story_entries_by_ref[canonical_ref])
         else:
@@ -630,6 +644,7 @@ def _write_sprint_summary(
     current_story_entries_by_ref: "dict[str, dict] | None" = None,
     story_state: "object | None" = None,
     config: "ForgeConfig | None" = None,
+    live_telemetry_snapshots: "dict[str, dict] | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -647,6 +662,7 @@ def _write_sprint_summary(
     skipped_issues = skipped_issues or []
     triage_actions_by_ref = triage_actions_by_ref or {}
     current_story_entries_by_ref = current_story_entries_by_ref or {}
+    live_telemetry_snapshots = live_telemetry_snapshots or {}
 
     # Load prior accumulated story entries from the sprint-level state file.
     # Keyed by canonical_ref so we can substitute them for stories not in
@@ -718,13 +734,27 @@ def _write_sprint_summary(
             outcome_source: str | None = None
             if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE":
                 outcome_source = "preflight_verdict"
+            _snapshot = live_telemetry_snapshots.get(slug)
+            _entry_cost = round(res.state.total_cost, 4)
+            _last_phase_val: str | None = None
+            if _snapshot:
+                _snap_cost = _snapshot.get("last_cost")
+                if _entry_cost == 0 and isinstance(_snap_cost, (int, float)) and _snap_cost > 0:
+                    _entry_cost = round(float(_snap_cost), 4)
+                if _dev_model is None:
+                    _snap_model = _snapshot.get("last_model")
+                    if isinstance(_snap_model, str) and _snap_model:
+                        _dev_model = _snap_model
+                _snap_phase = _snapshot.get("last_phase")
+                if isinstance(_snap_phase, str) and _snap_phase:
+                    _last_phase_val = _snap_phase
             entry: dict = {
                 "path": display_key,
                 "slug": slug,
                 "outcome": outcome,
                 "outcome_source": outcome_source,
                 "verdict": last_verdict or None,
-                "cost_usd": round(res.state.total_cost, 4),
+                "cost_usd": _entry_cost,
                 "dev_model": _dev_model,
                 "story_run_id": run_id,
                 "preflight": preflight,
@@ -764,6 +794,8 @@ def _write_sprint_summary(
                 entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
             entry["batch"] = batch_assignments.get(slug, 0)
             entry["depends_on"] = list(getattr(tasks_by_slug.get(slug), "depends_on", None) or [])
+            if _last_phase_val and outcome != "DONE":
+                entry["last_phase"] = _last_phase_val
             spec_entries.append(entry)
             accumulated_for_state.append({"canonical_ref": canonical_ref, **entry})
         elif canonical_ref in current_story_entries_by_ref:
@@ -827,15 +859,11 @@ def _write_sprint_summary(
         spec_entries.append(entry)
         accumulated_for_state.append(prior)
 
-    # Persist accumulated state so future runs can find stories from this invocation.
-    # Preserve prior entries that were not part of this invocation's canonical_refs
-    # so re-exec/resume summaries retain the full logical sprint history.
-    persist_accumulated_story_state(
-        sprint_id,
-        manifest.name,
-        project_root,
-        accumulated_for_state,
-    )
+    # Persistence is deferred until after canonical projection so the
+    # accumulated state on disk reflects per-story costs that include
+    # cross-phase spend attributed by the runner (e.g. intake remediation).
+    # Persisting before projection saves the stale CoordinatorState-only
+    # cost and a later --resume reloads the wrong total.
 
     usage_distribution = []
     for spec_str, res in result.results:
@@ -869,11 +897,14 @@ def _write_sprint_summary(
     # no canonical state was passed (legacy callers), fall back to recomputing
     # from spec_entries; the canonical path is the single source of truth.
     if story_state is not None and hasattr(story_state, "counts"):
-        # First, propagate canonical outcomes to per-story rows so that
-        # terminal-to-terminal corrections (e.g., DONE→FAILED for a queued PR
-        # that did not land) appear in the summary rows AND aggregate counts.
-        # The summary stories list and the summary totals must come from the
-        # same source — this loop ensures both project from story_state.
+        # First, propagate canonical outcomes AND cost_usd to per-story rows
+        # so that terminal-to-terminal corrections (e.g., DONE→FAILED for a
+        # queued PR that did not land) and cross-phase spend attribution
+        # (e.g. intake remediation) appear in the summary rows AND aggregate
+        # counts AND the persisted accumulated state. The summary stories
+        # list, persisted state, and summary totals must come from the same
+        # source — this loop ensures all three project from story_state.
+        accumulated_by_slug = {e.get("slug"): e for e in accumulated_for_state if e.get("slug")}
         for entry in spec_entries:
             slug = entry.get("slug")
             if not slug:
@@ -884,6 +915,10 @@ def _write_sprint_summary(
             entry["outcome"] = canonical_entry.outcome.name
             outcome_lower = canonical_entry.outcome.name.lower()
             entry["outcome_code"] = entry.get("error_type") or outcome_lower
+            entry["cost_usd"] = canonical_entry.cost_usd
+            accumulated = accumulated_by_slug.get(slug)
+            if accumulated is not None:
+                accumulated["cost_usd"] = canonical_entry.cost_usd
         canonical_counts = story_state.counts()
         effective_specs_total = canonical_counts["total"]
         effective_succeeded = canonical_counts["succeeded"]
@@ -913,6 +948,7 @@ def _write_sprint_summary(
                     "batch": 0,
                     "depends_on": list(entry.depends_on),
                     "drop_reason": entry.reason,
+                    "detail": dict(entry.detail) if entry.detail else None,
                 }
             )
     else:
@@ -929,6 +965,18 @@ def _write_sprint_summary(
             for e in spec_entries
             if e.get("outcome") in ("ALREADY_DONE", "SKIPPED", "PRESERVED", None)
         )
+
+    # Persist accumulated state so future runs can find stories from this
+    # invocation. Persistence runs after canonical projection so cost_usd
+    # values reflect cross-phase spend (e.g. intake remediation) attributed
+    # by the runner; otherwise --resume would reload stale per-story totals
+    # and sprint-summary.yaml would silently drop the prior intake spend.
+    persist_accumulated_story_state(
+        sprint_id,
+        manifest.name,
+        project_root,
+        accumulated_for_state,
+    )
 
     summary = {
         "sprint": {
@@ -980,6 +1028,7 @@ def _write_story_audit(
     task: "TaskStory",
     result: "CoordinatorResult",
     sprint_id: str | None = None,
+    telemetry_snapshot: dict | None = None,
 ) -> None:
     """Write per-story audit.yaml to the durable log directory and preserve ESCALATE worktrees.
 
@@ -993,6 +1042,20 @@ def _write_story_audit(
     except Exception as exc:
         _log(f"Warning: failed to generate story audit log for {task.slug}: {exc}")
         return
+
+    if telemetry_snapshot:
+        last_phase = telemetry_snapshot.get("last_phase")
+        last_model = telemetry_snapshot.get("last_model")
+        last_cost = telemetry_snapshot.get("last_cost")
+        if last_phase:
+            audit_data["last_phase"] = last_phase
+        if last_model:
+            audit_data["last_model"] = last_model
+        if isinstance(last_cost, (int, float)) and last_cost > 0:
+            outcome_block = audit_data.get("outcome")
+            if isinstance(outcome_block, dict):
+                if not outcome_block.get("cost_usd"):
+                    outcome_block["cost_usd"] = round(float(last_cost), 4)
 
     if sprint_id is not None:
         audit_data["sprint_id"] = sprint_id

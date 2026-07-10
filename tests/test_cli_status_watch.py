@@ -462,9 +462,10 @@ class TestRunWatchLoop:
 
         assert rc == 0
 
-    def test_first_frame_failure_returns_nonzero(
+    def test_first_frame_failure_stays_alive(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        """A render_frame exception on frame 0 shows a waiting message; the loop does not exit."""
         with (
             patch.object(
                 status_watch,
@@ -482,9 +483,9 @@ class TestRunWatchLoop:
                 max_frames=1,
             )
 
-        assert rc == 1
-        err = capsys.readouterr().err
-        assert "state unreadable" in err
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Waiting" in out
 
     def test_cursor_restored_on_tty_exit(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -670,6 +671,53 @@ class TestRunWatchLoop:
         assert rc == 0
         assert seen_costs == [{}, {}]
 
+    def test_watch_stays_alive_through_preflight_window(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Watch loop stays alive when state files do not exist yet (preflight/DAG-build).
+
+        Simulates the real startup window: frame 0 and frame 1 return no content
+        (state files not written yet), frame 2 returns normal content once the
+        sprint is past DAG-build.
+        """
+        frame_returns = [
+            ("", False, ""),  # preflight — no state files
+            ("", False, ""),  # DAG-build — still no state files
+            ("story rows\n", True, ""),  # sprint running — state populated
+        ]
+
+        def fake_render_frame(
+            _run_id: str,
+            _project_root: Path,
+            state: dict,
+            frame_idx: int,
+            *,
+            color: bool,
+            now_fn=None,
+        ) -> tuple[str, bool, str]:
+            del state, frame_idx, color, now_fn
+            return frame_returns.pop(0)
+
+        with (
+            patch.object(status_watch, "render_frame", side_effect=fake_render_frame),
+            patch.object(status_watch, "is_tty", return_value=False),
+        ):
+            rc = status_watch.run_watch_loop(
+                "run-x",
+                tmp_path,
+                interval=0.01,
+                color=False,
+                sleep_fn=lambda _s: None,
+                max_frames=3,
+            )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Waiting message shown during startup window.
+        assert "Waiting" in out
+        # Story rows shown once state is available.
+        assert "story rows" in out
+
 
 # ── cmd_status routing ───────────────────────────────────────────────────────
 
@@ -758,6 +806,42 @@ class TestCmdStatusWatchRouting:
         assert rc == 0
         loop.assert_called_once()
 
+    def test_tty_watch_enters_loop_for_pid_only_sprint_marker(self, tmp_path: Path) -> None:
+        """Regression for #1405: a sprint with only PID + sprint marker (no .state, no
+        summary, no redirect) must still enter watch mode.
+
+        Exercises the real ``_resolve_watch_run_ids`` path — does NOT patch the
+        resolver — so the gate logic that previously returned [] for PID-only sprint
+        runs is genuinely covered.
+        """
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = self._config(tmp_path)
+        args = argparse.Namespace(run_id=None, recent=False, last=False, watch=3, no_color=True)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-1.pid").write_text("99999\nissues-1430,1435,1438\n")
+        (runs_dir / "run-1.sprint").write_text("sprint\n")
+        # No .state, no sprint-summary.yaml, no .redirect — early-lifecycle window.
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status._list_active_run_ids", return_value=["run-1"]),
+            patch("theforge.cli.status_watch.is_tty", return_value=True),
+            patch("theforge.cli.status_watch.run_watch_loop", return_value=0) as loop,
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            rc = cmd_status(args)
+
+        assert rc == 0
+        loop.assert_called_once()
+        assert loop.call_args.kwargs["follow_active_runs"] is True
+
     def test_tty_single_run_falls_back(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -815,11 +899,16 @@ class TestCmdStatusWatchRouting:
 
 
 class TestSnapshotFailurePropagates:
-    """display_sprint_status returning non-zero on first frame must exit non-zero."""
+    """Frame-0 snapshot failures must not exit the watch loop.
 
-    def test_first_frame_snapshot_failure_exits_one(
+    The watch must stay alive through the sprint startup window (preflight and
+    DAG-build phases) before any state files are written to disk.
+    """
+
+    def test_first_frame_snapshot_failure_stays_alive(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        """snapshot_ok=False on frame 0 shows a waiting message; the loop does not exit."""
         with (
             patch.object(
                 status_watch,
@@ -837,16 +926,14 @@ class TestSnapshotFailurePropagates:
                 max_frames=1,
             )
 
-        assert rc == 1
-        # The captured diagnostic from display_sprint_status must reach stderr
-        # so the operator sees WHY the watch session refused to start.
-        err = capsys.readouterr().err
-        assert "snapshot diag" in err
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Waiting" in out
 
-    def test_first_frame_failure_falls_back_when_no_captured_diagnostic(
+    def test_first_frame_no_body_shows_waiting_message(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """If the snapshot returned non-zero but emitted nothing, we still surface a message."""
+        """When no body is produced on frame 0, a waiting message is shown instead of nothing."""
         with (
             patch.object(
                 status_watch,
@@ -864,9 +951,9 @@ class TestSnapshotFailurePropagates:
                 max_frames=1,
             )
 
-        assert rc == 1
-        err = capsys.readouterr().err
-        assert "failed to read sprint state" in err
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Waiting" in out
 
 
 class TestRenderFrameCapturesStderr:

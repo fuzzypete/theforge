@@ -151,6 +151,7 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
         "failed": "✗",
         "skipped": "⊘",
         "blocked": "⊘",
+        "operator-action": "⊘",
     }
 
     # Column header

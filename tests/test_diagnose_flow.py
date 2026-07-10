@@ -351,6 +351,50 @@ class TestDiagnoseFlow:
         assert "## Diagnosis" in new_body
         assert "Original" in new_body  # original body preserved
 
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_default_destination_lands_in_body_and_satisfies_shape_gate(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """Seam test: a default-config diagnose run must produce an issue body
+        the sprint shape gate accepts as fix-ready. Diagnose and sprint share
+        a contract on where the artifact lives — the default destination must
+        match what the gate reads."""
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+        from theforge.shape_check.heuristics import diagnosis_completeness
+
+        config = self._setup_config(tmp_path)
+        # Sanity: the configured default is the body-section destination so a
+        # plain `forge diagnose` run lands where the shape gate looks.
+        assert config.diagnose.output_destination == "body_section"
+        original_body = "Bug report: sprint drops the third story.\n"
+        mock_fetch.return_value = {
+            "number": 42,
+            "title": "broken sprint",
+            "body": original_body,
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        # No explicit output_destination — exercise the default contract.
+        result = run_diagnose_flow(
+            issue_number=42,
+            config=config,
+            project_root=tmp_path,
+        )
+
+        assert result.success
+        assert result.state.landing_destination == "body_section"
+        assert mock_edit.called, "default destination must edit issue body, not post a comment"
+        new_body = mock_edit.call_args[0][1]
+        assert "## Diagnosis" in new_body
+        # The body produced by diagnose must satisfy the same heuristic the
+        # sprint shape gate uses to decide bug_missing_diagnosis. If this
+        # assertion fails, diagnose and sprint disagree on what fix-ready means.
+        is_complete, missing = diagnosis_completeness(new_body)
+        assert is_complete, f"diagnose output does not satisfy shape gate; missing: {missing}"
+
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_pr_to_body_writes_markdown_file(self, mock_agent, mock_fetch, tmp_path):
@@ -471,6 +515,96 @@ class TestDiagnoseFlow:
         loaded = yaml.safe_load(audit_files[0].read_text())
         assert loaded["agent"]["cost_usd"] >= config.diagnose.budget_usd
         assert loaded["artifact"]["partial"] is True
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_empty_artifact_from_killed_agent_fails_without_mutating_body(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test for the timeout/empty-output failure mode: an investigative
+        agent killed mid-run emits output that still parses to a non-None but
+        all-empty artifact. That is a failure to diagnose, not a partial
+        diagnosis — the flow must exit FAILED, land nothing, and leave the issue
+        body untouched. This exercises the PARSE→LAND boundary where the
+        content-floor guard lives."""
+        config = self._setup_config(tmp_path)
+        original_body = "Bug report: diagnose lands empty scaffolding.\n"
+        mock_fetch.return_value = {
+            "number": 1575,
+            "title": "broken diagnose",
+            "body": original_body,
+            "state": "OPEN",
+        }
+        # An empty-but-structurally-parseable YAML block — the shape a killed
+        # agent's flushed output takes.
+        empty_yaml = "```yaml\n{}\n```"
+        mock_agent.return_value = _fake_agent_result(empty_yaml, success=False)
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1575,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        # (a) no landing occurred
+        assert not mock_edit.called, "issue body must not be edited"
+        assert not mock_post.called, "no comment must be posted"
+        assert result.state.landed_location is None
+        assert result.state.landing_destination is None
+        # (b) final phase is FAILED (not TIMEOUT_PARTIAL)
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert "Partial diagnosis landed" not in result.message
+        # (c) audit still written so the operator can inspect the killed run
+        audit_files = list((tmp_path / ".forge" / "audits").glob("diagnose-issue-1575-*.yaml"))
+        assert audit_files, "expected an audit for the failed run"
+        loaded = yaml.safe_load(audit_files[0].read_text())
+        assert loaded["final_phase"] == "FAILED"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_blank_hypothesis_scaffold_fails_without_mutating_body(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test for the empty-scaffold variant: a killed agent can flush a
+        structurally-parseable block whose only content is a blank hypothesis
+        entry (`hypotheses: [{}]`). parse_diagnose_output turns that into a
+        non-empty hypotheses tuple of one blank bullet — but it carries no
+        investigative content, so the content floor must still reject it and
+        the flow must fail without touching the issue body."""
+        config = self._setup_config(tmp_path)
+        original_body = "Bug report: diagnose lands empty scaffolding.\n"
+        mock_fetch.return_value = {
+            "number": 1595,
+            "title": "broken diagnose",
+            "body": original_body,
+            "state": "OPEN",
+        }
+        scaffold_yaml = "```yaml\nhypotheses:\n  - {}\n```"
+        mock_agent.return_value = _fake_agent_result(scaffold_yaml, success=False)
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1595,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not mock_edit.called, "issue body must not be edited"
+        assert not mock_post.called, "no comment must be posted"
+        assert result.state.landed_location is None
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert "Partial diagnosis landed" not in result.message
 
 
 # ── dry-run stdout tests ──────────────────────────────────────────────

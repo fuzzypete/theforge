@@ -525,6 +525,11 @@ test_coverage:
     ):
         """retry_reason='extend' → build_fix_prompt() when human extends after APPROVE."""
         config = _make_config(tmp_path)
+        # Disable post-APPROVE P2 cleanup so this test exercises the original
+        # extend-after-APPROVE+P2 path without an intervening cleanup pass.
+        config = dataclasses.replace(
+            config, retry=dataclasses.replace(config.retry, p2_cleanup_enabled=False)
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()

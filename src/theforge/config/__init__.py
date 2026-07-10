@@ -32,6 +32,7 @@ from .models import (
     canonical_id_for_spec,
     canonical_model_id,
     is_canonical_model_id,
+    model_info_view,
     resolve_agent_spec,
 )
 from .types import (
@@ -100,6 +101,7 @@ __all__ = [
     "canonical_id_for_spec",
     "canonical_model_id",
     "is_canonical_model_id",
+    "model_info_view",
     "resolve_agent_spec",
     # defaults
     "API_PROVIDER_DEFAULT_TOOLS",

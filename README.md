@@ -3,7 +3,7 @@
 [![CI](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml/badge.svg)](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/github/v/tag/fuzzypete/theforge?sort=semver&label=version&color=orange)](CHANGELOG.md)
 
 **Deterministic multi-LLM development orchestrator.**
 
@@ -168,7 +168,7 @@ recommended patterns.
 
 ## Minimal config
 
-This is the smallest useful mental model for `forge.yaml` in v0.9:
+This is the smallest useful mental model for `forge.yaml`:
 
 ```yaml
 models:

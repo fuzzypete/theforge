@@ -10,9 +10,10 @@ from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
+from theforge.config import ForgeConfig, apply_model_info
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
+    ReviewFinding,
     ReviewResult,
     _best_individual_result,
     review_to_dev_handoff,
@@ -60,13 +61,12 @@ from .run_setup import save_trajectory_state
 from .state import (
     CoordinatorResult,
     CoordinatorState,
-    FindingRecord,
     Phase,
     RetryReason,
     ReviewCycleMetadata,
     ReviewIterationTelemetry,
 )
-from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_worktree_eval
+from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_shell
 
 
 def _perform_dev_model_escalation(
@@ -78,13 +78,16 @@ def _perform_dev_model_escalation(
     model is available. Callers are responsible for updating state flags and emitting
     audit records appropriate to their escalation reason.
     """
-    curr_key = _find_registry_key_for_profile(config.dev_profile)
+    registry = config.model_registry or None
+    curr_key = _find_registry_key_for_profile(config.dev_profile, registry=registry)
     if curr_key is None:
         return None
-    next_key = _escalate_dev_model(curr_key, config.models)
+    next_key = _escalate_dev_model(curr_key, config.models, registry=registry)
     if next_key is None:
         return None
-    next_info = MODEL_REGISTRY[next_key]
+    from theforge.config.models import _resolve_model_info  # noqa: PLC0415
+
+    next_info = _resolve_model_info(next_key, registry=registry)
     old_model = config.dev_profile.model
     new_dev = apply_model_info(config.dev_profile, next_info)
     return old_model, next_info.model, _dc_replace(config, dev_profile=new_dev)
@@ -289,6 +292,132 @@ class _ReviewOutcome(Enum):
     RETRY_DEV = auto()
 
 
+def _open_p2_findings(parsed_review: ReviewResult) -> list[ReviewFinding]:
+    """Return the P2 findings raised by the current review pass."""
+    return [f for f in parsed_review.findings if f.severity == "P2"]
+
+
+def _p2_finding_key(f: ReviewFinding) -> tuple[str, int | None, str]:
+    """Return a stable fingerprint for a P2 finding."""
+    return (f.file or "", f.line, (f.description or "").strip())
+
+
+def _build_carry_findings(
+    parsed_review: ReviewResult,
+    carry_keys: list[tuple[str, int | None, str]],
+) -> list[ReviewFinding]:
+    """Filter the current P2 findings to those still in the carried set."""
+    if not carry_keys:
+        return []
+    carry_set = {tuple(key) for key in carry_keys}
+    return [
+        f for f in parsed_review.findings if f.severity == "P2" and _p2_finding_key(f) in carry_set
+    ]
+
+
+def _carry_handoff(findings: list[ReviewFinding]) -> str:
+    """Render carried P2 findings as a dev-agent handoff body."""
+    if not findings:
+        return "No specific findings provided."
+    lines: list[str] = ["## Carried P2 Findings"]
+    for f in findings:
+        loc = f" (line {f.line})" if f.line is not None else ""
+        lines.append(f"\n### [P2] `{f.file}`{loc}")
+        lines.append(f"**Issue:** {f.description}")
+        if f.suggestion:
+            lines.append(f"**Fix:** {f.suggestion}")
+    return "\n".join(lines)
+
+
+def _clear_p2_cleanup_state(state: CoordinatorState) -> None:
+    """Reset cleanup tracking when the loop exits (clean, regression, cap, etc.)."""
+    state.p2_cleanup_active = False
+    state.p2_cleanup_findings = []
+    state.p2_cleanup_carry_keys = []
+
+
+def _maybe_enter_p2_cleanup(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    parsed_review: ReviewResult,
+) -> bool:
+    """Decide whether to re-enter DEV for advisory P2 cleanup after APPROVE.
+
+    Mutates state when entering cleanup: sets retry_reason=P2_CLEANUP,
+    p2_cleanup_active=True, captures p2_cleanup_findings filtered to the
+    originally carried P2 set, and appends an audit entry. Returns True to
+    signal the caller should return RETRY_DEV instead of DONE.
+
+    On first entry the current P2 findings are fingerprinted and stored as
+    state.p2_cleanup_carry_keys; on subsequent passes only those carried
+    findings still raised by the reviewer keep the loop running. New P2
+    findings raised after carry capture are recorded but do not extend the
+    loop — preventing an unbounded "follow every new advisory" pattern.
+
+    Returns False when:
+      - the feature is disabled,
+      - no carried P2 findings remain (or none existed),
+      - the dev iteration budget for this cycle is exhausted, or
+      - the configured cleanup-iteration cap has been reached.
+    """
+    current_p2s = _open_p2_findings(parsed_review)
+    if not state.p2_cleanup_active:
+        # First evaluation post-APPROVE — capture the carry set from the
+        # P2 findings raised by THIS review.
+        carry_keys = [list(_p2_finding_key(f)) for f in current_p2s]
+    else:
+        carry_keys = list(state.p2_cleanup_carry_keys)
+    remaining_carried = _build_carry_findings(parsed_review, carry_keys)
+    audit_base = {
+        "review_cycle": state.review_cycle,
+        "dev_iteration": state.dev_iteration,
+        "p2_count": len(current_p2s),
+        "carried_p2_count": len(carry_keys),
+        "remaining_carried_p2_count": len(remaining_carried),
+        "budget_remaining": state.budget.remaining(),
+        "cleanup_iterations": state.p2_cleanup_iterations,
+    }
+    if not config.retry.p2_cleanup_enabled:
+        state.p2_cleanup_audit.append({"action": "skip_disabled", **audit_base})
+        _clear_p2_cleanup_state(state)
+        return False
+    if not remaining_carried:
+        # Either the original review had no P2s, or every carried P2 was
+        # resolved by a prior cleanup pass. Either way we exit the loop.
+        action = "exit_clean" if state.p2_cleanup_active else "skip_no_p2"
+        state.p2_cleanup_audit.append({"action": action, **audit_base})
+        _clear_p2_cleanup_state(state)
+        return False
+    if state.budget.remaining() <= 0:
+        state.p2_cleanup_audit.append({"action": "skip_budget", **audit_base})
+        _clear_p2_cleanup_state(state)
+        return False
+    cap = config.retry.p2_cleanup_max_iterations
+    if cap > 0 and state.p2_cleanup_iterations >= cap:
+        state.p2_cleanup_audit.append({"action": "skip_cap", **audit_base})
+        _clear_p2_cleanup_state(state)
+        return False
+    state.p2_cleanup_carry_keys = carry_keys
+    state.p2_cleanup_findings = [
+        {
+            "severity": f.severity,
+            "file": f.file,
+            "line": f.line,
+            "description": f.description,
+            "suggestion": f.suggestion,
+        }
+        for f in remaining_carried
+    ]
+    action = "continue" if state.p2_cleanup_iterations > 0 else "enter"
+    state.p2_cleanup_active = True
+    state.p2_cleanup_iterations += 1
+    state.retry_reason = RetryReason.P2_CLEANUP
+    state.human_feedback = None
+    state.last_review_findings = _carry_handoff(remaining_carried)
+    state.p2_cleanup_audit.append({"action": action, **audit_base})
+    return True
+
+
 # ── Review-phase helpers ──────────────────────────────────────────────
 
 
@@ -366,6 +495,7 @@ def _handle_interactive_review_decision(
     review_elapsed: float,
     run_id: str,
     exhausted_cycles: bool,
+    history_already_appended: bool = False,
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     """Handle the HUMAN_REVIEW decision flow for an interactive session.
 
@@ -397,7 +527,8 @@ def _handle_interactive_review_decision(
     state.human_review_feedback = feedback
 
     if decision == "approve":
-        _append_cycle_history(state, parsed_review)
+        if not history_already_appended:
+            _append_cycle_history(state, parsed_review)
         if exhausted_cycles:
             _approve_msg = (
                 f"Task '{task.name}' completed. "
@@ -432,6 +563,7 @@ def _handle_interactive_review_decision(
 
     if decision in ("escalate", "timeout"):
         state.phase = Phase.ESCALATE
+        state.escalate_kind = "content"
         if decision == "timeout":
             state.error = "Remote review timed out — auto-escalated."
         elif exhausted_cycles:
@@ -452,7 +584,8 @@ def _handle_interactive_review_decision(
         )
 
     if decision == "extend":
-        _append_cycle_history(state, parsed_review)
+        if not history_already_appended:
+            _append_cycle_history(state, parsed_review)
         state.budget.reset_cycle()
         state.review_cycle = 0
         state.human_review_extra_cycles += 1
@@ -474,7 +607,8 @@ def _handle_interactive_review_decision(
         return _ReviewOutcome.RETRY_DEV, None, config
 
     # decision == "reject"
-    _append_cycle_history(state, parsed_review)
+    if not history_already_appended:
+        _append_cycle_history(state, parsed_review)
     state.budget.reset_cycle()
     state.last_review_findings = None
     state.retry_reason = RetryReason.REJECT
@@ -491,6 +625,178 @@ def _handle_interactive_review_decision(
         state.human_feedback = feedback
         _log("Human rejected — looping back to dev with feedback")
     return _ReviewOutcome.RETRY_DEV, None, config
+
+
+def _maybe_replay_hygiene_consensus(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    workspace_path: Path,
+    branch_name: str,
+    task_start: float,
+    *,
+    auto_merge: bool,
+    notify: bool,
+    logger: StructuredLogger | None,
+    run_id: str,
+) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig] | None:
+    """Replay a prior APPROVE consensus captured at hygiene-escalation time.
+
+    Returns a DONE outcome when the dev commit is unchanged from the hygiene
+    trip and a prior APPROVE candidate was captured.  Returns None to fall
+    through to a fresh review otherwise; in that case escalation-state fields
+    are cleared so a future hygiene escalation does not silently reuse them.
+    """
+    prior_review = state.hygiene_escalation_prior_review
+    prior_sha = state.hygiene_escalation_dev_commit_sha or ""
+    _ok_sha, _sha_out = _run_shell("git rev-parse HEAD", workspace_path)
+    head_sha = _sha_out.strip() if _ok_sha else ""
+
+    if not head_sha or not prior_sha or head_sha != prior_sha:
+        audit = {
+            "resume_action": "rerun_dev_commit_changed"
+            if (head_sha and prior_sha)
+            else "rerun_no_prior_consensus",
+            "escalate_kind": state.escalate_kind,
+            "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+            "total_count": state.hygiene_escalation_total_count,
+            "dev_commit_sha_at_hygiene_trip": prior_sha or None,
+            "dev_commit_sha_at_resume": head_sha or None,
+        }
+        state.hygiene_resume_audit = audit
+        if logger:
+            logger._safe_emit("hygiene_resume", **audit)
+        _log(
+            "  ↺ RESUME   dev commit changed since hygiene escalation"
+            f" (was {prior_sha[:8] or '?'}, now {head_sha[:8] or '?'})"
+            " — running fresh review"
+        )
+        # Clear so a future hygiene escalation in this run does not replay.
+        state.escalate_kind = None
+        state.hygiene_escalation_prior_review = None
+        return None
+
+    # Refuse to replay if the worktree mutation that caused the original
+    # hygiene escalation (or any new mutation) is still present. Replaying
+    # under a dirty tree would let unreviewed reviewer-created changes ride
+    # under the prior dev-commit approval — and in merge mode land_story
+    # could auto-commit those changes before merging. Fail closed: ESCALATE
+    # with the offending paths so the operator either removes/quarantines
+    # them or marks the run rejected — do not fall through to a fresh
+    # review, whose own hygiene snapshot would treat the persistent
+    # mutation as part of the baseline and silently approve it.
+    from .workspace_hygiene import snapshot_porcelain  # noqa: PLC0415
+
+    _porcelain = snapshot_porcelain(workspace_path)
+    if _porcelain:
+        offending = sorted(entry[3:] if len(entry) > 3 else entry for entry in _porcelain)
+        audit = {
+            "resume_action": "rerun_dirty_worktree",
+            "escalate_kind": state.escalate_kind,
+            "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+            "total_count": state.hygiene_escalation_total_count,
+            "dev_commit_sha_at_hygiene_trip": prior_sha,
+            "dev_commit_sha_at_resume": head_sha,
+            "offending_paths": offending,
+        }
+        state.hygiene_resume_audit = audit
+        if logger:
+            logger._safe_emit("hygiene_resume", **audit)
+        _log(
+            "  ↺ RESUME   refusing to replay APPROVE consensus — worktree still"
+            f" dirty ({len(offending)} unresolved path(s)): {', '.join(offending[:5])}"
+        )
+        # Keep escalate_kind='hygiene' so the operator-facing state still
+        # reflects the unresolved hygiene escalation; clear the prior review
+        # so a subsequent extend/retry cycle starts fresh once the workspace
+        # is clean.
+        state.hygiene_escalation_prior_review = None
+        state.phase = Phase.ESCALATE
+        state.error = (
+            "Workspace hygiene escalation has unresolved mutations at resume; "
+            f"remove or quarantine offending paths before retrying: {', '.join(offending)}"
+        )
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit(
+                "escalate", reason=state.error, phase="REVIEW", escalate_kind="hygiene"
+            )
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
+            config,
+        )
+
+    # Apply the same empty-diff guard as the normal APPROVE path: refuse to
+    # mark DONE on a branch with no commits ahead of base. Without this,
+    # replaying a captured APPROVE on a branch whose commits have been
+    # stripped (or never landed) would silently approve an empty diff.
+    if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+        audit = {
+            "resume_action": "rerun_no_commits_ahead",
+            "escalate_kind": state.escalate_kind,
+            "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+            "total_count": state.hygiene_escalation_total_count,
+            "dev_commit_sha_at_hygiene_trip": prior_sha,
+            "dev_commit_sha_at_resume": head_sha,
+            "base_branch": config.workspace.base_branch,
+        }
+        state.hygiene_resume_audit = audit
+        if logger:
+            logger._safe_emit("hygiene_resume", **audit)
+        _log(
+            "  ↺ RESUME   refusing to replay APPROVE consensus — branch has no"
+            f" commits ahead of {config.workspace.base_branch}; running fresh review"
+        )
+        state.escalate_kind = None
+        state.hygiene_escalation_prior_review = None
+        return None
+
+    state.review_cycle += 1
+    state.review_results.append(prior_review)
+    audit = {
+        "resume_action": "replayed_consensus",
+        "escalate_kind": state.escalate_kind,
+        "prior_approve_count": state.hygiene_escalation_prior_approve_count,
+        "total_count": state.hygiene_escalation_total_count,
+        "dev_commit_sha_at_hygiene_trip": prior_sha,
+        "dev_commit_sha_at_resume": head_sha,
+    }
+    state.hygiene_resume_audit = audit
+    if logger:
+        logger._safe_emit("hygiene_resume", **audit)
+    _log(
+        "  ↺ RESUME   replaying prior APPROVE consensus from hygiene escalation,"
+        f" dev commit {prior_sha[:8]}"
+    )
+    # Clear so a subsequent escalation does not replay the same record.
+    state.escalate_kind = None
+    state.hygiene_escalation_prior_review = None
+    _append_cycle_history(state, prior_review)
+    return (
+        _ReviewOutcome.DONE,
+        _finalize_approve(
+            state,
+            config,
+            task,
+            prior_review,
+            workspace_path,
+            branch_name,
+            task_start,
+            auto_merge=auto_merge,
+            notify=notify,
+            logger=logger,
+            review_cost=0.0,
+            review_elapsed=0.0,
+            message=(
+                f"Task '{task.name}' completed. "
+                f"Replayed prior APPROVE consensus from hygiene escalation. "
+            ),
+            run_id=run_id,
+        ),
+        config,
+    )
 
 
 def _run_review_phase(
@@ -518,6 +824,26 @@ def _run_review_phase(
     config is returned because persistent-P1 model escalation may replace it.
     """
     state.phase = Phase.REVIEW
+
+    # Resume short-circuit: if the prior run escalated due to a workspace-hygiene
+    # mutation but the reviewer pool had already produced an APPROVE consensus
+    # for the dev commit, replay that consensus instead of re-running the pool
+    # against an unchanged dev commit (issue #1499).
+    if state.escalate_kind == "hygiene" and state.hygiene_escalation_prior_review is not None:
+        _resume_result = _maybe_replay_hygiene_consensus(
+            state,
+            config,
+            task,
+            workspace_path,
+            branch_name,
+            task_start,
+            auto_merge=auto_merge,
+            notify=notify,
+            logger=logger,
+            run_id=run_id,
+        )
+        if _resume_result is not None:
+            return _resume_result
     if state_update_fn is not None:
         state_update_fn(
             {
@@ -550,9 +876,42 @@ def _run_review_phase(
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
     from .workspace_hygiene import (  # noqa: PLC0415
-        check_phase_no_mutation,
+        enforce_pre_review_hygiene,
+        reconcile_post_review_mutations,
         snapshot_porcelain,
     )
+
+    # ── Workspace hygiene gate (every REVIEW cycle entry) ─────────────
+    # Stray untracked paths inherited from a prior interrupted iteration,
+    # resume, or non-DEV phase mutation must be quarantined BEFORE reviewers
+    # observe the tree — otherwise reviewers flag stale pollution as a
+    # finding even though the implementation itself is valid (see #1501).
+    # Symmetric to enforce_pre_dev_hygiene; modified-tracked files are
+    # audited but left in place (validate-phase auto-commit owns cleanup).
+    _hygiene_run_id = run_id or state.run_id or "unknown"
+    _pre_review_ok, _pre_review_diag, _pre_review_audit = enforce_pre_review_hygiene(
+        workspace_path,
+        _hygiene_run_id,
+        cycle=state.review_cycle,
+    )
+    state.workspace_hygiene_audit.append({"phase": "PRE_REVIEW", **_pre_review_audit})
+    if _pre_review_audit.get("quarantined"):
+        _q_paths = ", ".join(_pre_review_audit["quarantined"])
+        _q_dir = _pre_review_audit.get("quarantine_dir")
+        _log(f"  ⚠ REVIEW   quarantined stray paths to {_q_dir}: {_q_paths}")
+    if not _pre_review_ok:
+        state.phase = Phase.ESCALATE
+        state.error = _pre_review_diag or "Workspace hygiene gate refused REVIEW entry"
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
+            config,
+        )
 
     _review_hygiene_before = snapshot_porcelain(workspace_path)
 
@@ -572,19 +931,69 @@ def _run_review_phase(
     )
     state.last_cycle_reviewer_results = _named_parsed
 
-    _review_ok, _review_diag, _review_offending = check_phase_no_mutation(
-        workspace_path, _review_hygiene_before, "REVIEW"
+    _review_ok, _review_diag, _review_offending, _post_review_audit = (
+        reconcile_post_review_mutations(
+            workspace_path,
+            _review_hygiene_before,
+            _hygiene_run_id,
+            state.review_cycle,
+        )
     )
     state.workspace_hygiene_audit.append(
-        {"phase": "REVIEW", "ok": _review_ok, "offending_paths": _review_offending}
+        {
+            "phase": "REVIEW",
+            "ok": _review_ok,
+            "quarantined": _post_review_audit.get("quarantined", []),
+            "tracked_changes": _post_review_audit.get("tracked_changes", []),
+            "reverted": _post_review_audit.get("reverted", []),
+            "offending_paths": _review_offending,
+        }
     )
+    if _post_review_audit.get("quarantined"):
+        _moved = ", ".join(_post_review_audit["quarantined"])
+        _q_dir = _post_review_audit.get("quarantine_dir")
+        _log(f"  ⚠ REVIEW   quarantined reviewer scratch to {_q_dir}: {_moved}")
+    if _post_review_audit.get("reverted"):
+        _rev = ", ".join(_post_review_audit["reverted"])
+        _log(f"  ⚠ REVIEW   reverted reviewer-side tracked mutations: {_rev}")
     if not _review_ok:
         state.phase = Phase.ESCALATE
         state.error = _review_diag or "REVIEW phase mutated the worktree"
+        state.escalate_kind = "hygiene"
+        # Capture prior reviewer consensus so `forge sprint --resume` can replay
+        # the APPROVE outcome for an unchanged dev commit instead of re-exposing
+        # the run to reviewer flakiness on a hygiene-only escalation.
+        _approve_count = sum(1 for _, rr in _named_parsed if rr.verdict == "APPROVE")
+        _total_count = len(_named_parsed)
+        state.hygiene_escalation_prior_approve_count = _approve_count
+        state.hygiene_escalation_total_count = _total_count
+        if (
+            _candidate is not None
+            and not _candidate.parse_errors
+            and _candidate.verdict == "APPROVE"
+        ):
+            _ok_sha, _sha_out = _run_shell("git rev-parse HEAD", workspace_path)
+            if _ok_sha and _sha_out.strip():
+                state.hygiene_escalation_dev_commit_sha = _sha_out.strip()
+                state.hygiene_escalation_prior_review = _candidate
+                _log(
+                    f"  ↺ Captured prior APPROVE consensus "
+                    f"({_approve_count}/{_total_count}) at dev commit "
+                    f"{state.hygiene_escalation_dev_commit_sha[:8]} for resume replay"
+                )
+        save_trajectory_state(workspace_path, state)
         _log(f"✗ ESCALATE   {state.error}")
         if logger:
             logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
-            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+            logger._safe_emit(
+                "escalate",
+                reason=state.error,
+                phase="REVIEW",
+                escalate_kind="hygiene",
+                prior_approve_count=_approve_count,
+                total_count=_total_count,
+                dev_commit_sha=state.hygiene_escalation_dev_commit_sha,
+            )
         _escalate_notify(task, state, notify, config)
         return (
             _ReviewOutcome.ESCALATE,
@@ -657,66 +1066,26 @@ def _run_review_phase(
         sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
     )
 
-    # ── Finding classification via worktree subprocess ────────────────────
-    # Run update_finding_registry in the worktree's Python environment so that
-    # self-hosting sprints evaluate the worktree's classifier, not the
-    # coordinator's own copy. sys.path is never mutated; isolation is via
-    # PYTHONPATH in the subprocess.
-    _fr_payload: dict = {
-        "finding_registry": [
-            {
-                "finding_id": r.finding_id,
-                "cycle_first_seen": r.cycle_first_seen,
-                "cycle_last_seen": r.cycle_last_seen,
-                "file": r.file,
-                "line": r.line,
-                "severity": r.severity,
-                "description": r.description,
-                "reporter": r.reporter,
-                "disposition": r.disposition,
-            }
-            for r in state.finding_registry
-        ],
-        "cycle_results": [
-            (
-                reviewer_name,
-                {
-                    "verdict": rr.verdict,
-                    "summary": rr.summary,
-                    "findings": [
-                        {
-                            "severity": f.severity,
-                            "file": f.file,
-                            "line": f.line,
-                            "observed": f.observed,
-                            "expected": f.expected,
-                            "evidence": f.evidence,
-                            "suggestion": f.suggestion,
-                        }
-                        for f in rr.findings
-                    ],
-                    "story_matches": rr.story_matches,
-                    "story_mismatches": rr.story_mismatches,
-                    "test_adequate": rr.test_adequate,
-                    "test_gaps": rr.test_gaps,
-                    "parse_errors": rr.parse_errors,
-                    "raw_yaml": rr.raw_yaml,
-                },
-            )
-            for reviewer_name, rr in state.last_cycle_reviewer_results
-        ],
-        "workspace_path": str(workspace_path),
-        "cycle_num": state.review_cycle,
-        "prev_commit": state.last_dev_start_commit
+    # ── Finding classification (in-process) ───────────────────────────────
+    # update_finding_registry operates on coordinator-internal dataclasses
+    # (FindingRecord, ReviewFinding) and exists to drive coordinator decisions.
+    # It must run against the launched (installed) version's schema, not the
+    # worktree's — running it in a subprocess with PYTHONPATH=worktree/src
+    # silently swaps the dataclass shape across the parent/child boundary and
+    # crashes on any internal refactor (see #1386). Run in-process: there is
+    # no per-worktree state mutation to isolate, and no project-owned code is
+    # imported.
+    from theforge.finding_classifier import update_finding_registry as _update_finding_registry
+
+    _classified = _update_finding_registry(
+        state=state,
+        cycle_results=list(state.last_cycle_reviewer_results),
+        workspace_path=workspace_path,
+        cycle_num=state.review_cycle,
+        prev_commit=state.last_dev_start_commit
         if isinstance(state.last_dev_start_commit, str)
         else None,
-    }
-    _fr_result = _run_worktree_eval(workspace_path, "update_finding_registry", _fr_payload)
-    # Reconstruct state.finding_registry as FindingRecord objects with shared
-    # references so that AC-blocking disposition mutations below propagate
-    # correctly to the audit trail.
-    state.finding_registry = [FindingRecord(**r) for r in _fr_result["finding_registry"]]
-    _classified = [state.finding_registry[i] for i in _fr_result["classified_indices"]]
+    )
 
     _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
     _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
@@ -837,10 +1206,12 @@ def _run_review_phase(
             _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
 
-    # ── Trajectory classification via worktree subprocess ─────────────────
+    # ── Trajectory classification (in-process) ─────────────────────────────
     # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
     # Uses a dedicated monotonic counter (trajectory_cycle) that is never reset
     # or decremented by extend/reject/exhausted-gate paths — unlike review_cycle.
+    # classify_families is orchestrator-internal: see the in-process rationale
+    # at the update_finding_registry call site above (#1386).
     state.trajectory_cycle += 1
 
     # Snapshot this cycle's findings as plain dicts for cross-cycle matching
@@ -857,27 +1228,30 @@ def _run_review_phase(
 
     # Classify families on cycle 2+ (need at least one prior cycle to match against)
     if state.trajectory_cycle >= 2:
-        _cf_payload: dict = {
-            "current_findings": [
-                {
-                    "severity": f.severity,
-                    "file": f.file,
-                    "line": f.line,
-                    "description": f.description,
-                    "suggestion": f.suggestion,
-                }
-                for f in parsed_review.findings
+        from theforge.review_finding_classifier import classify_families as _classify_families
+
+        def _rf_from_snapshot(d: dict) -> ReviewFinding:
+            return ReviewFinding(
+                severity=d.get("severity", "P1"),
+                file=d.get("file", ""),
+                line=d.get("line"),
+                observed=d.get("observed", d.get("description", "")),
+                suggestion=d.get("suggestion"),
+                expected=d.get("expected", ""),
+                evidence=d.get("evidence", ""),
+            )
+
+        _updated_store, _surviving = _classify_families(
+            current_findings=list(parsed_review.findings),
+            current_cycle=state.trajectory_cycle,
+            trajectory_store=state.finding_trajectory,
+            prior_cycle_findings=[
+                (cycle_num, [_rf_from_snapshot(f) for f in findings])
+                for cycle_num, findings in state.review_cycle_findings[:-1]
             ],
-            "current_cycle": state.trajectory_cycle,
-            "trajectory_store": state.finding_trajectory,
-            # Pass stored dicts directly; subprocess eval handles missing suggestion
-            "prior_cycle_findings": [
-                (cycle_num, findings) for cycle_num, findings in state.review_cycle_findings[:-1]
-            ],
-        }
-        _cf_result = _run_worktree_eval(workspace_path, "classify_families", _cf_payload)
-        state.finding_trajectory = _cf_result["trajectory_store"]
-        state.surviving_families = _cf_result["surviving_families"]
+        )
+        state.finding_trajectory = _updated_store
+        state.surviving_families = _surviving
     else:
         state.surviving_families = []
 
@@ -936,6 +1310,7 @@ def _run_review_phase(
             # Blocking P1 persists but reviewer has converged — escalate so
             # the persistent issue gets human attention rather than looping.
             state.phase = Phase.ESCALATE
+            state.escalate_kind = "content"
             state.error = (
                 f"Review converged with unresolved blocking P1(s) after "
                 f"{_zero_stop} consecutive zero-new-findings cycles."
@@ -970,6 +1345,7 @@ def _run_review_phase(
         workspace_path, config.workspace.base_branch
     ):
         state.phase = Phase.ESCALATE
+        state.escalate_kind = "content"
         state.error = (
             "Review verdict APPROVE on a branch with no commits ahead of base — "
             "refusing to mark DONE on an empty diff"
@@ -1002,6 +1378,40 @@ def _run_review_phase(
             f"  ✓ REVIEW   {_verdict_label}  {_p1_count} P1  {_p2_count} P2"
             f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
         )
+        _append_cycle_history(state, parsed_review)
+        # ── P2 cleanup (post-APPROVE advisory iterations) ──────────────
+        # Default behaviour in both interactive and non-interactive modes:
+        # when the review left open P2s and dev iteration budget remains,
+        # re-enter DEV with the carried P2 list. Budget exhaustion, no
+        # remaining carried P2s, an iteration cap, or p2_cleanup_enabled=
+        # false all fall through to the existing approve handler.
+        if _maybe_enter_p2_cleanup(state, config, parsed_review):
+            _entry = state.p2_cleanup_audit[-1]
+            _log(
+                f"  ↻ P2 CLEANUP  entering dev iteration "
+                f"({_entry['remaining_carried_p2_count']} carried P2(s), "
+                f"budget_remaining={_entry['budget_remaining']})"
+            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="REVIEW",
+                    outcome="approve_p2_cleanup",
+                    cost_usd=round(_review_cost, 6),
+                    duration_s=round(_review_elapsed, 2),
+                )
+                logger._safe_emit(
+                    "p2_cleanup",
+                    action=_entry["action"],
+                    p2_count=_entry["p2_count"],
+                    carried_p2_count=_entry["carried_p2_count"],
+                    remaining_carried_p2_count=_entry["remaining_carried_p2_count"],
+                    review_cycle=_entry["review_cycle"],
+                    dev_iteration=_entry["dev_iteration"],
+                    budget_remaining=_entry["budget_remaining"],
+                )
+            return _ReviewOutcome.RETRY_DEV, None, config
+        # Cleanup was either skipped or terminated.
         if interactive:
             return _handle_interactive_review_decision(
                 state,
@@ -1017,9 +1427,9 @@ def _run_review_phase(
                 review_elapsed=_review_elapsed,
                 run_id=run_id,
                 exhausted_cycles=False,
+                history_already_appended=True,
             )
         else:
-            _append_cycle_history(state, parsed_review)
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(
@@ -1046,6 +1456,22 @@ def _run_review_phase(
             )
 
     # ── REQUEST_CHANGES (blocking P1s present) ───────────────────
+    # If we were in P2 cleanup and this review brought back blocking P1s,
+    # the cleanup pass regressed. Exit cleanup so the engine resets the
+    # per-cycle budget normally for the upcoming blocking-fix cycle.
+    if state.p2_cleanup_active:
+        state.p2_cleanup_audit.append(
+            {
+                "action": "exit_regression",
+                "review_cycle": state.review_cycle,
+                "dev_iteration": state.dev_iteration,
+                "p2_count": _p2_count,
+                "p1_count": _p1_count,
+                "budget_remaining": state.budget.remaining(),
+                "cleanup_iterations": state.p2_cleanup_iterations,
+            }
+        )
+        _clear_p2_cleanup_state(state)
     _is_persistent_p1 = False
     if config.models is not None and len(state.review_results) >= 2:
         _prev_result = state.review_results[-2]
@@ -1107,6 +1533,7 @@ def _run_review_phase(
             )
         else:
             state.phase = Phase.ESCALATE
+            state.escalate_kind = "content"
             state.error = (
                 f"Review requested changes after {state.review_cycle} cycles. "
                 f"Max cycles ({_adaptive_review_max}) exhausted."

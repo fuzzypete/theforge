@@ -314,6 +314,7 @@ class DaemonServer:
                 resume=args.get("resume", False),
                 state_update_fn=state_update_fn,
                 no_pull=args.get("no_pull", False),
+                force=args.get("force", False),
             )
         finally:
             release_story_locks(locked_fds)

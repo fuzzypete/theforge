@@ -173,6 +173,8 @@ def _outcome_to_status(outcome: str) -> str:
         return "done"
     if outcome == "SKIPPED":
         return "skipped"
+    if outcome == "OPERATOR_ACTION":
+        return "operator-action"
     if outcome in ("ESCALATE", "MERGE_FAILED", "MERGE_ARMING_FAILED"):
         return "failed"
     return "failed"
@@ -289,10 +291,91 @@ def _waiting_detail(blocked_by: list[str]) -> str:
     return "; ".join(blocked_by)
 
 
-def _terminal_phase(outcome: str, depends_on: list[str]) -> str | None:
+_FAILURE_OUTCOMES = {
+    "FAILED",
+    "MERGE_FAILED",
+    "ESCALATE",
+    "ESCALATED",
+    "DROPPED",
+    "DROPPED_SHAPE",
+    "DROPPED_AFTER_FIX",
+}
+
+
+def _terminal_phase(
+    outcome: str,
+    depends_on: list[str],
+    last_phase: str | None = None,
+) -> str | None:
     if outcome == "SKIPPED" and depends_on:
         return "waiting"
+    if outcome in _FAILURE_OUTCOMES and last_phase:
+        return last_phase
     return outcome or None
+
+
+def _render_intake_drop_detail(final_outcome: str, detail_data: dict) -> str:
+    """Operator-readable DETAIL for an intake-dropped story.
+
+    Includes the primary rule code + finding problem (so the operator knows
+    *what* failed) and an agent attempt summary (whether the LLM ran, cost,
+    model) — the structured data already lives in ``detail.intake_findings``
+    and ``detail.intake_audit``; this renders it instead of reducing to the
+    rule-codes-only ``intake_summary`` string.
+    """
+    findings = detail_data.get("intake_findings") or []
+    primary_code: str | None = None
+    primary_problem: str | None = None
+    if isinstance(findings, list) and findings:
+        first = findings[0]
+        if isinstance(first, dict):
+            code = first.get("code")
+            problem = first.get("problem")
+            if isinstance(code, str) and code:
+                primary_code = code
+            if isinstance(problem, str) and problem.strip():
+                primary_problem = problem.strip()
+    if primary_code is None:
+        codes = detail_data.get("intake_codes")
+        if isinstance(codes, list) and codes and isinstance(codes[0], str):
+            primary_code = codes[0]
+
+    parts: list[str] = [final_outcome]
+    if primary_code:
+        head = f"[{primary_code}]"
+        if primary_problem:
+            head = f"{head} {primary_problem}"
+        parts.append(head)
+    elif primary_problem:
+        parts.append(primary_problem)
+    else:
+        intake_summary = _nonempty_str(detail_data.get("intake_summary"))
+        if intake_summary:
+            parts.append(intake_summary)
+
+    agent_summary = _nonempty_str(detail_data.get("intake_agent_summary"))
+    if not agent_summary:
+        intake_audit = detail_data.get("intake_audit")
+        if isinstance(intake_audit, dict):
+            agent = intake_audit.get("agent")
+            if isinstance(agent, dict):
+                bits: list[str] = []
+                if agent.get("attempted"):
+                    bits.append("agent_attempted=yes")
+                else:
+                    bits.append("agent_attempted=no")
+                cost = agent.get("cost_usd")
+                if isinstance(cost, (int, float)) and cost > 0:
+                    bits.append(f"cost=${float(cost):.4f}")
+                model = agent.get("model_used")
+                if isinstance(model, str) and model:
+                    bits.append(f"model={model}")
+                agent_summary = ", ".join(bits) or None
+    if agent_summary:
+        parts.append(f"({agent_summary})")
+    if len(parts) == 1:
+        return ""
+    return " ".join(parts)
 
 
 def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None]:
@@ -321,6 +404,9 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
     if status_val == "waiting":
         return "", "waiting", complexity
 
+    if status_val == "operator-action":
+        return "", "not sprintable; operator deliverable", complexity
+
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
         # Defensive backstop: a failed/skipped story must never display a
@@ -331,6 +417,17 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
             canonical_outcome = _nonempty_str(story.get("outcome"))
             final_outcome = canonical_outcome.upper() if canonical_outcome else None
         skip_reason = _nonempty_str(story.get("reason")) if status_val == "skipped" else None
+        # Intake-drop outcomes carry structured rule codes in the detail dict.
+        # Surfacing them in the DETAIL column keeps operators from having to
+        # consult audit YAML to learn which rule fired, what the agent tried,
+        # or why the rerun gate failed.
+        if isinstance(final_outcome, str) and final_outcome in {
+            "DROPPED_AFTER_FIX",
+            "DROPPED_SHAPE",
+        }:
+            rendered = _render_intake_drop_detail(final_outcome, detail_data)
+            if rendered:
+                return "", rendered, complexity
         if (
             skip_reason
             and isinstance(final_outcome, str)
@@ -497,7 +594,9 @@ def _stage_and_detail_from_completed_story(
         # on a FAILED/ESCALATED/SKIPPED row from a prior run must not leak.
         _success_outcome = outcome in {"DONE", "ALREADY_DONE"}
         verdict = _nonempty_str(story.get("verdict")) if _success_outcome else None
-        if verdict == "APPROVE":
+        if outcome == "OPERATOR_ACTION":
+            detail = "not sprintable; operator deliverable"
+        elif verdict == "APPROVE":
             detail = "APPROVE"
         elif verdict:
             detail = verdict
@@ -507,6 +606,27 @@ def _stage_and_detail_from_completed_story(
                 or _nonempty_str(story.get("drop_reason"))
                 or outcome
             )
+        elif outcome in {"DROPPED_AFTER_FIX", "DROPPED_SHAPE"}:
+            # Intake-drop entries carry the rule code + problem in ``error``
+            # and the structured detail in ``intake``. Render finding problem
+            # + agent attempt summary so the operator can act from this row
+            # alone — not just see the outcome name.
+            intake_block = story.get("intake")
+            synthetic_detail: dict = {}
+            if isinstance(intake_block, dict):
+                synthetic_detail = {
+                    "intake_findings": intake_block.get("findings") or [],
+                    "intake_codes": intake_block.get("codes") or [],
+                    "intake_agent_summary": intake_block.get("agent_summary"),
+                    "intake_audit": intake_block.get("audit") or {},
+                    "intake_summary": _nonempty_str(story.get("error")),
+                }
+            else:
+                synthetic_detail = {
+                    "intake_summary": _nonempty_str(story.get("error")),
+                }
+            rendered = _render_intake_drop_detail(outcome, synthetic_detail)
+            detail = rendered or outcome
         elif outcome == "DONE":
             detail = "APPROVE"
         elif outcome == "ALREADY_DONE":
@@ -545,7 +665,11 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         cost_usd = float(story.get("cost_usd", 0.0))
 
         status = _outcome_to_status(outcome)
-        phase = _terminal_phase(outcome, list(story.get("depends_on") or []))
+        phase = _terminal_phase(
+            outcome,
+            list(story.get("depends_on") or []),
+            _nonempty_str(story.get("last_phase")),
+        )
 
         bundle_candidate = False
         complexity = None
@@ -638,10 +762,14 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
         phase_display = phase_val
         if status_val in {"waiting", "blocked"} and blocked_by_val:
             phase_display = "waiting"
+        if status_val == "failed":
+            last_phase_str = _nonempty_str(story.get("last_phase"))
+            if last_phase_str:
+                phase_display = last_phase_str
         stage, detail, complexity = _stage_and_detail_from_live_story(story)
         complexity_score = _normalize_complexity_score(story.get("complexity_score"))
 
-        if status_val in {"skipped", "blocked"}:
+        if status_val in {"skipped", "blocked", "operator-action"}:
             model_val: str | None = None
         else:
             model_raw = story.get("current_model")
@@ -685,7 +813,11 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                     slug=slug,
                     path=story.get("path", slug),
                     status=_outcome_to_status(outcome),
-                    phase=_terminal_phase(outcome, depends_on),
+                    phase=_terminal_phase(
+                        outcome,
+                        depends_on,
+                        _nonempty_str(story.get("last_phase")),
+                    ),
                     cost_usd=float(story.get("cost_usd", 0.0)),
                     blocked_by=depends_on,
                     bundle_candidate=False,

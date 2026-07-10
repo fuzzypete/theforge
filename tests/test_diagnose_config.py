@@ -21,7 +21,7 @@ def test_default_diagnose_config_when_block_absent(tmp_path: Path):
     cfg_path = _write_config(tmp_path, {"project": "test"})
     config = load_config(cfg_path)
     assert isinstance(config.diagnose, DiagnoseConfig)
-    assert config.diagnose.output_destination == "comment"
+    assert config.diagnose.output_destination == "body_section"
     assert config.diagnose.budget_usd > 0
     assert config.diagnose.timeout_seconds > 0
 

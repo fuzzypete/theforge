@@ -205,6 +205,174 @@ def test_cross_provider_with_three_reviewers():
     assert len(decision.code_reviewers) >= 1
 
 
+# ── test_cross_cli_provider_rotation (issue #1468) ────────────────────
+
+
+def _make_agents_cli_only() -> list[AgentDef]:
+    """Pool with three strong-tier CLI agents (claude/codex/gemini) plus a cheap
+    claude agent that takes the dev role, so the three strong agents remain
+    available as reviewers. provider=None on every agent — distinguished only
+    by their cli binary."""
+    return [
+        AgentDef(
+            name="claude-sonnet",
+            provider=None,
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=600,
+            tier="cheap",
+            cli="claude",
+        ),
+        AgentDef(
+            name="claude-opus",
+            provider=None,
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            cli="claude",
+        ),
+        AgentDef(
+            name="codex-gpt-5.4",
+            provider=None,
+            model="gpt-5.4",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            cli="codex",
+        ),
+        AgentDef(
+            name="gemini-pro",
+            provider=None,
+            model="gemini-2.5-pro",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            cli="gemini",
+        ),
+    ]
+
+
+def test_effective_provider_derived_from_cli_when_provider_none():
+    """CLI-only agents (provider=None) expose an effective_provider derived from
+    their cli binary so routing/display can distinguish claude/codex/gemini."""
+    agents = [a for a in _make_agents_cli_only() if a.tier == "strong"]
+    by_cli = {a.cli: a.effective_provider for a in agents}
+    assert by_cli == {"claude": "anthropic", "codex": "openai", "gemini": "google"}
+
+
+def test_effective_provider_explicit_provider_wins():
+    """An explicit provider takes precedence over CLI-derived value."""
+    a = AgentDef(
+        name="custom",
+        provider="deepseek",
+        model="x",
+        budget_usd=1.0,
+        timeout_seconds=60,
+        tier="strong",
+        cli="claude",
+    )
+    assert a.effective_provider == "deepseek"
+
+
+def test_cross_provider_cli_only_pool_yields_distinct_providers():
+    """Three CLI agents (claude+codex+gemini) with prefer_cross_provider must
+    produce three reviewers with distinct effective providers — the bug from
+    issue #1468 collapsed all CLI agents to provider=None and excluded all but
+    the first from the cross-provider rotation."""
+    agents = _make_agents_cli_only()
+    cfg = _make_cfg(
+        min_reviewers=3,
+        max_reviewers=3,
+        prefer_cross_provider=True,
+        max_cost_per_story_usd=1000.0,
+    )
+    # complexity=small lets dev pick the cheap claude-sonnet so the three strong
+    # reviewers (one per CLI binary) all remain available.
+    decision = assign_models(agents, cfg, "small")
+
+    assert len(decision.code_reviewers) == 3
+    cli_set = {r.cli for r in decision.code_reviewers}
+    assert cli_set == {"claude", "codex", "gemini"}, (
+        f"Expected one reviewer per CLI binary, got {cli_set}"
+    )
+
+
+def test_cross_provider_rationale_never_shows_none_for_cli_pool():
+    """The rationale display string must show derived provider names
+    (anthropic/openai/google), not the literal None that CLI agents carry on
+    AgentDef.provider."""
+    agents = _make_agents_cli_only()
+    cfg = _make_cfg(
+        min_reviewers=2,
+        max_reviewers=2,
+        prefer_cross_provider=True,
+        max_cost_per_story_usd=1000.0,
+    )
+    decision = assign_models(agents, cfg, "small")
+
+    rationale = decision.rationale.get("code_review", "")
+    assert "None" not in rationale, f"Rationale leaked None for CLI pool: {rationale}"
+    # At least two of the derived providers must appear in the rationale.
+    derived = {"anthropic", "openai", "google"}
+    appearing = {p for p in derived if p in rationale}
+    assert len(appearing) >= 2, f"Expected ≥2 derived providers in rationale, got {rationale}"
+
+
+def test_cross_provider_mixed_cli_and_api_pool(monkeypatch):
+    """Mixed pool (CLI claude + API deepseek): when both serve as reviewers, they
+    must come from distinct effective providers — claude's effective provider is
+    anthropic (derived from cli=claude), not None, so the diversity check
+    distinguishes it from deepseek."""
+    agents = [
+        AgentDef(
+            name="claude-sonnet",
+            provider=None,
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=600,
+            tier="cheap",
+            cli="claude",
+        ),
+        AgentDef(
+            name="claude-opus",
+            provider=None,
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            cli="claude",
+        ),
+        AgentDef(
+            name="deepseek-r1",
+            provider="deepseek",
+            model="deepseek-reasoner",
+            budget_usd=1.0,
+            timeout_seconds=600,
+            tier="strong",
+        ),
+    ]
+    # Pretend the claude CLI is on PATH so auth checks pass — otherwise the
+    # cheap claude agent fails auth, dev fallback picks deepseek, and the
+    # reviewer pool is confounded by the exclude-dev-model logic.
+    monkeypatch.setattr("theforge.config.auth.shutil.which", lambda cmd, *a, **kw: "/usr/bin/x")
+    cfg = _make_cfg(min_reviewers=2, max_reviewers=2, prefer_cross_provider=True)
+    decision = assign_models(agents, cfg, "small")
+
+    assert len(decision.code_reviewers) == 2
+    # The claude reviewer (cli=claude, provider=None) and the deepseek reviewer
+    # (provider=deepseek) must be distinguished — pre-fix, both collapsed into
+    # the same `None` effective provider (or same `deepseek` after first pick)
+    # depending on order, defeating the diversity contract.
+    by_eff = []
+    for r in decision.code_reviewers:
+        if r.cli == "claude":
+            by_eff.append("anthropic")
+        elif r.provider:
+            by_eff.append(r.provider)
+    assert set(by_eff) == {"anthropic", "deepseek"}
+
+
 # ── test_cross_provider_fallback ──────────────────────────────────────
 
 

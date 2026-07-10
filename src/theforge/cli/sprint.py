@@ -92,6 +92,82 @@ def cmd_sprint(args: object) -> int:
         load_config(config_path), getattr(args, "base_branch", None)
     )
 
+    # ── Detach BEFORE any subprocess/gh work ─────────────────────────────
+    # macOS aborts the child of a fork() when Foundation has been initialized
+    # in the parent (e.g., by `gh` subprocess calls during shape-gate /
+    # intake remediation). The new daemonize_run is a clean Popen re-exec
+    # rather than a fork, but we still hoist it above the subprocess work so
+    # neither the parent nor the child lands in a tainted-then-fork state.
+    # The detached child re-executes the full CLI; this branch detects that
+    # re-entry and skips daemonize while still installing the PID/cleanup.
+    import os as _os
+
+    fg = bool(getattr(args, "fg", False))
+    submit_to_daemon = bool(getattr(args, "detach", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    detach_to_background = not fg and not submit_to_daemon and not dry_run
+
+    # Capture the re-exec signal BEFORE the detach section runs. On the real
+    # coordinator re-exec path (workspace.pull_base_branch sets FORGE_PREV_RUN_ID
+    # then os.execv with the same argv), the re-exec'd process inherits
+    # FORGE_DETACHED=1, so it enters the is_detached_child() branch below and
+    # calls setup_detached_child(), which pops FORGE_PREV_RUN_ID (detach.py) to
+    # write the log-redirect sidecar. If we read _is_reexec() after that pop it
+    # always returns False, silently disabling the merged-story reconciliation in
+    # run_sprint. Snapshot it here so both manifest and query modes see the true
+    # signal regardless of the detach handoff.
+    reexec = _is_reexec()
+
+    if detach_to_background:
+        from theforge import detach as _detach_mod
+
+        # Compute slug from args alone — no subprocess work in the parent.
+        manifest_arg_local: str | None = getattr(args, "manifest", None)
+        milestone_local: str | None = getattr(args, "milestone", None)
+        label_local: str | None = getattr(args, "label", None)
+        issues_arg_local: str | None = getattr(args, "issues", None)
+        query_mode_local = bool(milestone_local or label_local or issues_arg_local)
+        if query_mode_local:
+            sprint_name_local = (
+                getattr(args, "name", None)
+                or milestone_local
+                or label_local
+                or f"issues-{issues_arg_local}"
+            )
+            launch_slug = sprint_name_local.replace(" ", "-").replace("/", "-").lower()[:50]
+        else:
+            launch_slug = Path(manifest_arg_local).stem if manifest_arg_local else "sprint"
+
+        if _detach_mod.is_detached_child():
+            launch_run_id = _os.environ.get("FORGE_DETACHED_RUN_ID") or _generate_run_id()
+            _detach_mod.setup_detached_child(
+                launch_run_id, launch_slug, config.project_root, is_sprint=True
+            )
+            _detach_mod.install_cleanup_handler(launch_run_id, config.project_root)
+            print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
+            args.__dict__["_detached_run_id"] = launch_run_id
+            args.__dict__["_detached_slug"] = launch_slug
+
+            # Backstop cleanup for early-return paths (all-skipped, no
+            # stories, --detach-not-supported guard) that bypass the
+            # try/finally in run_sprint blocks. Idempotent — write_run_ended
+            # is a no-op if the .ended marker already exists.
+            import atexit as _atexit
+
+            _atexit.register(
+                _detach_mod.write_run_ended,
+                launch_run_id,
+                config.project_root,
+                "completed",
+            )
+            _atexit.register(_detach_mod.remove_pid, launch_run_id, config.project_root)
+        else:
+            launch_run_id = _generate_run_id()
+            _detach_mod.daemonize_run(
+                launch_run_id, launch_slug, config.project_root, is_sprint=True
+            )
+            # daemonize_run never returns in the parent.
+
     if getattr(args, "verbose", False):
         coordinator_set_log_level(LogLevel.VERBOSE)
         runner_set_log_level(LogLevel.VERBOSE)
@@ -119,6 +195,7 @@ def cmd_sprint(args: object) -> int:
             auto_merge=auto_merge,
             interactive=interactive,
             resume=resume,
+            reexec=reexec,
             no_pull=no_pull,
             force=force,
             _daemon=_daemon,
@@ -133,7 +210,8 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     slugs = parse_manifest_slugs(config, manifest_path)
-    reexec = _is_reexec()
+    # ``reexec`` was captured at the top of cmd_sprint, before setup_detached_child
+    # popped FORGE_PREV_RUN_ID — do not recompute it here (the env signal is gone).
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
     )
@@ -141,17 +219,21 @@ def cmd_sprint(args: object) -> int:
         return launch_error
 
     live_slugs = [s for s in slugs if s not in dropped_slugs]
-    if not getattr(args, "fg", False) and not getattr(args, "detach", False):
-        run_id = _generate_run_id()
-        slug = manifest_path.stem
-        _detach.daemonize_run(run_id, slug, config.project_root)
+    # Detach already happened at top of cmd_sprint (Popen re-exec model). If
+    # we are in the detached child, the run_id/slug were resolved there and
+    # cached on args; otherwise (--fg / --detach daemon submit) generate now.
+    cached_run_id = args.__dict__.get("_detached_run_id")
+    cached_slug = args.__dict__.get("_detached_slug")
+    if cached_run_id is not None:
+        run_id = cached_run_id
+        slug = cached_slug or manifest_path.stem
+        # Locks were acquired in this same process; metadata rewrite is a
+        # no-op idempotent call but we keep it for parity with prior behavior.
         locked_fds = reacquire_story_locks_in_daemon(
             live_slugs,
             config.project_root,
             locked_fds,
         )
-        _detach.install_cleanup_handler(run_id, config.project_root)
-        print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
     else:
         run_id = _generate_run_id()
         slug = manifest_path.stem
@@ -164,6 +246,7 @@ def cmd_sprint(args: object) -> int:
             "resume": resume,
             "config": str(config_path),
             "no_pull": no_pull,
+            "force": force,
         }
         response = _daemon.submit_sprint(config.project_root, str(manifest_path), sprint_args)
         if response.get("ok"):
@@ -186,9 +269,11 @@ def cmd_sprint(args: object) -> int:
             interactive=interactive,
             notify=not args.no_notify,
             resume=resume,
+            reexec=reexec,
             no_pull=no_pull,
             run_id=run_id,
             dropped_slugs=dropped_slugs,
+            force=force,
         )
     except Exception as exc:
         import traceback
@@ -253,6 +338,52 @@ def _resolve_base_branch_sha(config: object) -> str | None:
         return None
     sha = proc.stdout.strip()
     return sha or None
+
+
+_INTAKE_REMEDIATED_ENV = "FORGE_INTAKE_REMEDIATED"
+
+
+def _consume_intake_remediated_env() -> set[int]:
+    """Read and clear the carry-across-re-exec remediated-issues env var.
+
+    Set by an earlier process before ``os.execv`` (see ``pull_base_branch``
+    in coordinator/workspace.py). Cleared on consumption so it never bleeds
+    into a subsequent re-exec or a child subprocess that has no business
+    inheriting the sprint's intake state.
+    """
+    import os
+
+    raw = os.environ.pop(_INTAKE_REMEDIATED_ENV, "")
+    if not raw:
+        return set()
+    numbers: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            numbers.add(int(part))
+        except ValueError:
+            continue
+    return numbers
+
+
+def _publish_intake_remediated_env(numbers: "set[int] | frozenset[int]") -> None:
+    """Stash the just-remediated issue numbers in the environment.
+
+    The sprint runner may re-exec the process if ``git pull`` updates the
+    src/theforge tree between intake remediation and dispatch. Env vars
+    survive ``os.execv``; in-memory dicts do not. Re-entry reads the value
+    via ``_consume_intake_remediated_env`` and threads it into the post-
+    re-exec shape gate so the just-remediated issues aren't dropped on a
+    stale ``needs-grooming`` label that the async labeler hasn't reconciled
+    yet.
+    """
+    import os
+
+    if not numbers:
+        return
+    os.environ[_INTAKE_REMEDIATED_ENV] = ",".join(str(n) for n in sorted(numbers))
 
 
 def _is_reexec() -> bool:
@@ -376,6 +507,7 @@ def _emit_all_skipped_audit(
     sprint_name: str,
     budget_usd: float,
     skipped_issues: list,
+    intake_outcomes: "dict | None" = None,
 ) -> None:
     """Write sprint-audit.yaml and sprint-summary.yaml when every issue was
     gated out. Without this, an all-skipped sprint leaves no machine-readable
@@ -392,6 +524,23 @@ def _emit_all_skipped_audit(
     # issue so the all-skipped audit/summary projects from the same SoT
     # structure run_sprint() uses. Counts and the per-story list both flow
     # from this single source.
+    intake_outcomes = intake_outcomes or {}
+    # Entry-level intake remediation may have spent agent budget before the
+    # all-skipped fork. Roll those costs into the sprint total so the
+    # operator-visible accounting matches the actual spend even when no
+    # issue made it past the shape gate.
+    intake_remediation_cost = 0.0
+    for outcome in intake_outcomes.values():
+        agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
+        if not isinstance(agent, dict):
+            continue
+        raw = agent.get("cost_usd")
+        if raw is None:
+            continue
+        try:
+            intake_remediation_cost += float(raw)
+        except (TypeError, ValueError):
+            continue
     story_state = SprintStoryState()
     for sk in skipped_issues or []:
         sk_dict = sk.as_dict() if hasattr(sk, "as_dict") else dict(sk)
@@ -399,14 +548,41 @@ def _emit_all_skipped_audit(
         if sk_num is None:
             continue
         sk_slug = f"issue-{sk_num}"
+        # Verdict-preferred reason/detail come from the shared helper so
+        # every surface renders the typed verdict identifier consistently;
+        # operator-action classification and intake-outcome enrichment are
+        # layered on top.
         sk_reason, sk_detail = skipped_issue_state_fields(sk)
+        sk_codes = sk_dict.get("reason_codes") or []
+        is_operator_action = "operator_action" in sk_codes
+        sk_outcome = StoryOutcome.OPERATOR_ACTION if is_operator_action else StoryOutcome.SKIPPED
+        sk_detail["final_outcome"] = sk_outcome.name
+        if is_operator_action:
+            sk_reason = "operator-action — operator deliverable"
+            sk_detail["operator_action"] = True
+        outcome = intake_outcomes.get(sk_num)
+        sk_cost = 0.0
+        if outcome is not None:
+            sk_detail["intake_kind"] = outcome.kind.value
+            sk_detail["intake_detail"] = outcome.detail
+            sk_detail["intake_findings"] = [f.as_dict() for f in outcome.findings]
+            sk_detail["intake_audit"] = dict(outcome.audit)
+            sk_detail["intake_proposed_replacement"] = outcome.proposed_replacement
+            agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
+            raw = agent.get("cost_usd") if isinstance(agent, dict) else None
+            if raw is not None:
+                try:
+                    sk_cost = float(raw)
+                except (TypeError, ValueError):
+                    sk_cost = 0.0
         story_state.register(
             sk_slug,
             f"Issue #{sk_num}",
-            outcome=StoryOutcome.SKIPPED,
+            outcome=sk_outcome,
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",
             detail=sk_detail,
+            cost_usd=sk_cost,
         )
     canonical_counts = story_state.counts()
     manifest = ResolvedSprint(
@@ -421,7 +597,7 @@ def _emit_all_skipped_audit(
         specs_succeeded=canonical_counts["succeeded"],
         specs_failed=canonical_counts["failed"],
         specs_skipped=canonical_counts["skipped"],
-        total_cost_usd=0.0,
+        total_cost_usd=intake_remediation_cost,
         budget_usd=budget_usd,
         results=[],
     )
@@ -473,13 +649,21 @@ def _run_query_mode(
     resume: bool,
     no_pull: bool,
     force: bool = False,
+    reexec: bool = False,
     _daemon: object,
     _detach: object,
     _generate_run_id: object,
 ) -> int:
-    """Handle --milestone / --label / --issues query mode."""
+    """Handle --milestone / --label / --issues query mode.
+
+    ``reexec`` is captured by ``cmd_sprint`` before the detach handoff pops
+    FORGE_PREV_RUN_ID; it must be passed in, not recomputed here (the env signal
+    is already gone by the time this runs on the real re-exec path).
+    """
     from theforge.coordinator.audit_substrate import record_shape_verdict_event
+    from theforge.intake import IntakeOutcomeKind
     from theforge.sprint.dag import resolve_satisfied_dependencies
+    from theforge.sprint.entry_intake import remediate_entry_skipped_issues
     from theforge.sprint.query import (
         assign_dependency_batches_with_satisfied,
         build_resolved_sprint,
@@ -487,7 +671,12 @@ def _run_query_mode(
         fetch_issues_for_label,
         fetch_issues_for_milestone,
     )
-    from theforge.sprint.shape_gate import apply_shape_gate, format_skipped_warning
+    from theforge.sprint.shape_gate import (
+        apply_shape_gate,
+        format_advisory_warning,
+        format_operator_action_notice,
+        format_skipped_warning,
+    )
 
     try:
         budget_usd = float(budget_str)
@@ -544,10 +733,20 @@ def _run_query_mode(
     # operators can inspect the DAG without making ``gh`` calls per issue.
     skipped_issues: list = []
     # Pre-compute the run_id so the shape gate's substrate verdict events
-    # can be correlated with the sprint that produced them. The same id is
-    # reused below where the daemon previously generated it.
-    gate_run_id = _generate_run_id() if not dry_run else None
+    # can be correlated with the sprint that produced them. Detach (Popen
+    # re-exec) already happened at the top of cmd_sprint — in the detached
+    # child the launch run_id was cached on args, so reuse it here; otherwise
+    # (--fg) generate one now and reuse it below where the daemon previously
+    # generated it.
+    gate_run_id = (
+        (args.__dict__.get("_detached_run_id") or _generate_run_id()) if not dry_run else None
+    )
     gate_sprint_name = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
+    # Carry-across-re-exec: a prior process may have intake-remediated some
+    # issues and stashed their numbers in the environment before re-exec.
+    # Consume them here so the post-re-exec gate treats the async-lagging
+    # ``needs-grooming`` label as stale rather than authoritative.
+    carried_remediated_numbers = _consume_intake_remediated_env()
     if not dry_run:
         classifier_mode = getattr(getattr(config, "shape_check", None), "classifier", "heuristic")
         base_branch_sha = _resolve_base_branch_sha(config)
@@ -566,6 +765,7 @@ def _run_query_mode(
             classifier_mode=classifier_mode,
             force=force,
             emit_verdict=_emit_shape_verdict,
+            intake_remediated_numbers=carried_remediated_numbers or None,
         )
         if gate_result.skipped:
             warning = format_skipped_warning(gate_result.skipped)
@@ -576,8 +776,57 @@ def _run_query_mode(
                 )
             else:
                 print(warning, file=sys.stderr)
+        if gate_result.advisories:
+            print(format_advisory_warning(gate_result.advisories), file=sys.stderr)
+        if gate_result.operator_action:
+            # Operator-facing banner — deliberate non-dispatch, distinct from
+            # the malformed-shape skip warning above. The label cannot be
+            # bypassed by --force; the banner prints in both modes.
+            print(format_operator_action_notice(gate_result.operator_action), file=sys.stderr)
         issues = gate_result.runnable
-        skipped_issues = gate_result.skipped
+        # Operator-action issues are persisted alongside shape-gate skips so
+        # the audit/summary surfaces them; the runner inspects reason_codes to
+        # apply the StoryOutcome.OPERATOR_ACTION classification.
+        skipped_issues = list(gate_result.skipped) + list(gate_result.operator_action)
+
+        # Bridge to intake remediation: entry-skipped issues bypass the
+        # in-runner remediation pass, so route them through here. Suppress
+        # remediation under --force, which is the operator's explicit
+        # escape hatch. Operator-action entries are excluded — the label is
+        # the operator's deliberate signal, not a defect to remediate.
+        entry_intake_outcomes: dict[int, object] = {}
+        remediation_targets = [sk for sk in gate_result.skipped]
+        if remediation_targets and not force:
+            entry_intake_outcomes = remediate_entry_skipped_issues(
+                remediation_targets,
+                config=config,
+                log=lambda m: print(f"[forge] {m}", file=sys.stderr),
+            )
+
+        # Re-add successfully remediated issues so the sprint continues without
+        # requiring the operator to re-invoke forge sprint.
+        if entry_intake_outcomes:
+            remediated_numbers = {
+                num
+                for num, outcome in entry_intake_outcomes.items()
+                if outcome.kind is IntakeOutcomeKind.REMEDIATED
+            }
+            if remediated_numbers:
+                skip_by_number = {sk.issue_number: sk for sk in skipped_issues}
+                for num in sorted(remediated_numbers):
+                    sk = skip_by_number[num]
+                    issues.append({"number": sk.issue_number, "title": sk.title})
+                skipped_issues = [
+                    sk for sk in skipped_issues if sk.issue_number not in remediated_numbers
+                ]
+            # Publish the union of this run's remediations and any that were
+            # carried across an earlier re-exec. If run_sprint re-execs after
+            # a mid-sprint source pull, the next entry into _run_query_mode
+            # must trust the just-remediated bodies over the async-stale
+            # ``needs-grooming`` label.
+            _publish_intake_remediated_env(remediated_numbers | carried_remediated_numbers)
+        elif carried_remediated_numbers:
+            _publish_intake_remediated_env(carried_remediated_numbers)
 
         # Body-only remediation for shape-gate skips. When intake auto_fix
         # is enabled in edit mode, attempt to repair body-fixable skip
@@ -605,6 +854,7 @@ def _run_query_mode(
                 or f"issues-{issues_arg}",
                 budget_usd=budget_usd,
                 skipped_issues=skipped_issues,
+                intake_outcomes=entry_intake_outcomes,
             )
             return 0
 
@@ -658,8 +908,9 @@ def _run_query_mode(
         return 0
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──
+    # ``reexec`` is threaded in from cmd_sprint (captured before the detach
+    # handoff popped FORGE_PREV_RUN_ID) — do not recompute it here.
     slugs = [task.slug for task, _src, _ref in resolved.stories]
-    reexec = _is_reexec()
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
     )
@@ -668,20 +919,21 @@ def _run_query_mode(
 
     live_slugs = [s for s in slugs if s not in dropped_slugs]
 
-    # ── Daemonization: slug from sprint name, not manifest filename ───────
-    # Reuse the run_id pre-generated for the shape gate so its substrate
-    # verdict events correlate with this sprint's downstream rows.
-    run_id = gate_run_id or _generate_run_id()
-    sprint_slug = sprint_name.replace(" ", "-").replace("/", "-").lower()[:50]
-
-    if not getattr(args, "fg", False) and not getattr(args, "detach", False):
-        _detach.daemonize_run(run_id, sprint_slug, config.project_root)
+    # ── run_id / slug ─────────────────────────────────────────────────────
+    # Detach (Popen re-exec) already happened at top of cmd_sprint. If we
+    # are in the detached child, run_id/slug were resolved there and cached
+    # on args (and gate_run_id above reused the cached id so the shape
+    # gate's substrate verdict events correlate with this sprint's
+    # downstream rows). Otherwise (--fg) reuse the run_id pre-generated for
+    # the shape gate.
+    cached_run_id = args.__dict__.get("_detached_run_id")
+    if cached_run_id is not None:
+        run_id = cached_run_id
         locked_fds = reacquire_story_locks_in_daemon(
             live_slugs,
             config.project_root,
             locked_fds,
         )
-        _detach.install_cleanup_handler(run_id, config.project_root)
         # Write a bootstrap state file before run_sprint enters its long
         # baseline-gate / intake-remediation / preflight phases so
         # `forge status --watch` renders the issue list, sprint phase, and
@@ -712,7 +964,8 @@ def _run_query_mode(
             # write failure (the runner will still create the canonical
             # state file once preflight completes).
             pass
-        print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
+    else:
+        run_id = gate_run_id or _generate_run_id()
 
     # Query mode does not support daemon submission (no manifest file to pass)
     if getattr(args, "detach", False) and _daemon.is_daemon_running(config.project_root):
@@ -732,10 +985,13 @@ def _run_query_mode(
             interactive=interactive,
             notify=not args.no_notify,
             resume=resume,
+            reexec=reexec,
             no_pull=no_pull,
             run_id=run_id,
             dropped_slugs=dropped_slugs,
             skipped_issues=skipped_issues,
+            entry_intake_outcomes=entry_intake_outcomes,
+            force=force,
         )
     except Exception as exc:
         import traceback

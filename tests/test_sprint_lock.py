@@ -329,6 +329,59 @@ class TestSweepStoryLocks:
             release_event.set()
             proc.join(timeout=5)
 
+    def test_unlink_runs_while_flock_still_held(self, tmp_path: Path) -> None:
+        """Regression for issue-1264: sweep must hold the flock across unlink.
+
+        If the flock is dropped before the file is unlinked, a concurrent
+        sprint can acquire the about-to-be-deleted lock — the exact race the
+        sweep is supposed to close.
+        """
+        import fcntl as _fcntl
+
+        lock_dir = tmp_path / ".forge" / "locks"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "issue-1264.lock"
+        lock_path.write_text("99999|x|fp\n", encoding="utf-8")
+
+        def attempt_flock(path: str, conn: object) -> None:
+            try:
+                fd = open(path, "a+")
+                try:
+                    _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                    conn.send("acquired")
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
+                except BlockingIOError:
+                    conn.send("blocked")
+                finally:
+                    fd.close()
+            except FileNotFoundError:
+                conn.send("missing")
+            finally:
+                conn.close()
+
+        observed: list[str] = []
+        real_unlink = Path.unlink
+
+        def observing_unlink(self: Path, *args: object, **kwargs: object) -> None:
+            if self == lock_path:
+                parent_conn, child_conn = _mp.Pipe()
+                proc = _mp.Process(target=attempt_flock, args=(str(self), child_conn))
+                proc.start()
+                child_conn.close()
+                try:
+                    observed.append(parent_conn.recv())
+                except EOFError:
+                    observed.append("eof")
+                proc.join(timeout=5)
+                parent_conn.close()
+            return real_unlink(self, *args, **kwargs)
+
+        with patch.object(Path, "unlink", observing_unlink):
+            removed = sweep_story_locks(tmp_path)
+
+        assert removed == [lock_path]
+        assert observed == ["blocked"]
+
 
 class TestCheckActiveWorktrees:
     def test_missing_worktree_is_not_active(self, tmp_path: Path) -> None:

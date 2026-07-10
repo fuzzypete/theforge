@@ -266,6 +266,13 @@ def build_preflight_prompt(
             evidence: >-
               <conclusion: how the cited runtime path turns the relevant
               input into the observable behavior/output, or what is missing>
+        symptom_verification:
+          status: verified_resolved | not_reproduced | not_feasible | not_attempted
+          reproduces_now: true | false
+          evidence: >-
+            <what concrete inspection or reproduction step was performed
+            against the current baseline to determine whether the
+            originally observed symptom still fires>
         ```
 
         Use `spec_issues: []` if the spec is clean.
@@ -285,6 +292,40 @@ def build_preflight_prompt(
         A valid ALREADY_DONE verdict also requires a non-empty `runtime_path` for every
         criterion. `runtime_path` must cite the live orchestrator/coordinator/sprint call
         path that actually exercises the behavior, not a related helper that merely exists.
+
+        ## Symptom Verification (bug stories)
+
+        For **bug** stories, ALREADY_DONE means "the originally observed symptom no
+        longer reproduces against the current baseline." Refuting a hypothesized
+        cause in the body's Diagnosis section is NOT equivalent to confirming the
+        defect is fixed — issue bodies routinely state a wrong theory of the
+        defect alongside a real symptom, and a wrong theory does not entail a
+        fixed symptom.
+
+        Whenever you classify a bug story, emit a `symptom_verification` block:
+
+        - `status: verified_resolved` — you reproduced or otherwise exercised the
+          originally reported symptom against the configured baseline branch and
+          confirmed the symptom no longer fires. Set `reproduces_now: false` and
+          provide concrete `evidence` (what you ran, inspected, or executed).
+        - `status: not_reproduced` — you attempted to verify but the originally
+          reported behavior could not be exercised from preflight context (no
+          test scenario, no reproduction harness, behavior depends on external
+          state). Set `reproduces_now: false` only if you have reason to believe
+          it does not — otherwise omit or set null.
+        - `status: not_feasible` — symptom reproduction is not feasible from
+          preflight (e.g., requires a live external service, multi-sprint state,
+          quota-exhausted CLI). Use this when the symptom is real but a
+          preflight-time verifier cannot exercise it.
+        - `status: not_attempted` — you did not attempt symptom verification.
+
+        Only `status: verified_resolved` with `reproduces_now: false` and concrete
+        `evidence` justifies a bug ALREADY_DONE verdict. The other statuses
+        will be downgraded by the coordinator to PROCEED so the dev cycle can
+        verify symptom resolution.
+
+        For non-bug stories, set `status: not_attempted` (or omit the block);
+        AC-evidence checks via `criteria_checked` are sufficient.
 
         ## Rules
 

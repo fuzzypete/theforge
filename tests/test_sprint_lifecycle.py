@@ -524,10 +524,10 @@ class TestRunSprint:
             "github_blockers": ["issue-9"],
         }
 
-    def test_authoring_warning_for_dependency_shaped_prose_is_visible(
+    def test_no_warning_emitted_when_prose_dependencies_are_honored(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Sprint start logs issue-body prose that looks dependency-shaped."""
+        """Prose dependencies promoted to scheduler edges suppress the legacy warning."""
         from theforge.sprint.manifest import ResolvedSprint
         from theforge.sprint.sources import GitHubIssueSource
         from theforge.task import TaskStory
@@ -543,7 +543,9 @@ class TestRunSprint:
                         name="Issue B",
                         slug="issue-2",
                         github_issue=2,
-                        dependency_warnings=["Depends on #265"],
+                        depends_on=["issue-265"],
+                        inferred_dependencies=["issue-265"],
+                        dependency_warnings=[],
                     ),
                     GitHubIssueSource(),
                     "issue:2",
@@ -556,13 +558,7 @@ class TestRunSprint:
             run_sprint(config, resolved)
 
         captured = capsys.readouterr()
-        assert "dependency-shaped prose ignored" in captured.err
-        assert "issue-2 (Issue B)" in captured.err
-        assert "Depends on #265" in captured.err
-        assert (
-            "declare dependencies with GitHub blocked-by relationships or leading issue metadata"
-            in captured.err
-        )
+        assert "dependency-shaped prose ignored" not in captured.err
 
 
 # ── Notification tests ────────────────────────────────────────────────

@@ -6,18 +6,25 @@ project: theforge
 # See docs/guides/inputs-reference.md for the full schema reference.
 models:
   enabled:
-    - claude/sonnet
-    - claude/opus
-    - openai/gpt-5.4
-    - openai/gpt-5.5
+    - claude/sonnet               # CLI alias auto-tracks: Sonnet 5 as of 2026-07 ($3/$15)
+    - claude/opus                 # CLI alias auto-tracks: Opus 4.8 as of 2026-07 ($5/$25)
+    - openai/gpt-5.4              # value strong tier ($2.50/$15); still served, no deprecation (verified 2026-07-07)
+    - openai/gpt-5.4-mini         # cheap tier ($0.75/$4.50) — pool previously had no cheap tier at all
+    - openai/gpt-5.5              # OpenAI's recommended coding model; overlay entry below
     # - deepseek/deepseek-reasoner  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Re-enable when adaptive routing can decide reviewer fitness automatically.
-    - google/gemini-3.1-pro-preview
+    # - google/gemini-3.1-pro-preview  # benched 2026-07-09: reviewer completed without calling submit_review
+    #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
+    #                                      Same fitness criterion as deepseek above: re-enable when adaptive
+    #                                      routing can decide reviewer fitness automatically.
+    #                                      Still the only Google pro tier (never GA'd). Registry story for
+    #                                      v0.11: add stable gemini-3.5-flash ($1.50/$9) as the Google re-entry.
   custom:
-    # GPT-5.5 — added via the user-declared registry overlay shipped in #1184
-    # (v0.10.0). Disabled pending #1355: AGENT_REGISTRY direct-readers in
-    # model_profiles.py bypass the overlay and crash worker dispatch with
-    # 'Unknown model'. Re-enable when #1355 ships.
+    # GPT-5.5 — user-declared registry overlay (shipped #1184, v0.10.0).
+    # #1355 (overlay bypassed by AGENT_REGISTRY direct-readers) fixed during the
+    # v0.10 rc ladder; #1358 (P2 falsy-dict follow-up) still open but benign for
+    # a non-empty custom block. GPT-5.6 launch imminent (2026-07) — expect a
+    # re-pin here shortly.
     openai/gpt-5.5:
       provider: openai            # routes via Codex CLI; use 'openai-api' for the API adapter
       model: gpt-5.5

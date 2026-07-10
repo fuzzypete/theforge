@@ -412,6 +412,362 @@ def test_run_validate_phase_timeout_with_commits_but_budget_exhausted_escalates(
     assert outcome is _ValidateOutcome.ESCALATE
 
 
+def test_run_validate_phase_already_complete_when_handoff_documents_work_done(
+    tmp_path: Path,
+) -> None:
+    """Empty worktree + handoff with all ACs MET + cited commit on branch → ALREADY_COMPLETE.
+
+    Regression test for the failure mode where a dev cycle correctly determined
+    no work was needed (because the fix is already on the base branch) and
+    documented this in the handoff YAML, but VALIDATE classified the empty
+    worktree as a missing-work failure.
+    """
+    # Build a real git repo so _has_commits_ahead_of_base returns False
+    # (HEAD == base) and _verified_handoff_commit_shas can resolve a real SHA.
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _write(tmp_path / "README.md", "base\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "fix: already-landed work")
+    landed_sha = _git(tmp_path, "rev-parse", "HEAD")
+
+    # Write a handoff YAML at the path the coordinator records under
+    # state.dev_handoff_snapshots so _latest_forge_handoff_path resolves it.
+    handoff_dir = tmp_path / ".forge" / "handoffs" / "issue-1447"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    handoff_path = handoff_dir / "iter_1.yaml"
+    handoff_path.write_text(
+        "summary: 'The fix for this issue was already implemented and committed'\n"
+        "commits:\n"
+        f"  - sha: '{landed_sha}'\n"
+        "    message: 'fix: already-landed work'\n"
+        "acceptance_criteria:\n"
+        "  - criterion: 'AC1 text from spec'\n"
+        "    status: MET\n"
+        "    notes: 'satisfied by existing commit'\n"
+        "  - criterion: 'AC2 text from spec'\n"
+        "    status: MET\n"
+        "    notes: 'satisfied by existing commit'\n"
+        "story_deviations: []\n"
+        "deferred_items: []\n",
+        encoding="utf-8",
+    )
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+    state.last_dev_start_commit = landed_sha
+    state.dev_handoff_snapshots.append(
+        {"source": "structured_output", "path": str(handoff_path), "handoff": {}}
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/"),
+        ),
+        patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+        # _check_conventions_parallel runs in a thread; stub it out so the test
+        # doesn't depend on convention configuration.
+        patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+        # Clean worktree → git status --porcelain returns empty.
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ALREADY_COMPLETE
+    assert result is not None
+    assert result.success is True
+    assert state.validate_already_complete is True
+    assert any(c["sha"] == landed_sha for c in state.validate_already_complete_commits)
+    assert state.validate_already_complete_reason is not None
+
+
+def test_run_validate_phase_empty_worktree_without_handoff_still_escalates(
+    tmp_path: Path,
+) -> None:
+    """Empty worktree with no handoff signal still routes to missing-work failure."""
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _write(tmp_path / "README.md", "base\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/"),
+        ),
+        patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+        patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert state.validate_already_complete is False
+    assert "missing-work failure" in (result.message or "")
+
+
+def test_run_validate_phase_empty_worktree_handoff_partial_ac_escalates(
+    tmp_path: Path,
+) -> None:
+    """Handoff with NOT_MET acceptance criterion does not unlock ALREADY_COMPLETE."""
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _write(tmp_path / "README.md", "base\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+    landed_sha = _git(tmp_path, "rev-parse", "HEAD")
+
+    handoff_dir = tmp_path / ".forge" / "handoffs" / "story"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    handoff_path = handoff_dir / "iter_1.yaml"
+    handoff_path.write_text(
+        "summary: 'Partial'\n"
+        "commits:\n"
+        f"  - sha: '{landed_sha}'\n"
+        "    message: 'base'\n"
+        "acceptance_criteria:\n"
+        "  - criterion: 'AC1'\n"
+        "    status: MET\n"
+        "    notes: 'ok'\n"
+        "  - criterion: 'AC2'\n"
+        "    status: NOT_MET\n"
+        "    notes: 'still pending'\n"
+        "story_deviations: []\n"
+        "deferred_items: []\n",
+        encoding="utf-8",
+    )
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+    state.dev_handoff_snapshots.append(
+        {"source": "structured_output", "path": str(handoff_path), "handoff": {}}
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/"),
+        ),
+        patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+        patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, _result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert state.validate_already_complete is False
+
+
+def test_run_validate_phase_empty_worktree_handoff_unverifiable_sha_escalates(
+    tmp_path: Path,
+) -> None:
+    """A handoff that cites a SHA not present on the branch must not unlock success."""
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _write(tmp_path / "README.md", "base\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+
+    handoff_dir = tmp_path / ".forge" / "handoffs" / "story"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    handoff_path = handoff_dir / "iter_1.yaml"
+    handoff_path.write_text(
+        "summary: 'fabricated'\n"
+        "commits:\n"
+        "  - sha: 'deadbeefcafebabefeedfacedeadbeefcafebabe'\n"
+        "    message: 'fake'\n"
+        "acceptance_criteria:\n"
+        "  - criterion: 'AC1'\n"
+        "    status: MET\n"
+        "    notes: 'fabricated'\n"
+        "story_deviations: []\n"
+        "deferred_items: []\n",
+        encoding="utf-8",
+    )
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+    state.dev_handoff_snapshots.append(
+        {"source": "structured_output", "path": str(handoff_path), "handoff": {}}
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/"),
+        ),
+        patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+        patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, _result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert state.validate_already_complete is False
+
+
+def test_run_validate_phase_empty_worktree_handoff_off_branch_sha_escalates(
+    tmp_path: Path,
+) -> None:
+    """A handoff citing a real SHA from another branch (not reachable from HEAD or
+    base) must not unlock ALREADY_COMPLETE — object existence is insufficient,
+    reachability is required."""
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _write(tmp_path / "README.md", "base\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base on main")
+
+    # Create a sibling branch with its own commit, then return to main. The
+    # sibling commit is a real object in the repo but is not reachable from
+    # HEAD or from main, so it must not satisfy the citation check.
+    _git(tmp_path, "checkout", "-b", "other")
+    _write(tmp_path / "other.txt", "off-branch\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "off-branch work")
+    off_branch_sha = _git(tmp_path, "rev-parse", "HEAD")
+    _git(tmp_path, "checkout", "main")
+
+    handoff_dir = tmp_path / ".forge" / "handoffs" / "story"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    handoff_path = handoff_dir / "iter_1.yaml"
+    handoff_path.write_text(
+        "summary: 'cites off-branch sha'\n"
+        "commits:\n"
+        f"  - sha: '{off_branch_sha}'\n"
+        "    message: 'off-branch work'\n"
+        "acceptance_criteria:\n"
+        "  - criterion: 'AC1'\n"
+        "    status: MET\n"
+        "    notes: 'claimed'\n"
+        "story_deviations: []\n"
+        "deferred_items: []\n",
+        encoding="utf-8",
+    )
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+    state.dev_handoff_snapshots.append(
+        {"source": "structured_output", "path": str(handoff_path), "handoff": {}}
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/"),
+        ),
+        patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+        patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, _result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert state.validate_already_complete is False
+
+
 def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", *args],

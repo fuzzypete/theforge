@@ -219,12 +219,101 @@ REQUIRED_DIAGNOSIS_TOKENS: tuple[str, ...] = (
     "fix-success criterion",
 )
 
+# Non-assertion vocabulary admissible as the value of the "confirmed cause" field.
+# A bug whose Diagnosis section has every other component but states the cause is
+# unknown is investigation-ready (admissible) — not implementation-ready. The dev
+# cycle's first job on such bugs is cause discovery, not hypothesized-cause
+# implementation. The gate must distinguish these states rather than coercing
+# operators into asserting causes they have not confirmed (which produced the
+# silent-contract-swap failure mode of #1435/#1446/#1447).
+_NON_ASSERTION_CAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^\s*(?:cause\s+(?:is|remains)\s+)?unknown\b", re.IGNORECASE),
+    re.compile(
+        r"^\s*(?:still\s+|currently\s+)?not\s+yet\s+"
+        r"(?:identified|known|determined|confirmed|isolated|established)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*not\s+(?:identified|known|determined|confirmed|established)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*(?:still\s+|currently\s+)?pending\s+investigation\b", re.IGNORECASE),
+    re.compile(r"^\s*under\s+investigation\b", re.IGNORECASE),
+    re.compile(r"^\s*tbd\b", re.IGNORECASE),
+    re.compile(r"^\s*to\s+be\s+(?:determined|identified|investigated|confirmed)\b", re.IGNORECASE),
+    re.compile(r"^\s*undetermined\b", re.IGNORECASE),
+    re.compile(r"^\s*unconfirmed\b", re.IGNORECASE),
+    re.compile(r"^\s*unidentified\b", re.IGNORECASE),
+    re.compile(r"^\s*investigation\s+(?:ongoing|in\s+progress)\b", re.IGNORECASE),
+    re.compile(r"^\s*\?+\s*$"),
+)
+
 # Status labels operators can apply to a bug to communicate fix-readiness intent.
 # These are advisory — the body's Diagnosis section is the authoritative signal.
 RECOGNIZED_STATUS_LABELS: frozenset[str] = frozenset(
     {"status:triage", "status:investigating", "status:diagnosed"}
 )
 FIX_READY_STATUS_LABELS: frozenset[str] = frozenset({"status:diagnosed"})
+
+
+def _extract_confirmed_cause_value(section: str) -> str | None:
+    """Return the prose value following the 'confirmed cause' label, if present.
+
+    Operators write the field in several common shapes::
+
+        - **Confirmed cause.** the cause is X
+        - **Confirmed cause:** unknown
+        - Confirmed cause: not yet identified
+        - Confirmed cause — pending investigation
+
+    Returns the trimmed text after the label up to the end of that logical
+    line, or ``None`` when no labelled occurrence exists. The match is
+    case-insensitive on the label only.
+    """
+    for line in section.splitlines():
+        # Strip leading whitespace, bullet markers, and opening bold markers.
+        cleaned = re.sub(r"^\s*(?:[-*+]\s+)?", "", line)
+        cleaned = re.sub(r"^\*+\s*", "", cleaned)
+        m = re.match(r"confirmed\s+cause\b", cleaned, re.IGNORECASE)
+        if m is None:
+            continue
+        rest = cleaned[m.end() :]
+        # Strip any combination of label punctuation, closing bold markers, and
+        # whitespace separating the label from its value.
+        rest = re.sub(r"^[\s*:.\-—]+", "", rest)
+        value = re.sub(r"\*+\s*$", "", rest).strip()
+        return value
+    return None
+
+
+def _is_non_assertion_cause(value: str) -> bool:
+    if not value:
+        return False
+    return any(pattern.match(value) for pattern in _NON_ASSERTION_CAUSE_PATTERNS)
+
+
+def cause_assertion_state(body: str) -> str:
+    """Classify the confirmed-cause field of the Diagnosis section.
+
+    Returns one of:
+
+    - ``"asserted"``: a confirmed-cause line exists and its value is a
+      specific cause claim (i.e. not non-assertion vocabulary).
+    - ``"non_asserted"``: the field exists but its value is non-assertion
+      vocabulary (``unknown``, ``not yet identified``, ``pending
+      investigation``, ``TBD``, etc.). Bug is investigation-ready.
+    - ``"missing"``: no confirmed-cause line present (or no Diagnosis
+      section at all).
+    """
+    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    if section is None:
+        return "missing"
+    value = _extract_confirmed_cause_value(section)
+    if value is None:
+        return "missing"
+    if _is_non_assertion_cause(value):
+        return "non_asserted"
+    return "asserted"
 
 
 def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
@@ -234,6 +323,12 @@ def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
     absent. Returns ``(False, [...])`` when the section is present but lacks
     one or more required tokens. Returns ``(True, [])`` only when every
     required token appears within the section text (case-insensitive).
+
+    The ``confirmed cause`` token requires presence of the field label; the
+    field's *value* may be either a specific cause or a non-assertion phrase
+    such as ``unknown`` or ``not yet identified``. Distinguishing those two
+    states is the job of :func:`cause_assertion_state` — the gate's only
+    responsibility here is verifying the operator filled the slot at all.
     """
     section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
     if section is None:
@@ -247,35 +342,59 @@ def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
 
 def derive_fix_ready(
     story_type: str | None, body: str, labels: Iterable[str] | None = None
-) -> tuple[bool | None, list[str]]:
-    """Compute the binary fix-readiness signal from structured type and body.
+) -> tuple[bool | None, bool, list[str]]:
+    """Compute the (fix_ready, investigation_ready, warnings) signals.
 
     Rules:
-    - ``type=None`` → ``(None, [warning])`` (cannot determine).
-    - ``type='bug'`` → ``True`` iff the body contains a complete Diagnosis section
-      with every required component; otherwise ``False`` with explanatory warnings.
-    - Any other recognized type (enhancement, task, epic) → always fix-ready
-      since features/tasks are described by acceptance criteria, not diagnosis.
+    - ``type=None`` → ``(None, False, [warning])`` (cannot determine).
+    - ``type='bug'`` with a complete Diagnosis section whose confirmed-cause
+      value is a specific claim → ``(True, False, [])`` (implementation-ready).
+    - ``type='bug'`` with a complete Diagnosis section whose confirmed-cause
+      value is non-assertion vocabulary (``unknown``, ``not yet identified``,
+      ``pending investigation``, ``TBD``, etc.) → ``(True, True, [warning])``
+      (investigation-ready). The bug passes the shape gate; the dev cycle's
+      first job is cause discovery, not hypothesized-cause implementation.
+    - ``type='bug'`` with a missing or incomplete Diagnosis section →
+      ``(False, False, [warnings])``.
+    - Any other recognized type (enhancement, task, epic) →
+      ``(True, False, [])``.
 
     Status labels (e.g. ``status:diagnosed``) are operator intent and do not
     override body content per AC: absence of the Diagnosis section flips a
     bug to not-fix-ready regardless of label.
     """
     if story_type is None:
-        return None, ["fix-readiness undetermined: story type unknown"]
+        return None, False, ["fix-readiness undetermined: story type unknown"]
     if story_type == "bug":
         ok, missing = diagnosis_completeness(body)
         if ok:
-            return True, []
+            state = cause_assertion_state(body)
+            if state == "non_asserted":
+                return (
+                    True,
+                    True,
+                    [
+                        "bug is investigation-ready: Diagnosis section is complete but the "
+                        "confirmed-cause field is a non-assertion (e.g. 'unknown', 'not yet "
+                        "identified'). Dev cycle's first job is cause discovery."
+                    ],
+                )
+            return True, False, []
         if missing == ["missing Diagnosis section"]:
-            return False, [
-                "bug missing Diagnosis section — not fix-ready (run "
-                "`forge diagnose` or add diagnosis manually)"
-            ]
-        return False, [
-            f"bug Diagnosis section missing required component: {tok}" for tok in missing
-        ]
-    return True, []
+            return (
+                False,
+                False,
+                [
+                    "bug missing Diagnosis section — not fix-ready (run "
+                    "`forge diagnose` or add diagnosis manually)"
+                ],
+            )
+        return (
+            False,
+            False,
+            [f"bug Diagnosis section missing required component: {tok}" for tok in missing],
+        )
+    return True, False, []
 
 
 def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
@@ -381,7 +500,11 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
                 "Bug has no Diagnosis section — not fix-ready. Add a '## Diagnosis' "
                 "section containing observed symptom, evidence, ruled-out hypotheses, "
                 "confirmed cause, affected code path, and fix-success criterion before "
-                "sprinting (or run `forge diagnose` when available)."
+                "sprinting (or run `forge diagnose` when available). The confirmed-cause "
+                "value may be a specific claim or a non-assertion phrase such as "
+                "'unknown', 'not yet identified', 'pending investigation', or 'TBD' — "
+                "investigation-ready bugs are admissible; only symptom-only bodies are "
+                "refused."
             ),
         )
     if _diagnosis_cause_unknown(body):
