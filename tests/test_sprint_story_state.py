@@ -72,6 +72,22 @@ def test_landed_done_is_immutable_against_non_done_terminal() -> None:
     assert state.get("a").outcome is StoryOutcome.DONE
 
 
+def test_landed_done_rejects_cost_usd_from_rejected_transition() -> None:
+    """A rejected FAILED transition must not clobber the landed DONE's cost.
+
+    Reproduces the sprint-summary bug where a re-dispatched story's round-2
+    failure ($0.0) overwrote round-1's recorded cost ($0.33) even though the
+    landed-immutability guard correctly kept the outcome at DONE.
+    """
+    state = SprintStoryState()
+    state.register("a", "p", outcome=StoryOutcome.RUNNING)
+    state.transition("a", outcome=StoryOutcome.DONE, landed=True, cost_usd=0.33)
+    state.transition("a", outcome=StoryOutcome.FAILED, cost_usd=0.0)
+    entry = state.get("a")
+    assert entry.outcome is StoryOutcome.DONE
+    assert entry.cost_usd == 0.33
+
+
 def test_unlanded_done_still_permits_terminal_correction() -> None:
     """The legitimate 'queued PR failed to land' path is NOT marked landed and
     must still be correctable from DONE to a failure outcome."""

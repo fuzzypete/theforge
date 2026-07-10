@@ -323,11 +323,13 @@ class SprintStoryState:
             entry = self._stories.get(slug)
             if entry is None:
                 return None
+            outcome_rejected = False
             if outcome is not None:
                 new_outcome = coerce_outcome(outcome)
                 if entry.outcome.is_terminal and not new_outcome.is_terminal:
                     # Reject: monotonicity invariant — once terminal, stay terminal.
                     new_outcome = entry.outcome
+                    outcome_rejected = True
                 elif (
                     entry.outcome.is_terminal
                     and entry.extras.get("landed")
@@ -337,7 +339,15 @@ class SprintStoryState:
                     # non-DONE terminal (e.g. a bogus FAILED from a re-entry after
                     # an unrelated process restart).
                     new_outcome = entry.outcome
+                    outcome_rejected = True
                 entry.outcome = new_outcome
+            if outcome_rejected:
+                # The outcome change was rejected by a monotonicity/landed guard.
+                # The accompanying fields (cost_usd, detail, etc.) describe the
+                # rejected round's attempt and must not clobber the settled
+                # entry's data — e.g. a round-2 failure's cost_usd=0.0 must not
+                # overwrite round-1's recorded cost on a landed DONE.
+                return entry
             for k, v in fields.items():
                 if k == "phase" and isinstance(v, (str, type(None))):
                     entry.phase = v  # type: ignore[assignment]
