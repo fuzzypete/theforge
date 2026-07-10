@@ -259,9 +259,8 @@ def _fetch_issue_timeline(number: int, project_root: Path | None) -> list[dict]:
             return events if page > 1 else []
         if not isinstance(data, list):
             return events if page > 1 else []
-        page_events = [item for item in data if isinstance(item, dict)]
-        events.extend(page_events)
-        if len(page_events) < _TIMELINE_PER_PAGE:
+        events.extend(item for item in data if isinstance(item, dict))
+        if len(data) < _TIMELINE_PER_PAGE:
             break
     else:
         _log.warning(

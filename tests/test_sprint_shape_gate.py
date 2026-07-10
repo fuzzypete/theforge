@@ -664,6 +664,25 @@ def test_fetch_issue_timeline_stops_at_page_boundary_when_last_page_is_full(
     assert len(events) == 200
 
 
+def test_fetch_issue_timeline_full_page_with_non_dict_entry_still_continues(
+    tmp_path: Path,
+) -> None:
+    """A full page containing a stray non-dict item must not be mistaken for
+    a short (final) page — the continuation check is on the raw page length,
+    not the post-filter dict count."""
+    first_page = [{"event": "commented", "id": i} for i in range(99)] + [None]
+    second_page = [{"event": "reopened", "id": 100}]
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(first_page), stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(second_page), stderr=""),
+        ]
+        events = _fetch_issue_timeline(42, tmp_path)
+    assert mock_run.call_count == 2
+    assert len(events) == 100
+    assert events[-1] == {"event": "reopened", "id": 100}
+
+
 def test_fetch_issue_timeline_returns_empty_on_first_page_failure(
     tmp_path: Path,
 ) -> None:
