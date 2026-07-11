@@ -276,11 +276,13 @@ def test_host_architecture_words_do_not_trigger_cross_module_surgery(story_text:
     "story_text",
     [
         # Genuine cross-cutting change signalled by stack-neutral vocabulary,
-        # with no reliance on TheForge architecture names.
-        "Change the serialization format across module boundaries so every"
+        # with no reliance on TheForge architecture names. Uses discriminative
+        # coordination-change terms ("propagate", "correctness depends"), not
+        # the bare high-frequency verbs "change"/"update" (see issue #1140).
+        "Propagate the serialization format across module boundaries so every"
         " reader and writer stays compatible.",
-        "Update the retry policy in multi-module fashion because correctness"
-        " depends on all sites changing in lockstep.",
+        "Coordinate the retry policy in multi-module fashion because correctness"
+        " depends on all sites staying in lockstep.",
     ],
 )
 def test_genuine_cross_module_surgery_still_triggers(story_text: str):
@@ -288,6 +290,43 @@ def test_genuine_cross_module_surgery_still_triggers(story_text: str):
     'correctness depends') plus a coordination-change verb must still classify
     as 'cross-module coordinator surgery' without any host-vocabulary hits."""
     assert "cross-module coordinator surgery" in _detect_large_preflight_story_categories(
+        story_text
+    )
+
+
+@pytest.mark.parametrize(
+    "story_text",
+    [
+        # "state machine" (a phase-transition term) plus a bare high-frequency
+        # verb ("update"/"change"/"changing") is ordinary story prose, not a
+        # description of multi-phase coordinator work. See issue #1140.
+        "Update the state machine diagram in the design doc for clarity.",
+        "We need to change the state machine's docstring to fix a typo.",
+        "The state machine is changing its logging format only.",
+    ],
+)
+def test_bare_high_frequency_verbs_do_not_trigger_multi_phase_category(story_text: str):
+    """'change'/'changes'/'changing'/'update'/'updates' are too common to serve
+    as the qualifying coordination-change signal — they must not upgrade an
+    ordinary story that merely mentions 'state machine' to the LARGE
+    'multi-phase state-machine modifications' category. See issue #1140."""
+    categories = _detect_large_preflight_story_categories(story_text)
+    assert "multi-phase state-machine modifications" not in categories
+
+
+@pytest.mark.parametrize(
+    "story_text",
+    [
+        # "module boundaries" (a cross-module term) plus a bare high-frequency
+        # verb is ordinary prose, not a description of cross-module surgery.
+        "Update the comment near the module boundaries for readability.",
+        "Change the changelog entry about the module boundaries diagram.",
+    ],
+)
+def test_bare_high_frequency_verbs_do_not_trigger_cross_module_category(story_text: str):
+    """Same overbroad-verb problem as the multi-phase category, but for the
+    'cross-module coordinator surgery' rule. See issue #1140."""
+    assert "cross-module coordinator surgery" not in _detect_large_preflight_story_categories(
         story_text
     )
 
