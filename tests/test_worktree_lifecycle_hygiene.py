@@ -130,3 +130,81 @@ def test_sweep_orphan_worktrees_removes_forge_only_orphans_and_merged_but_preser
     )
     assert escalated.exists()
     assert (escalated / ESCALATED_MARKER_PATH).exists()
+
+
+def test_sweep_orphan_worktrees_removes_merged_branch_still_checked_out_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """git branch --merged prefixes branches checked out in another worktree with
+    '+' (not '*'). The sweep must still recognize such a branch as merged, not just
+    branches whose remote-tracking ref is gone."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "README.md").write_text("root\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "init")
+    _git(repo, "remote", "add", "origin", str(repo))
+    _git(repo, "fetch", "origin", "main:refs/remotes/origin/main")
+
+    base_config = _make_config(repo)
+    config = dataclasses.replace(
+        base_config,
+        workspace=dataclasses.replace(
+            base_config.workspace,
+            path_pattern=".forge/worktrees/{slug}",
+            branch_pattern="forge/{slug}",
+            base_branch="main",
+        ),
+    )
+
+    worktrees_root = repo / ".forge" / "worktrees"
+    worktrees_root.mkdir(parents=True, exist_ok=True)
+
+    merged = worktrees_root / "merged-checked-out"
+    _git(repo, "worktree", "add", "-b", "forge/merged-checked-out", str(merged), "main")
+    (merged / "merged.txt").write_text("done\n", encoding="utf-8")
+    _git(merged, "add", "merged.txt")
+    _git(merged, "commit", "-m", "merged work")
+
+    # Give the branch a live remote-tracking ref so branch_gone is False,
+    # forcing the sweep to rely on the merged-branch check.
+    _git(
+        repo,
+        "fetch",
+        "origin",
+        "forge/merged-checked-out:refs/remotes/origin/forge/merged-checked-out",
+    )
+
+    _git(repo, "merge", "--ff-only", "forge/merged-checked-out")
+
+    # Refresh origin/main to include the merge commit, matching a real workflow
+    # where the base branch has already been fast-forwarded on the remote.
+    _git(repo, "fetch", "origin", "main:refs/remotes/origin/main")
+
+    # The branch is still checked out in the "merged" worktree, so
+    # `git branch --merged` run from `repo` reports it with a '+' prefix,
+    # not '*' (which is reserved for the branch checked out in `repo` itself).
+    merged_output = subprocess.run(
+        ["git", "branch", "--merged", "origin/main"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert any(
+        line.strip().startswith("+") and "forge/merged-checked-out" in line
+        for line in merged_output.splitlines()
+    )
+
+    sweep_orphan_worktrees(repo, config)
+
+    assert not merged.exists()
+    assert not any(
+        "forge/merged-checked-out" in line
+        for line in subprocess.run(
+            ["git", "branch", "--list"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+    )

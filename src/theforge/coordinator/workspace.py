@@ -534,7 +534,7 @@ def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
         merged = False
         if ok_merged:
             merged_branches = {
-                line.strip().lstrip("* ").strip()
+                line.strip().lstrip("+*").strip()
                 for line in merged_out.splitlines()
                 if line.strip()
             }
