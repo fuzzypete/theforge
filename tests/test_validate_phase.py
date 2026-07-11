@@ -341,6 +341,69 @@ def test_run_validate_phase_timeout_with_commits_routes_to_dev_retry(tmp_path: P
     assert state.dev_iteration_telemetry[0].is_timeout is True
 
 
+def test_run_validate_phase_timeout_rca_packet_falls_back_to_stderr(
+    tmp_path: Path,
+) -> None:
+    """Empty stdout tail with diagnostic stderr must still reach the RCA packet."""
+    from theforge.coordinator.state import RetryReason
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(2.0)
+    state.last_dev_start_commit = "HEAD"
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(
+                None,
+                "Gate timed out after 45s: FATAL pytest internal error, exit code 3",
+                "",
+                "make gate",
+            ),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._commits_exist_strict",
+            return_value=True,
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: implemented all three ACs",
+        ),
+        patch("theforge.coordinator.validate_phase.subprocess.run") as subproc,
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+
+        def _fake_run(args, **kwargs):
+            class _R:
+                returncode = 0
+                stdout = b"abc1234\n"
+
+            if "log" in args:
+                _R.stdout = b"abc1234 fix: thing\n"
+            return _R
+
+        subproc.side_effect = _fake_run
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.RETRY_DEV
+    assert result is None
+    assert state.retry_reason is RetryReason.GATE_FAIL
+    assert state.human_feedback is not None
+    assert "(empty)" not in state.human_feedback
+    assert "FATAL pytest internal error, exit code 3" in state.human_feedback
+
+
 def test_run_validate_phase_timeout_without_commits_still_escalates(tmp_path: Path) -> None:
     """Gate timeout with NO commits ahead of base remains terminal (state 1)."""
     config = _make_config(tmp_path)
