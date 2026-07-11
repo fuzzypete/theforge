@@ -148,15 +148,13 @@ _PHASE_TRANSITION_TERMS = (
     "state machine",
 )
 
-_COORDINATOR_COMPONENT_TERMS = (
-    "runner",
-    "engine",
-    "coordinator",
-    "coordinator loop",
-    "phase",
-    "phases",
-)
-
+# NOTE: This heuristic must stay stack-neutral. The orchestrator sizes stories
+# for *arbitrary* managed codebases, so classification signals may not embed
+# TheForge's own architecture vocabulary ("runner", "engine", "coordinator",
+# "phase"). Those words are common in unrelated build/CI/pipeline prose, so
+# using them as triggers mis-sizes stories for every other project. Cross-module
+# surgery is detected from stack-neutral signals (_CROSS_MODULE_TERMS +
+# _COORDINATION_CHANGE_TERMS) instead. See issue #1139.
 _COORDINATION_CHANGE_TERMS = (
     "modify",
     "modifies",
@@ -259,9 +257,8 @@ def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
     ):
         matched.append("concurrency control")
 
-    if _contains_any_phrase(normalized, _CANCELLATION_TERMS) and (
-        _contains_any_phrase(normalized, _CROSS_BOUNDARY_TERMS)
-        or _count_phrase_hits(normalized, _COORDINATOR_COMPONENT_TERMS) >= 2
+    if _contains_any_phrase(normalized, _CANCELLATION_TERMS) and _contains_any_phrase(
+        normalized, _CROSS_BOUNDARY_TERMS
     ):
         matched.append("lifecycle/cancellation propagation across module boundaries")
 
@@ -270,9 +267,8 @@ def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
     ):
         matched.append("multi-phase state-machine modifications")
 
-    if _count_phrase_hits(normalized, _COORDINATOR_COMPONENT_TERMS) >= 2 and (
-        _contains_any_phrase(normalized, _CROSS_MODULE_TERMS)
-        or _contains_any_phrase(normalized, _COORDINATION_CHANGE_TERMS)
+    if _contains_any_phrase(normalized, _CROSS_MODULE_TERMS) and _contains_any_phrase(
+        normalized, _COORDINATION_CHANGE_TERMS
     ):
         matched.append("cross-module coordinator surgery")
 
