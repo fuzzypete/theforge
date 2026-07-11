@@ -266,6 +266,9 @@ class TestCmdStatusRouting:
             patch("theforge.detach.read_run_status", return_value=mock_status),
             patch("theforge.pending.cleanup_stale"),
             patch("theforge.pending.list_pending", return_value=[]),
+            # Force the TTY branch: the defect only manifests when is_tty() is
+            # True, so the test must reach that guard to catch a regression.
+            patch("theforge.cli.status_watch.is_tty", return_value=True),
             patch("theforge.cli.status_watch.run_watch_loop") as mock_run_watch_loop,
         ):
             result = cmd_status(args)
