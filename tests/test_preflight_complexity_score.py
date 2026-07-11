@@ -212,6 +212,42 @@ def test_detect_large_preflight_story_categories_for_representative_stories(
     assert expected_category in matches
 
 
+@pytest.mark.parametrize(
+    "story_text",
+    [
+        # bare "thread" as a verb — threading config, not concurrency
+        "Thread the new timeout value through the config loader and CLI parser"
+        " so operators can override it.",
+        # bare "process" as a noun — process a payload, not a concurrency concept
+        "Process the sanitized review findings and render them in the summary"
+        " report shown to the operator.",
+        # bare "async" appearing in an async def signature, no concurrency scope
+        "Add an async def helper that formats the audit trail entry before it is written to disk.",
+    ],
+)
+def test_bare_high_frequency_terms_do_not_trigger_concurrency_category(story_text: str):
+    """Bare 'thread'/'process'/'async' without concurrency context must not
+    upgrade a non-concurrent story to the LARGE 'concurrency control' category."""
+    assert "concurrency control" not in _detect_large_preflight_story_categories(story_text)
+
+
+@pytest.mark.parametrize(
+    "story_text",
+    [
+        # ambiguous term + qualifying context still triggers
+        "Spawn a worker thread pool so the runner can process phases in parallel.",
+        "The async fetch path must await a lock before mutating shared state.",
+        # strong term alone is sufficient signal
+        "Fix the race condition in the sprint scheduler.",
+        "Add asyncio-based streaming to the coordinator loop.",
+    ],
+)
+def test_qualified_concurrency_stories_still_trigger_category(story_text: str):
+    """Genuine concurrency work — ambiguous term + qualifier, or a strong term
+    alone — must still be classified as 'concurrency control'."""
+    assert "concurrency control" in _detect_large_preflight_story_categories(story_text)
+
+
 # ── consumer: dev-tier routing diverges from enum-only routing ────────
 
 

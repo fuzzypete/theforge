@@ -44,18 +44,70 @@ _COMPLEXITY_TO_LEVEL: dict[str, str] = {
     "large": "HIGH",
 }
 
-_CONCURRENCY_CONTROL_TERMS = (
-    "thread",
-    "threads",
-    "process",
-    "processes",
-    "async",
+# Unambiguous concurrency vocabulary. A single hit is sufficient signal that a
+# story is about concurrency control, because these terms rarely appear in
+# non-concurrent prose.
+_CONCURRENCY_STRONG_TERMS = (
     "asynchronous",
     "asyncio",
     "concurrency",
     "concurrent",
     "inter thread",
     "inter process",
+    "multi thread",
+    "multi threaded",
+    "multiprocessing",
+    "race condition",
+    "deadlock",
+    "mutex",
+    "semaphore",
+    "thread safe",
+    "thread safety",
+    "thread pool",
+    "event loop",
+)
+
+# High-frequency terms that are common verbs/nouns in non-concurrent contexts
+# ("thread a value through config", "kill the process", "async def helper").
+# On their own these are NOT sufficient signal; they only count when a
+# qualifying concurrency-context term co-occurs.
+_CONCURRENCY_AMBIGUOUS_TERMS = (
+    "thread",
+    "threads",
+    "process",
+    "processes",
+    "async",
+)
+
+# Context terms that qualify an ambiguous term as genuinely concurrency-related.
+_CONCURRENCY_QUALIFIER_TERMS = (
+    "lock",
+    "locking",
+    "parallel",
+    "parallelism",
+    "worker",
+    "workers",
+    "pool",
+    "spawn",
+    "spawns",
+    "spawned",
+    "await",
+    "coroutine",
+    "coroutines",
+    "synchronize",
+    "synchronized",
+    "synchronization",
+    "shared state",
+    "shared memory",
+    "race",
+    "contention",
+    "atomic",
+    "scheduler",
+    "executor",
+    "background",
+    "blocking",
+    "non blocking",
+    "gil",
 )
 
 _CANCELLATION_TERMS = (
@@ -201,7 +253,10 @@ def _detect_large_preflight_story_categories(story_content: str) -> list[str]:
     normalized = _normalize_story_text_for_match(story_content)
     matched: list[str] = []
 
-    if _contains_any_phrase(normalized, _CONCURRENCY_CONTROL_TERMS):
+    if _contains_any_phrase(normalized, _CONCURRENCY_STRONG_TERMS) or (
+        _contains_any_phrase(normalized, _CONCURRENCY_AMBIGUOUS_TERMS)
+        and _contains_any_phrase(normalized, _CONCURRENCY_QUALIFIER_TERMS)
+    ):
         matched.append("concurrency control")
 
     if _contains_any_phrase(normalized, _CANCELLATION_TERMS) and (
