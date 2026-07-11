@@ -453,11 +453,14 @@ def cmd_status(args: object) -> int:
     if watch_interval is not None:
         from theforge.cli import status_watch
 
-        watch_run_ids = (
-            [explicit_run_id]
-            if explicit_run_id is not None
-            else _resolve_watch_run_ids(active_run_ids, project_root)
-        )
+        if explicit_run_id is not None:
+            watch_run_ids = (
+                [explicit_run_id]
+                if _await_watchable_sprint_run(explicit_run_id, project_root)
+                else []
+            )
+        else:
+            watch_run_ids = _resolve_watch_run_ids(active_run_ids, project_root)
         if status_watch.is_tty() and watch_run_ids:
             color = status_watch.color_enabled(no_color)
             return status_watch.run_watch_loop(

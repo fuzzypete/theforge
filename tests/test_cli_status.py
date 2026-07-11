@@ -232,6 +232,52 @@ class TestCmdStatusRouting:
 
         assert result == 1
 
+    def test_explicit_run_id_with_watch_falls_back_for_non_sprint_run(
+        self, tmp_path: Path, capsys: object
+    ) -> None:
+        """forge status <run-id> --watch on a non-sprint run must not enter the
+        sprint render path; it should fall back to a single snapshot."""
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(
+            run_id="explicit-run",
+            recent=False,
+            last=False,
+            watch=2,
+            no_color=False,
+        )
+
+        mock_status = {
+            "phase": "DEV",
+            "cost_usd": 0.10,
+            "elapsed_seconds": 30,
+            "log_path": None,
+        }
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status._resolve_run_id", return_value=True),
+            patch("theforge.cli.status._is_sprint_run", return_value=False),
+            patch("theforge.cli.status._await_watchable_sprint_run", return_value=False),
+            patch("theforge.detach.read_run_status", return_value=mock_status),
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+            # Force the TTY branch: the defect only manifests when is_tty() is
+            # True, so the test must reach that guard to catch a regression.
+            patch("theforge.cli.status_watch.is_tty", return_value=True),
+            patch("theforge.cli.status_watch.run_watch_loop") as mock_run_watch_loop,
+        ):
+            result = cmd_status(args)
+
+        assert result == 0
+        mock_run_watch_loop.assert_not_called()
+        captured = capsys.readouterr()
+        assert "explicit-run" in captured.out
+
     def test_last_flag_shows_most_recent_completed(self, tmp_path: Path, capsys: object) -> None:
         """forge status --last shows the most recent completed run."""
         from theforge.cli import cmd_status
