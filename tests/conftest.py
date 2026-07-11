@@ -142,6 +142,42 @@ def _scrub_agent_credentials_for_gate():
                         os.environ[name] = value
 
 
+# Detached-child runtime signals that leak into the test process when the gate
+# is launched from inside a detached `forge run`/`forge sprint` child (the
+# dogfood orchestrator sets these before re-exec). Their ambient presence makes
+# `is_detached_child()` return True and silently flips code paths that tests
+# assume run in the non-detached default (e.g. cmd_run's daemonize branch).
+# Tests that exercise the detached branch set these explicitly via
+# monkeypatch.setenv, which overrides this session-scoped scrub for their scope.
+_DETACHED_RUNTIME_ENV_VARS: tuple[str, ...] = (
+    "FORGE_DETACHED",
+    "FORGE_DETACHED_RUN_ID",
+    "FORGE_DETACHED_SLUG",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _neutralize_detached_child_env():
+    """Strip leaked detached-child signals so tests see the non-detached default.
+
+    Without this, running the suite from within a detached forge child (as the
+    orchestrator gate does) leaves FORGE_DETACHED=1 in the environment, which
+    diverts cmd_run/cmd_sprint into the child branch and breaks tests that
+    assert the parent daemonize path.
+    """
+    original = {name: os.environ.get(name) for name in _DETACHED_RUNTIME_ENV_VARS}
+    for name in _DETACHED_RUNTIME_ENV_VARS:
+        os.environ.pop(name, None)
+    try:
+        yield
+    finally:
+        for name, value in original.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 @pytest.fixture(autouse=True)
 def _enforce_network_integration_marker(request):
     """Enforce the two-key opt-in for real-network tests.
