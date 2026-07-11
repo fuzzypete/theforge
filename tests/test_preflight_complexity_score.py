@@ -248,6 +248,50 @@ def test_qualified_concurrency_stories_still_trigger_category(story_text: str):
     assert "concurrency control" in _detect_large_preflight_story_categories(story_text)
 
 
+@pytest.mark.parametrize(
+    "story_text",
+    [
+        # A non-TheForge CI/build story mentioning two host-architecture words
+        # ("runner", "phase") plus a coordination-change verb ("update"). These
+        # are ordinary words in build/pipeline prose, not cross-module surgery.
+        "Update the CI runner image and add a lint phase to the build pipeline.",
+        # "engine" + "phase" + "change" — a game/render project, not TheForge.
+        "Change the physics engine tick and add a warmup phase to the render loop.",
+        # "coordinator" + "runner" + "modify" for an unrelated events project.
+        "Modify the event coordinator so the background runner picks up new jobs.",
+    ],
+)
+def test_host_architecture_words_do_not_trigger_cross_module_surgery(story_text: str):
+    """Bare TheForge architecture vocabulary (runner/engine/coordinator/phase)
+    paired with a coordination-change verb must NOT upgrade an unrelated
+    project's story to the LARGE 'cross-module coordinator surgery' category.
+    The heuristic is stack-neutral and may not embed the host project's own
+    architecture names as signals. See issue #1139."""
+    assert "cross-module coordinator surgery" not in _detect_large_preflight_story_categories(
+        story_text
+    )
+
+
+@pytest.mark.parametrize(
+    "story_text",
+    [
+        # Genuine cross-cutting change signalled by stack-neutral vocabulary,
+        # with no reliance on TheForge architecture names.
+        "Change the serialization format across module boundaries so every"
+        " reader and writer stays compatible.",
+        "Update the retry policy in multi-module fashion because correctness"
+        " depends on all sites changing in lockstep.",
+    ],
+)
+def test_genuine_cross_module_surgery_still_triggers(story_text: str):
+    """Stack-neutral cross-module signal (cross/multi-module, 'all sites',
+    'correctness depends') plus a coordination-change verb must still classify
+    as 'cross-module coordinator surgery' without any host-vocabulary hits."""
+    assert "cross-module coordinator surgery" in _detect_large_preflight_story_categories(
+        story_text
+    )
+
+
 # ── consumer: dev-tier routing diverges from enum-only routing ────────
 
 
