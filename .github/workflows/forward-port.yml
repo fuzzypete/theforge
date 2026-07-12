@@ -112,13 +112,15 @@ jobs:
         run: |
           title="forward-port: $RELEASE_REF -> main failed"
           existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
-          body="Automatic forward-port of \`$RELEASE_REF\` into main failed for ${{ github.sha }} (run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-
-Conflicting files outside the version-file allowlist (empty means the gate failed instead):
-\`\`\`
-$CONFLICT_FILES
-\`\`\`
-Until this is resolved and merged manually, main is missing release-line commits and every subsequent port will keep failing."
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body=$(printf '%s\n' \
+            "Automatic forward-port of \`$RELEASE_REF\` into main failed for ${{ github.sha }} (run: $run_url)." \
+            "" \
+            "Conflicting files outside the version-file allowlist (empty means the gate failed instead):" \
+            '```' \
+            "$CONFLICT_FILES" \
+            '```' \
+            "Until this is resolved and merged manually, main is missing release-line commits and every subsequent port will keep failing.")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
