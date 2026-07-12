@@ -362,11 +362,25 @@ def _setup_resume_entry(
     # Restore trajectory data from sidecar (survives --resume)
     load_trajectory_state(workspace_path, state)
 
-    # Sync forge.yaml from project root into the worktree
+    # Sync forge.yaml from project root into the worktree so the run executes
+    # with current settings. The source is the operator's live working-tree
+    # file, which may carry uncommitted edits; syncing it onto the worktree's
+    # tracked forge.yaml would otherwise make the worktree dirty and let the
+    # dev-phase auto-commit sweep that operator state into the story's commits
+    # and PR (issue #1627). Flag the synced file skip-worktree so git ignores
+    # its working-tree modifications: the content stays available to the run,
+    # but it never appears as dirty and never lands in a story commit. An
+    # operator config change reaches main only when the operator commits it
+    # deliberately from the project root.
     _forge_yaml_src = config.project_root / "forge.yaml"
     _forge_yaml_dst = workspace_path / "forge.yaml"
     if _forge_yaml_src.exists():
         shutil.copy2(_forge_yaml_src, _forge_yaml_dst)
+        _skip_ok, _skip_out = _cu._run_shell(
+            "git update-index --skip-worktree forge.yaml", workspace_path
+        )
+        if not _skip_ok:
+            _cu._log(f"  ⚠ RESUME   could not skip-worktree forge.yaml: {_skip_out.strip()}")
         _cu._log(f"  ↺ RESUME   synced forge.yaml from {_forge_yaml_src}")
 
     # Restore session IDs from prior run if available
