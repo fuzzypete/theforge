@@ -4,16 +4,24 @@ name: Forward-port release to main
 # main stays a strict superset of every release line (doctrine established
 # 2026-07-11; replaces big-bang ports like #1604).
 #
-# Design notes:
-# - Runs the gate on the merged result BEFORE pushing; the push to main then
-#   triggers the full CI matrix as a backstop. A PR-based flow is not usable
-#   here: PRs opened with the default Actions token do not trigger CI, so
-#   required checks would never run and auto-merge would deadlock.
+# Design notes (dispatch-bridge flow — no PAT, no protection changes):
+# - Main's ruleset requires PRs and linear history, so the port lands as an
+#   auto-squash-merged PR from a bot branch, never a direct push.
+# - PRs created with the default Actions token do not trigger pull_request
+#   CI (GitHub's recursion guard), which would deadlock required checks. But
+#   required checks are evaluated per head SHA, so this workflow dispatches
+#   ci.yml explicitly on the bot branch (ci.yml has a workflow_dispatch
+#   trigger for this); the resulting check runs satisfy the PR's required
+#   checks and auto-merge fires.
 # - pyproject.toml and CHANGELOG.md always keep main's version: release-line
 #   commits bump the RC/release version and roll the changelog, and those
 #   must never overwrite main's dev version or its [Unreleased] section.
 # - Any conflict outside those two files aborts the port and files an issue
 #   instead of guessing.
+# - Squash-merged ports leave no shared ancestry, so "already ported?" is a
+#   content check (merged tree == main tree), not an ancestor check.
+# - Force-pushing the bot branch clears any armed auto-merge, so auto-merge
+#   is (re-)armed on every run after the push.
 # - This file must exist on each release/* branch as well as main: push
 #   events execute the workflow definition from the pushed ref.
 
@@ -27,6 +35,8 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
+  actions: write
   issues: write
 
 jobs:
@@ -47,14 +57,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin "$RELEASE_REF"
 
-          if git merge-base --is-ancestor "origin/$RELEASE_REF" HEAD; then
-            echo "main already contains $RELEASE_REF; nothing to port."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           set +e
-          git merge --no-ff --no-edit "origin/$RELEASE_REF"
+          git merge --no-ff --no-edit "origin/$RELEASE_REF" \
+            -m "Forward-port $RELEASE_REF into main"
           merge_rc=$?
           set -e
 
@@ -84,24 +89,37 @@ jobs:
             git commit --amend --no-edit
           fi
 
-      - uses: actions/setup-python@v5
-        if: steps.merge.outputs.skip != 'true'
-        with:
-          python-version: "3.12"
+          # Squash-ported history shares no ancestry, so "nothing to port" is
+          # a tree comparison: if the merged result is content-identical to
+          # main, every release change is already on main.
+          if git diff --quiet ORIG_HEAD HEAD; then
+            echo "Release content already on main; nothing to port."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      - name: Install dependencies
+      - name: Open forward-port PR and arm auto-merge
         if: steps.merge.outputs.skip != 'true'
-        run: pip install -e ".[dev]"
-
-      - name: Gate merged result
-        if: steps.merge.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ github.ref_name }}
         run: |
-          make lint
-          make test
+          branch="forward-port/${RELEASE_REF//\//-}"
+          git push --force origin "HEAD:refs/heads/$branch"
 
-      - name: Push to main
-        if: steps.merge.outputs.skip != 'true'
-        run: git push origin HEAD:main
+          existing=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            gh pr create --base main --head "$branch" \
+              --title "Forward-port $RELEASE_REF into main" \
+              --body "Automated forward-port of \`$RELEASE_REF\` (@ ${{ github.sha }}) into main. Version files (pyproject.toml, CHANGELOG.md) keep main's copies by design. Opened by forward-port.yml; CI is dispatched explicitly because Actions-token PRs do not trigger pull_request workflows."
+            existing=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          fi
+
+          # Force-push clears auto-merge; re-arm every run.
+          gh pr merge "$existing" --auto --squash
+
+          # Bridge required checks: dispatch CI on the bot branch's head SHA.
+          gh workflow run ci.yml --ref "$branch"
 
       - name: File issue on failure
         if: failure()
@@ -112,13 +130,15 @@ jobs:
         run: |
           title="forward-port: $RELEASE_REF -> main failed"
           existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
-          body="Automatic forward-port of \`$RELEASE_REF\` into main failed for ${{ github.sha }} (run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-
-Conflicting files outside the version-file allowlist (empty means the gate failed instead):
-\`\`\`
-$CONFLICT_FILES
-\`\`\`
-Until this is resolved and merged manually, main is missing release-line commits and every subsequent port will keep failing."
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body=$(printf '%s\n' \
+            "Automatic forward-port of \`$RELEASE_REF\` into main failed for ${{ github.sha }} (run: $run_url)." \
+            "" \
+            "Conflicting files outside the version-file allowlist (empty means a later step failed instead):" \
+            '```' \
+            "$CONFLICT_FILES" \
+            '```' \
+            "Until this is resolved and merged manually, main is missing release-line commits and every subsequent port will keep failing.")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
