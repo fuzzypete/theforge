@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.10.0] — 2026-07-11
+
 The headline of v0.10.0 is **workflow determinism and operator trust**. v0.9.0
 introduced adaptive intelligence; v0.10.0 makes the work that adaptive
 intelligence drives observable, reproducible, and trustworthy. Sprint state
