@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -294,7 +295,8 @@ class TestRunAgentPool:
         assert results[1].profile_name == "r2"
 
     def test_pool_runs_parallel(self, tmp_path: Path) -> None:
-        """Wall clock is less than the sum of individual durations (proves parallel)."""
+        """Agents are observed running concurrently (overlapping in-flight count > 1),
+        proving parallelism directly instead of via a load-sensitive wall-clock budget."""
         profiles = [
             ModelProfile(
                 name="a",
@@ -322,8 +324,18 @@ class TestRunAgentPool:
             ),
         ]
 
+        in_flight = 0
+        max_in_flight = 0
+        lock = threading.Lock()
+
         def slow_agent(**kwargs) -> AgentResult:
-            time.sleep(0.1)
+            nonlocal in_flight, max_in_flight
+            with lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            time.sleep(0.2)
+            with lock:
+                in_flight -= 1
             profile = kwargs["profile"]
             return AgentResult(
                 success=True,
@@ -336,13 +348,11 @@ class TestRunAgentPool:
             )
 
         with patch("theforge.runners.cli.run_agent", side_effect=slow_agent):
-            start = time.monotonic()
             results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
-            elapsed = time.monotonic() - start
 
         assert len(results) == 3
-        # Sequential total would be ~0.3s; parallel should finish in ~0.1s
-        assert elapsed < 0.25
+        # If run_agent_pool were sequential, in-flight would never exceed 1.
+        assert max_in_flight > 1
 
     def test_pool_preserves_order(self, tmp_path: Path) -> None:
         """Results are returned in profile order even when fast agent finishes first."""
