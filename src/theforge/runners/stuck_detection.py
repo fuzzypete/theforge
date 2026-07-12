@@ -350,12 +350,13 @@ class StuckTracker:
         """
         loop_start: int | None = None
         active_kind: str | None = None
-        if self._repeat_count >= 2:
-            loop_start = self._repeat_start_iter
-            active_kind = PATTERN_REPEAT
-        elif self._error_count >= 2:
-            loop_start = self._error_start_iter
-            active_kind = PATTERN_ERROR_LOOP
+        if self._cfg is not None:
+            if self._repeat_count >= self._cfg.repeat_threshold:
+                loop_start = self._repeat_start_iter
+                active_kind = PATTERN_REPEAT
+            elif self._error_count >= self._cfg.error_threshold:
+                loop_start = self._error_start_iter
+                active_kind = PATTERN_ERROR_LOOP
         return {
             "iterations_observed": self._iteration,
             "iters_without_modification": self._iters_without_mod,

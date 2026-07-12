@@ -261,25 +261,32 @@ def _scope_label(canonical_id: str, role: str | None, complexity: str | None) ->
     return " ".join(parts)
 
 
+def _unmeasured_suffix(summary: dict[str, Any]) -> str:
+    """`` (N cost-unmeasured)`` note so operators can tell free from unmeasured."""
+    unknown = int(summary.get("cost_unknown_runs", 0))
+    return f" ({unknown} cost-unmeasured)" if unknown > 0 else ""
+
+
 def _format_summary(summary: dict[str, Any]) -> str:
     role = summary["role"]
     complexity = summary.get("complexity")
     prefix = role if complexity is None else f"{role}/{complexity}"
+    suffix = _unmeasured_suffix(summary)
     if role == "dev":
         return (
             f"{prefix}: {summary.get('runs', 0)} runs, {summary.get('successes', 0)} successes, "
-            f"${float(summary.get('avg_cost_usd', 0.0)):.2f} avg cost, "
+            f"${float(summary.get('avg_cost_usd', 0.0)):.2f} avg cost{suffix}, "
             f"{float(summary.get('avg_iterations', 0.0)):.1f} avg iterations"
         )
     if role == "review":
         return (
             f"{prefix}: {summary.get('runs', 0)} runs, "
             f"{float(summary.get('avg_findings', 0.0)):.1f} avg findings, "
-            f"${float(summary.get('avg_cost_usd', 0.0)):.2f} avg cost"
+            f"${float(summary.get('avg_cost_usd', 0.0)):.2f} avg cost{suffix}"
         )
     return (
         f"{prefix}: {summary.get('runs', 0)} runs, "
-        f"${float(summary.get('avg_cost_usd', 0.0)):.2f} avg cost"
+        f"${float(summary.get('avg_cost_usd', 0.0)):.2f} avg cost{suffix}"
     )
 
 

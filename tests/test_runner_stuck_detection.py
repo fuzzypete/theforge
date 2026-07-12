@@ -577,6 +577,72 @@ class TestAuditObservability:
         assert ev["history"][0]["calls"]
         assert "redacted" in ev["history"][0]["calls"][0]
 
+    def test_evidence_active_kind_matches_configured_repeat_threshold(self):
+        from theforge.runners.stuck_detection import (
+            PATTERN_REPEAT,
+            StuckTracker,
+            build_observation,
+        )
+
+        class _Call:
+            def __init__(self, name, arguments):
+                self.name = name
+                self.arguments = arguments
+
+        cfg = StuckDetectionConfig(
+            enabled=True,
+            repeat_threshold=5,
+            no_progress_iterations=99,
+            error_threshold=99,
+            post_nudge_iterations=99,
+        )
+        profile = _dev_profile(stuck=cfg)
+        tracker = StuckTracker(profile)
+
+        # Two identical calls: below the configured threshold of 5, so
+        # evidence() must not report an active pattern yet.
+        for _ in range(2):
+            obs = build_observation(
+                calls=[_Call("Read", {"path": "x.py"})],
+                results=[{"id": "c1", "name": "Read", "content": "ok"}],
+            )
+            tracker.observe(obs)
+        ev = tracker.evidence()
+        assert ev["repeat_count"] == 2
+        assert ev["active_kind"] is None
+        assert ev["loop_start_iteration"] is None
+
+        # Reaching the configured threshold flips evidence() active.
+        for _ in range(3):
+            obs = build_observation(
+                calls=[_Call("Read", {"path": "x.py"})],
+                results=[{"id": "c1", "name": "Read", "content": "ok"}],
+            )
+            tracker.observe(obs)
+        ev = tracker.evidence()
+        assert ev["repeat_count"] == 5
+        assert ev["active_kind"] == PATTERN_REPEAT
+
+    def test_evidence_handles_missing_cfg(self):
+        from theforge.runners.stuck_detection import StuckTracker, build_observation
+
+        class _Call:
+            def __init__(self, name, arguments):
+                self.name = name
+                self.arguments = arguments
+
+        profile = _dev_profile(stuck=None)
+        tracker = StuckTracker(profile)
+        for _ in range(5):
+            obs = build_observation(
+                calls=[_Call("Read", {"path": "x.py"})],
+                results=[{"id": "c1", "name": "Read", "content": "ok"}],
+            )
+            tracker.observe(obs)
+        ev = tracker.evidence()
+        assert ev["active_kind"] is None
+        assert ev["loop_start_iteration"] is None
+
 
 class TestExplorationTelemetry:
     """Distinct file reads / searches across iterations are recorded as exploration."""

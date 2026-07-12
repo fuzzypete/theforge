@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -15,13 +16,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from theforge.agent_types import AgentResult
+from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
+from .schema_utils import _estimate_cost
+
+# Emit the cost-unmeasured warning at most once per model to avoid log spam.
+_COST_UNMEASURED_WARNED: set[str] = set()
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -136,6 +141,131 @@ def _get_codex_session_id(*, min_mtime: float) -> str | None:
     return best_id
 
 
+def _coerce_int(value: Any) -> int | None:
+    """Parse an int from a JSON value or a ``"12,345"``-style string; None if not."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        digits = value.replace(",", "").strip()
+        if digits.isdigit():
+            return int(digits)
+    return None
+
+
+def _usage_from_json(result_json: dict[str, Any]) -> tuple[int, int] | None:
+    """Best-effort (input_tokens, output_tokens) from a parsed codex JSON blob.
+
+    Defensive fallback only. The default codex transport writes its last message
+    to the ``-o`` file as PLAIN TEXT (``--output-last-message``), not JSON, so
+    this path does not fire on a normal run — it exists to opportunistically pick
+    up a usage block when codex is invoked in a structured-output mode
+    (e.g. ``--output-schema``) that happens to emit one. Tolerates several
+    plausible shapes: a ``usage``/``token_usage``/``token_count`` dict keyed by
+    ``input_tokens``/``prompt_tokens``/``input`` (and the output analogues).
+    Returns None when a usable input+output pair cannot be found.
+    """
+    if not isinstance(result_json, dict):
+        return None
+    for key in ("usage", "token_usage", "token_count", "tokens"):
+        block = result_json.get(key)
+        if not isinstance(block, dict):
+            continue
+        input_tokens = None
+        for in_key in ("input_tokens", "prompt_tokens", "input", "prompt"):
+            input_tokens = _coerce_int(block.get(in_key))
+            if input_tokens is not None:
+                break
+        output_tokens = None
+        for out_key in ("output_tokens", "completion_tokens", "output", "completion"):
+            output_tokens = _coerce_int(block.get(out_key))
+            if output_tokens is not None:
+                break
+        if input_tokens is not None and output_tokens is not None:
+            return (input_tokens, output_tokens)
+    return None
+
+
+# Verified against Codex CLI v0.142.x: the human-readable run summary reports
+# only a TOTAL token count, on its own line, e.g.::
+#     tokens used
+#     11,374
+# A bare total cannot be priced with the (input, output) pricing table, so the
+# default human transport is intentionally recorded cost-unknown rather than
+# fabricating a split. This regex therefore matches ONLY a single-line summary
+# that both names tokens AND carries an explicit input+output split (as a
+# structured/JSON-style summary would). It is deliberately tight:
+#   * anchored to a line containing "token" (MULTILINE ``^``), and
+#   * confined to one line (``[^\n]`` instead of DOTALL ``.*?``),
+# so it cannot fabricate a cost by matching unrelated "input … output" prose
+# elsewhere in the agent's stdout.
+_USAGE_LINE_RE = re.compile(
+    r"^[^\n]*token[^\n]*?input[^0-9]*(?P<input>[\d,]+)[^\n]*?output[^0-9]*(?P<output>[\d,]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _usage_from_text(text: str) -> tuple[int, int] | None:
+    """Best-effort (input_tokens, output_tokens) from a codex stdout summary line.
+
+    Scans for a single-line token-usage summary that names both input and output
+    token counts (e.g. ``tokens used: input 2,800 output 621``). Returns None
+    when no such split is present — including the real CLI's total-only ``tokens
+    used`` line — because a bare total cannot be priced honestly.
+    """
+    if not text:
+        return None
+    match = _USAGE_LINE_RE.search(text)
+    if not match:
+        return None
+    input_tokens = _coerce_int(match.group("input"))
+    output_tokens = _coerce_int(match.group("output"))
+    if input_tokens is None or output_tokens is None:
+        return None
+    return (input_tokens, output_tokens)
+
+
+def _extract_codex_cost(
+    *,
+    profile: ModelProfile,
+    result_json: dict[str, Any],
+    stdout: str,
+) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Recover real cost from codex output; never fabricate a zero.
+
+    Returns ``(cost_usd, model_usage)``. When token usage can be recovered we
+    price it via the shared pricing table and populate ``model_usage``; when it
+    cannot, ``cost_usd`` is ``None`` (cost-unknown, surfaced loudly) — never
+    ``0.0``, so an unmeasured run stays distinct from a genuinely free one.
+    """
+    usage = _usage_from_json(result_json) or _usage_from_text(stdout)
+    if usage is None:
+        model = profile.model or "?"
+        if model not in _COST_UNMEASURED_WARNED:
+            _COST_UNMEASURED_WARNED.add(model)
+            _log(
+                f"WARNING: Codex CLI run for model={model} completed cost-unmeasured "
+                "(no token usage in output); recording cost-unknown, NOT $0.00."
+            )
+        return None, ()
+    input_tokens, output_tokens = usage
+    cost = _estimate_cost("openai", profile.model, input_tokens, output_tokens)
+    model_usage = (
+        ModelUsage(
+            model=profile.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            cost_usd=cost,
+        ),
+    )
+    return cost, model_usage
+
+
 def _run_codex(
     *,
     prompt: str,
@@ -234,16 +364,25 @@ def _run_codex(
         # picking up a sibling invocation's entry from the global index.
         extracted_sid = None if is_pool else _get_codex_session_id(min_mtime=start_wall)
 
+        # Best-effort real cost from codex output. Unrecoverable → cost-unknown
+        # (None), surfaced loudly, never a fabricated $0.00.
+        cost_usd, model_usage = _extract_codex_cost(
+            profile=profile,
+            result_json=result_json,
+            stdout=proc.stdout or "",
+        )
+
         if result_json:
             _json_output = result_json.get("result", output_text)
             return AgentResult(
                 success=proc.returncode == 0,
                 output=_json_output,
                 session_id=extracted_sid,
-                cost_usd=None,
+                cost_usd=cost_usd,
                 exit_code=proc.returncode,
                 raw=result_json,
                 profile_name=profile.name,
+                model_usage=model_usage,
                 dev_handoff=_try_parse_handoff(_json_output),
             )
 
@@ -251,10 +390,11 @@ def _run_codex(
             success=proc.returncode == 0,
             output=output_text,
             session_id=extracted_sid,
-            cost_usd=None,
+            cost_usd=cost_usd,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
+            model_usage=model_usage,
             dev_handoff=_try_parse_handoff(output_text),
         )
     finally:

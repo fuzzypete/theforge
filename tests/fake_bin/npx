@@ -4,7 +4,16 @@
 Routes to fake codex or gemini behaviour based on the package argument.
 
 Codex (FAKE_CODEX_MODE):
-  happy  — write "Task complete." to the -o output file, exit 0 (default)
+  happy         — write "Task complete." to the -o output file, exit 0 (default)
+  usage         — write a JSON blob with a token `usage` block to the -o file
+  usage_stdout  — write plain text to the -o file, print a SINGLE-LINE token
+                  summary carrying an input+output split to stdout (a synthetic
+                  structured-style summary that exercises the stdout-scan cost
+                  path; the real CLI's human output is total-only, see below)
+  total_only    — write plain text to the -o file, print the REAL Codex CLI
+                  v0.142.x human summary (a bare `tokens used` total, no split)
+                  to stdout, so tests can assert it is recorded cost-unknown
+                  rather than fabricating a cost from a total alone
 
 Gemini (FAKE_GEMINI_MODE):
   happy  — print {"response": "Task complete."} to stdout, exit 0 (default)
@@ -28,14 +37,39 @@ def _find_flag(flag: str) -> str | None:
 
 if "@openai/codex" in args:
     mode = os.environ.get("FAKE_CODEX_MODE", "happy")
+    output_file = _find_flag("-o")
     if mode == "happy":
-        output_file = _find_flag("-o")
         output_text = "Task complete."
         if output_file:
             with open(output_file, "w") as fh:
                 fh.write(output_text + "\n")
         else:
             print(output_text)
+        sys.exit(0)
+    if mode == "usage":
+        blob = {
+            "result": "Task complete.",
+            "usage": {"input_tokens": 1000, "output_tokens": 500},
+        }
+        if output_file:
+            with open(output_file, "w") as fh:
+                fh.write(json.dumps(blob) + "\n")
+        else:
+            print(json.dumps(blob))
+        sys.exit(0)
+    if mode == "usage_stdout":
+        if output_file:
+            with open(output_file, "w") as fh:
+                fh.write("Task complete.\n")
+        print("tokens used: input 1,000 output 500")
+        sys.exit(0)
+    if mode == "total_only":
+        if output_file:
+            with open(output_file, "w") as fh:
+                fh.write("hi\n")
+        # Real Codex CLI v0.142.x human summary: a bare total on its own line.
+        print("tokens used")
+        print("11,374")
         sys.exit(0)
     sys.stderr.write(f"fake npx(codex): unknown FAKE_CODEX_MODE={mode!r}\n")
     sys.exit(1)
