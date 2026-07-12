@@ -22,8 +22,15 @@ Schema on disk::
           runs, avg_cost_usd
 
 Underscore-prefixed siblings (``_successes``, ``_iterations_sum``, ``_cost_sum``,
-``_findings_sum``) are the running accumulators used to update the derived
-fields in place. They are part of the persisted schema.
+``_findings_sum``, ``_cost_unknown_runs``) are the running accumulators used to
+update the derived fields in place. They are part of the persisted schema.
+
+``_cost_unknown_runs`` counts runs whose transport could not measure cost (a
+``None`` cost signal, e.g. a CLI runner that emits no token usage). Those runs
+are *not* folded into ``_cost_sum`` and ``avg_cost_usd`` is averaged over
+measured runs only (``runs - _cost_unknown_runs``). This keeps a genuinely free
+($0.00 measured) run distinct from an unmeasured one so spend never silently
+disappears from the ledger.
 """
 
 from __future__ import annotations
@@ -62,7 +69,7 @@ class RunOutcome:
     dev_model: str
     dev_success: bool
     dev_iterations: int
-    dev_cost_usd: float
+    dev_cost_usd: float | None  # None = the transport could not measure cost
     complexity_score: int | None = None
     preflight_model: str | None = None
     dev_actual_model: str | None = None
@@ -71,7 +78,7 @@ class RunOutcome:
     preflight_actual_model: str | None = None
     preflight_provider: str | None = None
     preflight_cli: str | None = None
-    preflight_cost_usd: float = 0.0
+    preflight_cost_usd: float | None = None  # None = cost unmeasured
     reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
 
 
@@ -222,40 +229,70 @@ def _ensure_model(
     return entry
 
 
+def _entry_model_label(entry: dict) -> str:
+    ident = entry.get("_identity")
+    if isinstance(ident, dict):
+        return str(ident.get("model") or "?")
+    return "?"
+
+
+def _fold_cost(bucket: dict, cost_usd: float | None, *, unknown_count: int = 1) -> None:
+    """Fold one run's cost into ``bucket``; needs ``bucket['runs']`` already set.
+
+    ``cost_usd is None`` means the transport could not measure cost: the run is
+    tallied in ``_cost_unknown_runs`` (never added to ``_cost_sum``) and
+    ``avg_cost_usd`` is averaged over MEASURED runs only. ``unknown_count`` lets
+    the review path attribute more than one unmeasured run in a single call.
+    """
+    cost_sum = float(bucket.get("_cost_sum", 0.0))
+    unknown = int(bucket.get("_cost_unknown_runs", 0))
+    if cost_usd is None:
+        unknown += unknown_count
+    else:
+        cost_sum += float(cost_usd)
+    bucket["_cost_sum"] = cost_sum
+    bucket["_cost_unknown_runs"] = unknown
+    measured = int(bucket.get("runs", 0)) - unknown
+    bucket["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+
+
 def _update_dev(
     entry: dict,
     complexity: str,
     success: bool,
     iterations: int,
-    cost_usd: float,
+    cost_usd: float | None,
     complexity_score: int | None = None,
 ) -> None:
+    if cost_usd is None:
+        log.warning(
+            "[model_profiles] Dev run recorded cost-unmeasured (NOT $0.00): "
+            "model=%s complexity=%s — transport reported no cost.",
+            _entry_model_label(entry),
+            complexity,
+        )
     dev = entry.setdefault("dev", {})
     runs = int(dev.get("runs", 0)) + 1
     successes = int(dev.get("_successes", 0)) + (1 if success else 0)
     iter_sum = float(dev.get("_iterations_sum", 0.0)) + float(iterations)
-    cost_sum = float(dev.get("_cost_sum", 0.0)) + float(cost_usd)
     dev["runs"] = runs
     dev["_successes"] = successes
     dev["_iterations_sum"] = iter_sum
-    dev["_cost_sum"] = cost_sum
     dev["success_rate"] = round(successes / runs, 4)
     dev["avg_iterations"] = round(iter_sum / runs, 4)
-    dev["avg_cost_usd"] = round(cost_sum / runs, 6)
+    _fold_cost(dev, cost_usd)
 
     by = dev.setdefault("by_complexity", {})
     bc = by.setdefault(complexity, {})
     bc_runs = int(bc.get("runs", 0)) + 1
     bc_successes = int(bc.get("_successes", 0)) + (1 if success else 0)
     bc_iter_sum = float(bc.get("_iterations_sum", 0.0)) + float(iterations)
-    bc_cost_sum = float(bc.get("_cost_sum", 0.0)) + float(cost_usd)
     bc["runs"] = bc_runs
     bc["_successes"] = bc_successes
     bc["_iterations_sum"] = bc_iter_sum
-    bc["_cost_sum"] = bc_cost_sum
     bc["success_rate"] = round(bc_successes / bc_runs, 4)
     bc["avg_iterations"] = round(bc_iter_sum / bc_runs, 4)
-    bc["avg_cost_usd"] = round(bc_cost_sum / bc_runs, 6)
+    _fold_cost(bc, cost_usd)
 
     if complexity_score is not None:
         score_key = str(int(complexity_score))
@@ -264,37 +301,44 @@ def _update_dev(
         sc_runs = int(sc.get("runs", 0)) + 1
         sc_successes = int(sc.get("_successes", 0)) + (1 if success else 0)
         sc_iter_sum = float(sc.get("_iterations_sum", 0.0)) + float(iterations)
-        sc_cost_sum = float(sc.get("_cost_sum", 0.0)) + float(cost_usd)
         sc["runs"] = sc_runs
         sc["_successes"] = sc_successes
         sc["_iterations_sum"] = sc_iter_sum
-        sc["_cost_sum"] = sc_cost_sum
         sc["success_rate"] = round(sc_successes / sc_runs, 4)
         sc["avg_iterations"] = round(sc_iter_sum / sc_runs, 4)
-        sc["avg_cost_usd"] = round(sc_cost_sum / sc_runs, 6)
+        _fold_cost(sc, cost_usd)
 
 
-def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float) -> None:
+def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float | None) -> None:
     if cycles <= 0:
         return
+    if cost_usd is None:
+        log.warning(
+            "[model_profiles] Review run recorded cost-unmeasured (NOT $0.00): "
+            "model=%s cycles=%d — transport reported no cost.",
+            _entry_model_label(entry),
+            cycles,
+        )
     rev = entry.setdefault("review", {})
     runs = int(rev.get("runs", 0)) + cycles
     find_sum = float(rev.get("_findings_sum", 0.0)) + float(findings)
-    cost_sum = float(rev.get("_cost_sum", 0.0)) + float(cost_usd)
     rev["runs"] = runs
     rev["_findings_sum"] = find_sum
-    rev["_cost_sum"] = cost_sum
     rev["avg_findings"] = round(find_sum / runs, 4)
-    rev["avg_cost_usd"] = round(cost_sum / runs, 6)
+    _fold_cost(rev, cost_usd, unknown_count=cycles)
 
 
-def _update_preflight(entry: dict, cost_usd: float) -> None:
+def _update_preflight(entry: dict, cost_usd: float | None) -> None:
+    if cost_usd is None:
+        log.warning(
+            "[model_profiles] Preflight run recorded cost-unmeasured (NOT $0.00): "
+            "model=%s — transport reported no cost.",
+            _entry_model_label(entry),
+        )
     pf = entry.setdefault("preflight", {})
     runs = int(pf.get("runs", 0)) + 1
-    cost_sum = float(pf.get("_cost_sum", 0.0)) + float(cost_usd)
     pf["runs"] = runs
-    pf["_cost_sum"] = cost_sum
-    pf["avg_cost_usd"] = round(cost_sum / runs, 6)
+    _fold_cost(pf, cost_usd)
 
 
 def _zero_dev_bucket(bucket: dict) -> None:
@@ -302,6 +346,7 @@ def _zero_dev_bucket(bucket: dict) -> None:
     bucket["_successes"] = 0
     bucket["_iterations_sum"] = 0.0
     bucket["_cost_sum"] = 0.0
+    bucket["_cost_unknown_runs"] = 0
     bucket["success_rate"] = 0.0
     bucket["avg_iterations"] = 0.0
     bucket["avg_cost_usd"] = 0.0
@@ -311,6 +356,7 @@ def _zero_review_section(section: dict) -> None:
     section["runs"] = 0
     section["_findings_sum"] = 0.0
     section["_cost_sum"] = 0.0
+    section["_cost_unknown_runs"] = 0
     section["avg_findings"] = 0.0
     section["avg_cost_usd"] = 0.0
 
@@ -318,6 +364,7 @@ def _zero_review_section(section: dict) -> None:
 def _zero_preflight_section(section: dict) -> None:
     section["runs"] = 0
     section["_cost_sum"] = 0.0
+    section["_cost_unknown_runs"] = 0
     section["avg_cost_usd"] = 0.0
 
 
@@ -327,19 +374,23 @@ def _recompute_dev_section(section: dict) -> None:
     successes = 0
     iterations = 0.0
     cost = 0.0
+    cost_unknown = 0
     for band in COMPLEXITY_BANDS:
         bucket = by.setdefault(band, {})
         runs += int(bucket.get("runs", 0))
         successes += int(bucket.get("_successes", 0))
         iterations += float(bucket.get("_iterations_sum", 0.0))
         cost += float(bucket.get("_cost_sum", 0.0))
+        cost_unknown += int(bucket.get("_cost_unknown_runs", 0))
     section["runs"] = runs
     section["_successes"] = successes
     section["_iterations_sum"] = iterations
     section["_cost_sum"] = cost
+    section["_cost_unknown_runs"] = cost_unknown
     section["success_rate"] = round(successes / runs, 4) if runs > 0 else 0.0
     section["avg_iterations"] = round(iterations / runs, 4) if runs > 0 else 0.0
-    section["avg_cost_usd"] = round(cost / runs, 6) if runs > 0 else 0.0
+    measured = runs - cost_unknown
+    section["avg_cost_usd"] = round(cost / measured, 6) if measured > 0 else 0.0
 
 
 def apply_run(data: dict, outcome: RunOutcome) -> dict:
@@ -507,6 +558,7 @@ def get_dev_complexity_stats(
         return None
     band = _normalize_band(complexity)
     runs = 0
+    measured_runs = 0
     iterations_sum = 0.0
     cost_sum = 0.0
     for _, entry in matching:
@@ -524,6 +576,9 @@ def get_dev_complexity_stats(
         if entry_iterations is None or entry_cost is None:
             return None
         runs += entry_runs
+        # Cost is a MEASURED-run average: divide by (runs - unmeasured), never by
+        # total runs, so unmeasured runs don't dilute the average toward zero.
+        measured_runs += entry_runs - int(bc.get("_cost_unknown_runs", 0))
         iterations_sum += entry_iterations
         cost_sum += entry_cost
     if runs < min_runs or runs <= 0:
@@ -531,7 +586,7 @@ def get_dev_complexity_stats(
     return {
         "runs": float(runs),
         "avg_iterations": round(iterations_sum / runs, 4),
-        "avg_cost_usd": round(cost_sum / runs, 6),
+        "avg_cost_usd": round(cost_sum / measured_runs, 6) if measured_runs > 0 else 0.0,
     }
 
 
@@ -627,6 +682,7 @@ def summarize_profile_scope(
                         "successes": 0,
                         "avg_iterations": 0.0,
                         "avg_cost_usd": 0.0,
+                        "cost_unknown_runs": 0,
                     }
                 )
             continue
@@ -644,6 +700,7 @@ def summarize_profile_scope(
                         "successes": int(bucket.get("_successes", 0)),
                         "avg_iterations": float(bucket.get("avg_iterations", 0.0)),
                         "avg_cost_usd": float(bucket.get("avg_cost_usd", 0.0)),
+                        "cost_unknown_runs": int(bucket.get("_cost_unknown_runs", 0)),
                     }
                 )
                 continue
@@ -655,6 +712,7 @@ def summarize_profile_scope(
                     "successes": int(section.get("_successes", 0)),
                     "avg_iterations": float(section.get("avg_iterations", 0.0)),
                     "avg_cost_usd": float(section.get("avg_cost_usd", 0.0)),
+                    "cost_unknown_runs": int(section.get("_cost_unknown_runs", 0)),
                     "by_complexity": deepcopy(section.get("by_complexity") or {}),
                 }
             )
@@ -665,6 +723,7 @@ def summarize_profile_scope(
             "complexity": None,
             "runs": int(section.get("runs", 0)),
             "avg_cost_usd": float(section.get("avg_cost_usd", 0.0)),
+            "cost_unknown_runs": int(section.get("_cost_unknown_runs", 0)),
         }
         if current_role == "review":
             summary["avg_findings"] = float(section.get("avg_findings", 0.0))
@@ -976,14 +1035,17 @@ def _merge_dev(target: dict, src: dict) -> None:
             src.get("runs", 0)
         )
 
+    cost_unknown = int(target.get("_cost_unknown_runs", 0)) + int(src.get("_cost_unknown_runs", 0))
     target["runs"] = runs
     target["_successes"] = successes
     target["_iterations_sum"] = iter_sum
     target["_cost_sum"] = cost_sum
+    target["_cost_unknown_runs"] = cost_unknown
     if runs > 0:
         target["success_rate"] = round(successes / runs, 4)
         target["avg_iterations"] = round(iter_sum / runs, 4)
-        target["avg_cost_usd"] = round(cost_sum / runs, 6)
+        measured = runs - cost_unknown
+        target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
 
     src_by = src.get("by_complexity") or {}
     if src_by:
@@ -1011,14 +1073,21 @@ def _merge_dev(target: dict, src: dict) -> None:
                     float(bc_src.get("avg_cost_usd", 0.0)) * int(bc_src.get("runs", 0)),
                 )
             )
+            bc_unknown = int(bc_target.get("_cost_unknown_runs", 0)) + int(
+                bc_src.get("_cost_unknown_runs", 0)
+            )
             bc_target["runs"] = bc_runs
             bc_target["_successes"] = bc_succ
             bc_target["_iterations_sum"] = bc_iter
             bc_target["_cost_sum"] = bc_cost
+            bc_target["_cost_unknown_runs"] = bc_unknown
             if bc_runs > 0:
                 bc_target["success_rate"] = round(bc_succ / bc_runs, 4)
                 bc_target["avg_iterations"] = round(bc_iter / bc_runs, 4)
-                bc_target["avg_cost_usd"] = round(bc_cost / bc_runs, 6)
+                bc_measured = bc_runs - bc_unknown
+                bc_target["avg_cost_usd"] = (
+                    round(bc_cost / bc_measured, 6) if bc_measured > 0 else 0.0
+                )
 
     src_by_score = src.get("by_complexity_score") or {}
     if src_by_score:
@@ -1046,14 +1115,21 @@ def _merge_dev(target: dict, src: dict) -> None:
                     float(sc_src.get("avg_cost_usd", 0.0)) * int(sc_src.get("runs", 0)),
                 )
             )
+            sc_unknown = int(sc_target.get("_cost_unknown_runs", 0)) + int(
+                sc_src.get("_cost_unknown_runs", 0)
+            )
             sc_target["runs"] = sc_runs
             sc_target["_successes"] = sc_succ
             sc_target["_iterations_sum"] = sc_iter
             sc_target["_cost_sum"] = sc_cost
+            sc_target["_cost_unknown_runs"] = sc_unknown
             if sc_runs > 0:
                 sc_target["success_rate"] = round(sc_succ / sc_runs, 4)
                 sc_target["avg_iterations"] = round(sc_iter / sc_runs, 4)
-                sc_target["avg_cost_usd"] = round(sc_cost / sc_runs, 6)
+                sc_measured = sc_runs - sc_unknown
+                sc_target["avg_cost_usd"] = (
+                    round(sc_cost / sc_measured, 6) if sc_measured > 0 else 0.0
+                )
 
 
 def _merge_review(target: dict, src: dict) -> None:
@@ -1064,12 +1140,15 @@ def _merge_review(target: dict, src: dict) -> None:
     cost_sum = float(target.get("_cost_sum", 0.0)) + float(
         src.get("_cost_sum", float(src.get("avg_cost_usd", 0.0)) * int(src.get("runs", 0)))
     )
+    cost_unknown = int(target.get("_cost_unknown_runs", 0)) + int(src.get("_cost_unknown_runs", 0))
     target["runs"] = runs
     target["_findings_sum"] = find_sum
     target["_cost_sum"] = cost_sum
+    target["_cost_unknown_runs"] = cost_unknown
     if runs > 0:
         target["avg_findings"] = round(find_sum / runs, 4)
-        target["avg_cost_usd"] = round(cost_sum / runs, 6)
+        measured = runs - cost_unknown
+        target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
 
 
 def _merge_preflight(target: dict, src: dict) -> None:
@@ -1077,10 +1156,13 @@ def _merge_preflight(target: dict, src: dict) -> None:
     cost_sum = float(target.get("_cost_sum", 0.0)) + float(
         src.get("_cost_sum", float(src.get("avg_cost_usd", 0.0)) * int(src.get("runs", 0)))
     )
+    cost_unknown = int(target.get("_cost_unknown_runs", 0)) + int(src.get("_cost_unknown_runs", 0))
     target["runs"] = runs
     target["_cost_sum"] = cost_sum
+    target["_cost_unknown_runs"] = cost_unknown
     if runs > 0:
-        target["avg_cost_usd"] = round(cost_sum / runs, 6)
+        measured = runs - cost_unknown
+        target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
 
 
 def _merge_entry(target: dict, src: dict) -> None:

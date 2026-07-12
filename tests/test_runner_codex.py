@@ -241,3 +241,50 @@ class TestCodexLifecycle:
         assert result.success is True
         assert "Task complete." in result.output
         assert result.exit_code == 0
+
+    def test_no_usage_records_cost_unknown_not_zero(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When codex emits no token usage, cost is None (unmeasured), never $0.00."""
+        self._patch_env(monkeypatch, "happy")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+        )
+        assert result.cost_usd is None
+        assert result.model_usage == ()
+
+    def test_json_usage_yields_real_estimated_cost(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A codex JSON blob with a usage block is priced via the pricing table."""
+        self._patch_env(monkeypatch, "usage")
+        profile = _make_profile(sandbox_mode="none")  # model o4-mini: (1.10, 4.40)/Mtok
+        result = _run_codex(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+        )
+        # 1000 in * 1.10/M + 500 out * 4.40/M = 0.0011 + 0.0022 = 0.0033
+        assert result.cost_usd is not None
+        assert result.cost_usd == pytest.approx(0.0033)
+        assert len(result.model_usage) == 1
+        usage = result.model_usage[0]
+        assert usage.input_tokens == 1000
+        assert usage.output_tokens == 500
+
+    def test_stdout_usage_line_yields_real_estimated_cost(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cost is recovered from codex's stdout token-usage summary line too."""
+        self._patch_env(monkeypatch, "usage_stdout")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+        )
+        assert result.cost_usd == pytest.approx(0.0033)
+        assert len(result.model_usage) == 1

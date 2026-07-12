@@ -115,3 +115,79 @@ def test_update_profiles_from_run_writes_file(tmp_path):
     assert data["models"]["deepseek-r1"]["preflight"]["runs"] == 1
     assert data["models"]["gemini"]["review"]["runs"] == 1
     assert data["models"]["opus"]["review"]["runs"] == 1
+
+
+@dataclass
+class _AR:
+    cost_usd: float | None = 0.0
+
+
+def _state_with_dev_costs(costs: list[float | None]) -> CoordinatorState:
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.dev_trace_count = 1
+    state.dev_results = [_AR(cost_usd=c) for c in costs]
+    return state
+
+
+def test_unmeasured_dev_cost_threads_none_through_bridge():
+    """A CoordinatorState whose dev_results are all cost-unmeasured yields a
+    RunOutcome with dev_cost_usd is None — the bridge must not coerce to $0.00."""
+    state = _state_with_dev_costs([None])
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    assert outcome.dev_cost_usd is None
+
+
+def test_unmeasured_dev_cost_records_cost_unknown_not_zero(tmp_path):
+    """update_from_run records the run as cost-unmeasured (not folded into
+    _cost_sum) so an unmeasured run stays distinct from a genuinely free one."""
+    state = _state_with_dev_costs([None])
+    cfg = _Cfg(project_root=str(tmp_path))
+    profiles_path = tmp_path / "model_profiles.yaml"
+
+    data = update_profiles_from_run(
+        profiles_path=profiles_path,
+        history_path=None,
+        config=cfg,
+        state=state,
+        success=True,
+    )
+
+    dev = data["models"]["sonnet"]["dev"]
+    assert dev["runs"] == 1
+    assert dev["_cost_unknown_runs"] == 1
+    assert dev["_cost_sum"] == 0.0
+    # avg is over measured runs only (0 here) — not a polluted $0.00 average.
+    assert dev["avg_cost_usd"] == 0.0
+    bucket = dev["by_complexity"]["medium"]
+    assert bucket["_cost_unknown_runs"] == 1
+    assert bucket["_cost_sum"] == 0.0
+
+
+def test_measured_zero_dev_cost_is_not_counted_unmeasured(tmp_path):
+    """A genuinely free ($0.00 measured) run increments neither _cost_unknown_runs."""
+    state = _state_with_dev_costs([0.0])
+    cfg = _Cfg(project_root=str(tmp_path))
+    profiles_path = tmp_path / "model_profiles.yaml"
+
+    data = update_profiles_from_run(
+        profiles_path=profiles_path,
+        history_path=None,
+        config=cfg,
+        state=state,
+        success=True,
+    )
+
+    dev = data["models"]["sonnet"]["dev"]
+    assert dev["runs"] == 1
+    assert dev["_cost_unknown_runs"] == 0
+    assert dev["_cost_sum"] == 0.0
+    assert dev["avg_cost_usd"] == 0.0
+
+
+def test_mixed_measured_and_unmeasured_dev_costs_are_unknown_aggregate():
+    """If any dev attempt is unmeasured, the whole aggregate is cost-unknown —
+    collapsing to a measured subtotal would hide the unmeasured attempt."""
+    state = _state_with_dev_costs([0.30, None])
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    assert outcome.dev_cost_usd is None
