@@ -767,10 +767,18 @@ def _rel(path: Path, root: Path) -> str:
 
 
 def _find_run_log(sprint_log_dir: Path, run_id: object) -> Path | None:
+    """Return the sprint run log for *this* run only.
+
+    When the run id is known we use exactly ``run-<run_id>.log`` and never fall
+    back to a sibling run's log: scanning another run's log would attribute the
+    wrong run's lines to this run's stories — cross-run contamination that a
+    historical ``forge rca`` (whose own run log may be gone while a later
+    same-name run's log remains) would otherwise hit. The glob fallback applies
+    only when the run id is unknown, where there is no specific run to confuse.
+    """
     if run_id:
         candidate = sprint_log_dir / f"run-{run_id}.log"
-        if candidate.is_file():
-            return candidate
+        return candidate if candidate.is_file() else None
     matches = sorted(sprint_log_dir.glob("run-*.log"))
     return matches[0] if matches else None
 

@@ -359,6 +359,39 @@ def test_evidence_source_cites_resolved_summary(tmp_path: Path) -> None:
     assert baseline["source"].endswith("run-hist-summary.yaml")
 
 
+def test_historical_run_ignores_sibling_run_log(tmp_path: Path) -> None:
+    """A historical run whose own run log is gone must not borrow a sibling's log.
+
+    run-<hist>.log is absent, but a later same-name run's run-<other>.log remains
+    in the sprint dir and contains a line mentioning this story. The engine must
+    NOT attribute that sibling run's line to the historical run — evidence is
+    confined to the requested run's local artifacts.
+    """
+    d = _sprint_dir(tmp_path, name="contam")
+    per_run = d / "run-hist-summary.yaml"
+    _write(
+        per_run,
+        _summary(
+            [{"slug": "issue-1324", "outcome": "ESCALATE", "error": "usage limit hit"}],
+            run_id="hist",
+        ),
+    )
+    # A DIFFERENT run's log survives and references issue-1324 with a gate timeout.
+    (d / "run-other.log").write_text(
+        "Pending decision timed out after 10m 0s — auto-escalating for #1324\n",
+        encoding="utf-8",
+    )
+    # This run's own log does NOT exist (run-hist.log absent).
+
+    entry = build_sprint_rca(per_run)["stories"]["issue-1324"]
+    # Provider quota still classified from the summary error...
+    assert entry["primary_failure_class"] == "provider_quota"
+    # ...but the sibling run's gate-timeout line must not leak in.
+    assert "operator_gate_timeout" not in entry["contributing_factors"]
+    for ev in entry["evidence"]:
+        assert not ev["source"].endswith("run-other.log"), ev
+
+
 # ── Signal rules (field-derived) ──────────────────────────────────────────────
 
 
