@@ -516,6 +516,21 @@ class CoordinatorState:
         return sum(r.cost_usd or 0.0 for r in self.dev_results)
 
     @property
+    def total_dev_cost_measured(self) -> float | None:
+        """Dev cost, or ``None`` when any dev attempt's cost was unmeasured.
+
+        Unlike :attr:`total_dev_cost` (which coerces an unmeasured ``None`` to
+        ``$0.00``), this preserves the cost-unknown signal so the ledger never
+        silently records unmeasured spend as free. If *any* contributing dev
+        result reports ``cost_usd is None``, the whole aggregate is unknown —
+        collapsing a mix to a measured subtotal would hide the unmeasured
+        attempt. Empty ``dev_results`` means no spend, so ``0.0``.
+        """
+        if any(r.cost_usd is None for r in self.dev_results):
+            return None
+        return sum(r.cost_usd or 0.0 for r in self.dev_results)
+
+    @property
     def total_review_cost(self) -> float:
         return sum(r.cost_usd or 0.0 for r in self.review_agent_results)
 
@@ -527,6 +542,26 @@ class CoordinatorState:
         if isinstance(attempts, list):
             return sum(float(a.get("cost_usd") or 0.0) for a in attempts if isinstance(a, dict))
         return self.preflight_result.cost_usd or 0.0
+
+    @property
+    def total_preflight_cost_measured(self) -> float | None:
+        """Preflight cost, or ``None`` when a preflight attempt's cost was unmeasured.
+
+        Mirrors :attr:`total_dev_cost_measured`: preflight can run over a CLI
+        transport (e.g. codex) that reports no cost, and coercing that to
+        ``$0.00`` would hide the spend. No preflight result means preflight did
+        not run, so ``0.0`` (genuinely no spend). A result whose cost is ``None``
+        — or whose attempts include an unmeasured one — is cost-unknown.
+        """
+        if self.preflight_result is None:
+            return 0.0
+        attempts = self.preflight_result.raw.get("attempts")
+        if isinstance(attempts, list):
+            costs = [a.get("cost_usd") for a in attempts if isinstance(a, dict)]
+            if any(c is None for c in costs):
+                return None
+            return sum(float(c or 0.0) for c in costs)
+        return self.preflight_result.cost_usd
 
     @property
     def total_plan_cost(self) -> float:

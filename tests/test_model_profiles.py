@@ -41,6 +41,67 @@ def test_apply_run_records_dev_stats():
     assert dev["by_complexity"]["medium"]["avg_cost_usd"] == 1.5
 
 
+def test_apply_run_records_unmeasured_dev_cost_distinct_from_zero():
+    """A None dev cost is tallied in _cost_unknown_runs, never folded into
+    _cost_sum, and avg_cost_usd is averaged over measured runs only."""
+    data: dict = {"models": {}}
+    # First run: cost unmeasured (None).
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=None,
+        ),
+    )
+    dev = data["models"]["sonnet"]["dev"]
+    assert dev["runs"] == 1
+    assert dev["_cost_unknown_runs"] == 1
+    assert dev["_cost_sum"] == 0.0
+    assert dev["avg_cost_usd"] == 0.0
+
+    # Second run: a real $2.00 measured cost. avg is over the ONE measured run.
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=2.00,
+        ),
+    )
+    dev = data["models"]["sonnet"]["dev"]
+    assert dev["runs"] == 2
+    assert dev["_cost_unknown_runs"] == 1
+    assert dev["_cost_sum"] == 2.0
+    assert dev["avg_cost_usd"] == 2.0  # 2.0 / (2 runs - 1 unmeasured)
+
+
+def test_get_dev_complexity_stats_averages_cost_over_measured_runs():
+    """avg_cost_usd from the reader divides by measured runs, so unmeasured runs
+    do not dilute the average toward zero for downstream budget sizing."""
+    data: dict = {"models": {}}
+    for cost in (2.0, None, None):
+        apply_run(
+            data,
+            RunOutcome(
+                complexity="medium",
+                dev_model="sonnet",
+                dev_success=True,
+                dev_iterations=1,
+                dev_cost_usd=cost,
+            ),
+        )
+    stats = get_dev_complexity_stats(data, "sonnet", "medium", min_runs=1)
+    assert stats is not None
+    assert stats["runs"] == 3.0
+    # $2.00 over the single measured run, not $2.00/3 = $0.67.
+    assert stats["avg_cost_usd"] == 2.0
+
+
 def test_apply_run_averages_across_runs():
     data: dict = {"models": {}}
     apply_run(

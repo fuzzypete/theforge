@@ -116,6 +116,7 @@ def test_reset_profile_data_role_scoped_reset_preserves_other_roles():
             "complexity": None,
             "runs": 6,
             "avg_cost_usd": 0.15,
+            "cost_unknown_runs": 0,
             "avg_findings": 2.5,
         }
     ]
@@ -135,6 +136,7 @@ def test_reset_profile_data_complexity_scoped_reset_preserves_other_buckets():
             "successes": 3,
             "avg_iterations": 1.25,
             "avg_cost_usd": 0.1,
+            "cost_unknown_runs": 0,
         }
     ]
     dev = updated["models"][CANONICAL_ID]["dev"]
@@ -206,6 +208,7 @@ def test_profiles_reset_command_audits_pre_reset_counts_and_prints_reason(capsys
             "successes": 2,
             "avg_iterations": 1.0,
             "avg_cost_usd": 0.1,
+            "cost_unknown_runs": 0,
         }
     ]
 

@@ -58,7 +58,9 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         dev_cli=getattr(config.dev_profile, "cli", None),
         dev_success=bool(success),
         dev_iterations=dev_iterations,
-        dev_cost_usd=float(state.total_dev_cost or 0.0),
+        # Pass the cost-unknown signal through (None) instead of coercing to
+        # $0.00, so unmeasured CLI-transport runs are recorded as unmeasured.
+        dev_cost_usd=state.total_dev_cost_measured,
         preflight_model=config.preflight_profile.name
         if getattr(config, "preflight_profile", None)
         else None,
@@ -71,7 +73,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         preflight_cli=getattr(config.preflight_profile, "cli", None)
         if getattr(config, "preflight_profile", None)
         else None,
-        preflight_cost_usd=float(state.total_preflight_cost or 0.0),
+        preflight_cost_usd=state.total_preflight_cost_measured,
         reviewers=_extract_reviewers(state),
     )
 
