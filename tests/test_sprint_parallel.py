@@ -495,6 +495,216 @@ class TestParallelDependencyGating:
         assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 1
 
+    def test_collision_dependent_waits_for_queued_parent_before_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        """Issue #1609: a collision-linked dependent must honor the queued-PR
+        reachability gate on every dispatch path.
+
+        The collision DAG links story-b to story-a via ``collision_deps`` (a
+        soft edge). dag.ready() releases that soft edge the instant story-a
+        reaches a terminal state — and a merge-queued parent is marked terminal
+        (pending_integration -> mark_skipped) the moment its PR is queued, well
+        before the merge commit is reachable on origin base. Before the fix, the
+        dispatch loop's queued-PR gate only inspected ``depends_on``, so the
+        dependent was dispatched onto a stale base while the parent's PR still
+        sat in the auto-merge queue, then conflicted at merge time (MERGE_FAILED).
+
+        This test stubs a queued-but-unmerged parent and asserts the dependent
+        does not dispatch (reach REVIEW) until the queued PR poll reports the
+        merge reachable, and that no MERGE_FAILED results from a stale base.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # story-a: approved, deferred merge queued (pending_integration).
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+        # story-b: clean run once dispatched.
+        result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        run_order: list[str] = []
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            run_order.append(task.slug)
+            return {"story-a": result_a, "story-b": result_b}[task.slug]
+
+        def _fake_land_story(*args, **kwargs):  # noqa: ANN002, ANN003
+            return (
+                {"merge_queued": True, "pr_url": "https://github.com/x/y/pull/1"},
+                "pending_integration",
+            )
+
+        def _fake_poll(*args, **kwargs):  # noqa: ANN002, ANN003
+            # The dependent must not have been dispatched while the parent's PR
+            # was still queued-unmerged.
+            assert "story-b" not in run_order
+            run_order.append("poll")
+            return {"status": "merged"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch(
+                "theforge.sprint.runner.compute_synthetic_edges",
+                return_value={"story-b": ["story-a"]},
+            ),
+            patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
+            patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # The queued-PR poll gated the dependent: it dispatched only after the
+        # parent's merge became reachable.
+        assert run_order == ["story-a", "poll", "story-b"]
+        # No stale-base MERGE_FAILED; both stories succeed.
+        assert sprint.specs_failed == 0
+        assert sprint.specs_succeeded == 2
+
+    def test_collision_dependent_proceeds_when_parent_abandoned(self, tmp_path: Path) -> None:
+        """Abandon-and-proceed is preserved: a collision parent that reaches a
+        terminal-but-not-merged state (never queued) releases the dependent.
+
+        The #1609 gate keys strictly on ``queued_prs`` membership, so a genuinely
+        failed collision parent — which never enters the queue — does not block
+        the dependent. This guards against the gate over-blocking legitimate
+        soft-edge release.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
+        result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            return {"story-a": result_a, "story-b": result_b}[task.slug]
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch(
+                "theforge.sprint.runner.compute_synthetic_edges",
+                return_value={"story-b": ["story-a"]},
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # story-a failed (never queued); the soft edge still releases story-b.
+        assert sprint.specs_failed == 1
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_skipped == 0
+
+    def test_resume_at_review_dependent_waits_for_queued_parent(self, tmp_path: Path) -> None:
+        """Issue #1609 (incident path): a dependent re-entering via resume triage
+        at REVIEW must honor the queued-parent reachability gate.
+
+        This reproduces the exact production shape from run c3ae5c757180: the
+        dependent (story-b) re-enters through ``_triage_spec`` action=review with
+        an existing worktree -- dispatched via ``run_from_review``, NOT a fresh
+        ``run_task`` -- while its collision parent (story-a) sits in the auto-merge
+        queue but has not yet merged. The resumed dependent must be held behind
+        ``_poll_queued_pr`` until the parent's merge is reachable on origin base,
+        and must not be carried stale into a MERGE_FAILED integration.
+
+        Before the fix, the scheduler's queued-PR gate inspected only
+        ``depends_on``; the soft collision edge released the instant story-a was
+        marked terminal (pending_integration), so ``run_from_review`` for story-b
+        fired while story-a's PR was still queued.
+        """
+        from theforge.sprint.dag import StoryTriage
+
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # Both resumed stories have existing worktrees predating the parent merge.
+        wt_a = tmp_path / "story-a"
+        wt_b = tmp_path / "story-b"
+        wt_a.mkdir(exist_ok=True)
+        wt_b.mkdir(exist_ok=True)
+
+        # story-a: approved on re-entry, deferred merge queued (pending_integration).
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+        # story-b: clean review re-entry once actually dispatched.
+        result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        def _fake_triage(story_path, cfg, project_root, *, task=None):  # noqa: ANN001
+            slug = task.slug
+            return StoryTriage(
+                story_path=story_path,
+                action="review",
+                reason="worktree exists, gate passes",
+                worktree_path=wt_a if slug == "story-a" else wt_b,
+                slug=slug,
+            )
+
+        # Ordered record of resume-path dispatches (run_from_review) and the poll.
+        dispatch_order: list[str] = []
+
+        def _fake_run_from_review(cfg, task, worktree_path, **kwargs):  # noqa: ANN001
+            dispatch_order.append(task.slug)
+            return {"story-a": result_a, "story-b": result_b}[task.slug]
+
+        def _fake_batch_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            # Batch preflight probe -- collision edges are forced below, so the
+            # returned state content is irrelevant.
+            return _make_coordinator_result(success=True, cost=0.0)
+
+        def _fake_land_story(*args, **kwargs):  # noqa: ANN002, ANN003
+            return (
+                {"merge_queued": True, "pr_url": "https://github.com/x/y/pull/1"},
+                "pending_integration",
+            )
+
+        def _fake_poll(*args, **kwargs):  # noqa: ANN002, ANN003
+            # The resumed dependent must not have reached run_from_review while
+            # the parent's queued PR was still unmerged.
+            assert "story-b" not in dispatch_order
+            dispatch_order.append("poll")
+            return {"status": "merged"}
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", side_effect=_fake_triage),
+            patch("theforge.sprint.runner.run_from_review", side_effect=_fake_run_from_review),
+            patch("theforge.sprint.collision.run_task", side_effect=_fake_batch_run_task),
+            patch(
+                "theforge.sprint.runner.compute_synthetic_edges",
+                return_value={"story-b": ["story-a"]},
+            ),
+            patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
+            patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
+        ):
+            sprint = run_sprint(config, manifest_path, resume=True)
+
+        # story-a re-entered review and queued; the queued-PR poll gated story-b;
+        # only after the poll reported the parent merge reachable did story-b
+        # re-enter run_from_review.
+        assert dispatch_order == ["story-a", "poll", "story-b"]
+        # No stale-base MERGE_FAILED; both resumed stories succeed.
+        assert sprint.specs_failed == 0
+        assert sprint.specs_succeeded == 2
+
 
 class TestParallelBudgetPooling:
     def test_budget_pooled_across_workers(self, tmp_path: Path) -> None:
