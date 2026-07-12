@@ -75,6 +75,26 @@ def _is_transient_review_failure(result: Any, config: ForgeConfig) -> bool:
     return any(pattern in lower for pattern in config.retry.review_transient_output_patterns)
 
 
+# Failure codes marking a reviewer that completed its turn without delivering a
+# verdict (no submit call). These are infrastructure/behavioral failures, not
+# review outcomes, and must not be able to kill a story on their own.
+_NON_VERDICT_FAILURE_CODES = frozenset({"no_submit_completion"})
+
+
+def _is_non_verdict_completion(result: Any) -> bool:
+    """Return True when a failed reviewer completed cleanly but emitted no verdict.
+
+    A reviewer that finishes its turn without calling submit delivered nothing to
+    synthesize. It is an infrastructure failure (the runner surfaces it via the
+    ``no_submit_completion`` failure code), not a REQUEST_CHANGES outcome, so the
+    pool can recover from it (degrade to surviving verdicts) rather than fail.
+    """
+    if result.success:
+        return False
+    code = (getattr(result, "failure_code", None) or "").lower()
+    return code in _NON_VERDICT_FAILURE_CODES
+
+
 def _resolve_prompt_for_reviewer(review_prompts: str | list[str], index: int) -> str:
     """Return the per-reviewer prompt. Shared string fans out to every reviewer."""
     if isinstance(review_prompts, list):
@@ -546,16 +566,53 @@ def _run_review_pool(
     meta.quorum_threshold = quorum_threshold
     meta.quorum_met = len(successful) >= quorum_threshold
 
+    failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
     if not meta.quorum_met:
-        state.phase = Phase.ESCALATE
-        failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
-        state.error = (
-            f"Quorum unmet: {len(successful)}/{pool_size} succeeded "
-            f"< threshold {quorum_threshold}; failed: {failed_desc}"
+        # ── Degraded-quorum recovery ──────────────────────────────────
+        # A reviewer that finishes without a submit call delivered no verdict
+        # — an infrastructure failure, not a review outcome. When the quorum
+        # shortfall is caused *entirely* by such non-verdict completions and
+        # at least one trustworthy verdict survives, degrade to the survivors
+        # with an explicit audit warning rather than killing the story.
+        # Escalation is reserved for a total quorum collapse (zero survivors)
+        # or a genuine hard failure (crash / exhausted transient retry) among
+        # the failures.
+        can_degrade = (
+            config.retry.review_degrade_on_infra_failure
+            and bool(successful)
+            and bool(failed_results)
+            and all(_is_non_verdict_completion(r) for r in failed_results)
         )
-        return successful, failed_results, None, [], []
+        if can_degrade:
+            warning = (
+                f"Degraded quorum: {len(successful)}/{pool_size} reviewer(s) "
+                f"delivered a verdict (threshold {quorum_threshold}); proceeding "
+                f"on surviving verdict(s) after non-verdict reviewer failure(s): "
+                f"{failed_desc}"
+            )
+            meta.degraded_quorum = True
+            meta.degraded_quorum_warning = warning
+            _log(f"  ⚠ {warning}")
+            if logger is not None:
+                logger._safe_emit(
+                    "review_degraded_quorum",
+                    cycle=_cycle_num,
+                    successful=meta.successful,
+                    failed=meta.failed,
+                    failed_detail=meta.failed_detail,
+                    quorum_threshold=quorum_threshold,
+                    pool_size=pool_size,
+                    warning=warning,
+                )
+        else:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Quorum unmet: {len(successful)}/{pool_size} succeeded "
+                f"< threshold {quorum_threshold}; failed: {failed_desc}"
+            )
+            return successful, failed_results, None, [], []
 
-    if failed_results:
+    if failed_results and meta.quorum_met:
         _log(
             f"Panel quorum met ({len(successful)}/{pool_size} reviewers succeeded "
             f"≥ quorum threshold {quorum_threshold}) — proceeding to synthesis"

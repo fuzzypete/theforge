@@ -743,3 +743,210 @@ class TestTransientRetry:
         assert meta.quorum_threshold == 1
         assert meta.quorum_met is False
         assert meta.transient_outcomes["solo"] == "transient_retried_then_failed"
+
+
+class _CapturingLogger:
+    """Minimal stand-in for the audit logger that records _safe_emit calls."""
+
+    def __init__(self) -> None:
+        self.emits: list[tuple[str, dict]] = []
+
+    def _safe_emit(self, event: str, **fields: object) -> None:
+        self.emits.append((event, dict(fields)))
+
+
+_NO_SUBMIT_OUTPUT = "Agent finished without calling submit tool and produced no output"
+
+
+def _no_submit_result(profile_name: str):
+    """A reviewer that finished its turn without emitting a submit call."""
+    return _make_agent_result(
+        success=False,
+        output=_NO_SUBMIT_OUTPUT,
+        profile_name=profile_name,
+        failure_code="no_submit_completion",
+    )
+
+
+class TestDegradedQuorum:
+    """A no-submit reviewer failure must not kill a story on quorum: with at
+    least one surviving verdict, the pool degrades to the survivors with an
+    explicit audit warning instead of escalating (issue #1598)."""
+
+    def _degrade_config(self, tmp_path, profiles, primary, *, enabled: bool = True):
+        config = _make_pool_config(tmp_path, profiles, primary)
+        return config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=0,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                    review_degrade_on_infra_failure=enabled,
+                ),
+            }
+        )
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_no_submit_degrades_to_surviving_verdict(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = self._degrade_config(tmp_path, [r1, r2], r1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _no_submit_result("r2"),
+        ]
+
+        logger = _CapturingLogger()
+        meta = _meta()
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+            logger=logger,
+        )
+
+        # Story lands a verdict instead of failing outright.
+        assert merged is not None
+        assert merged.verdict == "APPROVE"
+        assert state.phase != Phase.ESCALATE
+        assert [r.profile_name for r in successful] == ["r1"]
+        assert [r.profile_name for r in failed] == ["r2"]
+        # Recorded as degraded (threshold genuinely not met) with a warning.
+        assert meta.quorum_met is False
+        assert meta.degraded_quorum is True
+        assert meta.degraded_quorum_warning
+        assert "Degraded quorum" in meta.degraded_quorum_warning
+        # Audit trail carries the degrade decision.
+        assert any(event == "review_degraded_quorum" for event, _ in logger.emits)
+        _, fields = next(e for e in logger.emits if e[0] == "review_degraded_quorum")
+        assert fields["successful"] == ["r1"]
+        assert fields["failed"] == ["r2"]
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_all_no_submit_no_survivor_escalates(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        """Degrade needs a surviving verdict — zero survivors still escalates."""
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = self._degrade_config(tmp_path, [r1, r2], r1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _no_submit_result("r1"),
+            _no_submit_result("r2"),
+        ]
+
+        meta = _meta()
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert "Quorum unmet" in state.error
+        assert meta.degraded_quorum is False
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_hard_failure_does_not_degrade(self, mock_pool, mock_run_agent, _mock_log, tmp_path):
+        """A genuine hard crash (not a non-verdict completion) still escalates —
+        the degrade path is scoped to infrastructure/no-submit failures."""
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = self._degrade_config(tmp_path, [r1, r2], r1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _make_agent_result(success=False, output="ValueError: nope", profile_name="r2"),
+        ]
+
+        meta = _meta()
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert meta.degraded_quorum is False
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_degrade_disabled_escalates(self, mock_pool, mock_run_agent, _mock_log, tmp_path):
+        """review_degrade_on_infra_failure=False preserves fail-closed behavior."""
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = self._degrade_config(tmp_path, [r1, r2], r1, enabled=False)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _no_submit_result("r2"),
+        ]
+
+        meta = _meta()
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert meta.degraded_quorum is False

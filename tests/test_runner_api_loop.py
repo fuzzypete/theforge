@@ -124,6 +124,28 @@ class TestAgentLoopLifecycle:
         assert result.output == "All looks good."
         assert call_count[0] == 2
 
+    def test_no_submit_empty_output_tagged_as_non_verdict_completion(self, tmp_path):
+        """Agent finishes its turn with no submit call and no text → the failure
+        is tagged ``no_submit_completion`` so the review pool can recover from it
+        instead of failing the story (issue #1598)."""
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[],
+                text_output="",
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_manager(tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "review"}],
+            tool_schemas=[],
+        )
+        assert result.success is False
+        assert result.failure_code == "no_submit_completion"
+        assert "without calling submit tool" in result.output
+
     def test_submit_review_tool_extracts_structured_data(self, tmp_path):
         """Model calls submit_review — loop returns structured_data."""
         review_data = {

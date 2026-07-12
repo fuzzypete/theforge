@@ -683,6 +683,9 @@ def load_config(config_path: Path) -> ForgeConfig:
             retry_data.get("review_transport_retry_backoff_seconds", 8.0)
         ),
         review_quorum_threshold=int(retry_data.get("review_quorum_threshold", 2)),
+        review_degrade_on_infra_failure=bool(
+            retry_data.get("review_degrade_on_infra_failure", True)
+        ),
         review_transient_failure_codes=tuple(
             str(code)
             for code in retry_data.get(

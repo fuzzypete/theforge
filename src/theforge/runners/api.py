@@ -616,6 +616,12 @@ class AgentLoopManager:
         failure_code = None
         if reason.startswith("Agent loop terminated: max iterations reached"):
             failure_code = "max_iterations_reached"
+        elif reason.startswith("Agent finished without calling submit tool"):
+            # The agent completed its turn cleanly but delivered no verdict —
+            # a non-verdict/behavioral completion, distinct from a transport
+            # crash. Tagged so the review pool can recognise and recover from
+            # it (degrade to surviving verdicts) instead of failing the story.
+            failure_code = "no_submit_completion"
         return AgentResult(
             success=False,
             output=reason,
