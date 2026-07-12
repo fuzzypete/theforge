@@ -10,6 +10,7 @@ critical RC merge path can be exercised under a PATH-mocked `gh`. Covers:
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -25,7 +26,8 @@ def _write_fake_gh(bin_dir: Path, *, get_exit: int, put_exit: int) -> Path:
 
     The fake distinguishes the protection probe (a GET, no --method flag)
     from the protection apply (PUT via --method PUT) and exits with the
-    caller-specified codes for each.
+    caller-specified codes for each. The PUT's stdin (the protection body)
+    is captured to gh.put_body.json for content assertions.
     """
     log = bin_dir / "gh.log"
     fake = bin_dir / "gh"
@@ -37,7 +39,7 @@ def _write_fake_gh(bin_dir: Path, *, get_exit: int, put_exit: int) -> Path:
         '    if [[ "$a" == "PUT" ]]; then is_put=true; fi\n'
         "done\n"
         'if [[ "$is_put" == true ]]; then\n'
-        "    cat >/dev/null\n"
+        f'    cat > "{bin_dir}/gh.put_body.json"\n'
         f"    exit {put_exit}\n"
         "else\n"
         f"    exit {get_exit}\n"
@@ -102,6 +104,17 @@ def test_protection_applied_when_missing(sandbox):
     calls = log.read_text().strip().splitlines()
     assert len(calls) == 2, f"expected probe + PUT, got: {calls}"
     assert "PUT" in calls[1], "second call must be the PUT apply"
+
+    # required_status_checks must be a real (even empty) object, not null:
+    # GitHub's enablePullRequestAutoMerge mutation refuses to arm auto-merge
+    # ("does not have required protected branch rules") when it's null, even
+    # though the branch is otherwise protected. Confirmed live on
+    # release/v0.11 on 2026-07-12 — every story's auto-merge was blocked
+    # until the body below was applied.
+    put_body = json.loads((sandbox / "gh.put_body.json").read_text())
+    assert put_body["required_status_checks"] is not None, (
+        "required_status_checks must not be null or GitHub refuses to arm auto-merge"
+    )
 
 
 def test_put_failure_warns_and_continues(sandbox):
