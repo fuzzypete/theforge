@@ -1,10 +1,13 @@
 """Tests for _setup_resume_entry in coordinator/run_setup.py."""
 
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import _make_config, _make_task
 
 from theforge.coordinator.engine import _run_resume_coordinator
+from theforge.coordinator.gate import _parse_dirty_files
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import CoordinatorResult, Phase
 
@@ -60,6 +63,80 @@ def test_forge_yaml_sync_skipped_when_root_missing(tmp_path):
     assert isinstance(result, tuple)
     state, logger, branch_name, story_content, task_start = result
     assert state.workspace_path == workspace
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def _init_repo(path: Path) -> None:
+    _git(path, "init", "-q", "-b", "main")
+    _git(path, "config", "user.email", "test@example.com")
+    _git(path, "config", "user.name", "Test")
+
+
+def test_dirty_synced_forge_yaml_excluded_from_story_commit(tmp_path):
+    """Seam regression for issue #1627: an uncommitted operator forge.yaml edit
+    synced into the worktree must not be swept into the story's auto-commit.
+
+    Drives the real seam — run_setup's sync (which flags the synced file
+    skip-worktree) → gate dirty detection → the validate-phase ``git add -A``
+    auto-commit — over a real git repo and asserts the resulting commit set
+    omits forge.yaml while still capturing the story's own dev work.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _init_repo(workspace)
+
+    # Committed baseline: the story's worktree starts with the mainline
+    # forge.yaml and a story file, both tracked.
+    committed_forge = "project: mainline\nmodel_order: [full, mini]\n"
+    (workspace / "forge.yaml").write_text(committed_forge, encoding="utf-8")
+    (workspace / "story.py").write_text("# story baseline\n", encoding="utf-8")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "baseline")
+
+    # Operator's live working-tree edit at project root — never committed.
+    experiment_forge = "project: mainline\nmodel_order: [mini, full]  # EXPERIMENT #1617\n"
+    (tmp_path / "forge.yaml").write_text(experiment_forge, encoding="utf-8")
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    # Real git runs (no _run_shell mock) so skip-worktree is actually applied.
+    result = _setup_resume_entry(
+        config,
+        task,
+        workspace,
+        initial_phase=Phase.DEV,
+        notify=False,
+        run_id="test-run-id",
+    )
+    assert isinstance(result, tuple)
+
+    # The run sees the operator's live config in the worktree...
+    assert (workspace / "forge.yaml").read_text(encoding="utf-8") == experiment_forge
+
+    # ...but the dirty synced file is invisible to git dirty detection.
+    status = _git(workspace, "status", "--porcelain")
+    assert "forge.yaml" not in _parse_dirty_files(status)
+
+    # The dev cycle produces legitimate work, then the validate phase's
+    # indiscriminate ``git add -A`` auto-commit fires.
+    (workspace / "story.py").write_text("# story implemented\n", encoding="utf-8")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "acceptance_criteria:")
+
+    # The commit carries only the dev work; the operator experiment is absent.
+    committed = _git(workspace, "show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert "story.py" in committed
+    assert "forge.yaml" not in committed
+
+    # forge.yaml on the branch still holds the committed mainline content —
+    # the operator experiment never reached the story's tree.
+    assert _git(workspace, "show", "HEAD:forge.yaml") == committed_forge
 
 
 def test_setup_returns_escalate_when_workspace_missing(tmp_path):
