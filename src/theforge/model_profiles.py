@@ -1031,10 +1031,20 @@ def _merge_dev(target: dict, src: dict) -> None:
             src.get("avg_iterations", 0.0)
         ) * int(src.get("runs", 0))
     if "_cost_sum" not in src and "runs" in src:
+        # Legacy reconstruction: this ``avg_cost_usd * runs`` fallback assumes
+        # ``avg_cost_usd`` was computed over TOTAL runs. Since #1616 the average
+        # is over MEASURED runs only (``runs - _cost_unknown_runs``), so this
+        # reconstruction is only exact when ``_cost_unknown_runs == 0`` — i.e.
+        # for pre-#1616 profiles, which never recorded unmeasured runs. Do not
+        # rely on it when an old entry both omits ``_cost_sum`` and carries
+        # unmeasured runs (a combination that cannot occur in practice, since
+        # ``_cost_sum`` has always been persisted alongside ``avg_cost_usd``).
         cost_sum = float(target.get("_cost_sum", 0.0)) + float(src.get("avg_cost_usd", 0.0)) * int(
             src.get("runs", 0)
         )
 
+    # Same measured-vs-total caveat as above applies to the by_complexity /
+    # by_complexity_score and review/preflight ``avg_cost_usd * runs`` fallbacks.
     cost_unknown = int(target.get("_cost_unknown_runs", 0)) + int(src.get("_cost_unknown_runs", 0))
     target["runs"] = runs
     target["_successes"] = successes

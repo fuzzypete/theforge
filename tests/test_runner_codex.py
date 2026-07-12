@@ -288,3 +288,22 @@ class TestCodexLifecycle:
         )
         assert result.cost_usd == pytest.approx(0.0033)
         assert len(result.model_usage) == 1
+
+    def test_real_total_only_summary_is_cost_unknown_not_fabricated(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The real Codex CLI human summary is a bare total (no input/output split).
+
+        A total alone can't be priced with the (input, output) table, so the run
+        must be recorded cost-unknown (None) — never a fabricated cost derived by
+        guessing a split from the total.
+        """
+        self._patch_env(monkeypatch, "total_only")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+        )
+        assert result.cost_usd is None
+        assert result.model_usage == ()

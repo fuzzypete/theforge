@@ -159,9 +159,14 @@ def _coerce_int(value: Any) -> int | None:
 def _usage_from_json(result_json: dict[str, Any]) -> tuple[int, int] | None:
     """Best-effort (input_tokens, output_tokens) from a parsed codex JSON blob.
 
-    Tolerates several plausible shapes: a ``usage``/``token_usage``/``token_count``
-    dict keyed by ``input_tokens``/``prompt_tokens``/``input`` (and the output
-    analogues). Returns None when a usable input+output pair cannot be found.
+    Defensive fallback only. The default codex transport writes its last message
+    to the ``-o`` file as PLAIN TEXT (``--output-last-message``), not JSON, so
+    this path does not fire on a normal run — it exists to opportunistically pick
+    up a usage block when codex is invoked in a structured-output mode
+    (e.g. ``--output-schema``) that happens to emit one. Tolerates several
+    plausible shapes: a ``usage``/``token_usage``/``token_count`` dict keyed by
+    ``input_tokens``/``prompt_tokens``/``input`` (and the output analogues).
+    Returns None when a usable input+output pair cannot be found.
     """
     if not isinstance(result_json, dict):
         return None
@@ -184,18 +189,32 @@ def _usage_from_json(result_json: dict[str, Any]) -> tuple[int, int] | None:
     return None
 
 
+# Verified against Codex CLI v0.142.x: the human-readable run summary reports
+# only a TOTAL token count, on its own line, e.g.::
+#     tokens used
+#     11,374
+# A bare total cannot be priced with the (input, output) pricing table, so the
+# default human transport is intentionally recorded cost-unknown rather than
+# fabricating a split. This regex therefore matches ONLY a single-line summary
+# that both names tokens AND carries an explicit input+output split (as a
+# structured/JSON-style summary would). It is deliberately tight:
+#   * anchored to a line containing "token" (MULTILINE ``^``), and
+#   * confined to one line (``[^\n]`` instead of DOTALL ``.*?``),
+# so it cannot fabricate a cost by matching unrelated "input … output" prose
+# elsewhere in the agent's stdout.
 _USAGE_LINE_RE = re.compile(
-    r"input[^0-9]*(?P<input>[\d,]+).*?output[^0-9]*(?P<output>[\d,]+)",
-    re.IGNORECASE | re.DOTALL,
+    r"^[^\n]*token[^\n]*?input[^0-9]*(?P<input>[\d,]+)[^\n]*?output[^0-9]*(?P<output>[\d,]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
 def _usage_from_text(text: str) -> tuple[int, int] | None:
     """Best-effort (input_tokens, output_tokens) from a codex stdout summary line.
 
-    Scans for a token-usage summary that names both input and output token
-    counts (e.g. ``tokens used: input 2,800 output 621``). Returns None when no
-    such split is present — a bare total is not enough to price honestly.
+    Scans for a single-line token-usage summary that names both input and output
+    token counts (e.g. ``tokens used: input 2,800 output 621``). Returns None
+    when no such split is present — including the real CLI's total-only ``tokens
+    used`` line — because a bare total cannot be priced honestly.
     """
     if not text:
         return None
