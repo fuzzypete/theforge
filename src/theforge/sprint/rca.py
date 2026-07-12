@@ -34,6 +34,13 @@ from pathlib import Path
 import yaml
 
 SCHEMA_VERSION = 1
+# Version of the classifier RULES themselves. Bump whenever a rule change can
+# alter conclusions for the same inputs. It is stamped into every artifact so a
+# regeneration with an improved rule set is a *visible, versioned* re-analysis
+# (schema_version stays 1) rather than a silent rewrite of historical judgement:
+# an operator can tell whether two RCA files for one sprint were produced by the
+# same rule set by comparing this field.
+RULESET_VERSION = 1
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -244,16 +251,17 @@ def has_non_done_stories(summary: dict) -> bool:
     return False
 
 
-def build_sprint_rca(sprint_log_dir: Path, *, generated_at: str | None = None) -> dict | None:
-    """Build the sprint-rca.yaml payload for ``sprint_log_dir``.
+def build_sprint_rca(summary_path: Path, *, generated_at: str | None = None) -> dict | None:
+    """Build the sprint-rca.yaml payload from a specific sprint summary file.
 
-    Pure function over on-disk artifacts: reads ``sprint-summary.yaml`` plus the
-    per-story ``audit.yaml`` and logs beneath ``sprint_log_dir``. Returns the
-    RCA mapping, or ``None`` when there is no summary or when every story landed
+    Pure function over on-disk artifacts: reads exactly ``summary_path`` (the
+    caller resolves *which* summary — the legacy ``sprint-summary.yaml`` pointer
+    or the durable run-keyed ``run-<id>-summary.yaml`` for a specific run) plus
+    the per-story ``audit.yaml`` and logs beneath its directory. Returns the RCA
+    mapping, or ``None`` when there is no summary or when every story landed
     (nothing to analyse). ``generated_at`` defaults to the summary's
     ``finished_at`` so the mapping stays deterministic from disk.
     """
-    summary_path = sprint_log_dir / "sprint-summary.yaml"
     summary = _load_yaml(summary_path)
     if not isinstance(summary, dict):
         return None
@@ -263,6 +271,7 @@ def build_sprint_rca(sprint_log_dir: Path, *, generated_at: str | None = None) -
     if not non_done:
         return None
 
+    sprint_log_dir = summary_path.parent
     sprint_block = summary.get("sprint") if isinstance(summary.get("sprint"), dict) else {}
     run_id = sprint_block.get("run_id")
     if generated_at is None:
@@ -278,6 +287,7 @@ def build_sprint_rca(sprint_log_dir: Path, *, generated_at: str | None = None) -
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "ruleset_version": RULESET_VERSION,
         "sprint_run_id": run_id,
         "generated_at": generated_at,
         "generator": "mechanical",
@@ -288,27 +298,55 @@ def build_sprint_rca(sprint_log_dir: Path, *, generated_at: str | None = None) -
 def write_sprint_rca(
     sprint_log_dir: Path,
     *,
+    summary_path: Path | None = None,
     generated_at: str | None = None,
     overwrite: bool = True,
+    write_pointer: bool = True,
 ) -> Path | None:
-    """Build and write ``sprint-rca.yaml`` to the sprint log root.
+    """Build and write the sprint RCA artifact(s) to the sprint log root.
 
-    Returns the written path, or ``None`` when there was nothing to write
-    (no summary, or all stories landed). When ``overwrite`` is False and the
-    file already exists, leaves it in place and returns its path.
+    ``summary_path`` selects which summary to analyse; it defaults to the legacy
+    ``sprint-summary.yaml`` pointer in ``sprint_log_dir``. The RCA is written to
+    a durable run-keyed file ``run-<run_id>-sprint-rca.yaml`` (mirroring how
+    summaries/audits keep a per-run canonical copy that a later same-name run
+    cannot overwrite), and — when ``write_pointer`` is True — also to the
+    ``sprint-rca.yaml`` latest pointer. Regenerating an *older* run must not
+    clobber the latest pointer, so the on-demand verb passes
+    ``write_pointer=False`` for historical runs.
+
+    Returns the primary written path (the pointer when written, else the
+    run-keyed file), or ``None`` when there was nothing to write. When
+    ``overwrite`` is False and the pointer already exists, it is left untouched.
     """
-    rca_path = sprint_log_dir / RCA_FILENAME
-    if rca_path.exists() and not overwrite:
-        return rca_path
+    if summary_path is None:
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
 
-    payload = build_sprint_rca(sprint_log_dir, generated_at=generated_at)
+    pointer_path = sprint_log_dir / RCA_FILENAME
+    if write_pointer and pointer_path.exists() and not overwrite:
+        return pointer_path
+
+    payload = build_sprint_rca(summary_path, generated_at=generated_at)
     if payload is None:
         return None
 
     sprint_log_dir.mkdir(parents=True, exist_ok=True)
-    with open(rca_path, "w", encoding="utf-8") as f:
+    run_id = payload.get("sprint_run_id")
+
+    written: list[Path] = []
+    if run_id:
+        run_keyed = sprint_log_dir / f"run-{run_id}-sprint-rca.yaml"
+        _dump_yaml(run_keyed, payload)
+        written.append(run_keyed)
+    if write_pointer:
+        _dump_yaml(pointer_path, payload)
+        written.insert(0, pointer_path)
+
+    return written[0] if written else None
+
+
+def _dump_yaml(path: Path, payload: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
-    return rca_path
 
 
 def read_sprint_rca(sprint_log_dir: Path) -> dict | None:

@@ -30,6 +30,11 @@ def _write(path: Path, data: object) -> None:
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
 
+def _build(d: Path):
+    """Build RCA from a sprint dir's legacy summary (engine takes a summary path)."""
+    return build_sprint_rca(d / "sprint-summary.yaml")
+
+
 def _sprint_dir(tmp_path: Path, name: str = "issues-1324,1326,793") -> Path:
     d = tmp_path / ".forge" / "logs" / name
     d.mkdir(parents=True, exist_ok=True)
@@ -72,7 +77,7 @@ def test_all_done_stories_produce_no_rca(tmp_path: Path) -> None:
         ),
     )
     assert has_non_done_stories(read_sprint_rca_summary(d)) is False
-    assert build_sprint_rca(d) is None
+    assert _build(d) is None
     assert write_sprint_rca(d) is None
     assert not (d / "sprint-rca.yaml").exists()
 
@@ -96,7 +101,7 @@ def test_landed_stories_not_duplicated(tmp_path: Path) -> None:
             ]
         ),
     )
-    rca = build_sprint_rca(d)
+    rca = _build(d)
     assert rca is not None
     assert set(rca["stories"].keys()) == {"issue-793"}
 
@@ -110,7 +115,7 @@ def test_every_entry_has_required_keys(tmp_path: Path) -> None:
         d / "sprint-summary.yaml",
         _summary([{"slug": "issue-42", "outcome": "FAILED", "error": "boom"}]),
     )
-    rca = build_sprint_rca(d)
+    rca = _build(d)
     entry = rca["stories"]["issue-42"]
     for key in (
         "primary_failure_class",
@@ -151,7 +156,7 @@ def test_provider_quota_with_gate_timeout(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    rca = build_sprint_rca(d)
+    rca = _build(d)
     entry = rca["stories"]["issue-1324"]
     assert entry["primary_failure_class"] == "provider_quota"
     assert "operator_gate_timeout" in entry["contributing_factors"]
@@ -185,7 +190,7 @@ def test_worker_timeout_with_partial_value(tmp_path: Path) -> None:
             "workspace": {"path": "/wt/issue-1326", "branch": "feat/issue-1326"},
         },
     )
-    rca = build_sprint_rca(d)
+    rca = _build(d)
     entry = rca["stories"]["issue-1326"]
     assert entry["primary_failure_class"] == "worker_timeout"
     assert any("dev produced 1 iteration" in v for v in entry["partial_value"])
@@ -208,7 +213,7 @@ def test_intake_shape_drop(tmp_path: Path) -> None:
             ]
         ),
     )
-    rca = build_sprint_rca(d)
+    rca = _build(d)
     entry = rca["stories"]["issue-793"]
     assert entry["primary_failure_class"] == "intake_shape"
     assert entry["contributing_factors"] == []
@@ -224,7 +229,7 @@ def test_dependency_skip(tmp_path: Path) -> None:
         d / "sprint-summary.yaml",
         _summary([{"slug": "issue-9", "outcome": "SKIPPED", "depends_on": ["issue-8"]}]),
     )
-    entry = build_sprint_rca(d)["stories"]["issue-9"]
+    entry = _build(d)["stories"]["issue-9"]
     assert entry["primary_failure_class"] == "dependency_skip"
     assert any("issue-8" in a for a in entry["recommended_next_actions"])
 
@@ -238,7 +243,7 @@ def test_unknown_needs_rca_residual(tmp_path: Path) -> None:
         d / "sprint-summary.yaml",
         _summary([{"slug": "issue-77", "outcome": "SKIPPED"}]),
     )
-    entry = build_sprint_rca(d)["stories"]["issue-77"]
+    entry = _build(d)["stories"]["issue-77"]
     assert entry["primary_failure_class"] == UNKNOWN_CLASS
     # Never evidence-empty: baseline captured_outcome is always present.
     assert entry["evidence"]
@@ -255,31 +260,113 @@ def test_deterministic_from_disk(tmp_path: Path) -> None:
         d / "sprint-summary.yaml",
         _summary([{"slug": "issue-1324", "outcome": "ESCALATE", "error": "usage limit hit"}]),
     )
-    first = build_sprint_rca(d)
-    second = build_sprint_rca(d)
+    first = _build(d)
+    second = _build(d)
     assert first == second
     # generated_at derived from summary finished_at → stable
     assert first["generated_at"] == "2026-05-08T03:00:00Z"
     assert first["sprint_run_id"] == "6c83b3061455"
 
 
-def test_improved_ruleset_regenerates_without_rerun(tmp_path: Path) -> None:
+def test_ruleset_version_stamped(tmp_path: Path) -> None:
+    """Every artifact records the rule-set version that produced it."""
+    from theforge.sprint import rca as rca_mod
+
     d = _sprint_dir(tmp_path)
     _write(
         d / "sprint-summary.yaml",
-        _summary([{"slug": "issue-5", "outcome": "FAILED", "error": "mysterious"}]),
+        _summary([{"slug": "issue-5", "outcome": "FAILED", "error": "boom"}]),
     )
-    p1 = write_sprint_rca(d)
-    assert p1 is not None
+    payload = _build(d)
+    assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
+    assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
+
+
+def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
+    """A changed rule set regenerates a different, version-stamped artifact.
+
+    The on-disk inputs are held fixed; only the classifier rule set changes.
+    Regeneration produces different conclusions AND a bumped ruleset_version, so
+    the re-analysis is a visible, versioned event rather than a silent rewrite of
+    historical judgement.
+    """
+    from theforge.sprint import rca as rca_mod
+
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-5", "outcome": "FAILED", "error": "mysterious flooble"}]),
+    )
+    write_sprint_rca(d)
     before = read_sprint_rca(d)
     assert before["stories"]["issue-5"]["primary_failure_class"] == UNKNOWN_CLASS
+    assert before["ruleset_version"] == 1
 
-    # Simulate an improved artifact: add captured output the rules now match.
-    (d / "issue-5").mkdir(exist_ok=True)
-    (d / "issue-5" / "dev.log").write_text("Worker thread timed out after 60s\n", encoding="utf-8")
+    # Improved rule set (v2): a new rule now recognises the previously-unknown
+    # signature. Inputs on disk are unchanged.
+    improved_rule = rca_mod.RcaRule(
+        rule_id="flooble_detected",
+        failure_class="flooble_fault",
+        role="primary",
+        description="Recognises the flooble signature.",
+        patterns=("flooble",),
+    )
+    monkeypatch.setattr(rca_mod, "RULES", (*rca_mod.RULES, improved_rule))
+    monkeypatch.setattr(rca_mod, "RULES_BY_ID", {r.rule_id: r for r in rca_mod.RULES})
+    monkeypatch.setattr(
+        rca_mod, "_PRIMARY_PRIORITY", ("flooble_fault", *rca_mod._PRIMARY_PRIORITY)
+    )
+    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 2)
+
     write_sprint_rca(d, overwrite=True)
     after = read_sprint_rca(d)
-    assert after["stories"]["issue-5"]["primary_failure_class"] == "worker_timeout"
+    assert after["stories"]["issue-5"]["primary_failure_class"] == "flooble_fault"
+    assert after["ruleset_version"] == 2
+    # Same inputs, different rule set → distinguishable analyses.
+    assert before["ruleset_version"] != after["ruleset_version"]
+
+
+# ── Signal rules (field-derived) ──────────────────────────────────────────────
+
+
+def test_merge_failed_signal(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-3", "outcome": "MERGE_FAILED", "error": "conflict"}]),
+    )
+    entry = _build(d)["stories"]["issue-3"]
+    assert entry["primary_failure_class"] == "merge_failed"
+    assert {ev["rule_id"] for ev in entry["evidence"]} >= {"merge_failed"}
+
+
+def test_operator_action_signal(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-4", "outcome": "OPERATOR_ACTION", "error": "human only"}]),
+    )
+    entry = _build(d)["stories"]["issue-4"]
+    assert entry["primary_failure_class"] == "operator_action"
+
+
+def test_launch_collision_signal(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-6",
+                    "outcome": "DROPPED",
+                    "drop_reason": "active-worktree collision",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-6"]
+    assert entry["primary_failure_class"] == "launch_collision"
+    assert any("worktree" in a or "lock" in a for a in entry["recommended_next_actions"])
 
 
 # ── Rule set discoverability ──────────────────────────────────────────────────
@@ -399,6 +486,47 @@ def test_cli_rca_generates_and_refresh(tmp_path: Path, monkeypatch, capsys) -> N
     # --refresh overwrites.
     assert rca_cli.cmd_rca(SimpleNamespace(run_id="cli-run-1", config=None, refresh=True)) == 0
     assert "sentinel" not in rca_path.read_text()
+
+
+def test_cli_rca_historical_run_via_per_run_summary(tmp_path: Path, monkeypatch) -> None:
+    """Regenerating an older run must analyse that run, not the overwritten pointer.
+
+    The legacy sprint-summary.yaml has been overwritten by a later, all-DONE run;
+    the failed run survives only in its run-<id>-summary.yaml. `forge rca <old>`
+    must classify the old run's failure and write the durable run-keyed RCA
+    without clobbering the current run's sprint-rca.yaml pointer.
+    """
+    from theforge.cli import rca as rca_cli
+
+    d = _sprint_dir(tmp_path, name="hist-sprint")
+    # Older run: a real failure, preserved only in the run-keyed summary.
+    _write(
+        d / "run-old123-summary.yaml",
+        _summary(
+            [{"slug": "issue-1324", "outcome": "ESCALATE", "error": "usage limit hit"}],
+            run_id="old123",
+        ),
+    )
+    # Later same-name run overwrote the legacy pointer with an all-DONE summary.
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-2000", "outcome": "DONE"}], run_id="new456"),
+    )
+    _init_forge_project(tmp_path)
+    monkeypatch.setattr(rca_cli, "load_config", lambda _p: SimpleNamespace(project_root=tmp_path))
+    monkeypatch.setattr(rca_cli, "_find_config", lambda *_a, **_k: tmp_path / "forge.yaml")
+
+    args = SimpleNamespace(run_id="old123", config=None, refresh=False)
+    assert rca_cli.cmd_rca(args) == 0
+
+    # The old run's failure was analysed into a run-keyed artifact...
+    run_keyed = d / "run-old123-sprint-rca.yaml"
+    assert run_keyed.exists()
+    hist = yaml.safe_load(run_keyed.read_text())
+    assert hist["sprint_run_id"] == "old123"
+    assert hist["stories"]["issue-1324"]["primary_failure_class"] == "provider_quota"
+    # ...without creating/clobbering the latest-run pointer.
+    assert not (d / "sprint-rca.yaml").exists()
 
 
 def test_cli_rca_unknown_run_id(tmp_path: Path, monkeypatch) -> None:

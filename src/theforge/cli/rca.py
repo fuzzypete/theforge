@@ -16,8 +16,26 @@ from theforge.cli.shared import _find_config
 from theforge.config import load_config
 
 
+def _summary_run_id(path: Path) -> str | None:
+    """Return the sprint.run_id recorded inside a summary file, if readable."""
+    import yaml  # noqa: PLC0415
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    sprint = data.get("sprint")
+    if isinstance(sprint, dict):
+        rid = sprint.get("run_id")
+        return str(rid) if rid else None
+    return None
+
+
 def cmd_rca(args: argparse.Namespace) -> int:
-    """Regenerate sprint-rca.yaml for a run id."""
+    """Regenerate the RCA artifact for a specific run id."""
     from theforge.sprint.rca import build_sprint_rca, write_sprint_rca
     from theforge.sprint.status_reader import find_sprint_summary
 
@@ -41,16 +59,13 @@ def cmd_rca(args: argparse.Namespace) -> int:
         return 1
 
     sprint_log_dir = summary_path.parent
-    rca_path = sprint_log_dir / "sprint-rca.yaml"
 
-    if rca_path.exists() and not args.refresh:
-        print(
-            f"sprint-rca.yaml already exists at {rca_path}. Pass --refresh to regenerate it.",
-            file=sys.stderr,
-        )
-        return 0
-
-    payload = build_sprint_rca(sprint_log_dir)
+    # Analyse exactly the resolved summary — never the legacy pointer, which a
+    # later same-name run may have overwritten. Only refresh the sprint-rca.yaml
+    # pointer when the requested run *is* the latest one that pointer reflects;
+    # otherwise write the durable run-keyed RCA and leave the pointer alone so a
+    # historical regeneration cannot clobber the current run's analysis.
+    payload = build_sprint_rca(summary_path)
     if payload is None:
         print(
             f"No non-DONE stories for run '{run_id}' — nothing to analyse.",
@@ -58,7 +73,30 @@ def cmd_rca(args: argparse.Namespace) -> int:
         )
         return 0
 
-    written = write_sprint_rca(sprint_log_dir, overwrite=True)
+    resolved_run_id = str(payload.get("sprint_run_id") or run_id)
+    legacy_summary = sprint_log_dir / "sprint-summary.yaml"
+    is_latest = legacy_summary.exists() and _summary_run_id(legacy_summary) == payload.get(
+        "sprint_run_id"
+    )
+    target_rca = (
+        sprint_log_dir / "sprint-rca.yaml"
+        if is_latest
+        else sprint_log_dir / f"run-{resolved_run_id}-sprint-rca.yaml"
+    )
+
+    if target_rca.exists() and not args.refresh:
+        print(
+            f"{target_rca.name} already exists at {target_rca}. Pass --refresh to regenerate it.",
+            file=sys.stderr,
+        )
+        return 0
+
+    written = write_sprint_rca(
+        sprint_log_dir,
+        summary_path=summary_path,
+        overwrite=True,
+        write_pointer=is_latest,
+    )
     story_count = len(payload.get("stories") or {})
     noun = "story" if story_count == 1 else "stories"
     print(f"[forge] rca: wrote {written} ({story_count} non-DONE {noun})")
