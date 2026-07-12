@@ -3250,6 +3250,19 @@ def run_sprint(
             live_telemetry_snapshots=live_telemetry_snapshots,
         )
 
+        # Eagerly generate sprint-rca.yaml when any story finished non-DONE.
+        # The RCA engine is a pure function over the artifacts just written
+        # (sprint-summary.yaml + per-story audit/logs), so it runs off the
+        # runner's hot path and stays regenerable via `forge rca`.
+        try:
+            from .rca import write_sprint_rca
+
+            _rca_path = write_sprint_rca(_sprint_log_dir)
+            if _rca_path is not None:
+                _log(f"Sprint RCA written: {_rca_path}")
+        except Exception as _rca_exc:  # noqa: BLE001 — RCA is best-effort
+            _log(f"Warning: sprint RCA generation failed: {_rca_exc}")
+
     if _state_writer is not None:
         _state_writer.remove()
 

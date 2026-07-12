@@ -1,0 +1,791 @@
+"""Sprint RCA engine — pure classification of non-DONE stories from local artifacts.
+
+The engine is a **deterministic mapping** from on-disk artifacts to a single
+``sprint-rca.yaml`` at the sprint log root:
+
+    sprint-summary.yaml + per-story audit.yaml + sprint/story logs
+        ──▶  build_sprint_rca()  ──▶  sprint-rca.yaml
+
+It depends only on files under a sprint's log directory — never on runtime
+state, renderers, or an LLM. The same pure function powers eager generation on
+sprint completion, the on-demand ``forge rca`` verb, and tests.
+
+Classification is **mechanical first**: pattern scans over logs/captured agent
+output, audit-field lookups, and summary-field correlation. Every rule carries a
+stable ``rule_id`` so evidence can cite the rule that fired and operators can
+grep the taxonomy. The residual class ``unknown_needs_rca`` covers stories no
+mechanical rule matched — they never silently drop; LLM-assisted classification
+(``forge diagnose``) is reserved for that residual and is intentionally out of
+this pure engine.
+
+Each story entry carries a *primary* failure class plus explicit *contributing
+factors* — a real failure usually has one root cause and one or more amplifiers,
+each with a different fix path.
+
+``RULES`` below is the single discoverable location for the classifier's rule
+set. Grep it to see everything the mechanical classifier knows.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+SCHEMA_VERSION = 1
+RCA_FILENAME = "sprint-rca.yaml"
+
+# Outcomes that mean the story landed / succeeded. These stay accounted for in
+# sprint-summary.yaml; the RCA file is the recovery surface for everything else.
+DONE_OUTCOMES = frozenset({"DONE", "ALREADY_DONE"})
+
+# Residual class assigned when no mechanical primary rule matches a story.
+UNKNOWN_CLASS = "unknown_needs_rca"
+
+_EXCERPT_MAX_LEN = 240
+# Cap per-file text reads so a runaway log cannot blow up classification.
+_MAX_FILE_BYTES = 512 * 1024
+
+
+@dataclass(frozen=True)
+class RcaRule:
+    """One mechanical classifier rule.
+
+    ``rule_id`` is stable and greppable; evidence cites it. ``role`` is
+    ``"primary"`` (can be a story's root cause), ``"contributing"`` (an
+    amplifier that never stands alone), or ``"informational"`` (baseline
+    evidence that never affects classification).
+    """
+
+    rule_id: str
+    failure_class: str
+    role: str
+    description: str
+    # Case-insensitive substrings scanned against text sources; any hit fires
+    # the rule. Empty for "signal" rules whose detection is field-derived
+    # (implemented in ``_signal_rule_hits``) rather than pattern-based.
+    patterns: tuple[str, ...] = ()
+
+
+# ── Classifier rule set (single discoverable location) ────────────────────────
+#
+# Text rules match substrings against captured agent output and logs. Signal
+# rules (empty ``patterns``) are field-derived from the summary/audit and are
+# detected in ``_signal_rule_hits`` — they are listed here so every rule_id the
+# engine can emit is inspectable in one place.
+RULES: tuple[RcaRule, ...] = (
+    # ── primary: provider quota / rate limit exhaustion ──────────────────────
+    RcaRule(
+        rule_id="provider_usage_limit",
+        failure_class="provider_quota",
+        role="primary",
+        description="Provider reported a usage/quota/rate limit in captured output.",
+        patterns=(
+            "usage limit",
+            "current quota",
+            "quota limit",
+            "insufficient_quota",
+            "free tier limits have been reached",
+            "rate limit",
+            "resource exhausted",
+            "resource_exhausted",
+            "spend limit",
+            "429",
+            "overloaded",
+        ),
+    ),
+    # ── primary: worker / agent timeout ──────────────────────────────────────
+    RcaRule(
+        rule_id="worker_thread_timeout",
+        failure_class="worker_timeout",
+        role="primary",
+        description="Sprint worker thread exceeded its per-story wall-clock budget.",
+        patterns=("worker thread timed out after",),
+    ),
+    RcaRule(
+        rule_id="agent_timeout",
+        failure_class="worker_timeout",
+        role="primary",
+        description="An agent invocation exceeded its timeout.",
+        patterns=("timeout: agent exceeded",),
+    ),
+    # ── primary: intake shape drop ───────────────────────────────────────────
+    RcaRule(
+        rule_id="intake_dropped_after_fix",
+        failure_class="intake_shape",
+        role="primary",
+        description="Issue dropped after an auto-fix; intake gate still failing.",
+        patterns=("dropped_after_fix", "dropped after fix"),
+    ),
+    RcaRule(
+        rule_id="intake_dropped_shape",
+        failure_class="intake_shape",
+        role="primary",
+        description="Issue dropped at the shape gate before any work ran.",
+        patterns=("dropped_shape", "dropped shape"),
+    ),
+    # ── primary: signal rules (field-derived) ────────────────────────────────
+    RcaRule(
+        rule_id="merge_failed",
+        failure_class="merge_failed",
+        role="primary",
+        description="Story reached merge but the merge itself failed.",
+    ),
+    RcaRule(
+        rule_id="merge_arming_failed",
+        failure_class="merge_arming_failed",
+        role="primary",
+        description="PR is fine but arming auto-merge failed (branch protection).",
+    ),
+    RcaRule(
+        rule_id="review_changes_requested",
+        failure_class="review_rejected",
+        role="primary",
+        description="Story escalated/failed with a REQUEST_CHANGES review verdict.",
+    ),
+    RcaRule(
+        rule_id="operator_action_required",
+        failure_class="operator_action",
+        role="primary",
+        description="Deliverable is a human action no dev agent can perform.",
+    ),
+    RcaRule(
+        rule_id="launch_guard_dropped",
+        failure_class="launch_collision",
+        role="primary",
+        description="Story dropped/preserved by the launch guard (worktree/lock).",
+    ),
+    RcaRule(
+        rule_id="dependency_blocked",
+        failure_class="dependency_skip",
+        role="primary",
+        description="Story skipped because an unmet dependency blocked launch.",
+    ),
+    RcaRule(
+        rule_id="iteration_budget_exhausted",
+        failure_class="iteration_exhaustion",
+        role="primary",
+        description="Dev or review hit its iteration limit and the story failed.",
+    ),
+    # ── contributing factors (amplifiers) ────────────────────────────────────
+    RcaRule(
+        rule_id="pending_decision_auto_rejected",
+        failure_class="operator_gate_timeout",
+        role="contributing",
+        description="An operator decision gate timed out and auto-escalated.",
+        patterns=("pending decision timed out after",),
+    ),
+    RcaRule(
+        rule_id="provider_fallback_not_applied",
+        failure_class="fallback_not_applied",
+        role="contributing",
+        description="A configured provider fallback did not apply on the failure.",
+        patterns=("fallback not applied", "no fallback", "fallback unavailable"),
+    ),
+    RcaRule(
+        rule_id="dev_iteration_limit_hit",
+        failure_class="dev_iteration_limit",
+        role="contributing",
+        description="Dev exhausted its iteration budget.",
+    ),
+    RcaRule(
+        rule_id="review_iteration_limit_hit",
+        failure_class="review_iteration_limit",
+        role="contributing",
+        description="Review exhausted its iteration budget.",
+    ),
+    # ── informational baseline (never classifies) ────────────────────────────
+    RcaRule(
+        rule_id="captured_outcome",
+        failure_class="captured_outcome",
+        role="informational",
+        description="Baseline evidence recording the story's terminal outcome.",
+    ),
+)
+
+RULES_BY_ID: dict[str, RcaRule] = {rule.rule_id: rule for rule in RULES}
+
+# Order in which competing primary classes win. Earlier = more specific /
+# more actionable, so it is chosen as the primary_failure_class.
+_PRIMARY_PRIORITY: tuple[str, ...] = (
+    "provider_quota",
+    "worker_timeout",
+    "intake_shape",
+    "merge_failed",
+    "merge_arming_failed",
+    "review_rejected",
+    "operator_action",
+    "launch_collision",
+    "dependency_skip",
+    "iteration_exhaustion",
+)
+
+
+@dataclass(frozen=True)
+class _TextSource:
+    """A relative source path plus its text content, for pattern scanning."""
+
+    source: str
+    text: str
+
+
+# ── Public engine surface ─────────────────────────────────────────────────────
+
+
+def has_non_done_stories(summary: dict) -> bool:
+    """Return True when any story in a loaded sprint summary finished non-DONE."""
+    for story in summary.get("stories", []) or []:
+        if not isinstance(story, dict):
+            continue
+        outcome = str(story.get("outcome") or "").upper()
+        if outcome not in DONE_OUTCOMES:
+            return True
+    return False
+
+
+def build_sprint_rca(sprint_log_dir: Path, *, generated_at: str | None = None) -> dict | None:
+    """Build the sprint-rca.yaml payload for ``sprint_log_dir``.
+
+    Pure function over on-disk artifacts: reads ``sprint-summary.yaml`` plus the
+    per-story ``audit.yaml`` and logs beneath ``sprint_log_dir``. Returns the
+    RCA mapping, or ``None`` when there is no summary or when every story landed
+    (nothing to analyse). ``generated_at`` defaults to the summary's
+    ``finished_at`` so the mapping stays deterministic from disk.
+    """
+    summary_path = sprint_log_dir / "sprint-summary.yaml"
+    summary = _load_yaml(summary_path)
+    if not isinstance(summary, dict):
+        return None
+
+    stories = [s for s in (summary.get("stories") or []) if isinstance(s, dict)]
+    non_done = [s for s in stories if str(s.get("outcome") or "").upper() not in DONE_OUTCOMES]
+    if not non_done:
+        return None
+
+    sprint_block = summary.get("sprint") if isinstance(summary.get("sprint"), dict) else {}
+    run_id = sprint_block.get("run_id")
+    if generated_at is None:
+        generated_at = sprint_block.get("finished_at")
+
+    logs_root = sprint_log_dir.parent
+    story_entries: dict[str, dict] = {}
+    for story in non_done:
+        slug = str(story.get("slug") or "").strip()
+        if not slug:
+            continue
+        story_entries[slug] = _classify_story(story, sprint_log_dir, logs_root, run_id)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "sprint_run_id": run_id,
+        "generated_at": generated_at,
+        "generator": "mechanical",
+        "stories": story_entries,
+    }
+
+
+def write_sprint_rca(
+    sprint_log_dir: Path,
+    *,
+    generated_at: str | None = None,
+    overwrite: bool = True,
+) -> Path | None:
+    """Build and write ``sprint-rca.yaml`` to the sprint log root.
+
+    Returns the written path, or ``None`` when there was nothing to write
+    (no summary, or all stories landed). When ``overwrite`` is False and the
+    file already exists, leaves it in place and returns its path.
+    """
+    rca_path = sprint_log_dir / RCA_FILENAME
+    if rca_path.exists() and not overwrite:
+        return rca_path
+
+    payload = build_sprint_rca(sprint_log_dir, generated_at=generated_at)
+    if payload is None:
+        return None
+
+    sprint_log_dir.mkdir(parents=True, exist_ok=True)
+    with open(rca_path, "w", encoding="utf-8") as f:
+        yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
+    return rca_path
+
+
+def read_sprint_rca(sprint_log_dir: Path) -> dict | None:
+    """Return the parsed ``sprint-rca.yaml`` for a sprint, or ``None``.
+
+    Status/rendering surfaces read the persisted artifact rather than
+    re-running classification at display time.
+    """
+    data = _load_yaml(sprint_log_dir / RCA_FILENAME)
+    return data if isinstance(data, dict) else None
+
+
+# ── Classification internals ──────────────────────────────────────────────────
+
+
+def _classify_story(
+    story: dict,
+    sprint_log_dir: Path,
+    logs_root: Path,
+    run_id: object,
+) -> dict:
+    """Classify one non-DONE story into a full RCA entry."""
+    slug = str(story.get("slug") or "").strip()
+    outcome = str(story.get("outcome") or "").upper()
+
+    audit = _load_yaml(sprint_log_dir / slug / "audit.yaml")
+    audit = audit if isinstance(audit, dict) else {}
+
+    text_sources = _collect_text_sources(story, slug, audit, sprint_log_dir, logs_root, run_id)
+
+    # (rule_id, source, excerpt) triples in deterministic order.
+    hits: list[tuple[str, str, str]] = []
+    hits.extend(_text_rule_hits(text_sources))
+    hits.extend(_signal_rule_hits(story, audit, sprint_log_dir, logs_root))
+
+    # Baseline evidence so an entry is never evidence-empty (AC: unknown stories
+    # surface at least the captured outcome).
+    summary_source = _rel(sprint_log_dir / "sprint-summary.yaml", logs_root)
+    error = _nonempty(story.get("error"))
+    baseline_excerpt = f"outcome={outcome or 'UNKNOWN'}"
+    if error:
+        baseline_excerpt += f"; {error}"
+
+    # Deduplicate by rule_id, keeping first (most authoritative) evidence.
+    seen_rules: set[str] = set()
+    evidence: list[dict] = []
+    primary_classes: list[str] = []
+    contributing_classes: list[str] = []
+    for rule_id, source, excerpt in hits:
+        if rule_id in seen_rules:
+            continue
+        rule = RULES_BY_ID.get(rule_id)
+        if rule is None:
+            continue
+        seen_rules.add(rule_id)
+        evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
+        if rule.role == "primary":
+            primary_classes.append(rule.failure_class)
+        elif rule.role == "contributing":
+            contributing_classes.append(rule.failure_class)
+
+    # Always append the baseline outcome evidence last.
+    evidence.append(
+        {
+            "source": summary_source,
+            "rule_id": "captured_outcome",
+            "excerpt": _truncate(baseline_excerpt),
+        }
+    )
+
+    primary = _select_primary(primary_classes)
+    if primary is None:
+        primary = UNKNOWN_CLASS
+
+    # Contributing factors: unique, in rule-declaration order, minus whichever
+    # class was elevated to primary.
+    contributing = _dedupe_ordered(contributing_classes)
+
+    partial_value = _detect_partial_value(story, audit)
+    actions = _recommend_actions(primary, contributing, story)
+
+    return {
+        "primary_failure_class": primary,
+        "contributing_factors": contributing,
+        "evidence": evidence,
+        "partial_value": partial_value,
+        "recommended_next_actions": actions,
+    }
+
+
+def _collect_text_sources(
+    story: dict,
+    slug: str,
+    audit: dict,
+    sprint_log_dir: Path,
+    logs_root: Path,
+    run_id: object,
+) -> list[_TextSource]:
+    """Gather (relative-path, text) sources to scan for this story.
+
+    Sources are the story's error/detail from the summary, its per-story audit
+    error/message, every text file under its ``<slug>/`` log subdir, and the
+    lines of the sprint run log that reference this story (by slug or #number).
+    """
+    sources: list[_TextSource] = []
+    summary_rel = _rel(sprint_log_dir / "sprint-summary.yaml", logs_root)
+    audit_rel = _rel(sprint_log_dir / slug / "audit.yaml", logs_root)
+
+    # Per-story audit error/message — where the runner records terminal-failure
+    # detail (e.g. "Worker thread timed out after 3600s") on the CoordinatorResult.
+    if isinstance(audit, dict) and audit:
+        outcome_block = audit.get("outcome") if isinstance(audit.get("outcome"), dict) else {}
+        audit_text_parts = [
+            str(audit.get("error") or ""),
+            str(outcome_block.get("message") or ""),
+            str(outcome_block.get("error_type") or ""),
+        ]
+        audit_text = "\n".join(p for p in audit_text_parts if p)
+        if audit_text.strip():
+            sources.append(_TextSource(audit_rel, audit_text))
+
+    summary_text_parts = [
+        str(story.get("error") or ""),
+        str(story.get("drop_reason") or ""),
+        str(story.get("error_type") or ""),
+        str(story.get("outcome_code") or ""),
+        yaml.safe_dump(story.get("detail")) if story.get("detail") else "",
+        yaml.safe_dump(story.get("intake")) if story.get("intake") else "",
+    ]
+    summary_text = "\n".join(p for p in summary_text_parts if p)
+    if summary_text.strip():
+        sources.append(_TextSource(summary_rel, summary_text))
+
+    # Per-story log directory: scan every readable text file (dev/review
+    # iteration logs, captured agent output yaml, etc.).
+    story_dir = sprint_log_dir / slug
+    if story_dir.is_dir():
+        for path in sorted(story_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in {".log", ".txt", ".yaml", ".yml", ".md", ".json"}:
+                continue
+            text = _read_text(path)
+            if text:
+                sources.append(_TextSource(_rel(path, logs_root), text))
+
+    # Sprint run log: attribute only lines that reference this story so we never
+    # fabricate cross-story attribution from a shared log.
+    run_log = _find_run_log(sprint_log_dir, run_id)
+    if run_log is not None:
+        refs = _story_references(slug)
+        matched_lines = [
+            line for line in _read_text(run_log).splitlines() if any(ref in line for ref in refs)
+        ]
+        if matched_lines:
+            sources.append(_TextSource(_rel(run_log, logs_root), "\n".join(matched_lines)))
+
+    return sources
+
+
+def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str]]:
+    """Fire every text rule whose pattern appears in any source."""
+    hits: list[tuple[str, str, str]] = []
+    for rule in RULES:
+        if not rule.patterns:
+            continue
+        for src in sources:
+            lowered = src.text.lower()
+            matched_pattern = next((p for p in rule.patterns if p in lowered), None)
+            if matched_pattern is None:
+                continue
+            excerpt = _first_matching_line(src.text, rule.patterns)
+            hits.append((rule.rule_id, src.source, excerpt))
+            break  # one evidence per rule is enough
+    return hits
+
+
+def _signal_rule_hits(
+    story: dict,
+    audit: dict,
+    sprint_log_dir: Path,
+    logs_root: Path,
+) -> list[tuple[str, str, str]]:
+    """Fire field-derived (signal) rules from summary/audit structured fields."""
+    hits: list[tuple[str, str, str]] = []
+    summary_source = _rel(sprint_log_dir / "sprint-summary.yaml", logs_root)
+    audit_source = _rel(sprint_log_dir / str(story.get("slug") or "") / "audit.yaml", logs_root)
+    outcome = str(story.get("outcome") or "").upper()
+    error = _nonempty(story.get("error"))
+
+    def _outcome_excerpt(suffix: str = "") -> str:
+        tail = f"; {error}" if error else ""
+        return _truncate(f"outcome={outcome}{suffix}{tail}")
+
+    if outcome == "MERGE_FAILED":
+        hits.append(("merge_failed", summary_source, _outcome_excerpt()))
+    if outcome == "MERGE_ARMING_FAILED":
+        hits.append(("merge_arming_failed", summary_source, _outcome_excerpt()))
+    if outcome == "OPERATOR_ACTION":
+        hits.append(("operator_action_required", summary_source, _outcome_excerpt()))
+    if outcome in {"DROPPED", "PRESERVED"} or _nonempty(story.get("drop_reason")):
+        drop = _nonempty(story.get("drop_reason")) or error or "launch-guard drop"
+        hits.append(
+            ("launch_guard_dropped", summary_source, _truncate(f"outcome={outcome}; {drop}"))
+        )
+    if outcome == "SKIPPED":
+        deps = list(story.get("depends_on") or [])
+        if deps:
+            hits.append(
+                (
+                    "dependency_blocked",
+                    summary_source,
+                    _truncate(f"skipped; unmet dependencies: {', '.join(str(d) for d in deps)}"),
+                )
+            )
+
+    # Review verdict — from the per-story audit reviews (or summary verdict).
+    verdict = _last_review_verdict(story, audit)
+    if verdict == "REQUEST_CHANGES" and outcome in {"ESCALATE", "ESCALATED", "FAILED"}:
+        hits.append(
+            (
+                "review_changes_requested",
+                audit_source if audit else summary_source,
+                _truncate(f"final review verdict REQUEST_CHANGES; outcome={outcome}"),
+            )
+        )
+
+    # Iteration-limit signals from the per-story summary/audit iteration_usage.
+    usage = story.get("iteration_usage")
+    if not isinstance(usage, dict):
+        iteration_block = audit.get("iterations") if isinstance(audit, dict) else None
+        usage = iteration_block.get("usage_summary") if isinstance(iteration_block, dict) else None
+    dev_hit = _hit_limit(usage, "dev")
+    review_hit = _hit_limit(usage, "review")
+    if dev_hit:
+        hits.append(
+            ("dev_iteration_limit_hit", summary_source, _truncate("dev iteration limit reached"))
+        )
+    if review_hit:
+        hits.append(
+            (
+                "review_iteration_limit_hit",
+                summary_source,
+                _truncate("review iteration limit reached"),
+            )
+        )
+    # Elevate iteration exhaustion to a primary cause only when the story failed
+    # and nothing else classified it (checked at selection time via priority).
+    if (dev_hit or review_hit) and outcome in {"FAILED", "ESCALATE", "ESCALATED"}:
+        hits.append(
+            (
+                "iteration_budget_exhausted",
+                summary_source,
+                _truncate("iteration budget exhausted before completion"),
+            )
+        )
+
+    return hits
+
+
+def _select_primary(primary_classes: list[str]) -> str | None:
+    """Choose the winning primary failure class by declared priority."""
+    present = set(primary_classes)
+    for cls in _PRIMARY_PRIORITY:
+        if cls in present:
+            return cls
+    # A primary rule fired but its class is not in the priority list — return
+    # the first seen so we never lose a real classification.
+    return primary_classes[0] if primary_classes else None
+
+
+def _detect_partial_value(story: dict, audit: dict) -> list[str]:
+    """Surface mechanically-detectable partial value produced before failure."""
+    values: list[str] = []
+
+    dev_invocations = 0
+    workspace_path: str | None = None
+    branch: str | None = None
+    if isinstance(audit, dict):
+        cost = audit.get("cost")
+        if isinstance(cost, dict):
+            dev_invocations = int(cost.get("dev_invocations") or 0)
+        iterations = audit.get("iterations")
+        if not dev_invocations and isinstance(iterations, dict):
+            dev_invocations = int(iterations.get("dev_iterations") or 0)
+        workspace = audit.get("workspace")
+        if isinstance(workspace, dict):
+            workspace_path = _nonempty(workspace.get("path"))
+            branch = _nonempty(workspace.get("branch"))
+
+    if dev_invocations > 0:
+        values.append(f"dev produced {dev_invocations} iteration(s) of work")
+    outcome = str(story.get("outcome") or "").upper()
+    if outcome in {"ESCALATE", "ESCALATED", "PRESERVED"} and workspace_path:
+        detail = f"workspace preserved at {workspace_path}"
+        if branch:
+            detail += f" (branch {branch})"
+        values.append(detail)
+    return values
+
+
+def _recommend_actions(primary: str, contributing: list[str], story: dict) -> list[str]:
+    """Map primary class + contributing factors to actionable next steps."""
+    ref = _story_ref(story)
+    actions: list[str] = []
+
+    diagnose_ref = _issue_number(story) or ref
+    base = {
+        "provider_quota": (
+            f"wait for quota reset or switch the provider/model, then re-sprint {ref}"
+        ),
+        "worker_timeout": (
+            f"inspect the worker log for the phase {ref} was in at timeout; "
+            "split the story or raise the worker timeout, then re-run"
+        ),
+        "intake_shape": f"reshape the {ref} issue body to satisfy the intake gate, then re-run",
+        "merge_failed": f"resolve the merge conflict for {ref} and re-run the merge",
+        "merge_arming_failed": (
+            f"configure branch protection so auto-merge can arm, or merge {ref} manually"
+        ),
+        "review_rejected": (
+            f"inspect the escalated {ref} worktree and address the review findings, then re-run"
+        ),
+        "operator_action": f"perform the operator action described in {ref} (no dev agent can)",
+        "launch_collision": (f"clear the active worktree/lock blocking {ref}, then re-sprint it"),
+        "dependency_skip": _dependency_action(story, ref),
+        "iteration_exhaustion": (
+            f"raise the iteration budget for {ref} or narrow its scope, then re-run"
+        ),
+        UNKNOWN_CLASS: (
+            f"run 'forge diagnose --issue {diagnose_ref}' for LLM-assisted root cause"
+        ),
+    }
+    actions.append(base.get(primary, f"investigate {ref} manually"))
+
+    if "fallback_not_applied" in contributing:
+        actions.append("wire the provider fallback so the next failure recovers automatically")
+    if "operator_gate_timeout" in contributing:
+        actions.append("shorten or auto-resolve the operator decision gate that timed out")
+    if "dev_iteration_limit" in contributing and primary != "iteration_exhaustion":
+        actions.append("raise the dev iteration budget or narrow the story scope")
+    if "review_iteration_limit" in contributing and primary != "iteration_exhaustion":
+        actions.append("raise the review iteration budget or reduce review churn")
+
+    return actions
+
+
+def _dependency_action(story: dict, ref: str) -> str:
+    deps = [str(d) for d in (story.get("depends_on") or [])]
+    if deps:
+        return f"land blocking dependencies ({', '.join(deps)}) then re-sprint {ref}"
+    return f"resolve the blocker preventing {ref} from launching, then re-sprint it"
+
+
+# ── Small helpers ─────────────────────────────────────────────────────────────
+
+
+def _load_yaml(path: Path) -> object:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return None
+
+
+def _read_text(path: Path) -> str:
+    try:
+        if path.stat().st_size > _MAX_FILE_BYTES:
+            with open(path, "rb") as fb:
+                fb.seek(-_MAX_FILE_BYTES, 2)
+                return fb.read().decode("utf-8", errors="replace")
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _rel(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _find_run_log(sprint_log_dir: Path, run_id: object) -> Path | None:
+    if run_id:
+        candidate = sprint_log_dir / f"run-{run_id}.log"
+        if candidate.is_file():
+            return candidate
+    matches = sorted(sprint_log_dir.glob("run-*.log"))
+    return matches[0] if matches else None
+
+
+def _story_references(slug: str) -> list[str]:
+    """Tokens that identify a story's lines in the shared sprint run log."""
+    refs = [slug]
+    num = _issue_number_from_slug(slug)
+    if num:
+        refs.append(f"#{num}")
+    return refs
+
+
+def _issue_number_from_slug(slug: str) -> str | None:
+    # slugs look like "issue-1324"; extract the trailing number.
+    tail = slug.rsplit("-", 1)[-1] if "-" in slug else slug
+    return tail if tail.isdigit() else None
+
+
+def _issue_number(story: dict) -> str | None:
+    slug = str(story.get("slug") or "")
+    num = _issue_number_from_slug(slug)
+    if num:
+        return num
+    path = str(story.get("path") or "")
+    if path.startswith("Issue #"):
+        candidate = path.split("#", 1)[1].strip()
+        if candidate.isdigit():
+            return candidate
+    return None
+
+
+def _story_ref(story: dict) -> str:
+    num = _issue_number(story)
+    if num:
+        return f"#{num}"
+    return str(story.get("slug") or story.get("path") or "the story")
+
+
+def _first_matching_line(text: str, patterns: tuple[str, ...]) -> str:
+    for line in text.splitlines():
+        lowered = line.lower()
+        if any(p in lowered for p in patterns):
+            return _truncate(line.strip())
+    return _truncate(text.strip())
+
+
+def _truncate(text: str) -> str:
+    text = text.strip()
+    if len(text) > _EXCERPT_MAX_LEN:
+        return text[: _EXCERPT_MAX_LEN - 1] + "…"
+    return text
+
+
+def _nonempty(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _dedupe_ordered(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def _hit_limit(usage: object, kind: str) -> bool:
+    if not isinstance(usage, dict):
+        return False
+    block = usage.get(kind)
+    if isinstance(block, dict):
+        return bool(block.get("hit_limit"))
+    return False
+
+
+def _last_review_verdict(story: dict, audit: dict) -> str | None:
+    verdict = _nonempty(story.get("verdict"))
+    if verdict:
+        return verdict.upper()
+    if isinstance(audit, dict):
+        reviews = audit.get("reviews")
+        if isinstance(reviews, list) and reviews:
+            last = reviews[-1]
+            if isinstance(last, dict):
+                raw = _nonempty(last.get("verdict"))
+                if raw:
+                    return raw.upper()
+    return None
