@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 import time
@@ -68,17 +69,12 @@ _RUNNER_FAILURE_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
 _SHELL_ERROR_PREFIXES = ("bash:", "sh:", "zsh:")
 _DEV_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS = 2
 _TRANSIENT_DEV_ERROR_PATTERNS = (
-    "429",
     "rate limit",
     "rate-limited",
     "resource_exhausted",
     "resource exhausted",
     "quota exceeded",
     "quota_exceeded",
-    "500",
-    "502",
-    "503",
-    "504",
     "internal error",
     "server error",
     "service unavailable",
@@ -92,11 +88,20 @@ _TRANSIENT_DEV_ERROR_PATTERNS = (
     "connection-reset",
     "econnreset",
     "connection aborted",
-    "connection refused",
     "peer closed connection",
     "temporarily unavailable",
     "try again later",
     "timeout awaiting headers",
+)
+# HTTP status codes that indicate a transient provider failure. Matched with
+# digit-boundary anchoring so they don't fire on substrings of unrelated
+# numbers (port numbers, token counts, etc.) that happen to contain these
+# digits, e.g. "5003" or "1500". "connection refused" is deliberately not
+# treated as transient: it signals a misconfigured or unreachable endpoint,
+# not transient load, so retrying is unlikely to succeed.
+_TRANSIENT_DEV_ERROR_STATUS_CODES = ("429", "500", "502", "503", "504")
+_TRANSIENT_DEV_ERROR_STATUS_CODE_RE = re.compile(
+    r"(?<!\d)(?:" + "|".join(_TRANSIENT_DEV_ERROR_STATUS_CODES) + r")(?!\d)"
 )
 
 
@@ -209,6 +214,8 @@ def _is_transient_dev_failure(
     if failure_code in {"rate_limit", "provider_internal_error", "connection_reset"}:
         return True
     output = (result.output or "").lower()
+    if _TRANSIENT_DEV_ERROR_STATUS_CODE_RE.search(output):
+        return True
     return any(pattern in output for pattern in _TRANSIENT_DEV_ERROR_PATTERNS)
 
 
