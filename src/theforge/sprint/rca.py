@@ -349,6 +349,33 @@ def _dump_yaml(path: Path, payload: dict) -> None:
         yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
 
 
+def artifact_matches(
+    summary_path: Path,
+    artifact_path: Path,
+    *,
+    generated_at: str | None = None,
+) -> bool | None:
+    """Reproducibility check: does regenerating from ``summary_path`` reproduce
+    the persisted ``artifact_path`` byte-for-content?
+
+    Because the RCA file is a *regenerable derived artifact* (never committed —
+    it lives under gitignored ``.forge/``), the guard against silent divergence
+    is detectability: an operator or CI can compare a stored artifact against a
+    fresh generation and see whether the current rule set still produces it.
+
+    Returns ``True`` when they match, ``False`` when they diverge, and ``None``
+    when there is nothing to compare (no summary, no non-DONE stories, or no
+    persisted artifact).
+    """
+    fresh = build_sprint_rca(summary_path, generated_at=generated_at)
+    if fresh is None:
+        return None
+    existing = _load_yaml(artifact_path)
+    if not isinstance(existing, dict):
+        return None
+    return fresh == existing
+
+
 def read_sprint_rca(sprint_log_dir: Path) -> dict | None:
     """Return the parsed ``sprint-rca.yaml`` for a sprint, or ``None``.
 

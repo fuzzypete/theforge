@@ -34,6 +34,18 @@ def _summary_run_id(path: Path) -> str | None:
     return None
 
 
+def _artifact_ruleset_version(path: Path) -> object:
+    """Return the ruleset_version recorded in a persisted RCA artifact, if any."""
+    import yaml  # noqa: PLC0415
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    return data.get("ruleset_version") if isinstance(data, dict) else None
+
+
 def cmd_rca(args: argparse.Namespace) -> int:
     """Regenerate the RCA artifact for a specific run id."""
     from theforge.sprint.rca import build_sprint_rca, write_sprint_rca
@@ -84,6 +96,33 @@ def cmd_rca(args: argparse.Namespace) -> int:
         else sprint_log_dir / f"run-{resolved_run_id}-sprint-rca.yaml"
     )
 
+    # --check: reproducibility guard. Never writes; compares the persisted
+    # artifact against a fresh generation so silent divergence (e.g. an improved
+    # rule set that would now conclude differently) is detectable rather than
+    # invisible. Exit 2 signals drift so CI/operators can act.
+    if getattr(args, "check", False):
+        from theforge.sprint.rca import artifact_matches
+
+        if not target_rca.exists():
+            print(f"No RCA artifact at {target_rca} to check.", file=sys.stderr)
+            return 1
+        matches = artifact_matches(summary_path, target_rca)
+        if matches is None:
+            print(f"Cannot compare {target_rca.name} (unreadable or empty).", file=sys.stderr)
+            return 1
+        if matches:
+            print(f"[forge] rca: {target_rca.name} is reproducible from current inputs.")
+            return 0
+        stored_version = _artifact_ruleset_version(target_rca)
+        print(
+            f"[forge] rca: {target_rca.name} has DRIFTED — regenerating from the same "
+            f"inputs produces a different result (stored ruleset_version="
+            f"{stored_version}, current={payload.get('ruleset_version')}). "
+            f"Run 'forge rca {run_id} --refresh' to update it.",
+            file=sys.stderr,
+        )
+        return 2
+
     if target_rca.exists() and not args.refresh:
         print(
             f"{target_rca.name} already exists at {target_rca}. Pass --refresh to regenerate it.",
@@ -116,4 +155,13 @@ def register_parser(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Overwrite an existing sprint-rca.yaml",
+    )
+    p.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help=(
+            "Reproducibility check: compare the stored artifact against a fresh "
+            "generation without writing. Exit 2 if it has drifted."
+        ),
     )

@@ -529,6 +529,95 @@ def test_cli_rca_historical_run_via_per_run_summary(tmp_path: Path, monkeypatch)
     assert not (d / "sprint-rca.yaml").exists()
 
 
+def test_cli_rca_refresh_historical_run(tmp_path: Path, monkeypatch) -> None:
+    """--refresh regenerates a historical (non-latest) run's run-keyed artifact."""
+    from theforge.cli import rca as rca_cli
+
+    d = _sprint_dir(tmp_path, name="hist-refresh")
+    _write(
+        d / "run-old999-summary.yaml",
+        _summary(
+            [{"slug": "issue-1324", "outcome": "ESCALATE", "error": "usage limit hit"}],
+            run_id="old999",
+        ),
+    )
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-2000", "outcome": "DONE"}], run_id="newAAA"),
+    )
+    _init_forge_project(tmp_path)
+    monkeypatch.setattr(rca_cli, "load_config", lambda _p: SimpleNamespace(project_root=tmp_path))
+    monkeypatch.setattr(rca_cli, "_find_config", lambda *_a, **_k: tmp_path / "forge.yaml")
+
+    run_keyed = d / "run-old999-sprint-rca.yaml"
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="old999", config=None, refresh=False, check=False))
+        == 0
+    )
+    assert run_keyed.exists()
+
+    # Without --refresh the existing run-keyed artifact is left untouched.
+    run_keyed.write_text("sentinel: true\n", encoding="utf-8")
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="old999", config=None, refresh=False, check=False))
+        == 0
+    )
+    assert "sentinel" in run_keyed.read_text()
+
+    # --refresh regenerates it; the latest pointer is never created.
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="old999", config=None, refresh=True, check=False))
+        == 0
+    )
+    assert "sentinel" not in run_keyed.read_text()
+    assert not (d / "sprint-rca.yaml").exists()
+
+
+def test_cli_rca_check_reproducible_and_drift(tmp_path: Path, monkeypatch) -> None:
+    """--check reports reproducibility (exit 0) and drift (exit 2) without writing."""
+    from theforge.cli import rca as rca_cli
+    from theforge.sprint import rca as rca_mod
+
+    d = _sprint_dir(tmp_path, name="check-sprint")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [{"slug": "issue-1324", "outcome": "ESCALATE", "error": "usage limit hit"}],
+            run_id="chk-run",
+        ),
+    )
+    _init_forge_project(tmp_path)
+    monkeypatch.setattr(rca_cli, "load_config", lambda _p: SimpleNamespace(project_root=tmp_path))
+    monkeypatch.setattr(rca_cli, "_find_config", lambda *_a, **_k: tmp_path / "forge.yaml")
+
+    # --check with no artifact yet → rc 1 (nothing to check).
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="chk-run", config=None, refresh=False, check=True))
+        == 1
+    )
+
+    # Generate, then --check must report reproducible (rc 0), no write.
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="chk-run", config=None, refresh=False, check=False))
+        == 0
+    )
+    pointer = d / "sprint-rca.yaml"
+    before = pointer.read_text()
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="chk-run", config=None, refresh=False, check=True))
+        == 0
+    )
+    assert pointer.read_text() == before  # --check never writes
+
+    # Change the rule set so a fresh generation would diverge → drift, rc 2.
+    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 99)
+    assert (
+        rca_cli.cmd_rca(SimpleNamespace(run_id="chk-run", config=None, refresh=False, check=True))
+        == 2
+    )
+    assert pointer.read_text() == before  # still no write on drift
+
+
 def test_cli_rca_unknown_run_id(tmp_path: Path, monkeypatch) -> None:
     from theforge.cli import rca as rca_cli
 
