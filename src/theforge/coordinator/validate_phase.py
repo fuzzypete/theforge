@@ -240,6 +240,7 @@ def _build_timeout_rca_packet(
     config: ForgeConfig,
     gate_cmd: str,
     gate_output_tail: str,
+    gate_err: str | None,
     workspace_path: Path,
 ) -> str:
     """Assemble the dev retry input for a gate-timeout-with-commits failure."""
@@ -294,7 +295,7 @@ def _build_timeout_rca_packet(
         parts.append(f"Commits ahead of base:\n{commits_log}")
     parts.append(
         f"Gate output tail (last {tail_chars} chars; may be truncated at the kill"
-        f" boundary):\n{gate_output_tail or '(empty)'}"
+        f" boundary):\n{gate_output_tail or gate_err or '(empty)'}"
     )
     if state.gate_debug_telemetry:
         dbg = state.gate_debug_telemetry[-1]
@@ -440,6 +441,7 @@ def _run_validate_phase(
                 config=config,
                 gate_cmd=resolved_gate_cmd,
                 gate_output_tail=gate_output_tail,
+                gate_err=gate_err,
                 workspace_path=workspace_path,
             )
             state.retry_reason = RetryReason.GATE_FAIL
