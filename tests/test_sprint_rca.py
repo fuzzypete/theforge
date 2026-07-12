@@ -326,6 +326,39 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     assert before["ruleset_version"] != after["ruleset_version"]
 
 
+def test_evidence_source_cites_resolved_summary(tmp_path: Path) -> None:
+    """Summary-derived + captured_outcome evidence cites the analysed summary file.
+
+    When the engine is pointed at run-<id>-summary.yaml, evidence sources must
+    reference that file — not the legacy sprint-summary.yaml — because the
+    analysis is evidenced against the artifacts actually used for that run.
+    """
+    d = _sprint_dir(tmp_path, name="evidence-src")
+    # Legacy pointer belongs to a different, all-DONE run.
+    _write(
+        d / "sprint-summary.yaml", _summary([{"slug": "issue-x", "outcome": "DONE"}], run_id="new")
+    )
+    # Historical failed run in its own run-keyed summary.
+    per_run = d / "run-hist-summary.yaml"
+    _write(
+        per_run,
+        _summary(
+            [{"slug": "issue-1", "outcome": "MERGE_FAILED", "error": "conflict"}], run_id="hist"
+        ),
+    )
+
+    rca = build_sprint_rca(per_run)
+    entry = rca["stories"]["issue-1"]
+    for ev in entry["evidence"]:
+        if ev["source"].endswith("summary.yaml"):
+            assert ev["source"].endswith("run-hist-summary.yaml"), ev
+            assert not ev["source"].endswith("/sprint-summary.yaml")
+    # captured_outcome baseline is summary-derived and must be correctly sourced.
+    baseline = entry["evidence"][-1]
+    assert baseline["rule_id"] == "captured_outcome"
+    assert baseline["source"].endswith("run-hist-summary.yaml")
+
+
 # ── Signal rules (field-derived) ──────────────────────────────────────────────
 
 
@@ -524,7 +557,18 @@ def test_cli_rca_historical_run_via_per_run_summary(tmp_path: Path, monkeypatch)
     assert run_keyed.exists()
     hist = yaml.safe_load(run_keyed.read_text())
     assert hist["sprint_run_id"] == "old123"
-    assert hist["stories"]["issue-1324"]["primary_failure_class"] == "provider_quota"
+    story = hist["stories"]["issue-1324"]
+    assert story["primary_failure_class"] == "provider_quota"
+    # Summary-derived evidence must cite the RESOLVED run-keyed summary, never
+    # the legacy pointer (which now belongs to a later run and lacks the cited
+    # excerpt). No evidence source may point at sprint-summary.yaml.
+    summary_sources = [
+        ev["source"] for ev in story["evidence"] if ev["source"].endswith("summary.yaml")
+    ]
+    assert summary_sources, "expected at least one summary-derived evidence entry"
+    for src in summary_sources:
+        assert src.endswith("run-old123-summary.yaml"), src
+        assert not src.endswith("/sprint-summary.yaml")
     # ...without creating/clobbering the latest-run pointer.
     assert not (d / "sprint-rca.yaml").exists()
 

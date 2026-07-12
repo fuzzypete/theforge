@@ -283,7 +283,9 @@ def build_sprint_rca(summary_path: Path, *, generated_at: str | None = None) -> 
         slug = str(story.get("slug") or "").strip()
         if not slug:
             continue
-        story_entries[slug] = _classify_story(story, sprint_log_dir, logs_root, run_id)
+        story_entries[slug] = _classify_story(
+            story, summary_path, sprint_log_dir, logs_root, run_id
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -391,6 +393,7 @@ def read_sprint_rca(sprint_log_dir: Path) -> dict | None:
 
 def _classify_story(
     story: dict,
+    summary_path: Path,
     sprint_log_dir: Path,
     logs_root: Path,
     run_id: object,
@@ -402,16 +405,19 @@ def _classify_story(
     audit = _load_yaml(sprint_log_dir / slug / "audit.yaml")
     audit = audit if isinstance(audit, dict) else {}
 
-    text_sources = _collect_text_sources(story, slug, audit, sprint_log_dir, logs_root, run_id)
+    text_sources = _collect_text_sources(
+        story, slug, audit, summary_path, sprint_log_dir, logs_root, run_id
+    )
 
     # (rule_id, source, excerpt) triples in deterministic order.
     hits: list[tuple[str, str, str]] = []
     hits.extend(_text_rule_hits(text_sources))
-    hits.extend(_signal_rule_hits(story, audit, sprint_log_dir, logs_root))
+    hits.extend(_signal_rule_hits(story, audit, summary_path, sprint_log_dir, logs_root))
 
     # Baseline evidence so an entry is never evidence-empty (AC: unknown stories
-    # surface at least the captured outcome).
-    summary_source = _rel(sprint_log_dir / "sprint-summary.yaml", logs_root)
+    # surface at least the captured outcome). Cite the *resolved* summary file
+    # (e.g. run-<id>-summary.yaml for a historical run), never the legacy pointer.
+    summary_source = _rel(summary_path, logs_root)
     error = _nonempty(story.get("error"))
     baseline_excerpt = f"outcome={outcome or 'UNKNOWN'}"
     if error:
@@ -468,18 +474,20 @@ def _collect_text_sources(
     story: dict,
     slug: str,
     audit: dict,
+    summary_path: Path,
     sprint_log_dir: Path,
     logs_root: Path,
     run_id: object,
 ) -> list[_TextSource]:
     """Gather (relative-path, text) sources to scan for this story.
 
-    Sources are the story's error/detail from the summary, its per-story audit
-    error/message, every text file under its ``<slug>/`` log subdir, and the
-    lines of the sprint run log that reference this story (by slug or #number).
+    Sources are the story's error/detail from the resolved summary, its
+    per-story audit error/message, every text file under its ``<slug>/`` log
+    subdir, and the lines of the sprint run log that reference this story (by
+    slug or #number).
     """
     sources: list[_TextSource] = []
-    summary_rel = _rel(sprint_log_dir / "sprint-summary.yaml", logs_root)
+    summary_rel = _rel(summary_path, logs_root)
     audit_rel = _rel(sprint_log_dir / slug / "audit.yaml", logs_root)
 
     # Per-story audit error/message — where the runner records terminal-failure
@@ -554,12 +562,13 @@ def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str]]:
 def _signal_rule_hits(
     story: dict,
     audit: dict,
+    summary_path: Path,
     sprint_log_dir: Path,
     logs_root: Path,
 ) -> list[tuple[str, str, str]]:
     """Fire field-derived (signal) rules from summary/audit structured fields."""
     hits: list[tuple[str, str, str]] = []
-    summary_source = _rel(sprint_log_dir / "sprint-summary.yaml", logs_root)
+    summary_source = _rel(summary_path, logs_root)
     audit_source = _rel(sprint_log_dir / str(story.get("slug") or "") / "audit.yaml", logs_root)
     outcome = str(story.get("outcome") or "").upper()
     error = _nonempty(story.get("error"))
