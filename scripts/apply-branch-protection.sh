@@ -32,7 +32,13 @@ fi
 
 REPO="${ARGS[0]}"
 BRANCH="${ARGS[1]}"
-PROTECTION_BODY='{"required_status_checks":null,"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
+# required_status_checks must be a non-null object (even with empty contexts)
+# for GitHub's enablePullRequestAutoMerge mutation to succeed — a null value
+# "protects" the branch but leaves auto-merge arming refused with
+# "Pull Request Branch does not have required protected branch rules".
+# Confirmed 2026-07-12: release/v0.11's protection (applied with the old
+# null body) blocked every story's auto-merge until re-applied with this body.
+PROTECTION_BODY='{"required_status_checks":{"strict":false,"contexts":[]},"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
 
 if [[ "$DRY_RUN" == true ]]; then
     echo "+ (dry-run) gh api --method PUT repos/$REPO/branches/$BRANCH/protection --input -"
