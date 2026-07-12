@@ -508,15 +508,60 @@ class TestRunAgentClaude:
     def test_no_result_json_fallback_extracts_session_id(
         self, dev_profile: ModelProfile, tmp_path: Path
     ) -> None:
-        mock_proc = _make_stream_mock(
-            [json.dumps({"type": "assistant", "session_id": "sess-fallback"}) + "\n"]
+        assistant_line = json.dumps(
+            {
+                "type": "assistant",
+                "session_id": "sess-fallback",
+                "message": {"content": [{"type": "text", "text": "agent text"}]},
+            }
         )
+        mock_proc = _make_stream_mock([assistant_line + "\n"])
         with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
         assert result.session_id == "sess-fallback"
-        assert result.output == json.dumps({"type": "assistant", "session_id": "sess-fallback"})
+        assert result.output == "agent text"
+
+    def test_result_event_without_result_uses_last_assistant_text(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        assistant_line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial agent output"}]},
+            }
+        )
+        mock_proc = _make_stream_mock(
+            [
+                assistant_line + "\n",
+                _result_line(subtype="error_max_turns", session_id="sess-partial"),
+            ],
+            returncode=1,
+        )
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.session_id == "sess-partial"
+        assert result.output == "partial agent output"
+
+    def test_result_event_without_result_emits_marker_when_no_assistant_text(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        mock_proc = _make_stream_mock(
+            [_result_line(subtype="error_max_turns", session_id="sess-empty")],
+            returncode=1,
+        )
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.session_id == "sess-empty"
+        assert (
+            result.output == "CLAUDE_STREAM_NO_TEXT: reason=result_missing_text "
+            "subtype=error_max_turns"
+        )
 
 
 class TestClaudePermissionMode:

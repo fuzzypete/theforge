@@ -287,6 +287,69 @@ def _try_parse_handoff(output: str) -> dict | None:
         return None
 
 
+def _extract_assistant_text(event: dict[str, Any]) -> str:
+    """Return visible assistant-authored text from a Claude stream event."""
+    if event.get("type") != "assistant":
+        return ""
+    message = event.get("message", {})
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content", [])
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict) and item.get("type") == "text":
+            text = str(item.get("text", "")).strip()
+        else:
+            continue
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _extract_stream_output(lines: list[str]) -> str | None:
+    """Prefer assistant text from stream-json events; otherwise preserve plain-text streams."""
+    last_assistant_text = ""
+    saw_json_event = False
+    raw_text_parts: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            raw_text_parts.append(line)
+            continue
+        if isinstance(event, dict):
+            saw_json_event = True
+            assistant_text = _extract_assistant_text(event)
+            if assistant_text:
+                last_assistant_text = assistant_text
+
+    if last_assistant_text:
+        return last_assistant_text
+    if raw_text_parts:
+        return "".join(raw_text_parts).strip()
+    if saw_json_event:
+        return None
+    return "".join(lines).strip() or None
+
+
+def _build_no_text_marker(reason: str, *, subtype: str | None = None) -> str:
+    """Return a machine-readable marker for streams that contained no text output."""
+    marker = f"CLAUDE_STREAM_NO_TEXT: reason={reason}"
+    if subtype:
+        marker += f" subtype={subtype}"
+    return marker
+
+
 def _get_claude_session_id(
     output: str,
     cwd: Path,
@@ -532,19 +595,21 @@ def _run_claude(
             continue
 
     if not result_json:
-        raw_output = "".join(lines).strip()
+        extracted_output = _extract_stream_output(lines)
         stderr_text = ""
         if proc.stderr:
             try:
                 stderr_text = proc.stderr.read()
             except Exception:
                 pass
-        _noresult_output = raw_output or stderr_text or "(no output)"
+        _noresult_output = (
+            extracted_output or stderr_text or _build_no_text_marker("missing_result_event")
+        )
         return AgentResult(
             success=proc.returncode == 0,
             output=_noresult_output,
             session_id=_get_claude_session_id(
-                raw_output or stderr_text,
+                "".join(lines) or stderr_text,
                 working_dir,
                 fallback_to_file=fallback_to_file,
                 min_mtime=start_wall,
@@ -562,7 +627,11 @@ def _run_claude(
     except (TypeError, ValueError):
         cost = None
 
-    _success_output = result_json.get("result", "".join(lines))
+    _success_output = result_json.get("result")
+    if _success_output is None:
+        _success_output = _extract_stream_output(lines) or _build_no_text_marker(
+            "result_missing_text", subtype=str(result_json.get("subtype", "unknown"))
+        )
     return AgentResult(
         success=proc.returncode == 0,
         output=_success_output,
