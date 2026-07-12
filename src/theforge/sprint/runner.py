@@ -2519,7 +2519,19 @@ def run_sprint(
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
-                blocked_by_queued = [dep for dep in task.depends_on if dep in queued_prs]
+                # Both hard (depends_on) and soft (collision_deps) parents must
+                # honor the queued-PR reachability gate. dag.ready() releases a
+                # collision edge the instant its parent reaches a terminal state,
+                # and a merge-queued parent is marked terminal (pending_integration
+                # -> mark_skipped) the moment its PR is queued — before the merge
+                # commit is reachable on origin base. Without gating collision_deps
+                # here, a dependent (fresh OR resume-at-review) dispatches onto a
+                # base that predates the parent's landed fix, then conflicts at
+                # merge time. Gating on queued_prs membership preserves the
+                # abandon-and-proceed semantics for genuinely failed collision
+                # parents: those are never in queued_prs, so they skip this gate.
+                _gate_deps = list(dict.fromkeys((*task.depends_on, *task.collision_deps)))
+                blocked_by_queued = [dep for dep in _gate_deps if dep in queued_prs]
                 if blocked_by_queued:
                     dependency_failed = False
                     for dep in blocked_by_queued:
@@ -2565,7 +2577,7 @@ def run_sprint(
                             dependency_failed = True
                     if dependency_failed:
                         continue
-                    if any(dep in queued_prs for dep in task.depends_on):
+                    if any(dep in queued_prs for dep in _gate_deps):
                         continue
 
                 # Cap concurrent submissions at max_parallel
