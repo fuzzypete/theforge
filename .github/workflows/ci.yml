@@ -5,6 +5,10 @@ on:
     branches: [main, "release/**"]
   push:
     branches: [main, "release/**"]
+  # Dispatched by forward-port.yml on its bot branch: Actions-token PRs don't
+  # trigger pull_request runs, but check runs attach to the head SHA, so a
+  # dispatched run satisfies the PR's required checks.
+  workflow_dispatch:
 
 jobs:
   gate:
