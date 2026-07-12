@@ -379,7 +379,8 @@ def _run_plan_phase(
             }
         )
     _log_phase(state.phase, plan_profile.model)
-    logger._safe_emit("phase_start", phase="PLAN", iteration=0)
+    if logger:
+        logger._safe_emit("phase_start", phase="PLAN", iteration=0)
 
     plan_context = ContextAssembler.from_config(config).assemble(
         phase="plan",
@@ -428,8 +429,9 @@ def _run_plan_phase(
         state.phase = Phase.ESCALATE
         state.error = _plan_diag or "PLAN phase mutated the worktree"
         _log(f"✗ ESCALATE   {state.error}")
-        logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
-        logger._safe_emit("escalate", reason=state.error, phase="PLAN")
+        if logger:
+            logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="PLAN")
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False, phase=state.phase, state=state, message=state.error
@@ -443,13 +445,14 @@ def _run_plan_phase(
         state.plan_output = plan_text
         state.plan_structured = parse_plan_output(plan_text)
         _log(f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}")
-        logger._safe_emit(
-            "phase_end",
-            phase="PLAN",
-            outcome="success",
-            cost_usd=round(plan_result.cost_usd or 0.0, 6),
-            duration_s=round(_plan_elapsed, 2),
-        )
+        if logger:
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN",
+                outcome="success",
+                cost_usd=round(plan_result.cost_usd or 0.0, 6),
+                duration_s=round(_plan_elapsed, 2),
+            )
 
         _work_type = state.preflight_work_type or "feature"
 
@@ -503,7 +506,8 @@ def _run_plan_phase(
             "Consider increasing plan timeout or simplifying the spec."
         )
         _log("  ✗ PLAN failed — escalating (not proceeding blind)")
-        logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
+        if logger:
+            logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
         _log(f"✗ ESCALATE   {state.error}")
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
@@ -601,7 +605,8 @@ def _run_plan_agent_review(
             state.phase,
             f"agent review ({_pool_label}, {len(par_profiles)} reviewer(s))",
         )
-        logger._safe_emit("phase_start", phase="PLAN_REVIEW", iteration=_attempt)
+        if logger:
+            logger._safe_emit("phase_start", phase="PLAN_REVIEW", iteration=_attempt)
 
         pr_prompt = build_plan_review_prompt(
             task,
@@ -825,14 +830,15 @@ def _run_plan_agent_review(
                     f"  ✓ PLAN_REVIEW   approve (merged)  "
                     f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
                 )
-            logger._safe_emit(
-                "phase_end",
-                phase="PLAN_REVIEW",
-                outcome="approve",
-                cost_usd=round(_total_pr_cost, 6),
-                duration_s=round(_pr_elapsed, 2),
-                plan_regen_disposition=state.plan_regen_disposition,
-            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="PLAN_REVIEW",
+                    outcome="approve",
+                    cost_usd=round(_total_pr_cost, 6),
+                    duration_s=round(_pr_elapsed, 2),
+                    plan_regen_disposition=state.plan_regen_disposition,
+                )
             try:
                 _cu._run_shell(["git", "add", str(PLAN_PATH)], cwd=workspace_path)
                 _cu._run_shell(
@@ -859,13 +865,14 @@ def _run_plan_agent_review(
                 f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
             )
             _log(f"  Advisory findings (logged, not blocking):\n{findings_text}")
-            logger._safe_emit(
-                "phase_end",
-                phase="PLAN_REVIEW",
-                outcome="advisory",
-                cost_usd=round(_total_pr_cost, 6),
-                duration_s=round(_pr_elapsed, 2),
-            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="PLAN_REVIEW",
+                    outcome="advisory",
+                    cost_usd=round(_total_pr_cost, 6),
+                    duration_s=round(_pr_elapsed, 2),
+                )
             _write_log_artifact(state.log_dir, "plan.md", plan_text)
             return None  # continue to DEV regardless of verdict
 
@@ -885,14 +892,15 @@ def _run_plan_agent_review(
                 f"  ↳ regen filter: {_rec_p1} recurring P1(s) highlighted"
                 + (f", {_p2_omit} P2(s) omitted" if _p2_omit else "")
             )
-        logger._safe_emit(
-            "phase_end",
-            phase="PLAN_REVIEW",
-            outcome="reject",
-            cost_usd=round(_total_pr_cost, 6),
-            duration_s=round(_pr_elapsed, 2),
-            plan_regen_disposition=state.plan_regen_disposition,
-        )
+        if logger:
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN_REVIEW",
+                outcome="reject",
+                cost_usd=round(_total_pr_cost, 6),
+                duration_s=round(_pr_elapsed, 2),
+                plan_regen_disposition=state.plan_regen_disposition,
+            )
 
         state.plan_regen_count += 1
 
@@ -928,12 +936,13 @@ def _run_plan_agent_review(
                         f" {_old_model} → {_new_model}"
                         f" (rejected {state.plan_regen_count}x)"
                     )
-                    logger._safe_emit(
-                        "plan_model_escalate",
-                        from_model=_old_model,
-                        to_model=_new_model,
-                        rejections=state.plan_regen_count,
-                    )
+                    if logger:
+                        logger._safe_emit(
+                            "plan_model_escalate",
+                            from_model=_old_model,
+                            to_model=_new_model,
+                            rejections=state.plan_regen_count,
+                        )
                 else:
                     _log(
                         "  Plan escalation: no higher tier available"
@@ -1196,12 +1205,13 @@ def _run_human_plan_review(
                 "  ✓ PLAN_REVIEW   approve  "
                 f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
             )
-            logger._safe_emit(
-                "phase_end",
-                phase="PLAN_REVIEW",
-                outcome="approve",
-                plan_regen_disposition=state.plan_regen_disposition,
-            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="PLAN_REVIEW",
+                    outcome="approve",
+                    plan_regen_disposition=state.plan_regen_disposition,
+                )
             try:
                 _cu._run_shell(["git", "add", str(PLAN_PATH)], cwd=workspace_path)
                 _cu._run_shell(
@@ -1222,12 +1232,13 @@ def _run_human_plan_review(
         if plan_review_decision == "regenerate":
             state.plan_regen_count += 1
             record_plan_attempt(state, [])
-            logger._safe_emit(
-                "phase_end",
-                phase="PLAN_REVIEW",
-                outcome="regenerate",
-                plan_regen_disposition=state.plan_regen_disposition,
-            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="PLAN_REVIEW",
+                    outcome="regenerate",
+                    plan_regen_disposition=state.plan_regen_disposition,
+                )
             if state.plan_regen_count > config.retry.max_plan_regen_attempts:
                 state.plan_review_decision = "abandon"
                 _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — abandoning")
