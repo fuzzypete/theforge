@@ -9,7 +9,10 @@ models:
     - claude/sonnet               # CLI alias auto-tracks: Sonnet 5 as of 2026-07 ($3/$15)
     - claude/opus                 # CLI alias auto-tracks: Opus 4.8 as of 2026-07 ($5/$25)
     - openai/gpt-5.4              # value strong tier ($2.50/$15); still served, no deprecation (verified 2026-07-07)
-    - openai/gpt-5.4-mini         # cheap tier ($0.75/$4.50) — pool previously had no cheap tier at all
+    - openai/gpt-5.4-mini         # cheap tier ($0.75/$4.50). Tried list-first 2026-07-11 to force dispatch via
+    #                                 the cheap-bucket tie-break: got 4 preflights (at sonnet-equal cost, no
+    #                                 savings) but zero dev runs — profile reranker starves zero-history models
+    #                                 regardless of order. Reverted same day; real fix is #1617.
     - openai/gpt-5.5              # OpenAI's recommended coding model; overlay entry below
     # - deepseek/deepseek-reasoner  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Re-enable when adaptive routing can decide reviewer fitness automatically.
@@ -62,7 +65,10 @@ validation:
   gate_command: "make gate"
   # Canonical intermediate test command dev agents should use while working.
   test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
-  gate_timeout: 45
+  # 45→60 (2026-07-11): story #1243 hit identical 45s gate timeouts twice under
+  # --parallel 3 load, then passed instantly when resumed solo. Modest bump to
+  # absorb parallel contention; revisit if timeouts persist at 60.
+  gate_timeout: 60
 
 conventions:
   hard:
