@@ -36,7 +36,12 @@ def _write_fake_gh(bin_dir: Path, *, get_exit: int, put_exit: int) -> Path:
         'for a in "$@"; do\n'
         '    if [[ "$a" == "PUT" ]]; then is_put=true; fi\n'
         "done\n"
-        f'if [[ "$is_put" == true ]]; then exit {put_exit}; else exit {get_exit}; fi\n'
+        'if [[ "$is_put" == true ]]; then\n'
+        "    cat >/dev/null\n"
+        f"    exit {put_exit}\n"
+        "else\n"
+        f"    exit {get_exit}\n"
+        "fi\n"
     )
     fake.chmod(0o755)
     return log
