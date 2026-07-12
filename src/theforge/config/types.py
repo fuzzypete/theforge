@@ -265,6 +265,13 @@ class RetryPolicy:
     # Minimum successful reviewers required to proceed to synthesis without
     # escalating; collapses to 1 when the panel size is 1.
     review_quorum_threshold: int = 2
+    # When True, a review cycle whose quorum shortfall is caused entirely by
+    # non-verdict reviewer failures (a reviewer that finished without emitting a
+    # submit call) degrades to the surviving verdict(s) with an explicit audit
+    # warning instead of failing the story — provided at least one reviewer
+    # delivered a verdict. Story failure is reserved for a total quorum collapse
+    # (zero survivors) or a genuine hard failure blocking the quorum.
+    review_degrade_on_infra_failure: bool = True
     # Failure-code identifiers (from AgentResult.failure_code) that mark a
     # review-pool failure as transient/retryable.
     review_transient_failure_codes: tuple[str, ...] = (

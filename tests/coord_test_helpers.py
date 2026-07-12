@@ -87,6 +87,7 @@ def _make_agent_result(
     profile_name: str = "",
     startup_failure: bool = False,
     dev_handoff: dict | None = None,
+    failure_code: str | None = None,
 ) -> AgentResult:
     return AgentResult(
         success=success,
@@ -98,6 +99,7 @@ def _make_agent_result(
         profile_name=profile_name,
         startup_failure=startup_failure,
         dev_handoff=dev_handoff,
+        failure_code=failure_code,
     )
 
 

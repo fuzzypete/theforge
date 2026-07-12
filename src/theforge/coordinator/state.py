@@ -238,6 +238,13 @@ class ReviewCycleMetadata:
     quorum_threshold: int = 0
     # Whether the effective threshold was met (i.e. synthesis proceeded).
     quorum_met: bool = False
+    # Whether synthesis proceeded on a *degraded* quorum: the threshold was NOT
+    # met, but the shortfall was caused entirely by non-verdict reviewer
+    # failures (e.g. a reviewer that finished without calling submit) and at
+    # least one trustworthy verdict survived, so the story was not killed.
+    degraded_quorum: bool = False
+    # Human-readable audit note describing a degraded-quorum decision, or None.
+    degraded_quorum_warning: str | None = None
 
 
 @dataclass(frozen=True)

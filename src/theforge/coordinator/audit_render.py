@@ -89,6 +89,8 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
             "transient_outcomes": dict(meta.transient_outcomes),
             "quorum_threshold": meta.quorum_threshold,
             "quorum_met": meta.quorum_met,
+            "degraded_quorum": meta.degraded_quorum,
+            "degraded_quorum_warning": meta.degraded_quorum_warning,
         }
         if i < len(state.review_results):
             r = state.review_results[i]
