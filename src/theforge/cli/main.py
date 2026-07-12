@@ -19,6 +19,7 @@ from theforge.cli import (
     migrate_profiles,
     profiles,
     providers,
+    rca,
     review,
     run,
     shape,
@@ -69,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.register_parser(subparsers)
     todo.register_parser(subparsers)
     diagnose.register_parser(subparsers)
+    rca.register_parser(subparsers)
     shape.register_parser(subparsers)
     groom.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
@@ -109,6 +111,7 @@ def main() -> None:
         "eval-preflight": eval_cmd.cmd_eval_preflight,
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
+        "rca": rca.cmd_rca,
         "shape": shape.cmd_shape,
         "groom": groom.cmd_groom,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
