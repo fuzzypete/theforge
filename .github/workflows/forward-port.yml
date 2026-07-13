@@ -4,15 +4,20 @@ name: Forward-port release to main
 # main stays a strict superset of every release line (doctrine established
 # 2026-07-11; replaces big-bang ports like #1604).
 #
-# Design notes (dispatch-bridge flow — no PAT, no protection changes):
-# - Main's ruleset requires PRs and linear history, so the port lands as an
+# Design notes (GitHub App flow — no PAT, no protection changes; #1646):
+# - Main's protection requires PRs and linear history, so the port lands as an
 #   auto-squash-merged PR from a bot branch, never a direct push.
-# - PRs created with the default Actions token do not trigger pull_request
-#   CI (GitHub's recursion guard), which would deadlock required checks. But
-#   required checks are evaluated per head SHA, so this workflow dispatches
-#   ci.yml explicitly on the bot branch (ci.yml has a workflow_dispatch
-#   trigger for this); the resulting check runs satisfy the PR's required
-#   checks and auto-merge fires.
+# - PRs created with the default Actions token do NOT trigger pull_request CI
+#   (GitHub's recursion guard). A PR's required status checks are evaluated by
+#   check runs *associated with the PR*, not by check runs merely sharing the
+#   head SHA — so dispatching CI out-of-band never satisfies them. The fix:
+#   open the PR with a GitHub App installation token (a non-Actions-token
+#   identity), which makes pull_request CI fire normally; those check runs are
+#   PR-associated, satisfy the required checks, and auto-merge fires on green.
+# - The App (operator-action #1652) holds only Contents:RW + PullRequests:RW —
+#   no admin, no protection bypass. The forward-port PR merges through the
+#   front door with main's protection fully enforced, so no automation identity
+#   can push to a release branch outside a checked PR.
 # - pyproject.toml and CHANGELOG.md always keep main's version: release-line
 #   commits bump the RC/release version and roll the changelog, and those
 #   must never overwrite main's dev version or its [Unreleased] section.
@@ -36,7 +41,6 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
-  actions: write
   issues: write
 
 jobs:
@@ -98,28 +102,51 @@ jobs:
             exit 0
           fi
 
+      - name: Verify forward-port App secrets are present
+        if: steps.merge.outputs.skip != 'true'
+        env:
+          APP_ID: ${{ secrets.FORWARD_PORT_APP_ID }}
+          APP_KEY: ${{ secrets.FORWARD_PORT_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::Forward-port requires the FORWARD_PORT_APP_ID and FORWARD_PORT_APP_PRIVATE_KEY repository secrets so the PR is opened by a GitHub App (not the Actions token) and pull_request CI fires. Create the App and secrets per operator-action #1652."
+            exit 1
+          fi
+
+      - name: Mint GitHub App token
+        id: app-token
+        if: steps.merge.outputs.skip != 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.FORWARD_PORT_APP_ID }}
+          private-key: ${{ secrets.FORWARD_PORT_APP_PRIVATE_KEY }}
+
       - name: Open forward-port PR and arm auto-merge
         if: steps.merge.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # App token so the PR is authored by the App, not the Actions token —
+          # this is what makes pull_request CI fire with PR-associated checks.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_REF: ${{ github.ref_name }}
         run: |
           branch="forward-port/${RELEASE_REF//\//-}"
-          git push --force origin "HEAD:refs/heads/$branch"
+          # Push the bot branch as the App identity.
+          git push --force \
+            "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" \
+            "HEAD:refs/heads/$branch"
 
           existing=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number // empty')
           if [ -z "$existing" ]; then
             gh pr create --base main --head "$branch" \
               --title "Forward-port $RELEASE_REF into main" \
-              --body "Automated forward-port of \`$RELEASE_REF\` (@ ${{ github.sha }}) into main. Version files (pyproject.toml, CHANGELOG.md) keep main's copies by design. Opened by forward-port.yml; CI is dispatched explicitly because Actions-token PRs do not trigger pull_request workflows."
+              --body "Automated forward-port of \`$RELEASE_REF\` (@ ${{ github.sha }}) into main. Version files (pyproject.toml, CHANGELOG.md) keep main's copies by design. Opened by forward-port.yml via the forward-port GitHub App so pull_request CI runs with PR-associated checks (#1646)."
             existing=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
           fi
 
-          # Force-push clears auto-merge; re-arm every run.
+          # Force-push clears auto-merge; re-arm every run. Merges through main's
+          # normal protection once the App PR's pull_request CI is green.
           gh pr merge "$existing" --auto --squash
-
-          # Bridge required checks: dispatch CI on the bot branch's head SHA.
-          gh workflow run ci.yml --ref "$branch"
 
       - name: File issue on failure
         if: failure()
