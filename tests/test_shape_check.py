@@ -489,6 +489,25 @@ class TestExampleParsingContext:
         ]
         assert [bullet.in_example_section for bullet in bullets] == [False, True, False]
 
+    def test_extract_contextual_bullets_keeps_non_example_fenced_bullets(self):
+        section = textwrap.dedent(
+            """\
+            - The artifact is written.
+
+            ### Notes
+            ```markdown
+            - Refactor the export pipeline into an ExportService class
+            ```
+            """
+        )
+
+        bullets = extract_contextual_bullets(section)
+        assert [bullet.text for bullet in bullets] == [
+            "The artifact is written.",
+            "Refactor the export pipeline into an ExportService class",
+        ]
+        assert [bullet.in_example_section for bullet in bullets] == [False, False]
+
     def test_extract_contextual_fenced_blocks_marks_schema_heading(self):
         body = textwrap.dedent(
             """\

@@ -158,8 +158,6 @@ def extract_contextual_bullets(section: str) -> list[ContextualBullet]:
         if stripped.startswith("```"):
             in_fence = not in_fence
             continue
-        if in_fence:
-            continue
 
         bullet_match = _BULLET_RE.match(line)
         if bullet_match:
