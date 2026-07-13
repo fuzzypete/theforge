@@ -3,9 +3,33 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+?)\s*$")
+_EXAMPLE_HEADING_RE = re.compile(
+    r"^(?:"
+    r"examples?"
+    r"|target(?:\s+(?:output|state|sketch))?"
+    r"|what\s+it\s+should\s+look\s+like"
+    r"|schema(?:\s+(?:example|output|sketch))?"
+    r"|sample\s+output"
+    r"|expected\s+output"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ContextualBullet:
+    text: str
+    in_example_section: bool
+
+
+@dataclass(frozen=True)
+class ContextualFencedBlock:
+    content: str
+    in_example_section: bool
 
 
 def find_heading(body: str, pattern: str) -> re.Match[str] | None:
@@ -45,6 +69,11 @@ def extract_section(body: str, heading_pattern: str) -> str | None:
 
 def extract_ac_section(body: str) -> str | None:
     return extract_section(body, r"acceptance criteria|done criteria|checklist")
+
+
+def is_example_heading(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", title.strip().rstrip(":")).lower()
+    return _EXAMPLE_HEADING_RE.fullmatch(normalized) is not None
 
 
 def _bullet_indent(line: str) -> int | None:
@@ -109,6 +138,41 @@ def extract_top_level_bullet_blocks(section: str) -> list[str]:
     return ["\n".join(b) for b in blocks]
 
 
+def extract_contextual_bullets(section: str) -> list[ContextualBullet]:
+    """Return bullets annotated with whether they appear under an example heading."""
+    bullets: list[ContextualBullet] = []
+    example_level: int | None = None
+    in_fence = False
+
+    for line in section.splitlines():
+        stripped = line.strip()
+        heading_match = _HEADING_RE.match(line)
+        if heading_match and not in_fence:
+            level = len(heading_match.group(1))
+            if example_level is not None and level <= example_level:
+                example_level = None
+            if is_example_heading(heading_match.group(2)):
+                example_level = level
+            continue
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        bullet_match = _BULLET_RE.match(line)
+        if bullet_match:
+            bullets.append(
+                ContextualBullet(
+                    text=bullet_match.group(1).strip(),
+                    in_example_section=example_level is not None,
+                )
+            )
+
+    return bullets
+
+
 def fenced_code_blocks(body: str) -> list[str]:
     """Return the contents of each triple-backtick fenced code block."""
     blocks: list[str] = []
@@ -125,4 +189,42 @@ def fenced_code_blocks(body: str) -> list[str]:
                 i += 1
             blocks.append("\n".join(buf))
         i += 1
+    return blocks
+
+
+def extract_contextual_fenced_code_blocks(body: str) -> list[ContextualFencedBlock]:
+    """Return fenced blocks annotated with whether they appear under an example heading."""
+    blocks: list[ContextualFencedBlock] = []
+    example_level: int | None = None
+    in_fence = False
+    current: list[str] = []
+
+    for line in body.splitlines():
+        if not in_fence:
+            heading_match = _HEADING_RE.match(line)
+            if heading_match:
+                level = len(heading_match.group(1))
+                if example_level is not None and level <= example_level:
+                    example_level = None
+                if is_example_heading(heading_match.group(2)):
+                    example_level = level
+                continue
+
+        if re.match(r"^\s*```", line):
+            if in_fence:
+                blocks.append(
+                    ContextualFencedBlock(
+                        content="\n".join(current),
+                        in_example_section=example_level is not None,
+                    )
+                )
+                current = []
+                in_fence = False
+            else:
+                in_fence = True
+            continue
+
+        if in_fence:
+            current.append(line)
+
     return blocks
