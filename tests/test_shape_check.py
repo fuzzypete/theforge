@@ -27,6 +27,10 @@ from theforge.shape_check.heuristics import (
     check_too_many_behavioral_clusters,
     check_untriaged_finding,
 )
+from theforge.shape_check.parsing import (
+    extract_contextual_bullets,
+    extract_contextual_fenced_code_blocks,
+)
 
 WELL_FORMED_AC = textwrap.dedent(
     """\
@@ -461,6 +465,66 @@ class TestNoObservableDoneState:
 
     def test_with_verb(self):
         assert check_no_observable_done_state("T", WELL_FORMED_AC, []) is None
+
+
+class TestExampleParsingContext:
+    def test_extract_contextual_bullets_marks_example_subsections(self):
+        section = textwrap.dedent(
+            """\
+            - The artifact is written.
+
+            ### Example
+            - function_signature: str
+
+            ### Notes
+            - The command returns 0.
+            """
+        )
+
+        bullets = extract_contextual_bullets(section)
+        assert [bullet.text for bullet in bullets] == [
+            "The artifact is written.",
+            "function_signature: str",
+            "The command returns 0.",
+        ]
+        assert [bullet.in_example_section for bullet in bullets] == [False, True, False]
+
+    def test_extract_contextual_bullets_keeps_non_example_fenced_bullets(self):
+        section = textwrap.dedent(
+            """\
+            - The artifact is written.
+
+            ### Notes
+            ```markdown
+            - Refactor the export pipeline into an ExportService class
+            ```
+            """
+        )
+
+        bullets = extract_contextual_bullets(section)
+        assert [bullet.text for bullet in bullets] == [
+            "The artifact is written.",
+            "Refactor the export pipeline into an ExportService class",
+        ]
+        assert [bullet.in_example_section for bullet in bullets] == [False, False]
+
+    def test_extract_contextual_fenced_blocks_marks_schema_heading(self):
+        body = textwrap.dedent(
+            """\
+            ## Schema
+            ```yaml
+            primary_failure_class: flaky-tests
+            ```
+
+            ## Notes
+            ```yaml
+            function_signature: str
+            ```
+            """
+        )
+
+        blocks = extract_contextual_fenced_code_blocks(body)
+        assert [block.in_example_section for block in blocks] == [True, False]
 
 
 class TestTooManyBehavioralClusters:
