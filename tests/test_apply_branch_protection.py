@@ -3,8 +3,9 @@
 The helper is the branch-protection step extracted out of cut-rc.sh so the
 critical RC merge path can be exercised under a PATH-mocked `gh`. Covers:
   - --dry-run reports the planned PUT and does NOT call `gh`
-  - existing protection is preserved (probe GET returns 0; no PUT)
-  - new protection is applied via PUT when probe GET returns non-zero
+  - protection is always (re-)applied via PUT to bring the branch up to the
+    required state, whether or not it was already protected
+  - the PUT body requires the CI gate checks as status contexts
   - PUT failures warn-and-continue (script exits 0 so cut-rc.sh proceeds)
 """
 
@@ -21,13 +22,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "apply-branch-protection.sh"
 
 
-def _write_fake_gh(bin_dir: Path, *, get_exit: int, put_exit: int) -> Path:
+def _write_fake_gh(bin_dir: Path, *, put_exit: int) -> Path:
     """Install a fake `gh` on PATH that records every invocation.
 
-    The fake distinguishes the protection probe (a GET, no --method flag)
-    from the protection apply (PUT via --method PUT) and exits with the
-    caller-specified codes for each. The PUT's stdin (the protection body)
-    is captured to gh.put_body.json for content assertions.
+    The PUT apply (via --method PUT) exits with the caller-specified code and
+    its stdin (the protection body) is captured to gh.put_body.json for content
+    assertions. The script no longer probes for existing protection — it always
+    PUTs to bring the branch to the required state — so any non-PUT call is a
+    regression and is failed loudly here.
     """
     log = bin_dir / "gh.log"
     fake = bin_dir / "gh"
@@ -42,7 +44,7 @@ def _write_fake_gh(bin_dir: Path, *, get_exit: int, put_exit: int) -> Path:
         f'    cat > "{bin_dir}/gh.put_body.json"\n'
         f"    exit {put_exit}\n"
         "else\n"
-        f"    exit {get_exit}\n"
+        "    exit 3\n"
         "fi\n"
     )
     fake.chmod(0o755)
@@ -67,7 +69,7 @@ def _run(*args: str) -> subprocess.CompletedProcess:
 
 
 def test_dry_run_does_not_call_gh(sandbox):
-    log = _write_fake_gh(sandbox, get_exit=0, put_exit=0)
+    log = _write_fake_gh(sandbox, put_exit=0)
 
     result = _run("--dry-run", "fuzzypete/theforge", "release/v0.10")
 
@@ -75,26 +77,19 @@ def test_dry_run_does_not_call_gh(sandbox):
     assert "dry-run" in result.stdout
     assert "would apply branch protection to release/v0.10" in result.stdout
     assert "PUT repos/fuzzypete/theforge/branches/release/v0.10/protection" in result.stdout
+    # The dry-run body must carry the gate contexts so operators eyeballing the
+    # planned PUT see the required checks.
+    assert '"gate (3.11)"' in result.stdout
+    assert '"gate (3.12)"' in result.stdout
+    assert '"gate (3.13)"' in result.stdout
     # The log file must NOT exist — the fake `gh` was never invoked.
     assert not log.exists(), f"gh was called in dry-run: {log.read_text()}"
 
 
-def test_existing_protection_is_preserved(sandbox):
-    # Probe GET succeeds (exit 0) → branch already protected → no PUT.
-    log = _write_fake_gh(sandbox, get_exit=0, put_exit=99)
-
-    result = _run("fuzzypete/theforge", "release/v0.10")
-
-    assert result.returncode == 0, result.stderr
-    assert "already exists on release/v0.10; preserving it" in result.stdout
-    calls = log.read_text().strip().splitlines()
-    assert len(calls) == 1, f"expected exactly one gh call (the probe), got: {calls}"
-    assert "PUT" not in calls[0], "must not call PUT when protection already exists"
-
-
-def test_protection_applied_when_missing(sandbox):
-    # Probe GET fails (exit 1) → not protected → PUT to apply.
-    log = _write_fake_gh(sandbox, get_exit=1, put_exit=0)
+def test_protection_is_applied_unconditionally(sandbox):
+    # The script always PUTs — no probe — so an already-protected branch is
+    # brought up to the required state rather than left as-is.
+    log = _write_fake_gh(sandbox, put_exit=0)
 
     result = _run("fuzzypete/theforge", "release/v0.10")
 
@@ -102,24 +97,55 @@ def test_protection_applied_when_missing(sandbox):
     assert "applying branch protection to release/v0.10" in result.stdout
     assert "branch protected; auto-merge enabled" in result.stdout
     calls = log.read_text().strip().splitlines()
-    assert len(calls) == 2, f"expected probe + PUT, got: {calls}"
-    assert "PUT" in calls[1], "second call must be the PUT apply"
+    assert len(calls) == 1, f"expected a single PUT (no probe), got: {calls}"
+    assert "PUT" in calls[0], "the only call must be the PUT apply"
 
-    # required_status_checks must be a real (even empty) object, not null:
-    # GitHub's enablePullRequestAutoMerge mutation refuses to arm auto-merge
-    # ("does not have required protected branch rules") when it's null, even
-    # though the branch is otherwise protected. Confirmed live on
-    # release/v0.11 on 2026-07-12 — every story's auto-merge was blocked
-    # until the body below was applied.
+
+def test_put_body_requires_gate_status_checks(sandbox):
+    log = _write_fake_gh(sandbox, put_exit=0)
+
+    result = _run("fuzzypete/theforge", "release/v0.10")
+
+    assert result.returncode == 0, result.stderr
+    assert len(log.read_text().strip().splitlines()) == 1
+
+    # required_status_checks.contexts must name the CI gate checks. Empty
+    # contexts (or a null block) leaves nothing for enablePullRequestAutoMerge
+    # to wait on, so GitHub refuses to arm auto-merge (MERGE_ARMING_FAILED),
+    # and lets a PR merge into the release branch with a red gate. Confirmed
+    # live on release/v0.11 by the #1441 sprint on 2026-07-13.
     put_body = json.loads((sandbox / "gh.put_body.json").read_text())
-    assert put_body["required_status_checks"] is not None, (
+    checks = put_body["required_status_checks"]
+    assert checks is not None, (
         "required_status_checks must not be null or GitHub refuses to arm auto-merge"
     )
+    assert checks["contexts"] == [
+        "gate (3.11)",
+        "gate (3.12)",
+        "gate (3.13)",
+    ], "contexts must match the ci.yml gate matrix so CI is required before merge"
+
+
+def test_gate_contexts_match_ci_matrix():
+    """Pin the required contexts to the ci.yml gate matrix.
+
+    The context names GitHub reports are "<job> (<matrix value>)". This test
+    guards the coupling the script comment documents: if ci.yml's python-version
+    matrix drifts from the contexts hard-coded in the script, auto-merge arming
+    silently breaks, so fail loudly here instead.
+    """
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    script = SCRIPT.read_text()
+    for version in ("3.11", "3.12", "3.13"):
+        assert f'"{version}"' in ci, f"ci.yml no longer runs python {version}"
+        assert f"gate ({version})" in script, (
+            f"script must require the 'gate ({version})' status check"
+        )
 
 
 def test_put_failure_warns_and_continues(sandbox):
-    # Probe says unprotected, PUT fails (no admin perms / fork).
-    log = _write_fake_gh(sandbox, get_exit=1, put_exit=1)
+    # PUT fails (no admin perms / fork).
+    log = _write_fake_gh(sandbox, put_exit=1)
 
     result = _run("fuzzypete/theforge", "release/v0.10")
 
@@ -129,11 +155,11 @@ def test_put_failure_warns_and_continues(sandbox):
     assert "failed to apply branch protection" in result.stderr
     assert "apply manually" in result.stderr
     calls = log.read_text().strip().splitlines()
-    assert len(calls) == 2, f"expected probe + PUT attempt, got: {calls}"
+    assert len(calls) == 1, f"expected a single PUT attempt, got: {calls}"
 
 
 def test_missing_args_exits_nonzero(sandbox):
-    _write_fake_gh(sandbox, get_exit=0, put_exit=0)
+    _write_fake_gh(sandbox, put_exit=0)
 
     result = _run("only-one-arg")
 
