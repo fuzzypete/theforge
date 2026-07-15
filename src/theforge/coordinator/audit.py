@@ -13,6 +13,7 @@ from theforge.task import TaskStory
 from .audit_render import build_agent_entries, build_reviews
 from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
+from .landing_record import build_landing_record
 from .state import CoordinatorResult, CoordinatorState
 
 # Per-run audit-record schema version and the reader-side migration registry
@@ -649,6 +650,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             }
         ),
         "merge": result.merge,
+        "landing": build_landing_record(result.merge),
         "landing_status": getattr(result, "landing_status", None),
         "landing_event": (
             {

@@ -17,6 +17,7 @@ from theforge.config import (
     _validate_plan_provider,
 )
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.redact import redact
 from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
@@ -137,7 +138,7 @@ def _write_per_run_record(
             return
 
         record: dict = {
-            "schema_version": 2,
+            "schema_version": CURRENT_RECORD_SCHEMA_VERSION,
             "run_id": run_id,
             "parent_run_id": None,
             "forge_version": audit.get("forge_version"),
@@ -145,7 +146,7 @@ def _write_per_run_record(
         record.update(audit)
         # Ensure the envelope fields stay at the top (dict insertion order is preserved).
         # Re-insert them so they shadow any same-named keys from audit.
-        record["schema_version"] = 2
+        record["schema_version"] = CURRENT_RECORD_SCHEMA_VERSION
         record["run_id"] = run_id
         record["parent_run_id"] = None
         record["forge_version"] = audit.get("forge_version")
