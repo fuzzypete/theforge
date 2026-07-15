@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..advisory_conventions import noteworthy_advisory_entries
+from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
@@ -264,6 +265,7 @@ def _load_story_summary_entry_from_audit(
             audit_data.get("error_type") or outcome_block.get("error_type") or final_phase.lower()
         ),
         "merge": bool((audit_data.get("merge") or {}).get("merged", False)),
+        "landing": audit_data.get("landing") or build_landing_record(audit_data.get("merge")),
         "iteration_usage": {
             "dev": {
                 "used": dev_usage.get("used", 0),
@@ -447,6 +449,7 @@ def _write_sprint_audit(
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),
                 "merge": res.merge is not None and res.merge.get("merged", False),
+                "landing": build_landing_record(res.merge),
                 "iteration_usage": {
                     "dev": {
                         "used": dev_used,
@@ -768,6 +771,7 @@ def _write_sprint_summary(
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),
                 "merge": res.merge is not None and res.merge.get("merged", False),
+                "landing": build_landing_record(res.merge),
                 "iteration_usage": {
                     "dev": {
                         "used": dev_used,

@@ -34,7 +34,7 @@ SUBSTRATE_SCHEMA_VERSION = 3
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — today it
 # is a no-op because no breaking field rename/removal has shipped.
-CURRENT_RECORD_SCHEMA_VERSION = 2
+CURRENT_RECORD_SCHEMA_VERSION = 3
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -588,6 +588,23 @@ def _migrate_v1_to_v2(record: dict) -> dict:
     return record
 
 
+def _migrate_v2_to_v3(record: dict) -> dict:
+    """Add the structured ``landing`` field derived from ``merge`` (issue #1424).
+
+    v2 records stored only the raw ``land_story`` merge_info dict under
+    ``merge``; the sprint summary collapsed it to a boolean that could not tell
+    a fresh-PR merge from an already-merged short-circuit. v3 adds an
+    operator-facing ``landing`` record. Derive it from the persisted merge_info
+    so older records gain the field without re-running ``land_story``; the raw
+    ``merge`` dict already carries ``landing_path``/``guard_evidence``.
+    """
+    from .landing_record import build_landing_record  # noqa: PLC0415
+
+    if "landing" in record:
+        return record
+    return {**record, "landing": build_landing_record(record.get("merge"))}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -598,6 +615,7 @@ def _migrate_v1_to_v2(record: dict) -> dict:
 # versioning is load-bearing".
 MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 
