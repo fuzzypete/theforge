@@ -347,16 +347,25 @@ def _read_digest_rca(sprint_log_dir: Path, run_id: str) -> dict | None:
 
     Prefers the durable run-keyed ``run-<id>-sprint-rca.yaml`` so a historical
     run resolves to its own analysis even after a later same-name run overwrote
-    the ``sprint-rca.yaml`` pointer; falls back to the pointer otherwise.
+    the ``sprint-rca.yaml`` pointer. The run-keyed file is trustworthy by name.
+
+    The ``sprint-rca.yaml`` pointer, by contrast, tracks only the *latest* run
+    for a sprint name (``forge rca`` writes it with ``write_pointer=False`` for
+    historical runs). Accept it only when its ``sprint_run_id`` is absent or
+    matches the queried run — otherwise it belongs to a different (later) run and
+    would misattribute another run's failures into this postmortem brief. In
+    that case fall through to the missing-RCA branch rather than lie.
     """
-    candidates = []
     if run_id:
-        candidates.append(sprint_log_dir / f"run-{run_id}-sprint-rca.yaml")
-    candidates.append(sprint_log_dir / RCA_FILENAME)
-    for path in candidates:
-        data = _load_yaml(path)
-        if isinstance(data, dict):
-            return data
+        run_keyed = _load_yaml(sprint_log_dir / f"run-{run_id}-sprint-rca.yaml")
+        if isinstance(run_keyed, dict):
+            return run_keyed
+
+    pointer = _load_yaml(sprint_log_dir / RCA_FILENAME)
+    if isinstance(pointer, dict):
+        pointer_run_id = pointer.get("sprint_run_id")
+        if not pointer_run_id or not run_id or str(pointer_run_id) == str(run_id):
+            return pointer
     return None
 
 

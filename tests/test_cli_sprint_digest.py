@@ -415,6 +415,50 @@ def test_run_keyed_rca_preferred_over_pointer(tmp_path: Path) -> None:
     assert "worker_timeout" not in output
 
 
+def test_pointer_from_different_run_is_rejected(tmp_path: Path) -> None:
+    """A pointer belonging to a later run must not be read for the queried run.
+
+    This is exactly the state ``forge rca <historical> --refresh`` leaves behind
+    (write_pointer=False): the ``sprint-rca.yaml`` pointer reflects the latest
+    run while an older run has no run-keyed file. The digest must fall through to
+    the missing-RCA branch rather than misattribute the later run's failures.
+    """
+    name = "mismatch-sprint"
+    run_id = "runOLD"
+    stories = [
+        _landed_story(1, 1.0),
+        {"slug": "issue-2", "path": "Issue #2", "outcome": "FAILED", "cost_usd": 2.0},
+    ]
+    _write_summary(tmp_path, name, run_id, stories)
+    log_dir = tmp_path / ".forge" / "logs" / name
+
+    # Pointer belongs to a *later* run; no run-keyed file exists for runOLD.
+    (log_dir / "sprint-rca.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "sprint_run_id": "runLATER",
+                "stories": {
+                    "issue-2": {
+                        "primary_failure_class": "worker_timeout",
+                        "contributing_factors": [],
+                        "evidence": [],
+                        "partial_value": [],
+                        "recommended_next_actions": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = _render(tmp_path, run_id)
+    # Falls through to missing-RCA: LANDED only + pointer, no misattributed class.
+    assert "LANDED (1 of 2)" in output
+    assert f"forge rca {run_id}" in output
+    assert "worker_timeout" not in output
+    assert "FAILED —" not in output
+
+
 def test_digest_not_found_returns_1(tmp_path: Path) -> None:
     from theforge.cli.sprint_digest import display_sprint_digest
 
