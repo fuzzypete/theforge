@@ -542,6 +542,19 @@ class CoordinatorState:
         return sum(r.cost_usd or 0.0 for r in self.review_agent_results)
 
     @property
+    def total_review_cost_measured(self) -> float | None:
+        """Review cost, or ``None`` when any review attempt's cost was unmeasured.
+
+        Mirrors :attr:`total_dev_cost_measured`: a run killed before its
+        cost-bearing result event reports ``cost_usd is None``, and coercing that
+        to ``$0.00`` would record unmeasured spend as free in the audit. Empty
+        ``review_agent_results`` means no spend, so ``0.0``.
+        """
+        if any(r.cost_usd is None for r in self.review_agent_results):
+            return None
+        return sum(r.cost_usd or 0.0 for r in self.review_agent_results)
+
+    @property
     def total_preflight_cost(self) -> float:
         if self.preflight_result is None:
             return 0.0
@@ -575,7 +588,31 @@ class CoordinatorState:
         return sum(r.cost_usd or 0.0 for r in self.plan_results)
 
     @property
+    def total_plan_cost_measured(self) -> float | None:
+        """Plan cost, or ``None`` when any plan attempt's cost was unmeasured.
+
+        Mirrors :attr:`total_dev_cost_measured` so a plan run killed before its
+        cost-bearing result event is recorded as cost-unknown rather than free.
+        Empty ``plan_results`` means no spend, so ``0.0``.
+        """
+        if any(r.cost_usd is None for r in self.plan_results):
+            return None
+        return sum(r.cost_usd or 0.0 for r in self.plan_results)
+
+    @property
     def total_plan_review_cost(self) -> float:
+        return sum(r.cost_usd or 0.0 for r in self.plan_review_results)
+
+    @property
+    def total_plan_review_cost_measured(self) -> float | None:
+        """Plan-review cost, or ``None`` when a reviewer attempt's cost was unmeasured.
+
+        Mirrors :attr:`total_dev_cost_measured` so a plan-review run killed before
+        its cost-bearing result event is recorded as cost-unknown rather than
+        free. Empty ``plan_review_results`` means no spend, so ``0.0``.
+        """
+        if any(r.cost_usd is None for r in self.plan_review_results):
+            return None
         return sum(r.cost_usd or 0.0 for r in self.plan_review_results)
 
     @property
@@ -598,6 +635,27 @@ class CoordinatorState:
             + self.total_plan_review_cost
             + self.total_story_validation_cost
         )
+
+    @property
+    def total_cost_measured(self) -> float | None:
+        """Grand-total cost, or ``None`` when any contributing phase was unmeasured.
+
+        Sums the per-phase ``*_measured`` aggregates so a single kill-path run
+        with cost-unknown poisons the whole total to ``None`` rather than letting
+        a coerced ``$0.00`` understate real spend. When every phase is measured,
+        equals :attr:`total_cost`.
+        """
+        parts = [
+            self.total_dev_cost_measured,
+            self.total_review_cost_measured,
+            self.total_preflight_cost_measured,
+            self.total_plan_cost_measured,
+            self.total_plan_review_cost_measured,
+            self.total_story_validation_cost,
+        ]
+        if any(p is None for p in parts):
+            return None
+        return sum(p or 0.0 for p in parts)
 
 
 # dev_iteration property — added after @dataclass so the decorator sees the
