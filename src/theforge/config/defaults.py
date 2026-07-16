@@ -47,7 +47,8 @@ DEFAULT_VALIDATION = ValidationConfig(
 )
 
 # CLIs supported by the runner. Unsupported CLIs are rejected at config load.
-SUPPORTED_CLIS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
+# "ghaw" dispatches to GitHub Actions via the `gh` binary (ADR-0004 spike).
+SUPPORTED_CLIS: frozenset[str] = frozenset({"claude", "codex", "gemini", "ghaw"})
 PROVIDER_SDK_MAP = {
     "anthropic": "anthropic",
     "openai": "openai",

@@ -70,6 +70,9 @@ class AgentSpec:
 _TRANSPORT_CLAUDE_CLI = TransportSpec(kind="cli", runner="claude", executable="claude")
 _TRANSPORT_CODEX_CLI = TransportSpec(kind="cli", runner="codex", executable="codex")
 _TRANSPORT_GEMINI_CLI = TransportSpec(kind="cli", runner="gemini", executable="gemini")
+# gh-aw (GitHub Agentic Workflows): dispatched through the `gh` binary; the
+# agent itself executes remotely on GitHub Actions (ADR-0004 spike backend).
+_TRANSPORT_GHAW_CLI = TransportSpec(kind="cli", runner="ghaw", executable="gh")
 _TRANSPORT_ANTHROPIC_API = TransportSpec(kind="api", runner="anthropic")
 _TRANSPORT_OPENAI_API = TransportSpec(kind="api", runner="openai")
 _TRANSPORT_GOOGLE_API = TransportSpec(kind="api", runner="google")
@@ -80,6 +83,7 @@ _CLI_TRANSPORT_MAP: dict[str, TransportSpec] = {
     "claude": _TRANSPORT_CLAUDE_CLI,
     "codex": _TRANSPORT_CODEX_CLI,
     "gemini": _TRANSPORT_GEMINI_CLI,
+    "ghaw": _TRANSPORT_GHAW_CLI,
 }
 _PROVIDER_API_TRANSPORT_MAP: dict[str, TransportSpec] = {
     "anthropic": _TRANSPORT_ANTHROPIC_API,
