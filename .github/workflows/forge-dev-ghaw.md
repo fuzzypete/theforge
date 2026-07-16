@@ -19,7 +19,12 @@ run-name: "forge-dev-ghaw ${{ inputs.dispatch_id }}"
 #             without it; org-billing path does not apply to personal repos)
 #   claude  → ANTHROPIC_API_KEY with API credit balance (run 29527906749
 #             failed with "Credit balance is too low" despite valid auth)
-engine: copilot
+# Model pinned to a base-tier model: gh-aw's copilot default
+# (claude-sonnet-4.6) is premium and returned "model is not supported"
+# on this subscription (run 29528283280).
+engine:
+  id: copilot
+  model: gpt-5-mini
 timeout-minutes: 20
 permissions:
   contents: read
