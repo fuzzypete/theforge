@@ -568,6 +568,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "reason": state.preflight_reason,
                 "complexity": state.preflight_complexity,
                 "complexity_score": state.preflight_complexity_score,
+                "implementation_complexity_score": (
+                    state.preflight_implementation_complexity_score
+                ),
+                "validation_complexity_score": state.preflight_validation_complexity_score,
+                "complexity_projection": state.preflight_complexity_projection,
+                "complexity_evidence": list(state.preflight_complexity_evidence or []),
                 "work_type": state.preflight_work_type,
                 "contract_change": state.preflight_contract_change,
                 "bundle_candidate": state.preflight_bundle_candidate,

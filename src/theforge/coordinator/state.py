@@ -318,7 +318,16 @@ class CoordinatorState:
     preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
     preflight_reason: str | None = None
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
-    preflight_complexity_score: int | None = None  # 1-10 bounded integer score
+    preflight_complexity_score: int | None = None  # 1-10 projected legacy score
+    # Dual-axis sizing (issue #1442). The legacy complexity_score above is
+    # projected from these two via preflight_complexity_projection so existing
+    # readers keep working; new consumers may opt into the native axes.
+    preflight_implementation_complexity_score: int | None = None  # code-change envelope
+    preflight_validation_complexity_score: int | None = None  # validation/execution envelope
+    preflight_complexity_projection: str | None = None  # e.g. "max_implementation_validation"
+    # Cited evidence: list of {rule_id, signal, dimension} dicts naming the rules
+    # that fired on each axis. Empty until preflight sizing runs.
+    preflight_complexity_evidence: list[dict] = field(default_factory=list)
     preflight_sufficiency: str | None = None  # "implementation_ready" | "needs_planning"
     preflight_work_type: str | None = None  # "feature" | "refactor" | "mechanical" | "bug"
     preflight_contract_change: bool = False  # story intentionally alters a tested contract
