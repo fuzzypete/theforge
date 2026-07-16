@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import yaml
 
-from theforge.diagnose_types import DiagnosisArtifact, Hypothesis, InspectedFile
+from theforge.diagnose_types import (
+    DiagnosisArtifact,
+    Hypothesis,
+    InspectedFile,
+    PremiseAnchor,
+)
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
 You are an investigative diagnosis agent.  A symptom bug has been reported but
@@ -37,6 +42,14 @@ Mode: {mode}
    ``confirmed_cause: ""`` and explain in ``notes`` what evidence is missing.
    **Do NOT guess** — partial honest output is more valuable than a confident
    wrong diagnosis.
+5. Before confirming a cause, verify the bug's premise still exists in the
+   current baseline.  A bug's premise can be silently deleted by an intervening
+   commit — the code it describes may already be gone.  List the concrete,
+   falsifiable premise anchors (file + a literal code substring you actually
+   saw at HEAD) in ``premise_anchors``.  These are checked mechanically after
+   you finish: if a cited file or pattern is absent from the baseline, the run
+   is reported as "already resolved" rather than landed as a live diagnosis.
+   Do NOT emit a confirmed cause for code that no longer exists.
 
 == OUTPUT FORMAT ==
 
@@ -74,6 +87,14 @@ inspected_files:
   # an intervening commit.
   - "<repo-relative path to a file you inspected>"
   - "<repo-relative path to another file you inspected>"
+premise_anchors:
+  # REQUIRED when confirmed_cause is non-empty. Each entry names a file and a
+  # literal code substring the bug's premise depends on and that you verified
+  # is present at HEAD. These are checked mechanically: if a file or pattern
+  # here is absent from the baseline, the diagnosis is reported as "already
+  # resolved" (premise removed) instead of landed as a live confirmed cause.
+  - file: "<repo-relative path the bug lives in>"
+    pattern: "<exact code substring that must exist for the bug to be live>"
 ```
 """
 
@@ -171,6 +192,27 @@ def parse_diagnose_output(
             seen.add(path)
             inspected.append(InspectedFile(path=path, content_sha256=digest))
 
+    raw_anchors = parsed.get("premise_anchors") or []
+    anchors: list[PremiseAnchor] = []
+    if isinstance(raw_anchors, list):
+        seen_anchors: set[tuple[str, str]] = set()
+        for entry in raw_anchors:
+            if isinstance(entry, str):
+                file = entry.strip()
+                pattern = ""
+            elif isinstance(entry, dict):
+                file = str(entry.get("file", "")).strip()
+                pattern = str(entry.get("pattern", "")).strip()
+            else:
+                continue
+            if not file:
+                continue
+            key = (file, pattern)
+            if key in seen_anchors:
+                continue
+            seen_anchors.add(key)
+            anchors.append(PremiseAnchor(file=file, pattern=pattern))
+
     return DiagnosisArtifact(
         issue_number=issue_number,
         observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
@@ -182,4 +224,5 @@ def parse_diagnose_output(
         partial=partial,
         notes=str(parsed.get("notes", "")).strip(),
         inspected_files=tuple(inspected),
+        premise_anchors=tuple(anchors),
     )
