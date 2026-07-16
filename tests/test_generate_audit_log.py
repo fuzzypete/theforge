@@ -892,7 +892,7 @@ class TestKnowledgeCaptureLayer1:
         result = _make_coordinator_result(state)
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
 
-        assert log["schema_version"] == 3
+        assert log["schema_version"] == 4
 
     def test_run_id_from_state(self, tmp_path: Path) -> None:
         """run_id in audit record comes from state.run_id."""
@@ -1061,3 +1061,54 @@ class TestKnowledgeCaptureLayer1:
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
 
         assert log["phases"]["plan"] is None
+
+    def test_fix_ready_propagated(self, tmp_path: Path) -> None:
+        """task.fix_ready from TaskStory appears in audit task block."""
+        state = CoordinatorState()
+        task = TaskStory(name="Test", slug="test", fix_ready=True)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert log["task"]["fix_ready"] is True
+
+    def test_fix_ready_false_propagated(self, tmp_path: Path) -> None:
+        """task.fix_ready=False (shape gate rejection) is preserved, not dropped as falsy."""
+        state = CoordinatorState()
+        task = TaskStory(name="Test", slug="test", fix_ready=False)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert log["task"]["fix_ready"] is False
+
+    def test_fix_ready_none_when_not_set(self, tmp_path: Path) -> None:
+        """task.fix_ready is None when the story is not a bug (default unset)."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["task"]["fix_ready"] is None
+
+    def test_readiness_warnings_propagated(self, tmp_path: Path) -> None:
+        """task.readiness_warnings from TaskStory appears in audit task block."""
+        state = CoordinatorState()
+        task = TaskStory(
+            name="Test",
+            slug="test",
+            fix_ready=False,
+            readiness_warnings=["missing Diagnosis section", "no confirmed cause"],
+        )
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert log["task"]["readiness_warnings"] == [
+            "missing Diagnosis section",
+            "no confirmed cause",
+        ]
+
+    def test_readiness_warnings_empty_list_when_not_set(self, tmp_path: Path) -> None:
+        """task.readiness_warnings defaults to an empty list, not None."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["task"]["readiness_warnings"] == []

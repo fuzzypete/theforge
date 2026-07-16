@@ -34,7 +34,7 @@ SUBSTRATE_SCHEMA_VERSION = 3
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — today it
 # is a no-op because no breaking field rename/removal has shipped.
-CURRENT_RECORD_SCHEMA_VERSION = 3
+CURRENT_RECORD_SCHEMA_VERSION = 4
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -605,6 +605,26 @@ def _migrate_v2_to_v3(record: dict) -> dict:
     return {**record, "landing": build_landing_record(record.get("merge"))}
 
 
+def _migrate_v3_to_v4(record: dict) -> dict:
+    """Add ``task.fix_ready``/``task.readiness_warnings`` (issue #1253).
+
+    v3 records never captured the shape-gate readiness signal in the audit
+    trail, forcing operators to reconstruct it from shape-check reason
+    codes. v4 adds the fields directly to ``task``; older records have no
+    equivalent data to backfill, so default to the "unknown" shape (None /
+    empty list) rather than guessing a readiness verdict.
+    """
+    task = record.get("task")
+    if not isinstance(task, dict):
+        return record
+    if "fix_ready" in task and "readiness_warnings" in task:
+        return record
+    migrated_task = {**task}
+    migrated_task.setdefault("fix_ready", None)
+    migrated_task.setdefault("readiness_warnings", [])
+    return {**record, "task": migrated_task}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -616,6 +636,7 @@ def _migrate_v2_to_v3(record: dict) -> dict:
 MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
 }
 
 
