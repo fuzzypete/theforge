@@ -18,7 +18,7 @@ from theforge.agent_types import AgentResult, ModelUsage
 from theforge.config import ApiFallbackConfig, ModelProfile
 from theforge.config.profiles import _parse_model_spec, _parse_profile
 from theforge.runners.api import _classify_api_model_fallback, run_api_agent
-from theforge.runners.cli import _classify_cli_fallback
+from theforge.runners.cli import _classify_cli_fallback, _classify_cli_fallback_decision
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -497,6 +497,49 @@ class TestCliClassifyFallback:
             profile_name="cli-test",
         )
         assert _classify_cli_fallback(r) == "matched 'quota limit'"
+
+    def test_credit_balance_pattern(self):
+        r = AgentResult(
+            success=False,
+            output="API Error: Credit balance is too low",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="cli-test",
+        )
+        assert _classify_cli_fallback(r) == "matched 'credit balance'"
+        decision = _classify_cli_fallback_decision(r)
+        assert decision is not None
+        assert decision.cli_quota_error_observed is True
+
+    def test_insufficient_credit_pattern(self):
+        r = AgentResult(
+            success=False,
+            output="error: insufficient credit to complete this request",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="cli-test",
+        )
+        decision = _classify_cli_fallback_decision(r)
+        assert decision is not None
+        assert decision.cli_quota_error_observed is True
+
+    def test_balance_is_too_low_pattern(self):
+        r = AgentResult(
+            success=False,
+            output="your account balance is too low to run this model",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="cli-test",
+        )
+        decision = _classify_cli_fallback_decision(r)
+        assert decision is not None
+        assert decision.cli_quota_error_observed is True
 
     def test_model_not_found_pattern(self):
         r = AgentResult(
