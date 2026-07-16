@@ -178,8 +178,14 @@ jobs:
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
-            gh issue create --title "$title" --body "$body" --label bug
+            existing=$(gh issue create --title "$title" --body "$body" --label bug | grep -oE '[0-9]+$')
           fi
+          # Assign the operator so GitHub notifies them directly (email/mobile/
+          # web) — the reliable, zero-config alert path. A silent auto-filed
+          # issue is what let a forward-port failure sit unnoticed for a day
+          # (#1662/#1674). Assignment is idempotent; the Slack step below is an
+          # optional bonus when SLACK_WEBHOOK_URL is configured. (#1669)
+          [ -n "$existing" ] && gh issue edit "$existing" --add-assignee fuzzypete || true
 
       - name: Notify operator on failure (Slack)
         if: failure()
