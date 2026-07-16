@@ -11,11 +11,14 @@ import pytest
 
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
+    AbsentPremise,
     DiagnosePhase,
     DiagnoseResult,
     DiagnoseState,
     DiagnosisArtifact,
     Hypothesis,
+    PremiseAnchor,
+    render_already_resolved_markdown,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
@@ -45,8 +48,64 @@ class TestDiagnosePhase:
             "DONE",
             "FAILED",
             "TIMEOUT_PARTIAL",
+            "VERIFY_PREMISE",
+            "ALREADY_RESOLVED",
         ):
             assert required in names
+
+
+class TestAlreadyResolvedRendering:
+    def test_names_removing_commit_and_omits_diagnosis_heading(self):
+        md = render_already_resolved_markdown(
+            issue_number=1494,
+            baseline_sha="deadbeefcafefeed",
+            absent=(
+                AbsentPremise(
+                    file="src/mod.py",
+                    pattern="def buggy_func",
+                    removing_commit="817222bd1234",
+                    removing_summary="drop the buggy path",
+                ),
+            ),
+        )
+        assert "already resolved" in md.lower()
+        assert "817222bd1234"[:12] in md
+        assert "def buggy_func" in md
+        assert "src/mod.py" in md
+        # Must NOT present as a fix-ready Diagnosis section: no confirmed-cause
+        # scaffolding a shape gate would read as implementation-ready.
+        assert "## Diagnosis" not in md
+        assert "### Confirmed cause" not in md
+
+    def test_renders_whole_file_removal(self):
+        md = render_already_resolved_markdown(
+            issue_number=1,
+            baseline_sha="abc123",
+            absent=(
+                AbsentPremise(
+                    file="src/gone.py", pattern="", removing_commit="ff00aa", removing_summary=""
+                ),
+            ),
+        )
+        assert "file removed" in md
+        assert "src/gone.py" in md
+
+
+class TestPremiseAnchorField:
+    def test_artifact_carries_premise_anchors(self):
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="p",
+            fix_success_criterion="f",
+            premise_anchors=(PremiseAnchor(file="a.py", pattern="def x"),),
+        )
+        assert artifact.premise_anchors[0].file == "a.py"
+        # Optional metadata: does not affect completeness.
+        assert artifact.is_complete()
 
 
 class TestDiagnoseOutputDestinations:

@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -781,3 +783,286 @@ class TestDiagnoseState:
         s.transition(DiagnosePhase.INVESTIGATE, "t2")
         assert s.phase == DiagnosePhase.INVESTIGATE
         assert s.phase_transitions == [("FETCH", "t1"), ("INVESTIGATE", "t2")]
+
+
+# ── Premise verification (already-resolved detection) ─────────────────
+
+
+def _git(args: list[str], cwd: Path) -> str:
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "PATH": os.environ.get("PATH", ""),
+    }
+    proc = subprocess.run(
+        ["git", *args], cwd=str(cwd), env=env, capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+def _init_repo(root: Path) -> None:
+    _git(["init", "-q"], root)
+
+
+def _commit_file(root: Path, rel: str, content: str, message: str) -> str:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    _git(["add", rel], root)
+    _git(["commit", "-q", "-m", message], root)
+    return _git(["rev-parse", "HEAD"], root)
+
+
+def _remove_file(root: Path, rel: str, message: str) -> str:
+    _git(["rm", "-q", rel], root)
+    _git(["commit", "-q", "-m", message], root)
+    return _git(["rev-parse", "HEAD"], root)
+
+
+def _agent_yaml_with_anchor(*, affected: str, anchor_file: str, anchor_pattern: str) -> str:
+    payload = {
+        "observed_symptom": "The buggy path miscomputes the slot count",
+        "reproduction_or_evidence": "Call the affected function with N=3",
+        "hypotheses": [
+            {
+                "statement": "Off-by-one in the reservation loop",
+                "status": "confirmed",
+                "evidence": "The loop reserves N-1 slots",
+            }
+        ],
+        "confirmed_cause": "Off-by-one reservation in the affected function",
+        "affected_code_path": affected,
+        "fix_success_criterion": "N=3 reserves 3 slots",
+        "notes": "",
+        "premise_anchors": [{"file": anchor_file, "pattern": anchor_pattern}],
+    }
+    return f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+
+
+class TestPremiseVerification:
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_pattern_removed_from_file_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test: an agent that confirms a cause anchored to a pattern that a
+        later commit removed must NOT land a confirmed-cause body. The flow must
+        divert to ALREADY_RESOLVED naming the removing commit, leaving the issue
+        body untouched. Exercises the PARSE→VERIFY_PREMISE→(no LAND) boundary."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def buggy_func():\n    return reserve(n - 1)\n",
+            "add buggy func",
+        )
+        removing = _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def other_func():\n    return reserve(n)\n",
+            "remove buggy func premise",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 1494,
+            "title": "buggy func miscounts",
+            "body": "The buggy_func reserves the wrong number of slots.\n",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_with_anchor(
+                affected="src/mod.py:1",
+                anchor_file="src/mod.py",
+                anchor_pattern="def buggy_func",
+            )
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1494,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called, "must not write a confirmed-cause body"
+        assert not mock_post.called
+        assert result.state.landed_location is None
+        # Names the removing commit
+        assert result.state.absent_premises
+        assert result.state.absent_premises[0].removing_commit.startswith(removing[:8])
+        assert removing[:12] in result.message
+        # Audit records the already-resolved verdict
+        audit_files = list((tmp_path / ".forge" / "audits").glob("diagnose-issue-1494-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[0].read_text())
+        assert loaded["final_phase"] == "ALREADY_RESOLVED"
+        assert loaded["already_resolved"] is True
+        assert loaded["absent_premises"][0]["pattern"] == "def buggy_func"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_deleted_affected_file_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """A confirmed cause whose affected_code_path file was deleted entirely
+        must report already-resolved, naming the deleting commit — even without
+        premise anchors (AC: a cited code path must currently exist)."""
+        _init_repo(tmp_path)
+        # A second file keeps the repo non-empty after deletion.
+        _commit_file(tmp_path, "keep.txt", "keep\n", "seed")
+        _commit_file(tmp_path, "src/gone.py", "def gone():\n    pass\n", "add gone")
+        deleting = _remove_file(tmp_path, "src/gone.py", "delete gone module")
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 200,
+            "title": "gone module bug",
+            "body": "src/gone.py misbehaves\n",
+            "state": "OPEN",
+        }
+        # No premise_anchors — rely on affected_code_path file-existence check.
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [{"statement": "h", "status": "confirmed", "evidence": "e"}],
+            "confirmed_cause": "cause in gone module",
+            "affected_code_path": "src/gone.py:1",
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=200,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert result.state.absent_premises[0].removing_commit.startswith(deleting[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_present_premise_lands_normally(self, mock_agent, mock_fetch, mock_edit, tmp_path):
+        """Given a still-present bug, behavior is unchanged: the premise check
+        passes and the confirmed-cause diagnosis lands normally."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def buggy_func():\n    return reserve(n - 1)\n",
+            "add buggy func",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 300,
+            "title": "buggy func miscounts",
+            "body": "The buggy_func reserves the wrong number of slots.\n",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_with_anchor(
+                affected="src/mod.py:1",
+                anchor_file="src/mod.py",
+                anchor_pattern="def buggy_func",
+            )
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=300,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
+        assert mock_edit.called
+        new_body = mock_edit.call_args[0][1]
+        assert "## Diagnosis" in new_body
+
+    def test_verify_premise_fails_open_without_baseline(self):
+        """No baseline SHA (non-git checkout) → never diverts a live diagnosis."""
+        from theforge.coordinator.diagnose_flow import verify_premise
+        from theforge.diagnose_types import DiagnosisArtifact, Hypothesis, PremiseAnchor
+
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="src/anything.py:10",
+            fix_success_criterion="f",
+            premise_anchors=(PremiseAnchor(file="src/anything.py", pattern="def x"),),
+        )
+        verdict = verify_premise(artifact, "", Path("/nonexistent"))
+        assert verdict.resolved is False
+
+    def test_verify_premise_fails_open_when_pattern_never_existed(self, tmp_path):
+        """A pattern that has no removal history yields no removing commit, so the
+        check fails open rather than fabricating an already-resolved verdict."""
+        from theforge.coordinator.diagnose_flow import verify_premise
+        from theforge.diagnose_types import DiagnosisArtifact, Hypothesis, PremiseAnchor
+
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "src/mod.py", "def present():\n    pass\n", "seed")
+        head = _git(["rev-parse", "HEAD"], tmp_path)
+
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="src/mod.py",
+            fix_success_criterion="f",
+            # Pattern that was never in the file — absent but no removal commit.
+            premise_anchors=(PremiseAnchor(file="src/mod.py", pattern="never_here"),),
+        )
+        verdict = verify_premise(artifact, head, tmp_path)
+        assert verdict.resolved is False
+
+
+class TestParsePremiseAnchors:
+    def test_parses_premise_anchors(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "premise_anchors:\n  - file: src/mod.py\n    pattern: def buggy\n"
+            "  - file: src/other.py\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert len(artifact.premise_anchors) == 2
+        assert artifact.premise_anchors[0].file == "src/mod.py"
+        assert artifact.premise_anchors[0].pattern == "def buggy"
+        assert artifact.premise_anchors[1].pattern == ""
+
+    def test_missing_premise_anchors_is_empty_tuple(self):
+        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        assert artifact is not None
+        assert artifact.premise_anchors == ()

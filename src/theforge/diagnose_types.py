@@ -21,11 +21,13 @@ class DiagnosePhase(Enum):
     FETCH = auto()  # fetch issue body / inputs
     INVESTIGATE = auto()  # run the investigative agent
     PARSE = auto()  # parse agent output into a structured artifact
+    VERIFY_PREMISE = auto()  # confirm the cited code/symptom still exists in baseline
     LAND = auto()  # publish artifact to comment / body / file
     DONE = auto()
     FAILED = auto()
     TIMEOUT_PARTIAL = auto()  # ran out of time/budget; partial artifact returned
     BUDGET_EXCEEDED = auto()
+    ALREADY_RESOLVED = auto()  # premise absent from baseline; no diagnosis written
 
 
 # Output destinations for a completed diagnosis artifact.
@@ -58,6 +60,48 @@ class InspectedFile:
 
 
 @dataclass(frozen=True)
+class PremiseAnchor:
+    """A falsifiable premise the reported bug depends on.
+
+    ``pattern`` is a literal substring the agent expects to find in ``file``
+    at the diagnosis baseline — a function signature, a code line, an error
+    string — that constitutes the concrete premise of the bug.  The coordinator
+    verifies these mechanically (no LLM judgment): if the file is gone or the
+    pattern is absent at the baseline, the described symptom cannot reproduce
+    against code that no longer exists, and the run reports "already resolved"
+    instead of manufacturing a confirmed cause.  An empty ``pattern`` anchors
+    only on the file's continued existence.
+    """
+
+    file: str
+    pattern: str = ""
+
+
+@dataclass(frozen=True)
+class AbsentPremise:
+    """A cited premise reference that no longer exists in the baseline.
+
+    Carries the commit that removed it so the "already resolved" report can
+    name it, per the diagnose AC.  ``pattern`` is empty when the whole file
+    was removed (as opposed to a specific pattern removed from a file that
+    still exists).
+    """
+
+    file: str
+    pattern: str
+    removing_commit: str
+    removing_summary: str = ""
+
+
+@dataclass(frozen=True)
+class PremiseVerdict:
+    """Result of checking a diagnosis's cited code against the baseline."""
+
+    resolved: bool
+    absent: tuple[AbsentPremise, ...] = ()
+
+
+@dataclass(frozen=True)
 class DiagnosisArtifact:
     """Structured diagnosis output from an investigative agent.
 
@@ -78,6 +122,7 @@ class DiagnosisArtifact:
     baseline_sha: str = ""
     baseline_captured_at: str = ""
     inspected_files: tuple[InspectedFile, ...] = ()
+    premise_anchors: tuple[PremiseAnchor, ...] = ()
 
     def is_complete(self) -> bool:
         """Return True only when every required field is non-empty."""
@@ -150,6 +195,9 @@ class DiagnoseState:
     # (phase_name, ISO timestamp) entries appended on every transition.
     sub_investigations: list[dict] = field(default_factory=list)
     # Optional log of focused sub-investigations spawned during diagnosis.
+    already_resolved: bool = False
+    absent_premises: tuple[AbsentPremise, ...] = ()
+    # Set when the premise check finds the cited code was removed from baseline.
 
     def transition(self, new_phase: DiagnosePhase, when: str) -> None:
         self.phase = new_phase
@@ -248,6 +296,49 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     )
     if artifact.notes.strip():
         lines.extend(["### Notes", "", artifact.notes.strip(), ""])
+    return "\n".join(lines)
+
+
+def render_already_resolved_markdown(
+    *, issue_number: int, baseline_sha: str, absent: tuple[AbsentPremise, ...]
+) -> str:
+    """Render an "appears already resolved" report naming the removing commit(s).
+
+    Deliberately NOT a ``## Diagnosis`` section: the heading omits the word
+    "diagnosis" so a downstream shape/readiness check does not mistake this
+    note for a fix-ready confirmed-cause diagnosis.  The premise is gone, so
+    the issue is not fix-ready — it needs restating, not implementing.
+    """
+    sha_short = baseline_sha[:12] if baseline_sha else "unknown"
+    lines: list[str] = [
+        "## Premise check — appears already resolved",
+        "",
+        (
+            f"`forge diagnose` checked issue #{issue_number} against baseline "
+            f"`{sha_short}` and found that code the bug's premise depends on no "
+            "longer exists. No confirmed-cause diagnosis was written: the described "
+            "symptom cannot reproduce against code that has been removed."
+        ),
+        "",
+        "**Absent premise references:**",
+        "",
+    ]
+    for a in absent:
+        commit = a.removing_commit[:12] if a.removing_commit else "unknown"
+        summary = f" ({a.removing_summary})" if a.removing_summary else ""
+        if a.pattern:
+            lines.append(
+                f"- `{a.file}` — pattern `{a.pattern}` removed by commit `{commit}`{summary}"
+            )
+        else:
+            lines.append(f"- `{a.file}` — file removed by commit `{commit}`{summary}")
+    lines.extend(
+        [
+            "",
+            "If this issue is still valid, restate its premise against the current "
+            "baseline before re-running `forge diagnose`.",
+        ]
+    )
     return "\n".join(lines)
 
 

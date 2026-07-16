@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -31,11 +32,14 @@ import yaml
 from theforge.config import ForgeConfig, ModelProfile
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
+    AbsentPremise,
     DiagnosePhase,
     DiagnoseResult,
     DiagnoseState,
     DiagnosisArtifact,
     InspectedFile,
+    PremiseVerdict,
+    render_already_resolved_markdown,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
@@ -130,6 +134,196 @@ def _baseline_inspected_files(
         InspectedFile(path=f.path, content_sha256=_hash_file_at_sha(f.path, sha, project_root))
         for f in files
     )
+
+
+# ── Premise verification ──────────────────────────────────────────────
+# A confirmed-cause diagnosis is only trustworthy if the code it describes
+# still exists.  These helpers query git for the continued presence of the
+# cited paths/patterns at the diagnosis baseline.  They fail *open*: an
+# "already resolved" verdict is only returned when git positively shows the
+# cited reference existed and was removed by a nameable commit.  A path token
+# we cannot resolve (misparsed, never tracked) yields no deletion commit and
+# is therefore ignored, never diverting a live diagnosis.
+
+_UNIT_SEP = "\x1f"
+
+# Candidate file-path tokens inside a free-text ``affected_code_path`` field:
+# a dotted filename, optionally with directories and a trailing ``:line``.
+_PATH_TOKEN_RE = re.compile(r"[\w./\-]*\w+\.[A-Za-z0-9]+")
+
+
+def _path_exists_at_sha(path: str, sha: str, project_root: Path) -> bool:
+    """Return True when ``path`` is a tracked blob at git ``sha``."""
+    if not path or not sha:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}:{path}"],
+            capture_output=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _pattern_present_at_sha(path: str, pattern: str, sha: str, project_root: Path) -> bool | None:
+    """Return whether ``pattern`` appears in ``path`` at ``sha``.
+
+    ``None`` when the file cannot be read at that SHA (cannot determine).
+    """
+    if not path or not sha:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{sha}:{path}"],
+            capture_output=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout.decode("utf-8", errors="replace")
+    return pattern in text
+
+
+def _find_deleting_commit(path: str, sha: str, project_root: Path) -> tuple[str, str] | None:
+    """Return (commit_sha, summary) of the most recent commit that deleted ``path``.
+
+    Reachable from ``sha``.  ``None`` when no deletion is recorded (the path
+    was never tracked, or still exists) — the fail-open signal.
+    """
+    return _git_log_first(
+        ["--diff-filter=D", f"--format=%H{_UNIT_SEP}%s", sha, "--", path],
+        project_root,
+    )
+
+
+def _find_pattern_removing_commit(
+    path: str, pattern: str, sha: str, project_root: Path
+) -> tuple[str, str] | None:
+    """Return (commit_sha, summary) of the commit that removed ``pattern`` from ``path``.
+
+    Uses git's pickaxe (``-S``, fixed-string) to find the most recent commit
+    reachable from ``sha`` that changed the number of occurrences of
+    ``pattern`` in ``path``.  ``None`` when the pattern has no such history —
+    the fail-open signal.
+    """
+    if not pattern:
+        return None
+    return _git_log_first(
+        [f"-S{pattern}", f"--format=%H{_UNIT_SEP}%s", sha, "--", path],
+        project_root,
+    )
+
+
+def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str] | None:
+    """Run ``git log -1`` with ``extra_args``; return (sha, summary) or None."""
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-1", *extra_args],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    line = proc.stdout.strip()
+    if not line:
+        return None
+    commit, _, summary = line.partition(_UNIT_SEP)
+    commit = commit.strip()
+    if not commit:
+        return None
+    return commit, summary.strip()
+
+
+def _extract_affected_paths(affected_code_path: str) -> list[str]:
+    """Pull candidate repo-relative file paths out of a free-text field.
+
+    Strips a trailing ``:line`` locator. Order-preserving and deduped.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+    for token in _PATH_TOKEN_RE.findall(affected_code_path or ""):
+        path = token.strip().strip(".,;()[]`'\"")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) -> PremiseVerdict:
+    """Verify the diagnosis's cited code still exists at baseline ``sha``.
+
+    Returns a resolved verdict only when git positively confirms a cited file
+    or premise pattern was removed by a nameable commit.  Fails open (unresolved)
+    when there is no baseline SHA, or when absence cannot be attributed to a
+    removing commit — this must never turn a live diagnosis into a false
+    "already resolved".
+    """
+    if not sha:
+        return PremiseVerdict(resolved=False)
+
+    absent: list[AbsentPremise] = []
+    covered: set[str] = set()
+
+    for anchor in artifact.premise_anchors:
+        path = anchor.file.strip()
+        pattern = anchor.pattern.strip()
+        if not path:
+            continue
+        if not _path_exists_at_sha(path, sha, project_root):
+            commit = _find_deleting_commit(path, sha, project_root)
+            if commit:
+                absent.append(
+                    AbsentPremise(
+                        file=path,
+                        pattern="",
+                        removing_commit=commit[0],
+                        removing_summary=commit[1],
+                    )
+                )
+                covered.add(path)
+            continue
+        if pattern and _pattern_present_at_sha(path, pattern, sha, project_root) is False:
+            commit = _find_pattern_removing_commit(path, pattern, sha, project_root)
+            if commit:
+                absent.append(
+                    AbsentPremise(
+                        file=path,
+                        pattern=pattern,
+                        removing_commit=commit[0],
+                        removing_summary=commit[1],
+                    )
+                )
+
+    # AC: a diagnosis that cites an affected code path must confirm the path
+    # currently exists. Verify the file(s) named in affected_code_path — but
+    # only report absence backed by a deletion commit (fail open otherwise).
+    for path in _extract_affected_paths(artifact.affected_code_path):
+        if path in covered:
+            continue
+        if not _path_exists_at_sha(path, sha, project_root):
+            commit = _find_deleting_commit(path, sha, project_root)
+            if commit:
+                absent.append(
+                    AbsentPremise(
+                        file=path,
+                        pattern="",
+                        removing_commit=commit[0],
+                        removing_summary=commit[1],
+                    )
+                )
+
+    return PremiseVerdict(resolved=bool(absent), absent=tuple(absent))
 
 
 def _gh_fetch_issue(number: int, project_root: Path) -> dict:
@@ -261,6 +455,16 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "sha": state.baseline_sha,
             "captured_at": state.baseline_captured_at,
         },
+        "already_resolved": state.already_resolved,
+        "absent_premises": [
+            {
+                "file": a.file,
+                "pattern": a.pattern,
+                "removing_commit": a.removing_commit,
+                "removing_summary": a.removing_summary,
+            }
+            for a in state.absent_premises
+        ],
         "error": state.error,
     }
     if state.artifact is not None:
@@ -291,6 +495,9 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         "baseline_captured_at": artifact.baseline_captured_at,
         "inspected_files": [
             {"path": f.path, "content_sha256": f.content_sha256} for f in artifact.inspected_files
+        ],
+        "premise_anchors": [
+            {"file": a.file, "pattern": a.pattern} for a in artifact.premise_anchors
         ],
     }
 
@@ -533,6 +740,37 @@ def run_diagnose_flow(
         state.transition(DiagnosePhase.FAILED, _now_iso())
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
+
+    # ── VERIFY_PREMISE ────────────────────────────────────────────────
+    # A diagnosis is only trustworthy if the code it describes still exists.
+    # Before landing any confirmed cause, verify the cited paths/patterns are
+    # present at the baseline. If a premise was removed by a later commit, the
+    # described symptom cannot reproduce against code that is gone — report
+    # "appears already resolved" (naming the removing commit) and write no
+    # confirmed-cause body, rather than manufacturing a live diagnosis.
+    state.transition(DiagnosePhase.VERIFY_PREMISE, _now_iso())
+    verdict = verify_premise(artifact, state.baseline_sha, project_root)
+    if verdict.resolved:
+        state.already_resolved = True
+        state.absent_premises = verdict.absent
+        state.transition(DiagnosePhase.ALREADY_RESOLVED, _now_iso())
+        report = render_already_resolved_markdown(
+            issue_number=issue_number,
+            baseline_sha=state.baseline_sha,
+            absent=verdict.absent,
+        )
+        if dry_run:
+            print(report)
+        first = verdict.absent[0]
+        extra = f" (+{len(verdict.absent) - 1} more)" if len(verdict.absent) > 1 else ""
+        target = f"{first.file}" + (f":{first.pattern}" if first.pattern else "")
+        message = (
+            f"Issue #{issue_number} appears already resolved — premise `{target}` "
+            f"removed by commit {first.removing_commit[:12]}{extra}. "
+            "No confirmed-cause diagnosis written."
+        )
+        write_diagnose_audit(state, project_root)
+        return DiagnoseResult(success=False, state=state, message=message)
 
     # If essential fields are missing OR the run breached its budget/timeout
     # envelope, treat as TIMEOUT_PARTIAL — return the partial work for operator
