@@ -108,9 +108,7 @@ class TestGhawLifecycle:
         assert result.startup_failure is True
         assert "DISPATCH_FAILED" in result.output
 
-    def test_run_conclusion_failure(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_run_conclusion_failure(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("FAKE_GH_MODE", "run_fail")
         result = _run_ghaw(prompt="implement", profile=_make_profile(), working_dir=tmp_path)
         assert result.success is False
