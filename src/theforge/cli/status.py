@@ -361,8 +361,32 @@ def _show_single_run_status(run_id: str, project_root: Path) -> None:
     print(f"{run_id:<12}  {story_label:<30}  {phase:<12}  {cost_str:>7}  {elapsed_str:>8}")
 
 
+def _is_completed_sprint(run_id: str, project_root: Path) -> bool:
+    """Return True when ``run_id`` is a finished sprint with a summary on disk.
+
+    A live sprint has a PID file; a crashed one has a leftover ``.state`` file.
+    Neither should get the postmortem digest — the live telemetry table stays
+    the rendering for both. Only a run that is truly complete (no PID, no
+    lingering state, but a persisted ``sprint-summary.yaml``) selects the digest.
+    """
+    from theforge.sprint.status_reader import find_sprint_summary
+
+    runs_dir = project_root / ".forge" / "runs"
+    if (runs_dir / f"{run_id}.pid").exists():
+        return False
+    if (runs_dir / f"{run_id}.state").exists():
+        return False
+    return find_sprint_summary(run_id, project_root) is not None
+
+
 def _render_status_blocks(run_ids: list[str], project_root: Path) -> int:
-    """Render one status block per run_id and aggregate return codes."""
+    """Render one status block per run_id and aggregate return codes.
+
+    Completed sprints render the postmortem digest (recovery brief); live and
+    crashed sprints keep the wide telemetry table. Both read the same on-disk
+    state — the digest is a different renderer, not a different data source.
+    """
+    from theforge.cli.sprint_digest import display_sprint_digest
     from theforge.cli.sprint_status import display_sprint_status
 
     rcs: list[int] = []
@@ -370,7 +394,10 @@ def _render_status_blocks(run_ids: list[str], project_root: Path) -> int:
         if index:
             print()
         if _is_sprint_run(run_id, project_root):
-            rc = display_sprint_status(run_id, project_root)
+            if _is_completed_sprint(run_id, project_root):
+                rc = display_sprint_digest(run_id, project_root)
+            else:
+                rc = display_sprint_status(run_id, project_root)
         else:
             _show_single_run_status(run_id, project_root)
             rc = 0
