@@ -116,6 +116,12 @@ def check_agent_auth(
             if include_sandbox_readiness:
                 return _launcher_sandbox_readiness(profile)
             return (True, "")
+        # ghaw dispatches through the `gh` binary; the agent executes remotely
+        # on GitHub Actions, so local sandbox readiness does not apply.
+        if profile.cli == "ghaw":
+            if shutil.which("gh") is None:
+                return (False, "'gh' not found in PATH (required for cli: ghaw)")
+            return (True, "")
         ok = shutil.which(profile.cli) is not None
         if not ok:
             return (False, f"{profile.cli!r} not found in PATH")

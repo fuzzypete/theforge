@@ -148,7 +148,7 @@ _CLI_MODEL_FALLBACK_PATTERNS = (
 
 # Known CLI binary names — used to distinguish CLI vs API model identifiers in
 # fallback_models lists for CLI profiles.
-_KNOWN_CLI_NAMES = frozenset({"claude", "codex", "gemini"})
+_KNOWN_CLI_NAMES = frozenset({"claude", "codex", "gemini", "ghaw"})
 
 
 @dataclass(frozen=True)
@@ -543,9 +543,28 @@ def run_agent(
             result = replace(result, model_used=profile.model)
         return result
 
+    if cli == "ghaw":
+        from .runner_ghaw import _run_ghaw  # noqa: PLC0415
+
+        # No API fallback on this transport: gh-aw failures (dispatch, Actions
+        # queueing, engine auth on the runner) are not provider-quota signals,
+        # and re-running the dev phase locally would silently swap substrates.
+        result = _run_ghaw(
+            prompt=prompt,
+            profile=profile,
+            working_dir=working_dir,
+            session_id=session_id,
+            quiet=quiet,
+            is_pool=is_pool,
+            secrets=secrets,
+        )
+        if result.model_used is None:
+            result = replace(result, model_used=profile.model)
+        return result
+
     return AgentResult(
         success=False,
-        output=f"Unknown CLI: {cli!r}. Supported: ['claude', 'codex', 'gemini']",
+        output=f"Unknown CLI: {cli!r}. Supported: ['claude', 'codex', 'gemini', 'ghaw']",
         session_id=None,
         cost_usd=None,
         exit_code=-1,

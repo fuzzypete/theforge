@@ -46,7 +46,10 @@ def test_scrubbed_home_paths_cover_cli_auth_locations():
 
 
 def test_scrubbed_cli_launchers_cover_supported_auth_probes():
-    expected = {"claude", "codex", "gemini", "npx"}
+    # "ghaw" is derived from SUPPORTED_CLIS; its real launcher is `gh`, which
+    # stays unscrubbed — ghaw launches no local model, and remote dispatch is
+    # blocked in tests by the network guard.
+    expected = {"claude", "codex", "gemini", "ghaw", "npx"}
     assert expected == set(SCRUBBED_CLI_LAUNCHERS)
     assert SCRUBBED_CLI_LAUNCHERS == MODULE_CLI_LAUNCHERS
 
