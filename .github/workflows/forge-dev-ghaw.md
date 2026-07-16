@@ -24,7 +24,7 @@ run-name: "forge-dev-ghaw ${{ inputs.dispatch_id }}"
 # on this subscription (run 29528283280).
 engine:
   id: copilot
-  model: gpt-5-mini
+  model: gpt-4.1
 timeout-minutes: 20
 permissions:
   contents: read
