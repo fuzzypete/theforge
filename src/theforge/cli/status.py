@@ -434,6 +434,11 @@ def cmd_status(args: object) -> int:
     explicit_run_id: str | None = getattr(args, "run_id", None)
     watch_interval: int | None = getattr(args, "watch", None)
     no_color: bool = getattr(args, "no_color", False)
+    operator_actions: bool = getattr(args, "operator_actions", False)
+
+    # ── --operator-actions: readiness queue for operator-owned issues ─────
+    if operator_actions:
+        return _show_operator_action_queue(project_root)
 
     if watch_interval is not None and watch_interval <= 0:
         print(
@@ -508,6 +513,18 @@ def cmd_status(args: object) -> int:
     _show_pending_decisions(_pending, project_root)
 
     return rc
+
+
+def _show_operator_action_queue(project_root: Path) -> int:
+    """Print the operator-action readiness queue (ready vs blocked)."""
+    from theforge.operator_action_queue import (
+        build_operator_action_queue,
+        format_operator_action_queue,
+    )
+
+    entries = build_operator_action_queue(project_root)
+    print(format_operator_action_queue(entries))
+    return 0
 
 
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
@@ -886,6 +903,16 @@ def register_parsers(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Disable ANSI color in watch mode (NO_COLOR env var also honored).",
+    )
+    status_parser.add_argument(
+        "--operator-actions",
+        dest="operator_actions",
+        action="store_true",
+        default=False,
+        help=(
+            "List open operator-action issues with a ready/blocked readiness "
+            "indicator derived from their depends_on dependency state."
+        ),
     )
 
     # forge logs
