@@ -21,27 +21,51 @@ from ..shape_check.parsing import (
 )
 from .findings import FixType, IntakeFinding, IntakeSeverity
 
-# Tokens that strongly suggest a how/implementation-shaped AC line. These are
-# intentionally conservative — false positives would cause the grooming check
-# to drop runnable stories.
-_HOW_TOKENS: tuple[str, ...] = (
+# HOW-detection is deliberately context-aware. A flat substring list over raw
+# AC text misfires whenever a flagged word functions as a domain verb, field
+# name, or command rather than an implementation prescription — e.g. "Import
+# output includes...", "Export saves...", "Rename target file to...". Those are
+# legitimate WHAT-language and must not be dropped. So detection is split into
+# two rules:
+#
+#   1. Strong tokens: phrases that describe *manipulating code* and have no
+#      plausible domain reading (e.g. "refactor", "implement using"). These
+#      flag on their own.
+#   2. Verb + code-construct proximity: an implementation verb ("extract",
+#      "rename", "split", ...) is HOW-shaped only when it operates on a code
+#      construct ("class", "method", "module", ...). The same verb applied to a
+#      domain object ("Rename target file", "Extract records from CSV") is not.
+#
+# Note: the ingest verb "import" is intentionally NOT in the verb list — it is
+# the single most common domain-verb false positive ("Import output includes
+# ..."). Genuine import-machinery prescriptions still trip a strong token
+# (e.g. "implement using the existing import machinery").
+_STRONG_HOW_TOKENS: tuple[str, ...] = (
     "refactor",
-    "extract",
-    "rename",
     "implement using",
     "implemented using",
     "implementation:",
-    "use the ",
-    "using the ",
-    "import ",
-    "function ",
-    "class ",
-    "method ",
-    "module ",
     "subclass",
 )
 
-_HOW_RE = re.compile("|".join(re.escape(tok) for tok in _HOW_TOKENS), re.IGNORECASE)
+_STRONG_HOW_RE = re.compile("|".join(re.escape(tok) for tok in _STRONG_HOW_TOKENS), re.IGNORECASE)
+
+# An implementation verb operating on a code construct within the same clause.
+# The verb list excludes "import" (see above); the construct list matches the
+# code nouns that distinguish "restructure code" from "describe behavior".
+_IMPL_VERB_CONSTRUCT_RE = re.compile(
+    r"\b(?:add|create|extract|implement|introduce|modify|move|refactor|"
+    r"rename|split|update|use)\b"
+    r".{0,60}?\b(?:class|method|function|module|subclass)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_how_shaped(text: str) -> bool:
+    """True when a bullet reads as implementation-prescriptive (HOW), not WHAT."""
+    return bool(_STRONG_HOW_RE.search(text) or _IMPL_VERB_CONSTRUCT_RE.search(text))
+
+
 _EXAMPLE_FILE_DIRECTIVE_RE = re.compile(
     r"\b(?:add|create|edit|implement|modify|remove|rename|update)\b"
     r".{0,100}\b(?:src/|tests/|docs/|[\w./-]+\.(?:py|pyi|js|jsx|ts|tsx|yaml|yml|json|sh|toml|rs|go|java|rb|md))",
@@ -79,7 +103,7 @@ def _ac_lines_look_how_shaped(section: str) -> list[str]:
     return [
         bullet.text
         for bullet in extract_contextual_bullets(section)
-        if not bullet.in_example_section and _HOW_RE.search(bullet.text)
+        if not bullet.in_example_section and _looks_how_shaped(bullet.text)
     ]
 
 
