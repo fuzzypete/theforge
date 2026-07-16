@@ -14,14 +14,20 @@ models:
     #                                 savings) but zero dev runs — profile reranker starves zero-history models
     #                                 regardless of order. Reverted same day; real fix is #1617.
     - openai/gpt-5.5              # OpenAI's recommended coding model; overlay entry below
+    - google/gemini-3.5-flash     # Google re-entry (2026-07-16, the registry story flagged below): stable/GA
+    #                                 since 2026-05, Google's recommended model for agentic+coding. Beats
+    #                                 3.1-pro on tool-call chaining (MCP Atlas 83.6%, Terminal-Bench 76.2 vs
+    #                                 70.3) — the exact no-submit failure class that benched 3.1-pro (#1598).
+    #                                 Overlay entry below; promote to AGENT_REGISTRY when the registry story lands.
     # - deepseek/deepseek-reasoner  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Re-enable when adaptive routing can decide reviewer fitness automatically.
     # - google/gemini-3.1-pro-preview  # benched 2026-07-09: reviewer completed without calling submit_review
     #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
     #                                      Same fitness criterion as deepseek above: re-enable when adaptive
     #                                      routing can decide reviewer fitness automatically.
-    #                                      Still the only Google pro tier (never GA'd). Registry story for
-    #                                      v0.11: add stable gemini-3.5-flash ($1.50/$9) as the Google re-entry.
+    #                                      Still the only Google pro tier (never GA'd; 3.5 Pro delayed to
+    #                                      mid-July 2026 over recursive tool-calling failures — bench it
+    #                                      separately if it GAs). gemini-3.5-flash re-entry shipped above.
   custom:
     # GPT-5.5 — user-declared registry overlay (shipped #1184, v0.10.0).
     # #1355 (overlay bypassed by AGENT_REGISTRY direct-readers) fixed during the
@@ -34,6 +40,17 @@ models:
       tier: strong
       input_cost_per_mtok: 5.00
       output_cost_per_mtok: 30.00
+    # Gemini 3.5 Flash — Google re-entry via overlay; AGENT_REGISTRY has no
+    # 3.5-line entry yet (registry story tracked in the enabled-list comment).
+    # tier strong (capability 9): it replaces 3.1-pro-preview's reviewer slot
+    # and outbenches it on the agentic axes that matter for submit_review
+    # discipline. $1.50/$9 lands in cost_rank 2.
+    google/gemini-3.5-flash:
+      provider: google            # Google API adapter — same reviewer path 3.1-pro was benched on
+      model: gemini-3.5-flash
+      tier: strong
+      input_cost_per_mtok: 1.50
+      output_cost_per_mtok: 9.00
 
 provider_fallbacks:
   openai:
