@@ -108,6 +108,14 @@ def apply_cached_preflight_state(
     state.preflight_reason = cached_state.preflight_reason
     state.preflight_complexity = cached_state.preflight_complexity
     state.preflight_complexity_score = cached_state.preflight_complexity_score
+    state.preflight_implementation_complexity_score = (
+        cached_state.preflight_implementation_complexity_score
+    )
+    state.preflight_validation_complexity_score = (
+        cached_state.preflight_validation_complexity_score
+    )
+    state.preflight_complexity_projection = cached_state.preflight_complexity_projection
+    state.preflight_complexity_evidence = list(cached_state.preflight_complexity_evidence or [])
     state.preflight_sufficiency = cached_state.preflight_sufficiency
     state.preflight_work_type = cached_state.preflight_work_type
     state.preflight_contract_change = cached_state.preflight_contract_change

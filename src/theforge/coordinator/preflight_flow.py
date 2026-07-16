@@ -54,6 +54,11 @@ from .preflight import (
 from .preflight_cache import capture_preflight_cache_snapshot
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
+from .validation_complexity import (
+    assess_validation_complexity,
+    implementation_evidence,
+    project_complexity_score,
+)
 
 # Tokens that indicate a BLOCKED verdict is based on ambiguity/verifiability
 # concerns rather than a concrete hard blocker.  Two conditions must hold
@@ -202,6 +207,9 @@ def _preflight_phase_end_fields(state: CoordinatorState) -> dict[str, object]:
     return {
         "complexity": state.preflight_complexity,
         "complexity_score": state.preflight_complexity_score,
+        "implementation_complexity_score": state.preflight_implementation_complexity_score,
+        "validation_complexity_score": state.preflight_validation_complexity_score,
+        "complexity_projection": state.preflight_complexity_projection,
         "complexity_routing": routing,
     }
 
@@ -468,6 +476,7 @@ def _run_preflight_phase(
         # bugs — the preflight LLM reads the codebase and should size bugs correctly.
         # The override is load-bearing only for feature/refactor/mechanical stories
         # where imperative spec language reflects genuine cross-cutting scope.
+        large_story_categories: list[str] = []
         if work_type != "bug":
             large_story_categories = _detect_large_preflight_story_categories(story_content)
             if large_story_categories and (
@@ -489,6 +498,44 @@ def _run_preflight_phase(
                 )
                 state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
                 _log(f"  ↑ {override_reason}")
+
+        # ── Dual-axis complexity: implementation vs validation envelope ──
+        # The (possibly overridden) model score above is the *implementation*
+        # (code-change) envelope. Assess the *validation/execution* envelope
+        # separately from body-local structural signals, then project the legacy
+        # complexity_score = max(implementation, validation) so existing routing,
+        # timeout, and review-budget consumers get the validation lift without
+        # reading the new fields. Evidence on both axes makes the size auditable.
+        implementation_score = state.preflight_complexity_score
+        validation = assess_validation_complexity(story_content)
+        projected_score, projection_rule = project_complexity_score(
+            implementation_score, validation.score
+        )
+        combined_evidence = (
+            implementation_evidence(
+                implementation_score,
+                large_categories=large_story_categories,
+                contract_change=contract_change,
+            )
+            + validation.evidence
+        )
+        state.preflight_implementation_complexity_score = implementation_score
+        state.preflight_validation_complexity_score = validation.score
+        state.preflight_complexity_projection = projection_rule
+        state.preflight_complexity_evidence = [e.as_dict() for e in combined_evidence]
+        state.preflight_complexity_score = projected_score
+        complexity = score_to_band(projected_score)
+        state.preflight_complexity = complexity
+        if validation.warnings:
+            state.preflight_warnings = list(state.preflight_warnings or []) + validation.warnings
+        if projected_score > (implementation_score or 0):
+            _log(
+                f"  ↑ validation-envelope lift: implementation={implementation_score} "
+                f"validation={validation.score} → complexity_score={projected_score} "
+                f"({projection_rule})"
+            )
+            for w in validation.warnings:
+                _log(f"  ⚠ {w}")
 
         # ── Bounded-bug planning skip ─────────────────────────────────
         # Bounded, diagnosed bugs whose fix is localized to a single area
@@ -652,8 +699,21 @@ def _run_preflight_phase(
     else:
         # Agent failed — skip all parsers; hard-set conservative values so
         # downstream phases plan carefully despite missing classification.
-        state.preflight_complexity = "large"
-        state.preflight_complexity_score = 9
+        # The validation envelope is still assessable from the story body alone
+        # (it needs no codebase read), so both axes stay present per AC.
+        _failed_validation = assess_validation_complexity(story_content)
+        _failed_projected, _failed_projection = project_complexity_score(
+            9, _failed_validation.score
+        )
+        state.preflight_complexity = score_to_band(_failed_projected)
+        state.preflight_complexity_score = _failed_projected
+        state.preflight_implementation_complexity_score = 9
+        state.preflight_validation_complexity_score = _failed_validation.score
+        state.preflight_complexity_projection = _failed_projection
+        state.preflight_complexity_evidence = [
+            e.as_dict()
+            for e in implementation_evidence(9, agent_failed=True) + _failed_validation.evidence
+        ]
         state.preflight_sufficiency = "needs_planning"
         if task.type == "bug":
             state.preflight_work_type = "bug"
@@ -702,6 +762,10 @@ def _run_preflight_phase(
         "reason": reason,
         "complexity": state.preflight_complexity,
         "complexity_score": state.preflight_complexity_score,
+        "implementation_complexity_score": state.preflight_implementation_complexity_score,
+        "validation_complexity_score": state.preflight_validation_complexity_score,
+        "complexity_projection": state.preflight_complexity_projection,
+        "complexity_evidence": list(state.preflight_complexity_evidence or []),
         "sufficiency": state.preflight_sufficiency,
         "contract_change": state.preflight_contract_change,
         "cost_usd": preflight_result.cost_usd,
