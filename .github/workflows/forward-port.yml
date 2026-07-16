@@ -180,3 +180,38 @@ jobs:
           else
             gh issue create --title "$title" --body "$body" --label bug
           fi
+
+      - name: Notify operator on failure (Slack)
+        if: failure()
+        env:
+          # Same webhook forge uses for sprint notifications. Add it as a repo
+          # Actions secret named SLACK_WEBHOOK_URL to enable this. (#1669)
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ github.ref_name }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+        run: |
+          # No-op (never fail) if the webhook secret isn't configured — a
+          # missing Slack wire must not break the forward-port itself.
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping Slack notification."
+            exit 0
+          fi
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          title="forward-port: $RELEASE_REF -> main failed"
+          issue_url=$(gh issue list --state open --search "in:title \"$title\"" --json url --jq '.[0].url // empty')
+          if [ -n "$CONFLICT_FILES" ]; then
+            reason="conflicting files outside the allowlist: $(printf '%s' "$CONFLICT_FILES" | tr '\n' ' ')"
+          else
+            reason="a workflow step failed (not a merge conflict)"
+          fi
+          text=$(printf '%s\n' \
+            ":rotating_light: *Forward-port failed* — \`$RELEASE_REF\` -> main is not syncing; main is missing release commits." \
+            "Reason: $reason" \
+            "Run: $run_url" \
+            ${issue_url:+"Issue: $issue_url"})
+          payload=$(jq -n --arg t "$text" '{text: $t}')
+          # Best-effort: a failed Slack POST must not fail the workflow.
+          curl -sf -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL" >/dev/null \
+            && echo "Slack notified." \
+            || echo "Slack POST failed (non-fatal)."
