@@ -5,8 +5,14 @@ name: Forward-port release to main
 # 2026-07-11; replaces big-bang ports like #1604).
 #
 # Design notes (GitHub App flow — no PAT, no protection changes; #1646):
-# - Main's protection requires PRs and linear history, so the port lands as an
-#   auto-squash-merged PR from a bot branch, never a direct push.
+# - Main's protection requires PRs, so the port lands as an auto-MERGE-merged
+#   PR from a bot branch, never a direct push. It is a real merge commit (NOT a
+#   squash): a squash gives main's commit no ancestry link to release, so the
+#   merge-base never advances and every subsequent port re-conflicts on any file
+#   touched across cycles (this caused repeated manual syncs #1657/#1666/#1679).
+#   A merge commit records release's tip as a parent, so the next port's
+#   merge-base IS release's last-ported tip and already-ported files never
+#   re-conflict. Main's linear-history requirement was dropped to allow this.
 # - PRs created with the default Actions token do NOT trigger pull_request CI
 #   (GitHub's recursion guard). A PR's required status checks are evaluated by
 #   check runs *associated with the PR*, not by check runs merely sharing the
@@ -23,8 +29,9 @@ name: Forward-port release to main
 #   must never overwrite main's dev version or its [Unreleased] section.
 # - Any conflict outside those two files aborts the port and files an issue
 #   instead of guessing.
-# - Squash-merged ports leave no shared ancestry, so "already ported?" is a
-#   content check (merged tree == main tree), not an ancestor check.
+# - "Already ported?" stays a content check (merged tree == main tree) — cheap
+#   and correct regardless of strategy; a merge commit additionally keeps the
+#   ancestry so conflicts don't recur.
 # - Force-pushing the bot branch clears any armed auto-merge, so auto-merge
 #   is (re-)armed on every run after the push.
 # - This file must exist on each release/* branch as well as main: push
@@ -145,8 +152,10 @@ jobs:
           fi
 
           # Force-push clears auto-merge; re-arm every run. Merges through main's
-          # normal protection once the App PR's pull_request CI is green.
-          gh pr merge "$existing" --auto --squash
+          # normal protection once the App PR's pull_request CI is green. A real
+          # merge commit (NOT squash) so main keeps release's ancestry and future
+          # ports don't re-conflict on already-ported files.
+          gh pr merge "$existing" --auto --merge
 
       - name: File issue on failure
         if: failure()
