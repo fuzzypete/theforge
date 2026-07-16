@@ -1,6 +1,6 @@
 # ADR-0004: Execution Substrate — GitHub Agentic Workflows (gh-aw) vs CLI Runners
 
-- **Status:** Proposed — recommended verdict: **Defer** (re-entry conditions below); operator decision pending
+- **Status:** Proposed — recommended verdict: **Defer** (re-entry conditions below); Codex design review concurs (2026-07-16); operator decision pending
 - **Date:** 2026-07-16 (proposed; live evidence collected same day)
 - **Deciders:** Peter Wickersham (project lead); spike executed by Claude, design review by Codex
 - **Affected milestones:** v0.11.0 (execution-substrate decision), v0.12.x (runner maintenance consequences)
@@ -76,10 +76,14 @@ Prerequisites per target repo: workflow on default branch (lands with PR #1684 f
 
 ## 8. Decision criteria
 
-Hard gates (any failure → not adopted, regardless of latency):
+Hard gates (any failure → not adopted, regardless of latency). These are
+deliberately independent: strong capture is post-hoc truth and must not be
+allowed to over-resolve the others — great logs do not equal budget control,
+retry semantics, or merge-lifecycle compatibility.
 1. Capture supports review verdicts and audit replay — **met**; artifact capture exceeds local CLI fidelity (adds rendered prompt + network audit).
 2. Budget model explicitly accepted by operator — **pending operator decision** (§4).
 3. Dev-phase write path produces a reviewable branch/PR — **not met** in spike config (issue+patch fallback).
+4. One full `forge sprint` completes on the substrate without manual interpretation — **not attempted** in the spike.
 
 Soft criteria:
 - Per-cycle overhead vs story size: measured **~4.5–5 min fixed overhead per dispatch** (dispatch→visible 13s; activation 15s; agent job 149s of which sandbox+engine setup dominates; detection 47s; safe-outputs 14s; conclusion 38s). A 4-dispatch story pays ~20 min of substrate overhead. Expressed per Codex: acceptable only where total sprint wall-clock and operator intervention stay within tolerance — irrelevant for 20-minute agent jobs, painful for tight review loops.
@@ -91,7 +95,9 @@ Soft criteria:
 
 Grounds: hard gate 3 unmet (write path), hard gate 2 unresolved (operator budget acceptance), the claude-engine leg — the engine TheForge would actually route dev to — unmeasured, and three preview-churn incidents in a single afternoon of use. None of this trips the kill criterion (latency and capture are workable), so this is *defer*, not *reject*.
 
-**Re-entry conditions** (any of): gh-aw exits preview or stabilizes its auth/model surface; the PR write path is demonstrated end-to-end; the operator accepts the ceiling-based budget model; story sizes grow to amortize the ~5-min dispatch floor. On re-entry: run the claude-engine leg, the capture-diff harness, and one full sprint; then promote `TransportSpec(kind="remote")` per §2.
+**Re-entry conditions** (any of): gh-aw exits preview or stabilizes its auth/model surface; the PR write path is demonstrated end-to-end; the operator accepts the ceiling-based budget model; story sizes grow to amortize the ~5-min dispatch floor. **Re-entry exit bar (all of, before any production routing):** claude-engine leg measured, capture-diff harness run, and one full sprint completed without manual interpretation; then promote `TransportSpec(kind="remote")` per §2.
+
+Strategic footnote: the live run's wrong-but-flawlessly-executed result is direct evidence for the wedge thesis — better commodity execution makes the coordinator/review/gate layer more valuable, not less. Replacing runners does not replace TheForge.
 
 ## Appendix A — Evidence log (2026-07-16, spike host `fuzzypete/theforge-ghaw-spike`)
 
