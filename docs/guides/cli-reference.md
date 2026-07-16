@@ -273,6 +273,30 @@ For an active sprint run, `forge status` includes the per-story sprint status
 view. The old standalone `forge sprint-status` command is no longer exposed by
 the top-level parser.
 
+### Operator-action queue
+
+```bash
+forge status --operator-actions
+```
+
+Lists open `operator-action` issues with a readiness indicator so the operator
+can see, at a glance, which operator-owned actions are next:
+
+- **ready** — every issue the operator-action `depends_on` is closed (or it
+  declares no dependencies).
+- **blocked** — at least one `depends_on` issue is still open. The output names
+  the pending dependencies and counts them.
+
+Readiness is recomputed from GitHub on each invocation, so re-running the
+command reflects current dependency state without a manual refresh.
+
+```
+$ forge status --operator-actions
+Operator-action queue (2 issues):
+  ready    #1471  Validate v0.11 substrate (deps: #1326 ok, #1437 ok)
+  blocked  #1480  Cut v0.11.0rc1 (deps: #1450 open, #1469 open - 2 pending)
+```
+
 ---
 
 ## `forge logs`
