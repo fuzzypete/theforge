@@ -55,6 +55,9 @@ from .preflight_cache import capture_preflight_cache_snapshot
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
 from .validation_complexity import (
+    DIMENSION_IMPLEMENTATION,
+    VALIDATION_BASELINE_SCORE,
+    ComplexityEvidence,
     assess_validation_complexity,
     implementation_evidence,
     project_complexity_score,
@@ -687,14 +690,37 @@ def _run_preflight_phase(
                 state.preflight_degraded = True
                 state.preflight_degraded_reason = "blocked_downgraded_prior_evidence"
                 # Compensate for missing classification: force planning and
-                # upgrade complexity to at least medium.
+                # upgrade complexity to at least medium. Route the bump through
+                # the dual-axis projection so implementation/validation scores,
+                # the projection rule, and cited evidence stay consistent with
+                # the final complexity_score rather than going stale (issue #1442).
                 if state.preflight_complexity == "small":
-                    state.preflight_complexity = "medium"
-                    if (
-                        state.preflight_complexity_score is not None
-                        and state.preflight_complexity_score < 4
-                    ):
-                        state.preflight_complexity_score = 5
+                    impl_floor = state.preflight_implementation_complexity_score
+                    if impl_floor is None or impl_floor < 5:
+                        impl_floor = 5
+                    validation_score = (
+                        state.preflight_validation_complexity_score
+                        if state.preflight_validation_complexity_score is not None
+                        else VALIDATION_BASELINE_SCORE
+                    )
+                    projected_score, projection_rule = project_complexity_score(
+                        impl_floor, validation_score
+                    )
+                    state.preflight_implementation_complexity_score = impl_floor
+                    state.preflight_validation_complexity_score = validation_score
+                    state.preflight_complexity_score = projected_score
+                    state.preflight_complexity = score_to_band(projected_score)
+                    state.preflight_complexity_projection = projection_rule
+                    override_ev = ComplexityEvidence(
+                        "implementation_ambiguity_downgrade_floor",
+                        "BLOCKED→PROCEED ambiguity downgrade with prior execution "
+                        "evidence: raised implementation floor to 5 to force planning",
+                        DIMENSION_IMPLEMENTATION,
+                    ).as_dict()
+                    state.preflight_complexity_evidence = [
+                        *(state.preflight_complexity_evidence or []),
+                        override_ev,
+                    ]
                 state.preflight_sufficiency = "needs_planning"
     else:
         # Agent failed — skip all parsers; hard-set conservative values so

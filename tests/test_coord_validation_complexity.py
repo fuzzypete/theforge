@@ -397,6 +397,86 @@ class TestDualScoreSeam:
         # Plan skipped for the ordinary bounded story.
         assert mock_plan_agent.call_count == 0
 
+    @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=True)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_ambiguity_downgrade_keeps_dual_axis_consistent(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        _mock_prior,
+        tmp_path,
+    ):
+        """An ambiguity BLOCKED→PROCEED downgrade force-bumps complexity_score; the
+        projection, both native axes, and cited evidence must stay consistent with
+        the bumped value rather than going stale (issue #1442 review finding)."""
+        config = _make_plan_config(tmp_path)
+        task = _task_with_text(tmp_path, _STORY_ORDINARY)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        blocked_ambiguous = """\
+```yaml
+verdict: BLOCKED
+reason: "Acceptance criteria are ambiguous and not objectively verifiable."
+complexity: small
+complexity_score: 2
+work_type: feature
+sufficiency: needs_planning
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "Cannot verify without external API"
+```
+"""
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=blocked_ambiguous, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(success=True, output="# Plan\n\nStep 1.", cost_usd=0.10)
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+        call_idx = {"n": 0}
+        results = [plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_plan_agent.side_effect = mock_dev_agent
+        mock_dev_agent.side_effect = agent_side_effect
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+        state = result.state
+
+        assert result.success is True
+        assert state.preflight_degraded_reason == "blocked_downgraded_prior_evidence"
+        # The force-bump raised the implementation floor and re-projected.
+        assert state.preflight_complexity == "medium"
+        assert state.preflight_implementation_complexity_score == 5
+        assert state.preflight_validation_complexity_score == 1
+        # complexity_score must equal the re-projected max, not a stale value.
+        projected, rule = project_complexity_score(
+            state.preflight_implementation_complexity_score,
+            state.preflight_validation_complexity_score,
+        )
+        assert state.preflight_complexity_score == projected == 5
+        assert state.preflight_complexity_projection == rule == PROJECTION_MAX_IMPL_VALIDATION
+        # Evidence records the override so the derivation stays auditable.
+        fired = {e["rule_id"] for e in state.preflight_complexity_evidence}
+        assert "implementation_ambiguity_downgrade_floor" in fired
+
 
 def test_state_defaults_are_present():
     state = CoordinatorState()
