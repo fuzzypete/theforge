@@ -6,10 +6,37 @@ from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import _make_config, _make_task
 
+from theforge.coordinator.context_scope import plan_file_list
 from theforge.coordinator.engine import _run_resume_coordinator
 from theforge.coordinator.gate import _parse_dirty_files
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import CoordinatorResult, Phase
+
+_STRUCTURED_PLAN = """---
+plan:
+  approach: Resume the implementation
+  steps:
+    - id: 1
+      description: Update the entry point
+      files:
+        - src/foo.py
+        - tests/test_foo.py
+      action: modify
+      details: Continue the resumed story
+    - id: 2
+      description: Wire the helper
+      files:
+        - src/foo.py
+        - src/helper.py
+      action: modify
+      details: Add the helper call
+"""
+
+
+def _write_plan(workspace: Path, text: str) -> None:
+    plan_dir = workspace / ".forge"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    (plan_dir / "plan.md").write_text(text, encoding="utf-8")
 
 
 def _call_setup(config, task, workspace_path):
@@ -137,6 +164,75 @@ def test_dirty_synced_forge_yaml_excluded_from_story_commit(tmp_path):
     # forge.yaml on the branch still holds the committed mainline content —
     # the operator experiment never reached the story's tree.
     assert _git(workspace, "show", "HEAD:forge.yaml") == committed_forge
+
+
+def test_resume_restores_plan_structured_from_worktree_plan(tmp_path):
+    """Seam regression for issue #1135: the PLAN_VALIDATION → DEV/REVIEW handoff.
+
+    A resumed run allocates a fresh CoordinatorState. Without restoring the plan
+    from the worktree's .forge/plan.md, state.plan_structured stays None and every
+    plan-derived policy signal (stuck-detection scaling, routing, audit telemetry)
+    degrades to zero even when the plan demonstrably declares target files. This
+    drives the real entry point and asserts the restored structure matches the
+    plan on disk, so plan_file_list reports the declared files rather than 0.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_plan(workspace, _STRUCTURED_PLAN)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    result = _call_setup(config, task, workspace)
+
+    assert isinstance(result, tuple)
+    state = result[0]
+    assert state.plan_structured is not None
+    assert state.plan_output == _STRUCTURED_PLAN
+    # The file list downstream policy consumes matches the plan's declared files.
+    assert plan_file_list(state.plan_structured) == [
+        "src/foo.py",
+        "tests/test_foo.py",
+        "src/helper.py",
+    ]
+
+
+def test_resume_freeform_plan_restores_text_but_not_structure(tmp_path):
+    """A freeform-markdown plan restores raw text but leaves plan_structured None.
+
+    This matches the non-resume PLAN path, where an unparseable plan falls back to
+    markdown and plan_structured is legitimately None (distinct from the #1135 bug).
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    freeform = "# Plan\n\nJust do the thing, no YAML block here.\n"
+    _write_plan(workspace, freeform)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    result = _call_setup(config, task, workspace)
+
+    assert isinstance(result, tuple)
+    state = result[0]
+    assert state.plan_output == freeform
+    assert state.plan_structured is None
+
+
+def test_resume_no_plan_leaves_state_defaults(tmp_path):
+    """A resume with no .forge/plan.md leaves plan fields at their defaults."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    result = _call_setup(config, task, workspace)
+
+    assert isinstance(result, tuple)
+    state = result[0]
+    assert state.plan_output is None
+    assert state.plan_structured is None
 
 
 def test_setup_returns_escalate_when_workspace_missing(tmp_path):

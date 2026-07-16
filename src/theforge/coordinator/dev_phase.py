@@ -137,6 +137,38 @@ def _scale_stuck_for_complexity(
     )
 
 
+def _plan_files_for_stuck_scaling(
+    state: CoordinatorState,
+    logger: StructuredLogger | None,
+) -> list[str]:
+    """Return the plan's target files for stuck-detection scaling.
+
+    A plan must populate ``state.plan_structured`` before DEV entry (non-resume:
+    plan_flow after the PLAN agent; resume: run_setup.load_plan_state from the
+    worktree's .forge/plan.md). When it is ``None`` here, the plan structure
+    never reached the dev phase, so the +N plan-scope exploration bonus silently
+    collapses to zero (issue #1135). Surface that as a structured warning naming
+    the missing field rather than letting a bare 0 flow into policy — a genuinely
+    file-less plan yields a non-None structure with an empty file list, which is
+    distinct from this degraded case and does not warn.
+    """
+    if state.plan_structured is None:
+        _log_verbose(
+            "  ⚠ DEV   plan_structured missing from state — stuck-detection scaling "
+            "proceeds with 0 plan files (no plan-scope exploration bonus)"
+        )
+        if logger:
+            logger._safe_emit(
+                "plan_structured_missing",
+                phase="DEV",
+                iteration=state.dev_iteration,
+                field="plan_structured",
+                consumer="stuck_detection_scaling",
+            )
+        return []
+    return plan_file_list(state.plan_structured)
+
+
 def _summarize_runner_failure(output: str, indicators: tuple[str, ...]) -> str:
     """Return a short, operator-friendly summary line for a runner crash."""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
@@ -708,7 +740,7 @@ def _run_dev_phase(
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
     else:
         _log(f"  Dev timeout: {_dev_timeout}s")
-    _plan_files = plan_file_list(state.plan_structured)
+    _plan_files = _plan_files_for_stuck_scaling(state, logger)
     _scaled_stuck = _scale_stuck_for_complexity(
         config.stuck_detection,
         state.preflight_complexity,
