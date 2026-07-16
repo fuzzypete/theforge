@@ -481,6 +481,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "story_path": str(task.story_path) if task.story_path is not None else None,
             "story_text": state.story_content,
             "github_issue": task.github_issue,
+            "fix_ready": task.fix_ready,
+            "readiness_warnings": list(task.readiness_warnings),
         },
         "outcome": {
             "success": result.success,

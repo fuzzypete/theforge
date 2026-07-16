@@ -212,3 +212,30 @@ def test_migrate_record_dispatches_through_registry(
     assert called == [1]
     assert out["migrated_v2"] is True
     assert out["marker"] == "untouched"
+
+
+def test_migrate_v3_to_v4_backfills_readiness_fields() -> None:
+    """v3 records lack task.fix_ready/readiness_warnings; v4 backfills them.
+
+    Older records have no equivalent signal to recover, so the migration
+    defaults to the "unknown" shape (None / empty list) rather than
+    guessing a readiness verdict. See issue #1253.
+    """
+    v3_record = {"task": {"name": "Test", "slug": "test"}}
+
+    migrated = audit_substrate._migrate_v3_to_v4(v3_record)
+
+    assert migrated["task"]["fix_ready"] is None
+    assert migrated["task"]["readiness_warnings"] == []
+    assert migrated["task"]["name"] == "Test"
+
+
+def test_migrate_v3_to_v4_is_idempotent_when_fields_already_present() -> None:
+    """Does not clobber existing fix_ready/readiness_warnings values."""
+    v3_record = {
+        "task": {"name": "Test", "slug": "test", "fix_ready": True, "readiness_warnings": []}
+    }
+
+    migrated = audit_substrate._migrate_v3_to_v4(v3_record)
+
+    assert migrated["task"]["fix_ready"] is True
