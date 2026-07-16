@@ -134,6 +134,103 @@ class TestDurationAndCostNoneChecks:
         assert log["preflight"]["cache_validation"]["reason"] == "worktree_head_changed"
 
 
+class TestUnmeasuredCostPreservedInAudit:
+    """A kill-path run with unmeasured cost (None) must stay null in the audit.
+
+    Covers the runner -> coordinator-state -> audit seam: an AgentResult whose
+    cost_usd is None (e.g. killed before its cost-bearing result event, no usage
+    reconstructable) must serialize to null in every coordinator audit surface,
+    never a coerced 0.0 that reads as "genuinely free".
+    """
+
+    @staticmethod
+    def _unmeasured(profile_name: str = "agent") -> AgentResult:
+        return AgentResult(
+            success=False,
+            output="TIMEOUT: Agent exceeded limit",
+            session_id=None,
+            cost_usd=None,
+            exit_code=-9,
+            raw={},
+            profile_name=profile_name,
+        )
+
+    def test_dev_phase_cost_null_not_zero(self, tmp_path: Path) -> None:
+        state = CoordinatorState()
+        state.dev_results.append(self._unmeasured())
+        state.dev_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["phases"]["dev"]["cost_usd"] is None
+
+    def test_review_phase_and_per_reviewer_cost_null_not_zero(self, tmp_path: Path) -> None:
+        state = CoordinatorState()
+        state.review_agent_results.append(self._unmeasured(profile_name="slow-reviewer"))
+        state.review_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        review = log["phases"]["review"]
+        assert review["cost_usd"] is None
+        assert review["per_reviewer"]["slow-reviewer"]["cost"] is None
+
+    def test_preflight_phase_cost_null_not_zero(self, tmp_path: Path) -> None:
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_result = self._unmeasured(profile_name="preflight")
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["phases"]["preflight"]["cost_usd"] is None
+
+    def test_plan_phase_cost_null_not_zero(self, tmp_path: Path) -> None:
+        state = CoordinatorState()
+        state.plan_results.append(self._unmeasured(profile_name="planner"))
+        state.plan_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["phases"]["plan"]["cost_usd"] is None
+
+    def test_plan_review_cost_null_not_zero_on_both_surfaces(self, tmp_path: Path) -> None:
+        """Both plan_review cost surfaces (phases block AND top-level block) stay null."""
+        state = CoordinatorState()
+        state.plan_review_decision = "APPROVE"
+        state.plan_review_results.append(self._unmeasured(profile_name="plan-reviewer"))
+        state.plan_review_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        # phases.plan_review.cost_usd and the sibling top-level plan_review.cost_usd
+        # read the same measured source, so neither may coerce None to 0.0.
+        assert log["phases"]["plan_review"]["cost_usd"] is None
+        assert log["plan_review"]["cost_usd"] is None
+
+    def test_totals_and_cost_summary_null_when_any_phase_unmeasured(self, tmp_path: Path) -> None:
+        state = CoordinatorState()
+        state.dev_results.append(self._unmeasured())
+        state.dev_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["totals"]["cost_usd"] is None
+        assert log["cost"]["total_usd"] is None
+        assert log["cost"]["dev_usd"] is None
+
+    def test_measured_zero_still_records_zero_not_null(self, tmp_path: Path) -> None:
+        """A genuinely free run (cost 0.0) stays 0.0 — the fix must not null it out."""
+        state = CoordinatorState()
+        r = AgentResult(
+            success=True,
+            output="ok",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=0,
+            raw={},
+            profile_name="free-dev",
+        )
+        state.dev_results.append(r)
+        state.dev_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["phases"]["dev"]["cost_usd"] == 0.0
+
+    def test_serialize_plan_review_result_preserves_none(self) -> None:
+        from theforge.coordinator.audit import _serialize_plan_review_result
+
+        entry = _serialize_plan_review_result(self._unmeasured(profile_name="pr"), attempt=0)
+        assert entry["cost_usd"] is None
+        assert entry["verdict"] == "CRASHED"
+
+
 class TestHasReviewApprove:
     def test_no_history_file(self, tmp_path: Path) -> None:
         """Fresh repo (no audit inputs) returns False (safe default)."""

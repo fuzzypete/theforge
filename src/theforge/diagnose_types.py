@@ -135,7 +135,10 @@ class DiagnoseState:
     issue_title: str = ""
     issue_body: str = ""
     agent_output: str = ""
-    agent_cost_usd: float = 0.0
+    # None means the agent's cost was unmeasured (e.g. run killed before the
+    # cost-bearing result event and no usage was reconstructable). Distinct from
+    # 0.0, which means a genuinely free run. Never coerce one into the other.
+    agent_cost_usd: float | None = 0.0
     agent_duration_s: float = 0.0
     artifact: DiagnosisArtifact | None = None
     landing_destination: str | None = None
