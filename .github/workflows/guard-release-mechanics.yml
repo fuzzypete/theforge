@@ -1,0 +1,76 @@
+name: Guard release-mechanics paths
+
+# Release-mechanics files (branch protection, rc cut/promote, the forward-port
+# workflow itself) must land on release/* and reach main ONLY via forward-port —
+# never via a direct PR to main. A competing direct-to-main edit creates two
+# independent histories of the same file, which the forward-port merge cannot
+# reconcile, so the port aborts and main silently diverges (observed: #1653,
+# #1662). This guard rejects such PRs at the source. (#1668)
+#
+# The rule is mechanical, not a convention: the two failures above both happened
+# because "land release-mechanics on release first" was only a written intention,
+# and it was violated anyway (including by the author who proposed it).
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject release-mechanics edits targeting main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # Forward-port bot PRs legitimately carry these files to main via the
+          # sanctioned path — exempt them (and report success, so a required
+          # check is satisfied rather than left skipped).
+          case "$HEAD_REF" in
+            forward-port/*)
+              echo "Exempt: forward-port PR ($HEAD_REF) carries release-mechanics to main by design."
+              exit 0
+              ;;
+          esac
+
+          # Single source of truth for the protected path set. Extend here.
+          protected="
+          scripts/apply-branch-protection.sh
+          scripts/cut-rc.sh
+          scripts/promote-rc.sh
+          .github/workflows/forward-port.yml
+          "
+
+          changed=$(gh pr view "$PR" --repo "$REPO" --json files --jq '.files[].path')
+
+          violations=""
+          for f in $changed; do
+            for p in $protected; do
+              if [ "$f" = "$p" ]; then
+                violations="${violations}  - ${f}"$'\n'
+              fi
+            done
+          done
+
+          if [ -n "$violations" ]; then
+            {
+              echo "This PR targets main and edits release-mechanics path(s):"
+              printf '%s' "$violations"
+              echo ""
+              echo "Release-mechanics files must land on release/* and reach main via"
+              echo "forward-port, never via a direct PR to main — a competing direct edit"
+              echo "creates divergent histories that break the next forward-port (#1653, #1662)."
+              echo "Retarget this PR to release/v0.11."
+            } >&2
+            echo "::error::Release-mechanics path(s) edited in a PR targeting main — retarget to release/*. See job log for the list."
+            exit 1
+          fi
+
+          echo "OK: no release-mechanics paths touched by this PR."
