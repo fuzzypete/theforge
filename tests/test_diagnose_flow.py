@@ -201,7 +201,7 @@ class TestPromptBuilder:
 # ── State machine / flow tests ────────────────────────────────────────
 
 
-def _fake_agent_result(output: str, *, success: bool = True, cost: float = 0.05):
+def _fake_agent_result(output: str, *, success: bool = True, cost: float | None = 0.05):
     """Build a minimal AgentResult-shaped object usable as a runner stub."""
     from theforge.agent_types import AgentResult
 
@@ -608,6 +608,58 @@ class TestDiagnoseFlow:
 
 
 # ── dry-run stdout tests ──────────────────────────────────────────────
+
+
+class TestDiagnoseCostFidelity:
+    """A killed diagnose run records real/unknown cost in the audit, never $0.00.
+
+    Covers the runner -> diagnose_flow -> audit seam: a run killed at the timeout
+    deadline still incurred cost, and the audit must reflect that faithfully.
+    """
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_reconstructed_cost_lands_in_audit(self, mock_agent, mock_fetch, tmp_path):
+        """A non-zero (reconstructed) cost from the runner is preserved in the audit."""
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {"number": 1, "title": "x", "body": "y", "state": "OPEN"}
+        mock_agent.return_value = _fake_agent_result(
+            "TIMEOUT: Agent exceeded limit", success=False, cost=0.37
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+        audit = tmp_path / ".forge" / "audits" / f"diagnose-issue-1-{result.state.run_id}.yaml"
+        loaded = yaml.safe_load(audit.read_text())
+        assert loaded["agent"]["cost_usd"] == 0.37
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_unmeasured_cost_is_null_not_zero(self, mock_agent, mock_fetch, tmp_path):
+        """An unmeasured cost (None) is written as null, distinct from a free 0.0."""
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {"number": 1, "title": "x", "body": "y", "state": "OPEN"}
+        mock_agent.return_value = _fake_agent_result(
+            "TIMEOUT: Agent exceeded limit", success=False, cost=None
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+        audit = tmp_path / ".forge" / "audits" / f"diagnose-issue-1-{result.state.run_id}.yaml"
+        loaded = yaml.safe_load(audit.read_text())
+        assert loaded["agent"]["cost_usd"] is None
 
 
 class TestDryRunPrintsArtifact:

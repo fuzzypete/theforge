@@ -32,6 +32,7 @@ from theforge.coordinator.audit_substrate import (
 )
 from theforge.coordinator.audit_substrate import MIGRATION_HELPERS
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -60,11 +61,10 @@ def _collect_schema(value: object, path: str = "") -> dict[str, str]:
     return out
 
 
-def _build_canonical_record(tmp_path: Path) -> dict:
-    """Generate an audit record from a minimal-but-deterministic state."""
+def _make_config(tmp_path: Path) -> ForgeConfig:
     spec_path = tmp_path / "spec.md"
     spec_path.write_text("# spec", encoding="utf-8")
-    config = ForgeConfig(
+    return ForgeConfig(
         project="test",
         project_root=tmp_path,
         workspace=WorkspaceConfig(
@@ -79,11 +79,58 @@ def _build_canonical_record(tmp_path: Path) -> dict:
         synthesis_profile=None,
         retry=RetryPolicy(),
     )
-    task = TaskStory(name="Test", slug="test", story_path=spec_path)
+
+
+def _build_canonical_record(tmp_path: Path) -> dict:
+    """Generate an audit record from a minimal-but-deterministic state."""
+    config = _make_config(tmp_path)
+    task = TaskStory(name="Test", slug="test", story_path=tmp_path / "spec.md")
     state = CoordinatorState()
     state.started_at = "2026-01-01T00:00:00+00:00"
     state.run_id = "deadbeefcafe"
     result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+    return generate_audit_log(config, task, result)
+
+
+def _killed(profile_name: str) -> AgentResult:
+    """An AgentResult whose cost is unmeasured (None) — e.g. killed at timeout."""
+    return AgentResult(
+        success=False,
+        output="TIMEOUT: Agent exceeded limit",
+        session_id=None,
+        cost_usd=None,
+        exit_code=-9,
+        raw={},
+        profile_name=profile_name,
+    )
+
+
+def _build_unmeasured_record(tmp_path: Path) -> dict:
+    """Generate an audit record where every phase cost is unmeasured (None).
+
+    Exercises the kill-path shape the timeout-cost fix introduced: cost fields
+    that are ``float`` in a measured run become ``null`` here. Pins that shape so
+    future drift on the nullable path is caught, and feeds the substrate
+    round-trip test.
+    """
+    config = _make_config(tmp_path)
+    task = TaskStory(name="Test", slug="test", story_path=tmp_path / "spec.md")
+    state = CoordinatorState()
+    state.started_at = "2026-01-01T00:00:00+00:00"
+    state.run_id = "deadbeefcafe"
+    # preflight, plan, plan_review, dev, review — each killed with unmeasured cost.
+    state.preflight_verdict = "PROCEED"
+    state.preflight_result = _killed("preflight")
+    state.plan_results.append(_killed("planner"))
+    state.plan_durations.append(5.0)
+    state.plan_review_decision = "APPROVE"
+    state.plan_review_results.append(_killed("plan-reviewer"))
+    state.plan_review_durations.append(5.0)
+    state.dev_results.append(_killed("dev"))
+    state.dev_durations.append(5.0)
+    state.review_agent_results.append(_killed("reviewer"))
+    state.review_durations.append(5.0)
+    result = CoordinatorResult(success=False, phase=Phase.DONE, state=state, message="killed")
     return generate_audit_log(config, task, result)
 
 
@@ -157,6 +204,67 @@ def test_audit_record_schema_unchanged(tmp_path: Path) -> None:
     )
 
 
+def test_unmeasured_cost_fields_serialize_null_under_same_schema_version(
+    tmp_path: Path,
+) -> None:
+    """Kill-path cost fields serialize null, and that is an intentional widening.
+
+    The timeout-cost fix made every audit cost field ``float | None`` — a
+    measured run records a number, an unmeasured (killed) run records null.
+    This is a backward-compatible value-domain widening, NOT a breaking field
+    rename/removal, so it does not bump the record schema version: old records
+    (all-numeric) still read, and the reader tolerates null (verified by the
+    round-trip test below). The paths asserted here are the exact ones the
+    canonical measured record types as ``float`` — pinning the polymorphism so a
+    future accidental re-coercion to 0.0 (or a new cost field that forgets to
+    preserve None) is caught.
+    """
+    record = _build_unmeasured_record(tmp_path)
+
+    # Same record version as the measured canonical record — no bump.
+    assert record["schema_version"] == SCHEMA_VERSION
+
+    null_cost_paths = [
+        record["phases"]["preflight"]["cost_usd"],
+        record["phases"]["plan"]["cost_usd"],
+        record["phases"]["plan_review"]["cost_usd"],
+        record["phases"]["dev"]["cost_usd"],
+        record["phases"]["review"]["cost_usd"],
+        record["phases"]["review"]["per_reviewer"]["reviewer"]["cost"],
+        record["plan_review"]["cost_usd"],
+        record["totals"]["cost_usd"],
+        record["cost"]["total_usd"],
+        record["cost"]["dev_usd"],
+        record["cost"]["review_usd"],
+    ]
+    for value in null_cost_paths:
+        assert value is None
+
+
+def test_unmeasured_cost_record_round_trips_through_substrate(tmp_path: Path) -> None:
+    """The reader must persist and read back a null-cost record without error.
+
+    This is the seam that the schema concern turns on: a nullable cost field must
+    survive write -> flatten -> sqlite (REAL column) -> read. total_cost_usd lands
+    as SQL NULL, not a coerced 0.0, so cost-based views stay honest.
+    """
+    record = _build_unmeasured_record(tmp_path)
+    audit_substrate.seed_records(tmp_path, [record])
+
+    conn = audit_substrate.create_or_open(tmp_path)
+    try:
+        row = conn.execute(
+            "SELECT total_cost_usd, record_schema_version FROM audit_records WHERE run_id = ?",
+            (record["run_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row[0] is None  # SQL NULL, not 0.0 — unmeasured stays distinct from free
+    assert row[1] == SCHEMA_VERSION
+
+
 def test_migration_helpers_cover_current_version() -> None:
     """Bumping ``SCHEMA_VERSION`` must add a matching ``MIGRATION_HELPERS`` entry.
 
@@ -212,3 +320,30 @@ def test_migrate_record_dispatches_through_registry(
     assert called == [1]
     assert out["migrated_v2"] is True
     assert out["marker"] == "untouched"
+
+
+def test_migrate_v3_to_v4_backfills_readiness_fields() -> None:
+    """v3 records lack task.fix_ready/readiness_warnings; v4 backfills them.
+
+    Older records have no equivalent signal to recover, so the migration
+    defaults to the "unknown" shape (None / empty list) rather than
+    guessing a readiness verdict. See issue #1253.
+    """
+    v3_record = {"task": {"name": "Test", "slug": "test"}}
+
+    migrated = audit_substrate._migrate_v3_to_v4(v3_record)
+
+    assert migrated["task"]["fix_ready"] is None
+    assert migrated["task"]["readiness_warnings"] == []
+    assert migrated["task"]["name"] == "Test"
+
+
+def test_migrate_v3_to_v4_is_idempotent_when_fields_already_present() -> None:
+    """Does not clobber existing fix_ready/readiness_warnings values."""
+    v3_record = {
+        "task": {"name": "Test", "slug": "test", "fix_ready": True, "readiness_warnings": []}
+    }
+
+    migrated = audit_substrate._migrate_v3_to_v4(v3_record)
+
+    assert migrated["task"]["fix_ready"] is True

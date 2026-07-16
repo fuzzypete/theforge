@@ -27,6 +27,18 @@ MAX_KNOWN_VERSION = max(MIGRATION_HELPERS.keys()) if MIGRATION_HELPERS else 0
 __all_schema_exports__ = ("SCHEMA_VERSION", "MIGRATION_HELPERS", "MAX_KNOWN_VERSION")
 
 
+def _round_cost(value: float | None) -> float | None:
+    """Round a cost for the audit, preserving an unmeasured ``None`` as ``None``.
+
+    A ``None`` cost means the phase's spend could not be measured (e.g. a run
+    killed before its cost-bearing result event and no usage was reconstructable).
+    It must stay ``None`` in the audit — a coerced ``0.0`` is indistinguishable
+    from a genuinely free run and corrupts every cost-based view built on the
+    audit substrate.
+    """
+    return round(value, 6) if value is not None else None
+
+
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
     """Return True if branch exists and has commits ahead of base.
 
@@ -109,7 +121,10 @@ def has_review_approve(
 
 def _serialize_plan_review_result(result: object, attempt: int) -> dict:
     profile_name = getattr(result, "profile_name", "") or "unknown"
-    cost_usd = round(getattr(result, "cost_usd", None) or 0.0, 6)
+    # Preserve an unmeasured cost (None) rather than coercing to 0.0 — a
+    # reviewer run killed before its cost-bearing result event still spent money.
+    _raw_cost = getattr(result, "cost_usd", None)
+    cost_usd = round(_raw_cost, 6) if _raw_cost is not None else None
     if not getattr(result, "success", False):
         entry = {
             "attempt": attempt,
@@ -185,7 +200,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     preflight_block: dict | None = None
     if state.preflight_verdict is not None:
         preflight_block = {
-            "cost_usd": round(state.total_preflight_cost, 6),
+            "cost_usd": _round_cost(state.total_preflight_cost_measured),
             "duration_s": round(state.preflight_duration_s, 2)
             if state.preflight_duration_s is not None
             else None,
@@ -196,7 +211,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     plan_block: dict | None = None
     if state.plan_results:
         plan_block = {
-            "cost_usd": round(state.total_plan_cost, 6),
+            "cost_usd": _round_cost(state.total_plan_cost_measured),
             "duration_s": round(sum(state.plan_durations), 2) if state.plan_durations else None,
             "outcome": "success",
             "plan_structured": state.plan_structured,
@@ -210,7 +225,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     if state.plan_review_decision is not None:
         _per_reviewer = _build_plan_review_per_reviewer(state, config)
         plan_review_block = {
-            "cost_usd": round(state.total_plan_review_cost, 6),
+            "cost_usd": _round_cost(state.total_plan_review_cost_measured),
             "duration_s": round(sum(state.plan_review_durations), 2)
             if state.plan_review_durations
             else None,
@@ -228,7 +243,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             for event in item.transport_retry_events
         ]
         dev_block = {
-            "cost_usd": round(state.total_dev_cost, 6),
+            "cost_usd": _round_cost(state.total_dev_cost_measured),
             "duration_s": round(sum(state.dev_durations), 2) if state.dev_durations else None,
             "iterations": len(state.dev_results),
             "outcome": "success" if state.dev_results[-1].success else "failure",
@@ -259,25 +274,38 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
         _last_verdicts: dict[str, str] = {
             name: rr.verdict for name, rr in state.last_cycle_reviewer_results
         }
+        # Accumulate per reviewer, preserving an unmeasured cost: if any of a
+        # reviewer's runs reports cost_usd is None (e.g. killed before its
+        # cost-bearing result event), that reviewer's total is cost-unknown
+        # (None), never a coerced 0.0.
         _reviewer_costs: dict[str, float] = {}
+        _reviewer_unmeasured: set[str] = set()
         for r in state.review_agent_results:
             if r.profile_name and r.profile_name != "synthesis":
-                _reviewer_costs[r.profile_name] = _reviewer_costs.get(r.profile_name, 0.0) + (
-                    r.cost_usd if r.cost_usd is not None else 0.0
-                )
+                if r.cost_usd is None:
+                    _reviewer_unmeasured.add(r.profile_name)
+                else:
+                    _reviewer_costs[r.profile_name] = (
+                        _reviewer_costs.get(r.profile_name, 0.0) + r.cost_usd
+                    )
         per_reviewer = {
             name: {
-                "cost": round(cost, 6),
+                "cost": None if name in _reviewer_unmeasured else round(cost, 6),
                 "verdict": _last_verdicts.get(name),
             }
             for name, cost in _reviewer_costs.items()
         }
+        # A reviewer whose only run(s) were all unmeasured has no entry in
+        # _reviewer_costs; surface it with cost None rather than dropping it.
+        for name in _reviewer_unmeasured:
+            if name not in per_reviewer:
+                per_reviewer[name] = {"cost": None, "verdict": _last_verdicts.get(name)}
         # Final verdict from most recent review cycle
         _final_verdict: str | None = None
         if state.review_results:
             _final_verdict = state.review_results[-1].verdict.lower()
         review_block = {
-            "cost_usd": round(state.total_review_cost, 6),
+            "cost_usd": _round_cost(state.total_review_cost_measured),
             "duration_s": round(sum(state.review_durations), 2)
             if state.review_durations
             else None,
@@ -296,7 +324,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
         sum(state.review_durations),
     ]
     totals = {
-        "cost_usd": round(state.total_cost, 6),
+        "cost_usd": _round_cost(state.total_cost_measured),
         "duration_s": round(sum(all_durations), 2),
         "dev_attempts_total": len(state.dev_results),
         "dev_iterations_productive": len(state.dev_results),
@@ -481,6 +509,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "story_path": str(task.story_path) if task.story_path is not None else None,
             "story_text": state.story_content,
             "github_issue": task.github_issue,
+            "fix_ready": task.fix_ready,
+            "readiness_warnings": list(task.readiness_warnings),
         },
         "outcome": {
             "success": result.success,
@@ -523,9 +553,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             ],
         },
         "cost": {
-            "total_usd": state.total_cost,
-            "dev_usd": state.total_dev_cost,
-            "review_usd": state.total_review_cost,
+            # Use *_measured aggregates so an unmeasured kill-path run stays
+            # cost-unknown (None) here rather than being coerced to 0.0.
+            "total_usd": state.total_cost_measured,
+            "dev_usd": state.total_dev_cost_measured,
+            "review_usd": state.total_review_cost_measured,
             "dev_invocations": len(state.dev_results),
             "review_invocations": len(state.review_agent_results),
             "agents": agents,
@@ -606,7 +638,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "regenerated": state.plan_regen_count > 0,
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
                 "findings": state.plan_agent_review_findings,
-                "cost_usd": state.total_plan_review_cost,
+                # Same measured source of truth as phases.plan_review.cost_usd, so
+                # the two plan_review surfaces can never diverge on kill-path runs:
+                # an unmeasured (None) cost stays null here too, never coerced 0.0.
+                "cost_usd": _round_cost(state.total_plan_review_cost_measured),
                 **({"per_reviewer": plan_review_per_reviewer} if plan_review_per_reviewer else {}),
                 "plan_finding_registry": [
                     {

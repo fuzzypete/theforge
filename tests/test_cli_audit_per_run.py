@@ -54,9 +54,9 @@ class TestPerRunFileWrite:
         data = json.loads(run_file.read_text())
 
         assert "schema_version" in data
-        # New per-run records are written at schema_version=3 (#1424 added the
-        # structured `landing` field); pre-slice records (no field) read as 1.
-        assert data["schema_version"] == 3
+        # New per-run records are written at schema_version=4 (#1253 added
+        # task.fix_ready/readiness_warnings); pre-slice records read as 1.
+        assert data["schema_version"] == 4
         assert "run_id" in data
         assert data["run_id"] == "run-envelope-001"
         assert "parent_run_id" in data
