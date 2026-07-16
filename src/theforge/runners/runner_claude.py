@@ -89,6 +89,167 @@ def _parse_model_usage(result_json: dict[str, Any]) -> tuple[ModelUsage, ...]:
     return tuple(usages)
 
 
+# ── Partial-cost reconstruction (kill paths) ──────────────────────────
+#
+# When a run is killed (timeout, stuck-pattern, or missing result event) the
+# terminal ``result`` event — which carries ``total_cost_usd`` and the
+# aggregated ``modelUsage`` block — never arrives, so the normal cost path
+# produces nothing. But every ``assistant`` stream event already captured in
+# memory carries a per-message ``usage`` block (Anthropic usage shape). We
+# aggregate those and price them via the shared pricing table so a killed run's
+# real spend is attributed rather than silently dropped to $0.00. Where no
+# usable usage was ever received, cost is recorded as unknown (None) — never a
+# fabricated zero, so "unmeasured" stays distinct from "free".
+
+# Anthropic prompt-cache pricing is expressed as multiples of the base input
+# rate: cache reads bill at 0.1x and 5-minute cache writes at 1.25x (Anthropic
+# pricing docs). The shared PRICING_TABLE only carries (input, output) rates,
+# so we apply these multipliers here to price the cached-token components.
+_CACHE_READ_RATE_MULT = 0.1
+_CACHE_WRITE_RATE_MULT = 1.25
+
+# Models whose kill-path cost could not be reconstructed — warned once each so
+# the log makes cost-unknown runs loud rather than silently zero.
+_COST_UNMEASURED_WARNED: set[str] = set()
+
+
+def _resolve_anthropic_pricing_key(raw_model: str) -> str | None:
+    """Map a stream-event model id to a PRICING_TABLE anthropic key.
+
+    Claude reports the fully-resolved model id (e.g. ``claude-sonnet-4-6`` or a
+    dated variant) in each message, while the pricing table is keyed on the
+    undated family id. Match exactly, then by prefix in either direction so a
+    dated id resolves to its family entry. Returns None when unknown.
+    """
+    from theforge.runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
+
+    if not raw_model:
+        return None
+    if ("anthropic", raw_model) in PRICING_TABLE:
+        return raw_model
+    for provider, key in PRICING_TABLE:
+        if provider != "anthropic":
+            continue
+        if raw_model.startswith(key) or key.startswith(raw_model):
+            return key
+    return None
+
+
+def _estimate_anthropic_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+) -> float | None:
+    """Price reconstructed Anthropic token usage; None when model is unpriced."""
+    from theforge.runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
+
+    key = _resolve_anthropic_pricing_key(model)
+    if key is None:
+        return None
+    in_rate, out_rate = PRICING_TABLE[("anthropic", key)]
+    return (
+        (input_tokens / 1_000_000) * in_rate
+        + (output_tokens / 1_000_000) * out_rate
+        + (cache_read_tokens / 1_000_000) * in_rate * _CACHE_READ_RATE_MULT
+        + (cache_creation_tokens / 1_000_000) * in_rate * _CACHE_WRITE_RATE_MULT
+    )
+
+
+def _reconstruct_partial_cost(
+    lines: list[str],
+    profile: ModelProfile,
+) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Reconstruct spend and per-model usage from partial stream-json events.
+
+    Aggregates ``message.usage`` blocks across all captured ``assistant`` events
+    and prices them via the pricing table. Returns ``(cost_usd, model_usage)``.
+    ``cost_usd`` is None (cost-unknown, surfaced loudly) when no usable usage was
+    observed or no observed model could be priced — never a fabricated ``0.0``.
+    """
+    per_model: dict[str, dict[str, int]] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message", {})
+        if not isinstance(message, dict):
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        model_name = str(message.get("model") or profile.model or "?")
+        acc = per_model.setdefault(
+            model_name,
+            {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+        )
+        acc["input"] += int(usage.get("input_tokens", 0) or 0)
+        acc["output"] += int(usage.get("output_tokens", 0) or 0)
+        acc["cache_read"] += int(usage.get("cache_read_input_tokens", 0) or 0)
+        acc["cache_creation"] += int(usage.get("cache_creation_input_tokens", 0) or 0)
+
+    if not per_model:
+        return None, ()
+
+    total_cost = 0.0
+    any_priced = False
+    usages: list[ModelUsage] = []
+    for model_name, acc in per_model.items():
+        cost = _estimate_anthropic_cost(
+            model_name,
+            acc["input"],
+            acc["output"],
+            acc["cache_read"],
+            acc["cache_creation"],
+        )
+        if cost is not None:
+            total_cost += cost
+            any_priced = True
+        usages.append(
+            ModelUsage(
+                model=model_name,
+                input_tokens=acc["input"],
+                output_tokens=acc["output"],
+                cache_read_tokens=acc["cache_read"],
+                cache_creation_tokens=acc["cache_creation"],
+                cost_usd=cost,
+            )
+        )
+    return (total_cost if any_priced else None), tuple(usages)
+
+
+def _partial_cost_or_warn(
+    lines: list[str],
+    profile: ModelProfile,
+    *,
+    kill_reason: str,
+) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Reconstruct kill-path cost, logging whether it was measured or unknown."""
+    cost, usage = _reconstruct_partial_cost(lines, profile)
+    label = profile.name or profile.model or "?"
+    if cost is not None:
+        _log(
+            f"  {label} {kill_reason}: reconstructed partial cost ${cost:.4f} "
+            f"from {len(usage)} model(s) of stream usage (result event never arrived)."
+        )
+    else:
+        key = f"{label}:{profile.model}"
+        if key not in _COST_UNMEASURED_WARNED:
+            _COST_UNMEASURED_WARNED.add(key)
+            _log(
+                f"  WARNING: {label} {kill_reason} with no priceable stream usage; "
+                "recording cost-unknown, NOT $0.00."
+            )
+    return cost, usage
+
+
 def _format_tool_input_preview(inp: dict[str, Any]) -> str:
     """Return a short preview string for a tool's input dict."""
     if not inp:
@@ -534,6 +695,9 @@ def _run_claude(
 
     if stuck_monitor.should_terminate:
         partial_output = "".join(lines)
+        _stuck_cost, _stuck_usage = _partial_cost_or_warn(
+            lines, profile, kill_reason="killed on stuck-pattern"
+        )
         return AgentResult(
             success=False,
             output=(
@@ -546,10 +710,11 @@ def _run_claude(
                 fallback_to_file=fallback_to_file,
                 min_mtime=start_wall,
             ),
-            cost_usd=None,
+            cost_usd=_stuck_cost,
             exit_code=-2,
             raw={},
             profile_name=profile.name,
+            model_usage=_stuck_usage,
             failure_code="stuck_pattern",
             dev_handoff=_try_parse_handoff(partial_output),
         )
@@ -560,6 +725,9 @@ def _run_claude(
     if timed_out:
         partial_output = "".join(lines)
         _timeout_output = f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit"
+        _timeout_cost, _timeout_usage = _partial_cost_or_warn(
+            lines, profile, kill_reason="killed at timeout"
+        )
         return AgentResult(
             success=False,
             output=_timeout_output,
@@ -569,10 +737,11 @@ def _run_claude(
                 fallback_to_file=fallback_to_file,
                 min_mtime=start_wall,
             ),
-            cost_usd=None,
+            cost_usd=_timeout_cost,
             exit_code=-9,
             raw={},
             profile_name=profile.name,
+            model_usage=_timeout_usage,
             dev_handoff=_try_parse_handoff(partial_output),
         )
 
@@ -605,6 +774,9 @@ def _run_claude(
         _noresult_output = (
             extracted_output or stderr_text or _build_no_text_marker("missing_result_event")
         )
+        _noresult_cost, _noresult_usage = _partial_cost_or_warn(
+            lines, profile, kill_reason="ended without a result event"
+        )
         return AgentResult(
             success=proc.returncode == 0,
             output=_noresult_output,
@@ -614,10 +786,11 @@ def _run_claude(
                 fallback_to_file=fallback_to_file,
                 min_mtime=start_wall,
             ),
-            cost_usd=None,
+            cost_usd=_noresult_cost,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
+            model_usage=_noresult_usage,
             dev_handoff=_try_parse_handoff(_noresult_output),
         )
 

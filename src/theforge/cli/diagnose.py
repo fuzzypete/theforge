@@ -91,9 +91,11 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
         )
         icon = "✓" if result.success else "✗"
+        _cost = result.state.agent_cost_usd
+        cost_str = f"${_cost:.3f}" if _cost is not None else "unknown"
         print(
             f"[forge] {icon} #{number}: {result.message}  "
-            f"(phase={result.state.phase.name}, cost=${result.state.agent_cost_usd:.3f}, "
+            f"(phase={result.state.phase.name}, cost={cost_str}, "
             f"duration={result.state.agent_duration_s:.1f}s)",
             file=sys.stderr,
         )
