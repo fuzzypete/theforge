@@ -200,6 +200,31 @@ def _blocking(findings: list[IntakeFinding]) -> list[IntakeFinding]:
     return [f for f in findings if f.severity is IntakeSeverity.BLOCK]
 
 
+# Divergence note appended to a DROPPED_AFTER_FIX detail when the rerun drop is
+# driven solely by the sprint-time grooming gate. The shape-check gate (which
+# posts the operator-visible "runnable / no findings" Action) does not run the
+# grooming rules at all, so the two signals can legitimately disagree on the
+# same body. Surface that explicitly so the drop doesn't look like a silent
+# contradiction of the shape-check verdict.
+_GROOM_SHAPE_DIVERGENCE_NOTE = (
+    "NOTE: this is a sprint-time grooming-gate rejection (groom_* rule) and is "
+    "NOT corroborated by the shape-check gate, which does not run these rules — "
+    "the shape-check Action may still report this issue as runnable"
+)
+
+
+def _grooming_divergence_suffix(rerun_blocking: list[IntakeFinding]) -> str:
+    """Return the divergence note (prefixed with a separator) when the rerun
+    drop is caused only by grooming (``groom_*``) findings; else empty string.
+
+    A drop that includes any shape-check finding is corroborated by the
+    shape-check gate and needs no divergence warning.
+    """
+    if rerun_blocking and all(f.code.startswith("groom_") for f in rerun_blocking):
+        return f" — {_GROOM_SHAPE_DIVERGENCE_NOTE}"
+    return ""
+
+
 def _format_remediation_comment(
     findings: list[IntakeFinding],
     replacement: str | None,
@@ -434,6 +459,7 @@ def _remediate_one(
                     "rerun gate still failing; comment post failed and candidate "
                     "artifact write failed"
                 )
+            detail += _grooming_divergence_suffix(rerun_blocking)
             return IntakeOutcome(
                 slug=slug,
                 kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
@@ -489,7 +515,10 @@ def _remediate_one(
             kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
             findings=tuple(rerun_blocking),
             proposed_replacement=proposed_body,
-            detail="comment mode: posted replacement; rerun gate still failing",
+            detail=(
+                "comment mode: posted replacement; rerun gate still failing"
+                + _grooming_divergence_suffix(rerun_blocking)
+            ),
             audit=_build_audit(
                 consumed=_consumed,
                 semantic_remaining=semantic_remaining,

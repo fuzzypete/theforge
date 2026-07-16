@@ -12,6 +12,18 @@ from theforge.task import TaskStory
 # Issue body that fails shape gate (missing AC, missing example).
 _FAILING_BODY = "## What\n\nDo a thing.\n\n## Why\n\nReason.\n"
 
+# Body that passes shape check but trips ONLY the grooming gate
+# (groom_how_shaped_ac) — the exact contradiction #1428 is about.
+_GROOM_ONLY_FAILING_BODY = (
+    "## What\n\nUsers can export.\n\n"
+    "## Why\n\nLegal needs it.\n\n"
+    "## Acceptance criteria\n\n"
+    "- Refactor the export pipeline into an ExportService class\n"
+    "- The download is available within 60 seconds for accounts with <1k users\n\n"
+    "## Example\n\n"
+    "```csv\nuser_id,email\n1,a@example.com\n```\n"
+)
+
 # A valid body that passes shape and grooming.
 _PASSING_BODY = (
     "## What\n\nUsers can export.\n\n"
@@ -168,6 +180,71 @@ def test_auto_fix_edit_mode_keeps_failing_body_off_issue():
     out = outcomes[task.slug]
     assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
     assert edit_calls == []  # never wrote a still-failing body
+
+
+def test_grooming_only_drop_surfaces_shape_check_divergence():
+    """When a rerun drop is driven solely by the grooming gate (groom_* codes),
+    the outcome detail must state that this is NOT corroborated by the
+    shape-check gate — otherwise the shape-check Action ('runnable') and the
+    intake drop appear to silently contradict each other (#1428)."""
+    task = _make_task()
+    post_comment, _ = _record_calls()
+    edit_body, edit_calls = _record_calls()
+
+    def agent(body, findings, comments=()):
+        # Agent's rewrite still trips grooming only (keeps a HOW-shaped AC).
+        return AgentRewriteResult(
+            replacement=_GROOM_ONLY_FAILING_BODY, detail="agent produced replacement"
+        )
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch(
+            {"title": "T", "body": _GROOM_ONLY_FAILING_BODY, "labels": ["enhancement"]}
+        ),
+        post_comment=post_comment,
+        edit_body=edit_body,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert edit_calls == []
+    assert all(f.code.startswith("groom_") for f in out.findings)
+    # The divergence must be spelled out for the operator.
+    assert "grooming-gate rejection" in out.detail
+    assert "shape-check" in out.detail
+
+
+def test_shape_backed_drop_does_not_claim_divergence():
+    """A drop whose rerun findings include a shape-check code IS corroborated by
+    the shape-check gate, so the divergence note must NOT be attached."""
+    task = _make_task()
+    post_comment, _ = _record_calls()
+    edit_body, _ = _record_calls()
+
+    def agent(body, findings, comments=()):
+        # Rewrite still fails shape (missing AC + example) → shape-backed drop.
+        return AgentRewriteResult(replacement=_FAILING_BODY, detail="agent produced replacement")
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch({"title": "T", "body": _FAILING_BODY, "labels": ["enhancement"]}),
+        post_comment=post_comment,
+        edit_body=edit_body,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert any(not f.code.startswith("groom_") for f in out.findings)
+    assert "grooming-gate rejection" not in out.detail
 
 
 def test_agent_called_at_most_once_per_story():

@@ -34,6 +34,48 @@ def test_groom_no_findings_on_empty_body():
     assert groom_check("Title", "", []) == []
 
 
+def test_groom_does_not_flag_import_as_domain_verb():
+    """Regression for #1428: 'Import output includes...' uses 'import' as the
+    issue's own domain verb (data ingestion), not an implementation directive."""
+    body = (
+        "## Acceptance criteria\n\n"
+        "- Import output includes an operator-visible summary: imported, "
+        "skipped-as-existing, updated/repaired, and failed records\n"
+    )
+    assert groom_check("Title", body, ["bug"]) == []
+
+
+def test_groom_does_not_flag_domain_verbs_as_field_or_command_names():
+    """Flagged tokens used as domain verbs / field names must not trip."""
+    body = (
+        "## Acceptance criteria\n\n"
+        "- Export saves the generated report to the configured location\n"
+        "- Rename target file to its canonical slug before writing\n"
+        "- Extract records from the uploaded CSV and validate each row\n"
+    )
+    assert groom_check("Title", body, ["enhancement"]) == []
+
+
+def test_groom_still_flags_verb_operating_on_code_construct():
+    """Genuine implementation-prescriptive language must still be flagged even
+    without a standalone strong token."""
+    body = "## Acceptance criteria\n\n- Refactor the FooService class to extract a helper method\n"
+    findings = groom_check("Title", body, ["enhancement"])
+    assert len(findings) == 1
+    assert findings[0].code == "groom_how_shaped_ac"
+
+
+def test_groom_still_flags_implement_using_domain_import_machinery():
+    """'implement using' is a strong token; it flags even when the object is
+    the issue's own domain vocabulary ('import machinery')."""
+    body = (
+        "## Acceptance criteria\n\n- Implement using the existing import machinery in loader.py\n"
+    )
+    findings = groom_check("Title", body, ["enhancement"])
+    assert len(findings) == 1
+    assert findings[0].code == "groom_how_shaped_ac"
+
+
 def test_groom_ignores_yaml_example_block_under_example_heading_in_ac():
     body = (
         "## Acceptance criteria\n\n"
