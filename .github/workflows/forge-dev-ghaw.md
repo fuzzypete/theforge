@@ -14,7 +14,10 @@ on:
         description: "Dev-phase prompt built by the forge coordinator"
         required: true
 run-name: "forge-dev-ghaw ${{ inputs.dispatch_id }}"
-engine: copilot
+# claude engine requires the ANTHROPIC_API_KEY repo secret. The copilot
+# engine was tried first and requires COPILOT_GITHUB_TOKEN on personal
+# repos (validated 2026-07-16, run 29516910990 on the spike host).
+engine: claude
 timeout-minutes: 20
 permissions:
   contents: read
