@@ -185,13 +185,17 @@ class TestUnmeasuredCostPreservedInAudit:
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
         assert log["phases"]["plan"]["cost_usd"] is None
 
-    def test_plan_review_phase_cost_null_not_zero(self, tmp_path: Path) -> None:
+    def test_plan_review_cost_null_not_zero_on_both_surfaces(self, tmp_path: Path) -> None:
+        """Both plan_review cost surfaces (phases block AND top-level block) stay null."""
         state = CoordinatorState()
         state.plan_review_decision = "APPROVE"
         state.plan_review_results.append(self._unmeasured(profile_name="plan-reviewer"))
         state.plan_review_durations.append(5.0)
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        # phases.plan_review.cost_usd and the sibling top-level plan_review.cost_usd
+        # read the same measured source, so neither may coerce None to 0.0.
         assert log["phases"]["plan_review"]["cost_usd"] is None
+        assert log["plan_review"]["cost_usd"] is None
 
     def test_totals_and_cost_summary_null_when_any_phase_unmeasured(self, tmp_path: Path) -> None:
         state = CoordinatorState()
