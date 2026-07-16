@@ -147,9 +147,12 @@ def _baseline_inspected_files(
 
 _UNIT_SEP = "\x1f"
 
-# Candidate file-path tokens inside a free-text ``affected_code_path`` field:
-# a dotted filename, optionally with directories and a trailing ``:line``.
-_PATH_TOKEN_RE = re.compile(r"[\w./\-]*\w+\.[A-Za-z0-9]+")
+# Candidate references inside a free-text ``affected_code_path`` field: a dotted
+# filename (optionally with directories) plus an optional ``:locator`` — either a
+# line number (``:142``) or a symbol name (``:buggy_func``). The symbol, when
+# present, is a checkable premise: a diagnosis that pins the bug to a function
+# that has been deleted from a still-present file must not land as live.
+_PATH_REF_RE = re.compile(r"([\w./\-]*\w+\.[A-Za-z0-9]+)(?::([A-Za-z_]\w*))?")
 
 
 def _path_exists_at_sha(path: str, sha: str, project_root: Path) -> bool:
@@ -244,20 +247,27 @@ def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str]
     return commit, summary.strip()
 
 
-def _extract_affected_paths(affected_code_path: str) -> list[str]:
-    """Pull candidate repo-relative file paths out of a free-text field.
+def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
+    """Pull candidate ``(path, symbol)`` references out of a free-text field.
 
-    Strips a trailing ``:line`` locator. Order-preserving and deduped.
+    ``symbol`` is the non-numeric locator following a ``:`` (a function/class
+    name whose continued presence is checkable); it is empty for a bare path or
+    a numeric ``:line`` locator, which anchors only on the file's existence.
+    Order-preserving and deduped on the full ``(path, symbol)`` pair.
     """
-    paths: list[str] = []
-    seen: set[str] = set()
-    for token in _PATH_TOKEN_RE.findall(affected_code_path or ""):
-        path = token.strip().strip(".,;()[]`'\"")
-        if not path or path in seen:
+    refs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for path_tok, symbol_tok in _PATH_REF_RE.findall(affected_code_path or ""):
+        path = path_tok.strip().strip(".,;()[]`'\"")
+        symbol = symbol_tok.strip()
+        if not path:
             continue
-        seen.add(path)
-        paths.append(path)
-    return paths
+        key = (path, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(key)
+    return refs
 
 
 def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) -> PremiseVerdict:
@@ -306,18 +316,35 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                 )
 
     # AC: a diagnosis that cites an affected code path must confirm the path
-    # currently exists. Verify the file(s) named in affected_code_path — but
-    # only report absence backed by a deletion commit (fail open otherwise).
-    for path in _extract_affected_paths(artifact.affected_code_path):
-        if path in covered:
-            continue
+    # currently exists. Verify the file(s) named in affected_code_path — and,
+    # when the citation pins the bug to a named symbol (``path:func``), that the
+    # symbol itself still exists in the (possibly still-present) file. Only
+    # report absence backed by a removing commit (fail open otherwise).
+    for path, symbol in _extract_affected_refs(artifact.affected_code_path):
         if not _path_exists_at_sha(path, sha, project_root):
+            if path in covered:
+                continue
             commit = _find_deleting_commit(path, sha, project_root)
             if commit:
                 absent.append(
                     AbsentPremise(
                         file=path,
                         pattern="",
+                        removing_commit=commit[0],
+                        removing_summary=commit[1],
+                    )
+                )
+                covered.add(path)
+            continue
+        # File is present; if the citation named a symbol that has since been
+        # removed from it, the described bug can no longer reproduce there.
+        if symbol and _pattern_present_at_sha(path, symbol, sha, project_root) is False:
+            commit = _find_pattern_removing_commit(path, symbol, sha, project_root)
+            if commit:
+                absent.append(
+                    AbsentPremise(
+                        file=path,
+                        pattern=symbol,
                         removing_commit=commit[0],
                         removing_summary=commit[1],
                     )

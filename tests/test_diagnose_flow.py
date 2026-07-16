@@ -911,6 +911,120 @@ class TestPremiseVerification:
         assert loaded["absent_premises"][0]["pattern"] == "def buggy_func"
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_symbol_removed_from_present_file_without_anchors_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test for the review finding: the target file still exists, but the
+        function the diagnosis pins the bug to was removed, and the agent supplied
+        NO premise_anchors — only affected_code_path names the removed symbol
+        (``src/mod.py:buggy_func``). This must still divert to ALREADY_RESOLVED
+        rather than landing a live ## Diagnosis section."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def buggy_func():\n    return reserve(n - 1)\n",
+            "add buggy func",
+        )
+        # File survives; only buggy_func is removed (other_func remains).
+        removing = _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def other_func():\n    return reserve(n)\n",
+            "remove buggy_func, keep module",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 1494,
+            "title": "buggy_func miscounts",
+            "body": "buggy_func reserves the wrong number of slots\n",
+            "state": "OPEN",
+        }
+        # Confirmed cause, NO premise_anchors, symbol locator in affected path.
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [{"statement": "h", "status": "confirmed", "evidence": "e"}],
+            "confirmed_cause": "off-by-one in buggy_func",
+            "affected_code_path": "src/mod.py:buggy_func",
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1494,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called, "must not land a ## Diagnosis section"
+        assert not mock_post.called
+        assert result.state.absent_premises
+        absent = result.state.absent_premises[0]
+        assert absent.file == "src/mod.py"
+        assert absent.pattern == "buggy_func"
+        assert absent.removing_commit.startswith(removing[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_present_symbol_in_affected_path_lands_normally(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """A symbol locator in affected_code_path that still exists must NOT
+        divert: behavior unchanged for a live bug cited as ``path:symbol``."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def buggy_func():\n    return reserve(n - 1)\n",
+            "add buggy func",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 301,
+            "title": "buggy_func miscounts",
+            "body": "buggy_func reserves the wrong number of slots\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [{"statement": "h", "status": "confirmed", "evidence": "e"}],
+            "confirmed_cause": "off-by-one in buggy_func",
+            "affected_code_path": "src/mod.py:buggy_func",
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=301,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
+        assert mock_edit.called
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_deleted_affected_file_reports_already_resolved(
