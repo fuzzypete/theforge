@@ -94,7 +94,9 @@ class TestGhawLifecycle:
         assert result.success is True
         assert "Fake ghaw agent output" in result.output
         assert result.session_id == "4242"
-        assert result.cost_usd is None  # budget degrades to Actions accounting
+        assert result.cost_usd == pytest.approx(0.22479)  # 22.479 AIC × $0.01
+        assert result.model_usage[0].model == "gpt-4.1-2025-04-14"
+        assert result.model_usage[0].input_tokens == 25965
         assert result.raw["run"]["conclusion"] == "success"
         assert result.raw["timing"]["total_seconds"] >= 0
         assert "agent-output/agent-output.md" in result.raw["artifacts"]

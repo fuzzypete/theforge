@@ -91,6 +91,20 @@ def main() -> int:
         (out_dir / "agent-output.md").write_text(
             "Fake ghaw agent output: task complete.\n"
         )
+        usage_dir = dest / "usage"
+        usage_dir.mkdir(parents=True, exist_ok=True)
+        (usage_dir / "agent_usage.json").write_text(
+            json.dumps(
+                {
+                    "input_tokens": 25965,
+                    "output_tokens": 1335,
+                    "cache_read_tokens": 324352,
+                    "cache_write_tokens": 0,
+                    "ai_credits": 22.479,
+                    "primary_model": "gpt-4.1-2025-04-14",
+                }
+            )
+        )
         return 0
 
     if args[:2] == ["run", "cancel"]:

@@ -11,9 +11,10 @@ and polls — agent execution, sandboxing, and network isolation happen on
 the Actions runner, so this runner does not wrap itself in the local
 workspace sandbox.
 
-Budget semantics degrade on this transport: engine spend is accounted in
-Actions minutes + engine units, not direct API dollars, so cost_usd is
-None. Timing evidence for the ADR is recorded in AgentResult.raw["timing"].
+Budget semantics degrade on this transport: there is no mid-run dollar
+kill. Post-hoc cost IS recovered — gh-aw's agent_usage.json artifact
+reports AI-credit consumption, which this runner converts to cost_usd
+($0.01/credit). Timing evidence is recorded in AgentResult.raw["timing"].
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from theforge.agent_types import AgentResult
+from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
@@ -220,6 +221,37 @@ def _discover_run_id(
     return None
 
 
+# One GitHub AI Credit is billed at $0.01 (usage-based Copilot billing,
+# 2026-06). gh-aw reports per-run consumption in the agent_usage.json
+# artifact, which is the only cost signal this transport emits.
+_USD_PER_AI_CREDIT = 0.01
+
+
+def _parse_agent_usage(dest: Path) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Extract (cost_usd, model_usage) from a downloaded agent_usage.json.
+
+    Returns (None, ()) when the artifact is absent or unparseable — cost
+    stays unmeasured rather than being coerced to 0.0.
+    """
+    for path in dest.rglob("agent_usage.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        credits = data.get("ai_credits")
+        cost = round(float(credits) * _USD_PER_AI_CREDIT, 6) if credits is not None else None
+        usage = ModelUsage(
+            model=str(data.get("primary_model", "unknown")),
+            input_tokens=int(data.get("input_tokens", 0)),
+            output_tokens=int(data.get("output_tokens", 0)),
+            cache_read_tokens=int(data.get("cache_read_tokens", 0)),
+            cache_creation_tokens=int(data.get("cache_write_tokens", 0)),
+            cost_usd=cost,
+        )
+        return cost, (usage,)
+    return None, ()
+
+
 def _collect_artifact_text(dest: Path) -> tuple[str, dict[str, int]]:
     """Fold downloaded artifact files into one text blob plus a size index.
 
@@ -390,6 +422,8 @@ def _run_ghaw(
     # 4. Collect artifacts — the capture-fidelity surface of this transport.
     artifact_text = ""
     artifact_index: dict[str, int] = {}
+    cost_usd: float | None = None
+    model_usage: tuple[ModelUsage, ...] = ()
     with tempfile.TemporaryDirectory(prefix="ghaw-artifacts-") as tmp:
         proc = _gh(
             build_run_download_argv(run_id=run_id, dest=tmp),
@@ -399,6 +433,7 @@ def _run_ghaw(
         )
         if proc.returncode == 0:
             artifact_text, artifact_index = _collect_artifact_text(Path(tmp))
+            cost_usd, model_usage = _parse_agent_usage(Path(tmp))
         else:
             artifact_text = (
                 f"ARTIFACT_DOWNLOAD_FAILED: gh run download exited {proc.returncode}: "
@@ -418,9 +453,10 @@ def _run_ghaw(
         success=success,
         output=output,
         session_id=str(run_id),
-        cost_usd=None,
+        cost_usd=cost_usd,
         exit_code=0 if success else 1,
         raw={"run": run_json, "artifacts": artifact_index, "timing": timing},
         profile_name=profile.name,
+        model_usage=model_usage,
         dev_handoff=_try_parse_handoff(output),
     )
