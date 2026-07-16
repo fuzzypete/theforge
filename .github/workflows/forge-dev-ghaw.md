@@ -14,10 +14,12 @@ on:
         description: "Dev-phase prompt built by the forge coordinator"
         required: true
 run-name: "forge-dev-ghaw ${{ inputs.dispatch_id }}"
-# claude engine requires the ANTHROPIC_API_KEY repo secret. The copilot
-# engine was tried first and requires COPILOT_GITHUB_TOKEN on personal
-# repos (validated 2026-07-16, run 29516910990 on the spike host).
-engine: claude
+# Engine auth (validated live on the spike host, 2026-07-16):
+#   copilot → COPILOT_GITHUB_TOKEN fine-grained PAT (run 29516910990 failed
+#             without it; org-billing path does not apply to personal repos)
+#   claude  → ANTHROPIC_API_KEY with API credit balance (run 29527906749
+#             failed with "Credit balance is too low" despite valid auth)
+engine: copilot
 timeout-minutes: 20
 permissions:
   contents: read
