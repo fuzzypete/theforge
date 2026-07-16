@@ -32,8 +32,17 @@ from typing import Iterable
 SUBSTRATE_SCHEMA_VERSION = 3
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
-# (`_migrate_record`) is the seam future breaking changes hang off — today it
-# is a no-op because no breaking field rename/removal has shipped.
+# (`_migrate_record`) is the seam future breaking changes hang off — a version
+# bump is warranted only for a breaking field rename/removal that a reader must
+# migrate an old record across.
+#
+# Note (#1596): audit cost fields are ``float | None`` — an unmeasured
+# (killed-at-timeout) run records ``null`` where a measured run records a
+# number. That is a backward-compatible value-domain *widening*, not a breaking
+# shape change: old all-numeric records still read unchanged, and this reader
+# stores the null straight into the nullable ``total_cost_usd`` REAL column. So
+# it does NOT bump this version. The schema guard pins both the measured and the
+# unmeasured shapes so a future accidental re-coercion is still caught.
 CURRENT_RECORD_SCHEMA_VERSION = 4
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
