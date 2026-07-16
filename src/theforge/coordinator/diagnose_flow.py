@@ -246,7 +246,9 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
         "final_phase": state.phase.name,
         "phase_transitions": [{"phase": name, "at": ts} for name, ts in state.phase_transitions],
         "agent": {
-            "cost_usd": round(state.agent_cost_usd, 6),
+            "cost_usd": (
+                round(state.agent_cost_usd, 6) if state.agent_cost_usd is not None else None
+            ),
             "duration_s": round(state.agent_duration_s, 3),
             "raw_output_tail": state.agent_output[-2000:] if state.agent_output else "",
         },
@@ -463,7 +465,12 @@ def run_diagnose_flow(
 
     state.agent_duration_s = time.monotonic() - t0
     state.agent_output = getattr(agent_result, "output", "") or ""
-    state.agent_cost_usd = float(getattr(agent_result, "cost_usd", 0.0) or 0.0)
+    # Preserve an unmeasured cost (None) faithfully — a run killed at timeout
+    # still spent real money, and coercing None to 0.0 would record that spend
+    # as free in the audit. Reconstruction happens in the runner; here we only
+    # avoid destroying the cost-unknown signal it may hand us.
+    _raw_cost = getattr(agent_result, "cost_usd", None)
+    state.agent_cost_usd = float(_raw_cost) if _raw_cost is not None else None
 
     # Treat failure as "possibly partial" rather than abandon — per AC, a
     # diagnosis that can't be confirmed within bounds returns the partial
@@ -472,7 +479,12 @@ def run_diagnose_flow(
 
     # Budget guard — if the agent cost exceeded the configured budget, mark
     # the result as partial regardless of whether the agent reported success.
-    budget_exceeded = state.agent_cost_usd > config.diagnose.budget_usd * 1.05
+    # A cost-unknown run (None) cannot be shown to exceed the budget, so it is
+    # not treated as a budget breach here.
+    budget_exceeded = (
+        state.agent_cost_usd is not None
+        and state.agent_cost_usd > config.diagnose.budget_usd * 1.05
+    )
     if budget_exceeded:
         partial = True
 

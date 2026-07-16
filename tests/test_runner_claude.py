@@ -792,6 +792,145 @@ class TestRunAgentModelUsage:
         assert "claude-opus-4-6" in models
 
 
+def _assistant_usage_line(
+    *,
+    model: str = "claude-sonnet-4-6",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read: int = 0,
+    cache_creation: int = 0,
+) -> str:
+    """Build a stream-json assistant event carrying a per-message usage block."""
+    return (
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": model,
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_read_input_tokens": cache_read,
+                        "cache_creation_input_tokens": cache_creation,
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+
+
+class TestReconstructPartialCost:
+    """Unit tests for kill-path cost reconstruction from partial stream usage."""
+
+    def test_sums_and_prices_assistant_usage(self, dev_profile: ModelProfile) -> None:
+        lines = [
+            _assistant_usage_line(input_tokens=1000, output_tokens=500),
+            _assistant_usage_line(input_tokens=2000, output_tokens=1000, cache_read=10000),
+        ]
+        cost, usage = runner_claude_mod._reconstruct_partial_cost(lines, dev_profile)
+        # sonnet pricing: input 3.00/Mtok, output 15.00/Mtok, cache_read 0.1x input.
+        expected = (
+            (3000 / 1_000_000) * 3.00
+            + (1500 / 1_000_000) * 15.00
+            + (10000 / 1_000_000) * 3.00 * 0.1
+        )
+        assert cost is not None
+        assert cost == pytest.approx(expected)
+        assert cost > 0.0
+        assert len(usage) == 1
+        assert usage[0].input_tokens == 3000
+        assert usage[0].output_tokens == 1500
+        assert usage[0].cache_read_tokens == 10000
+
+    def test_no_usage_returns_none_not_zero(self, dev_profile: ModelProfile) -> None:
+        lines = [json.dumps({"type": "assistant", "message": {"content": []}}) + "\n"]
+        cost, usage = runner_claude_mod._reconstruct_partial_cost(lines, dev_profile)
+        assert cost is None
+        assert usage == ()
+
+    def test_unpriced_model_records_usage_but_unknown_cost(
+        self, dev_profile: ModelProfile
+    ) -> None:
+        lines = [_assistant_usage_line(model="mystery-model-9", input_tokens=1000)]
+        cost, usage = runner_claude_mod._reconstruct_partial_cost(lines, dev_profile)
+        assert cost is None
+        assert len(usage) == 1
+        assert usage[0].cost_usd is None
+
+    def test_dated_model_id_resolves_to_family_pricing(self, dev_profile: ModelProfile) -> None:
+        lines = [_assistant_usage_line(model="claude-sonnet-4-6-20260115", input_tokens=1000)]
+        cost, _ = runner_claude_mod._reconstruct_partial_cost(lines, dev_profile)
+        assert cost is not None
+        assert cost == pytest.approx((1000 / 1_000_000) * 3.00)
+
+
+class TestTimeoutCostReconstruction:
+    """A run killed at the deadline attributes cost from partial stream usage."""
+
+    def _blocking_after(self, usage_lines: list[str]):
+        class _PartialThenBlockStdout:
+            def __iter__(self):
+                yield from usage_lines
+                time.sleep(0.5)  # longer than the tiny timeout
+                return
+
+        return _PartialThenBlockStdout()
+
+    def _tiny_timeout_profile(self) -> ModelProfile:
+        return ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=0.1,
+            allowed_tools=(),
+        )
+
+    def test_timeout_reconstructs_nonzero_cost(self, tmp_path: Path) -> None:
+        usage_lines = [
+            _assistant_usage_line(input_tokens=5000, output_tokens=2000, cache_read=40000),
+        ]
+        mock_proc = MagicMock()
+        mock_proc.stdout = self._blocking_after(usage_lines)
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.returncode = -1
+        mock_proc.wait.return_value = -1
+        mock_proc.poll.return_value = None
+
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            result = run_agent(
+                prompt="test", profile=self._tiny_timeout_profile(), working_dir=tmp_path
+            )
+
+        assert result.exit_code == -9
+        assert "TIMEOUT" in result.output
+        # The whole point: a killed run's cost is reconstructed, not dropped to 0.0.
+        assert result.cost_usd is not None
+        assert result.cost_usd > 0.0
+        assert len(result.model_usage) == 1
+
+    def test_timeout_without_usage_records_unknown_not_zero(self, tmp_path: Path) -> None:
+        no_usage_line = json.dumps({"type": "assistant", "session_id": "s"}) + "\n"
+        mock_proc = MagicMock()
+        mock_proc.stdout = self._blocking_after([no_usage_line])
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.returncode = -1
+        mock_proc.wait.return_value = -1
+        mock_proc.poll.return_value = None
+
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            result = run_agent(
+                prompt="test", profile=self._tiny_timeout_profile(), working_dir=tmp_path
+            )
+
+        assert result.exit_code == -9
+        # Unmeasurable cost stays explicitly unknown (None), never a fabricated 0.0.
+        assert result.cost_usd is None
+
+
 class TestRunAgentUnknownCli:
     """Test dispatch for unsupported CLI."""
 
