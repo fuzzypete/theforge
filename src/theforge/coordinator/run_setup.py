@@ -206,6 +206,46 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         state.hygiene_escalation_prior_review = _prior_rr  # type: ignore[assignment]
 
 
+def load_plan_state(workspace_path: Path, state: CoordinatorState) -> None:
+    """Restore plan_output / plan_structured from the worktree's ``.forge/plan.md``.
+
+    Called in ``_setup_resume_entry`` so a resumed run stands in for the
+    PLAN_VALIDATION → DEV/REVIEW handoff: without this, ``_setup_resume_entry``
+    allocates a fresh ``CoordinatorState`` whose ``plan_structured`` stays at its
+    ``None`` default, and every plan-derived signal consumed by coordinator
+    policy (stuck-detection scaling, routing, complexity adjustment, audit
+    telemetry) silently degrades to a zero/empty default even though the plan
+    that ran for the story demonstrably declares files (issue #1135).
+
+    Best-effort: a missing plan file leaves state at its defaults (a fresh run
+    that never produced a plan). A present-but-unparseable plan (freeform
+    markdown fallback) restores the raw text into ``plan_output`` and leaves
+    ``plan_structured`` at ``None``, matching how the non-resume PLAN path
+    behaves for freeform plans.
+    """
+    from theforge.artifacts import PLAN_PATH  # noqa: PLC0415
+    from theforge.task.plan_parser import parse_plan_output  # noqa: PLC0415
+
+    plan_file = workspace_path / PLAN_PATH
+    if not plan_file.exists():
+        return
+    try:
+        text = plan_file.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("plan.md: failed to read (%s) — ignoring", exc)
+        return
+    if not text.strip():
+        return
+    state.plan_output = text
+    try:
+        parsed = parse_plan_output(text)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("plan.md: failed to parse (%s) — restoring raw text only", exc)
+        return
+    if parsed is not None:
+        state.plan_structured = parsed
+
+
 def save_merge_state(workspace_path: Path, merge_state: MergeStepState) -> None:
     """Persist merge step state to <workspace_path>/.forge/merge_state.yaml.
 
@@ -361,6 +401,12 @@ def _setup_resume_entry(
 
     # Restore trajectory data from sidecar (survives --resume)
     load_trajectory_state(workspace_path, state)
+
+    # Restore the parsed plan from the worktree's .forge/plan.md. A resumed run
+    # allocates a fresh CoordinatorState that stands in for the PLAN_VALIDATION →
+    # DEV/REVIEW handoff; without this, state.plan_structured stays None and every
+    # plan-derived policy signal degrades to a zero/empty default (issue #1135).
+    load_plan_state(workspace_path, state)
 
     # Sync forge.yaml from project root into the worktree so the run executes
     # with current settings. The source is the operator's live working-tree
