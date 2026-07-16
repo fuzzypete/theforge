@@ -293,13 +293,44 @@ def test_status_shows_completed_sprint_from_summary_with_all_rows(
             {"slug": "issue-3", "path": "Issue #3", "outcome": "SKIPPED", "cost_usd": 0.0},
         ],
     )
+    # A completed sprint with non-DONE stories renders the postmortem digest,
+    # which reads the persisted RCA artifact to place the failed/skipped rows.
+    (tmp_path / ".forge" / "logs" / "completed-sprint" / "sprint-rca.yaml").write_text(
+        yaml.dump(
+            {
+                "sprint_run_id": "run-123",
+                "stories": {
+                    "issue-2": {
+                        "primary_failure_class": "worker_timeout",
+                        "contributing_factors": [],
+                        "evidence": [],
+                        "partial_value": [],
+                        "recommended_next_actions": ["re-run #2"],
+                    },
+                    "issue-3": {
+                        "primary_failure_class": "dependency_skip",
+                        "contributing_factors": [],
+                        "evidence": [],
+                        "partial_value": [],
+                        "recommended_next_actions": [],
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
 
     rc, out = _run_cmd_status(tmp_path, capsys)
 
     assert rc == 0
-    assert "Sprint: completed-sprint  run: run-123  [completed]" in out
+    # Postmortem digest, not the live telemetry table.
+    assert "SPRINT completed-sprint  ·  completed" in out
+    assert "LANDED (1 of 3)" in out
     assert "Issue #1" in out
+    assert "FAILED — worker_timeout" in out
     assert "Issue #2" in out
+    assert "SKIPPED / INTAKE" in out
     assert "Issue #3" in out
 
 
@@ -331,7 +362,9 @@ def test_status_preserves_prior_story_run_ids_in_completed_sprint_view(
     rc, out = _run_cmd_status(tmp_path, capsys, run_id="run-old")
 
     assert rc == 0
-    assert "Sprint: rollover-sprint  run: run-old  [completed]" in out
+    # All-DONE completed sprint renders the tighter LANDED-only digest.
+    assert "SPRINT rollover-sprint  ·  completed" in out
+    assert "LANDED (2 of 2)" in out
     assert "Issue #959" in out
     assert "Issue #960" in out
 
