@@ -584,21 +584,31 @@ def _stage_and_detail_from_completed_story(
                     verdict = _nonempty_str(last_review.get("verdict"))
                     if verdict:
                         detail = f"{detail} (review verdict: {verdict})"
+        # For success outcomes, the row's detail must not surface a stale
+        # blocking review verdict (REQUEST_CHANGES) that conflates an
+        # intermediate cycle with the story's final approved state — the
+        # mirror image of the failure-outcome guard above. When the recorded
+        # ``reviews`` list omits the terminal APPROVE cycle (leaving a
+        # blocking verdict as the last entry), fall back to the canonical
+        # outcome message instead of rendering that stale intermediate cycle.
+        is_success_outcome = outcome in {"DONE", "ALREADY_DONE"}
         reviews = audit_data.get("reviews")
         if not detail and isinstance(reviews, list) and reviews:
             last_review = reviews[-1]
             if isinstance(last_review, dict):
-                finding_counts = last_review.get("findings_by_severity")
-                p1 = p2 = None
-                if isinstance(finding_counts, dict):
-                    p1 = finding_counts.get("P1", 0)
-                    p2 = finding_counts.get("P2", 0)
-                detail = _review_detail(last_review.get("verdict"), p1, p2)
-                summary = _nonempty_str(last_review.get("summary"))
-                if summary and not detail:
-                    detail = summary
-                elif summary and detail:
-                    detail = f"{detail} — {summary}"
+                last_verdict = _nonempty_str(last_review.get("verdict"))
+                if not (is_success_outcome and last_verdict and last_verdict != "APPROVE"):
+                    finding_counts = last_review.get("findings_by_severity")
+                    p1 = p2 = None
+                    if isinstance(finding_counts, dict):
+                        p1 = finding_counts.get("P1", 0)
+                        p2 = finding_counts.get("P2", 0)
+                    detail = _review_detail(last_review.get("verdict"), p1, p2)
+                    summary = _nonempty_str(last_review.get("summary"))
+                    if summary and not detail:
+                        detail = summary
+                    elif summary and detail:
+                        detail = f"{detail} — {summary}"
         if not detail:
             outcome_block = audit_data.get("outcome")
             if isinstance(outcome_block, dict):
