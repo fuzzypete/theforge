@@ -90,9 +90,12 @@ def _deserialize_review_result(data: object) -> object | None:
                 severity=f.get("severity", "P1"),
                 file=f.get("file", ""),
                 line=f.get("line"),
-                description=f.get("description", ""),
+                observed=f.get("observed", ""),
+                expected=f.get("expected", ""),
+                evidence=f.get("evidence", ""),
                 suggestion=f.get("suggestion"),
                 reviewers=tuple(f.get("reviewers") or ()),
+                reporter=f.get("reporter", ""),
             )
         )
     ac_verification = []

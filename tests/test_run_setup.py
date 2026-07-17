@@ -9,7 +9,11 @@ from coord_test_helpers import _make_config, _make_task
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.coordinator.engine import _run_resume_coordinator
 from theforge.coordinator.gate import _parse_dirty_files
-from theforge.coordinator.run_setup import _setup_resume_entry
+from theforge.coordinator.run_setup import (
+    _deserialize_review_result,
+    _serialize_review_result,
+    _setup_resume_entry,
+)
 from theforge.coordinator.state import CoordinatorResult, Phase
 
 _STRUCTURED_PLAN = """---
@@ -52,6 +56,50 @@ def _call_setup(config, task, workspace_path):
             notify=False,
             run_id="test-run-id",
         )
+
+
+def test_review_result_sidecar_roundtrip_preserves_finding_fields():
+    """Serialize→deserialize of the hygiene-escalation sidecar must reconstruct
+    ReviewFinding faithfully, including reporter attribution and the observed/
+    expected/evidence prose fields (regression: the deserializer previously read a
+    non-existent ``description`` key and dropped reporter)."""
+    from theforge.review import ReviewFinding, ReviewResult
+
+    original = ReviewResult(
+        verdict="REQUEST_CHANGES",
+        summary="needs work",
+        findings=[
+            ReviewFinding(
+                severity="P1",
+                file="src/foo.py",
+                line=12,
+                observed="null deref on retry",
+                expected="runtime paths guard against null",
+                evidence="src/foo.py:12",
+                suggestion="add a guard",
+                reviewers=("reviewer-2",),
+                reporter="reviewer-2",
+            )
+        ],
+        story_matches=False,
+        story_mismatches=[],
+        test_adequate=True,
+        test_gaps=[],
+        parse_errors=[],
+        raw_yaml={},
+    )
+
+    restored = _deserialize_review_result(_serialize_review_result(original))
+
+    assert restored is not None
+    assert len(restored.findings) == 1
+    f = restored.findings[0]
+    assert f.reporter == "reviewer-2"
+    assert f.observed == "null deref on retry"
+    assert f.expected == "runtime paths guard against null"
+    assert f.evidence == "src/foo.py:12"
+    assert f.reviewers == ("reviewer-2",)
+    assert f.severity == "P1"
 
 
 def test_forge_yaml_synced_from_project_root(tmp_path):
