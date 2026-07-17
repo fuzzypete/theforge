@@ -21,7 +21,12 @@ from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
 
-from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
+from .commit_guard import (
+    _checkpoint_commit,
+    _commits_exist_strict,
+    _has_commits_ahead_of_base,
+    _worktree_has_changes,
+)
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
@@ -949,6 +954,31 @@ def _run_dev_phase(
             else f"exit={dev_result.exit_code}"
         )
         _log_verbose(f"Dev agent failed ({_failure_detail})")
+        # ── Checkpoint-commit stranded work (#1746) ──────────────────────
+        # A killed/failed dev iteration may leave correct work as uncommitted
+        # working-tree state that every commit-reasoning mechanism below is
+        # blind to: the timeout-retry (which would restart from an empty
+        # base), the zero-commit guard (which would escalate on a diff that is
+        # not actually empty), integration, and the audit trail. The agent may
+        # already be gone (SIGKILL); the coordinator owns the worktree and is
+        # the only party still alive able to commit. Preserve whatever was
+        # produced as a checkpoint commit BEFORE any retry/escalate decision
+        # runs. Committing only happens when the worktree is genuinely dirty,
+        # so a truly empty iteration still escalates as before.
+        if _worktree_has_changes(workspace_path):
+            _checkpointed = _checkpoint_commit(workspace_path, _failure_detail)
+            if _checkpointed:
+                _log(
+                    f"  ⎇ DEV   checkpoint-committed stranded work before "
+                    f"failure handling ({_failure_detail})"
+                )
+                if logger:
+                    logger._safe_emit(
+                        "dev_checkpoint_commit",
+                        phase="DEV",
+                        iteration=state.dev_iteration,
+                        reason=_failure_detail,
+                    )
         # ── Timeout retry (iterations remaining) ─────────────────────────
         # A per-iteration timeout is a retryable failure, not a terminal
         # escalation. Running out of time is not the same event as crashing or
@@ -964,9 +994,10 @@ def _run_dev_phase(
             state.retry_reason = RetryReason.TIMEOUT_RESUME
             state.human_feedback = (
                 f"Your previous dev iteration was cut off by a timeout: {_failure_detail}. "
-                "Continue from where you left off. Commit the work you already have "
-                "before doing anything else, then narrow the remaining scope so you "
-                "finish within the time limit."
+                "Any work you had already produced was checkpoint-committed for you, so "
+                "the branch already contains it — continue from that committed state rather "
+                "than redoing it. Narrow the remaining scope so you finish within the time "
+                "limit."
             )
             record_dev_iteration_telemetry(
                 state,
