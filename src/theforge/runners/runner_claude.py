@@ -742,6 +742,7 @@ def _run_claude(
             raw={},
             profile_name=profile.name,
             model_usage=_timeout_usage,
+            failure_code="timeout",
             dev_handoff=_try_parse_handoff(partial_output),
         )
 
