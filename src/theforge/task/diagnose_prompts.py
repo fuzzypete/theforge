@@ -196,12 +196,12 @@ Queries that most often crack landing/merge investigations fast:
 - gh issue view <N> --comments             (operator notes not in the body)
 - grep -rn <keyword> {audits}              (prior runs touching this story)
 
-Code locations for the major flows:
-- Coordinator engine (phase state machine): src/theforge/coordinator/engine.py
-- Story landing / merge (land_story):        src/theforge/coordinator/completion.py
-- Audit paths + field schema:                src/theforge/coordinator/audit_substrate.py
-- Sprint scheduling + audit writers:         src/theforge/sprint/
-- Agent execution / providers:               src/theforge/runners/"""
+Locating the code under investigation:
+- The failing code lives in this project's own source tree — discover it with
+  Glob/Grep, not by assuming a fixed layout.
+- Let the audit trail point you: an audit record's `branch`, `slug`, and
+  `affected_code_path` fields, plus `git log --oneline <branch>` and
+  `git show <sha>`, take you straight to the commits a run actually touched."""
 
 
 def build_diagnose_prompt(
