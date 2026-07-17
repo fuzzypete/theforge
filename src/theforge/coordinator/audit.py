@@ -765,6 +765,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             }
             for r in state.finding_registry
         ],
+        # Non-blocking / suppressed P1s: findings that were set aside without
+        # blocking approval. Both net_new (latent, single-reviewer) and
+        # gate_contradicted (mechanically disproven by a PASS gate) belong here so
+        # a reader can see which P1s were waived and on what basis — a suppression
+        # that leaves no trace here is invisible where waived findings are looked
+        # for. The real disposition is preserved rather than flattened to net_new.
         "non_blocking_p1s": [
             {
                 "finding_id": r.finding_id,
@@ -773,10 +779,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "line": r.line,
                 "description": r.description,
                 "reporter": r.reporter,
-                "disposition": "net_new",
+                "disposition": r.disposition,
             }
             for r in state.finding_registry
-            if r.severity == "P1" and r.disposition == "net_new"
+            if r.severity == "P1" and r.disposition in ("net_new", "gate_contradicted")
         ],
         "conventions": {"soft": config.conventions_soft} if config.conventions_soft else None,
         **_build_phases_block(state, config),
