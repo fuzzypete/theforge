@@ -256,6 +256,9 @@ class RetryPolicy:
     max_dev_transport_retries: int = (
         1  # per-iteration retries on transient dev transport/provider failure
     )
+    max_plan_transport_retries: int = (
+        2  # per-attempt retries on transient plan draft/regen transport/provider failure
+    )
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
     max_plan_review_transport_retries: int = (
