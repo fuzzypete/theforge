@@ -524,22 +524,38 @@ def _apply_review_parse_fallback(
     return None
 
 
+def _story_label(task: TaskStory) -> str:
+    """Human-readable story tag for finding log lines, e.g. ``Add retry backoff (#42)``."""
+    if task.github_issue is not None:
+        return f"{task.name} (#{task.github_issue})"
+    return task.name
+
+
 def _log_review_findings(
     parsed_review: ReviewResult,
     p1_count: int,
     p2_count: int,
     review_cost: float,
     logger: StructuredLogger | None,
+    task: TaskStory,
 ) -> None:
-    """Log review summary and findings grouped by severity; emit structured review_result event."""
+    """Log review summary and findings grouped by severity; emit structured review_result event.
+
+    Each finding line surfaces the reviewer profile that produced it and the story
+    under review so operators can see which model flagged what on which story. The
+    reporter tag is always present — an unattributed finding renders ``[reviewer: ?]``
+    rather than being hidden, so the single-reviewer (no-pool) case still shows a tag.
+    """
     _log(f"  Summary: {parsed_review.summary}")
+    _story_tag = f" [story: {_story_label(task)}]"
     _findings_by_sev: dict[str, list] = {}
     for _f in parsed_review.findings:
         _findings_by_sev.setdefault(_f.severity, []).append(_f)
     for _sev in sorted(_findings_by_sev):
         for _f in _findings_by_sev[_sev]:
             _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
-            _log(f"  [{_sev}]{_loc} {_f.description}")
+            _reporter_tag = f" [reviewer: {_f.reporter or '?'}]"
+            _log(f"  [{_sev}]{_reporter_tag}{_story_tag}{_loc} {_f.description}")
     if logger:
         logger._safe_emit(
             "review_result",
@@ -1335,7 +1351,7 @@ def _run_review_phase(
         max_iterations=_adaptive_review_max,
     )
 
-    _log_review_findings(parsed_review, _p1_count, _p2_count, _review_cost, logger)
+    _log_review_findings(parsed_review, _p1_count, _p2_count, _review_cost, logger, task)
 
     # ── Early termination: consecutive zero-new-findings cycles ────────
     # Stop the review loop regardless of verdict when the reviewer converges
@@ -1778,7 +1794,7 @@ def _run_review_only_phase(
     _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
     _ro_elapsed = _pool_elapsed
 
-    _log_review_findings(parsed_review, _ro_p1, _ro_p2, _ro_cost, logger)
+    _log_review_findings(parsed_review, _ro_p1, _ro_p2, _ro_cost, logger, task)
 
     if parsed_review.verdict == "APPROVE":
         state.phase = Phase.DONE

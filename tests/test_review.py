@@ -88,6 +88,17 @@ class TestParseReviewOutput:
         assert result.test_adequate is False
         assert len(result.test_gaps) == 1
 
+    def test_reporter_stamped_on_findings(self):
+        """The reviewer profile name flows onto each parsed finding for log attribution."""
+        result = parse_review_output(VALID_REQUEST_CHANGES_YAML, reporter="reviewer-2")
+        assert len(result.findings) == 2
+        assert all(f.reporter == "reviewer-2" for f in result.findings)
+
+    def test_reporter_defaults_to_empty(self):
+        """Omitting reporter leaves the field empty rather than raising."""
+        result = parse_review_output(VALID_REQUEST_CHANGES_YAML)
+        assert all(f.reporter == "" for f in result.findings)
+
     def test_file_scope_p1_with_null_line_parses_cleanly(self):
         """File-scope P1 (file existence) with line: null preserves REQUEST_CHANGES."""
         text = (
@@ -872,6 +883,19 @@ class TestDedupFindings:
         result = _dedup_findings([("r1", f1), ("r2", f2)])
         assert len(result) == 1
         assert set(result[0].reviewers) == {"r1", "r2"}
+
+    def test_reporter_preserved_from_canonical(self):
+        """Dedup keeps the canonical finding's reporter so attribution survives merge."""
+        f = ReviewFinding(
+            severity="P1",
+            file="foo.py",
+            line=1,
+            observed="Bug A",
+            suggestion=None,
+            reporter="reviewer-a",
+        )
+        result = _dedup_findings([("reviewer-a", f)])
+        assert result[0].reporter == "reviewer-a"
 
 
 # ── Tests: merge_review_results deduplication ────────────────────────
