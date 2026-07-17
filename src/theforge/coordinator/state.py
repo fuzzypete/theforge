@@ -369,6 +369,10 @@ class CoordinatorState:
     plan_review_transport_retries: list[dict] = field(
         default_factory=list
     )  # per-retry audit trail: {"attempt": int, "reviewer": str, "retry": int, "error": str}
+    plan_review_parse_retries: list[dict] = field(
+        default_factory=list
+    )  # per-retry audit for successful-but-unparseable reviewer re-invocations:
+    # {"attempt": int, "reviewer": str, "retry": int, "errors": list[str]}
     plan_review_failures: list[dict] = field(
         default_factory=list
     )  # per-reviewer failures: {"attempt": int, "reviewer": str, "errors": list[str], ...}

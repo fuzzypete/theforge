@@ -681,6 +681,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_plan_review_transport_retries=int(
             retry_data.get("max_plan_review_transport_retries", 2)
         ),
+        max_plan_review_parse_retries=int(retry_data.get("max_plan_review_parse_retries", 2)),
         max_review_transport_retries=int(retry_data.get("max_review_transport_retries", 2)),
         review_transport_retry_backoff_seconds=float(
             retry_data.get("review_transport_retry_backoff_seconds", 8.0)

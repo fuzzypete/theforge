@@ -261,6 +261,10 @@ class RetryPolicy:
     max_plan_review_transport_retries: int = (
         2  # per-reviewer retries on transient plan-review transport/provider failure
     )
+    max_plan_review_parse_retries: int = (
+        2  # per-reviewer fresh-session retries when a plan reviewer completes but
+        # emits unparseable output (prose / non-mapping YAML root); 0 disables
+    )
     # Per-reviewer retries on transient review-pool transport/provider failure.
     max_review_transport_retries: int = 2
     # Initial backoff (seconds) for review-pool transient retry; doubled per retry.
