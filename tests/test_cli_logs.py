@@ -322,6 +322,177 @@ class TestCmdLogs:
         assert "legitimate output" in captured.out
         assert "Run re-exec'd" not in captured.err
 
+    def test_story_tail_reads_nested_sprint_log(self, tmp_path, capsys):
+        """forge logs <run> --story <slug> tails that story's nested run log."""
+        from theforge.cli import cmd_logs
+        from theforge.cli.status import _SENTINEL_EOF
+
+        run_id = "sprintrun01"
+        sprint_name = "my-sprint"
+        slug = "story-a"
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.state").write_text(
+            f"sprint_name: {sprint_name}\n"
+            "sprint_id: sid1\n"
+            "stories:\n"
+            f"  - slug: {slug}\n"
+            "    status: running\n"
+            "    phase: DEV\n",
+            encoding="utf-8",
+        )
+
+        story_dir = tmp_path / ".forge" / "logs" / sprint_name / slug
+        story_dir.mkdir(parents=True)
+        (story_dir / f"run-{run_id}.log").write_text(
+            f"story-a dev output\n{_SENTINEL_EOF}\n", encoding="utf-8"
+        )
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, story=slug)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "story-a dev output" in captured.out
+        assert slug in captured.err  # "Tailing .../story-a/run-...log"
+
+    def test_story_tail_picks_most_recent_log(self, tmp_path, capsys):
+        """Across re-exec generations, --story tails the newest run log."""
+        import os
+
+        from theforge.cli import cmd_logs
+        from theforge.cli.status import _SENTINEL_EOF
+
+        run_id = "sprintrun01"
+        sprint_name = "my-sprint"
+        slug = "story-a"
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.state").write_text(
+            f"sprint_name: {sprint_name}\nstories:\n  - slug: {slug}\n",
+            encoding="utf-8",
+        )
+
+        story_dir = tmp_path / ".forge" / "logs" / sprint_name / slug
+        story_dir.mkdir(parents=True)
+        old_log = story_dir / "run-oldgen.log"
+        old_log.write_text(f"old generation\n{_SENTINEL_EOF}\n", encoding="utf-8")
+        new_log = story_dir / "run-newgen.log"
+        new_log.write_text(f"new generation\n{_SENTINEL_EOF}\n", encoding="utf-8")
+        # Make new_log clearly newer than old_log.
+        os.utime(old_log, (1_000_000, 1_000_000))
+        os.utime(new_log, (2_000_000, 2_000_000))
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, story=slug)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "new generation" in captured.out
+        assert "old generation" not in captured.out
+
+    def test_story_tail_missing_log_returns_error(self, tmp_path, capsys):
+        """--story with a slug that has no run log yet returns an error hint."""
+        from theforge.cli import cmd_logs
+
+        run_id = "sprintrun01"
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.state").write_text(
+            "sprint_name: my-sprint\nstories:\n  - slug: story-a\n",
+            encoding="utf-8",
+        )
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, story="never-ran")
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "never-ran" in captured.err
+
+    def test_story_list_mode_shows_slugs_and_phases(self, tmp_path, capsys):
+        """forge logs <run> --story (no arg) lists stories with their phases."""
+        from theforge.cli import cmd_logs
+
+        run_id = "sprintrun01"
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.state").write_text(
+            "sprint_name: my-sprint\n"
+            "stories:\n"
+            "  - slug: story-a\n"
+            "    status: running\n"
+            "    phase: DEV\n"
+            "  - slug: story-b\n"
+            "    status: running\n"
+            "    phase: REVIEW\n",
+            encoding="utf-8",
+        )
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        # const="" — argparse yields "" when --story is passed with no value.
+        args = argparse.Namespace(run_id=run_id, story="")
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "story-a" in captured.out
+        assert "DEV" in captured.out
+        assert "story-b" in captured.out
+        assert "REVIEW" in captured.out
+
+    def test_story_list_mode_no_live_stories_errors(self, tmp_path, capsys):
+        """--story listing returns error when there is no live sprint state."""
+        from theforge.cli import cmd_logs
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id="nostate", story="")
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "No live sprint stories" in captured.err
+
     def test_reflexive_redirect_does_not_emit_reexec_notice(self, tmp_path, capsys):
         """A redirect file pointing to the current run id must not trigger a re-exec notice.
 

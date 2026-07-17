@@ -84,6 +84,27 @@ def find_live_state_path(run_id: str, project_root: Path) -> Path | None:
     return None
 
 
+def read_live_sprint_name(run_id: str, project_root: Path) -> str | None:
+    """Return the ``sprint_name`` recorded in the live state for ``run_id``.
+
+    Returns ``None`` if no live state file exists or it records no sprint name.
+    Used to resolve the nested per-story log directory
+    (``.forge/logs/<sprint_name>/<slug>/``) for ``forge logs --story``.
+    """
+    state_path = find_live_state_path(run_id, project_root)
+    if state_path is None:
+        return None
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = data.get("sprint_name")
+    return name if isinstance(name, str) and name else None
+
+
 def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
     """Scan .forge/logs/*/sprint-summary.yaml for the file containing run_id.
 
