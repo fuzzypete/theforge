@@ -852,6 +852,155 @@ def check_no_observable_done_state(title: str, body: str, labels: Iterable[str])
     )
 
 
+# --- live-run evidence detection (#1735) ------------------------------------
+#
+# Some acceptance criteria are satisfiable only by the *recorded outcome of a
+# live run* — its dollar cost, its wall-clock duration, its budget consumption,
+# or whether the artifact an agent produced during that run was complete. The
+# dev loop produces exactly one class of evidence: source changes, deterministic
+# tests, and a gate exit code, and a reviewer only ever sees the diff. A
+# criterion in the live-run class therefore cannot be satisfied by any diff the
+# loop can produce; discovering that through iteration exhaustion is the
+# expensive way to learn what the story text says for free (#1425, run
+# 0f519b0b845b: dev spent its whole iteration budget on such a criterion).
+#
+# Detection requires TWO independent signals in the *same* criterion:
+#   1. a live-run scope — the criterion is about an actual execution instance
+#      ("a diagnose run", "running the pipeline", "a live agent run"), and
+#   2. a recorded-outcome assertion — a property observable only by performing
+#      that run (cost, duration, budget consumption, produced-artifact
+#      completeness).
+# The conjunction is deliberate. A criterion that merely *mentions* runs,
+# budgets, agents, or artifacts (e.g. "the report lists each agent's cost",
+# "forge run prints warnings", "the agent produces a diff") describes an
+# inspectable source feature and must not fire (#1735 AC3).
+
+_LIVE_RUN_SCOPE_RES: tuple[re.Pattern[str], ...] = (
+    # "a diagnose run", "the run", "one sprint run" — run as an execution noun.
+    re.compile(
+        r"\b(?:a|an|the|each|one|any|every|another|this|first|second)\s+"
+        r"(?:\w+[- ]){0,3}run\b",
+        re.IGNORECASE,
+    ),
+    # "run on an issue", "run produces", "run completes" — run + outcome verb.
+    re.compile(
+        r"\brun\s+(?:on|against|of|over|produces?|produced|completes?|completed|"
+        r"yields?|results?|takes?|costs?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\brunning\b", re.IGNORECASE),
+    re.compile(r"\blive\s+(?:run|agent|invocation|execution|dispatch)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:agent|pipeline|dev|sprint|diagnose|diagnosis|end-to-end|e2e|real|actual)"
+        r"[- ]run\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bactual\s+(?:invocation|execution)\b", re.IGNORECASE),
+    re.compile(r"\bexecuting\b", re.IGNORECASE),
+    re.compile(r"\bon\s+a\s+(?:representative|real|live|sample)\b", re.IGNORECASE),
+)
+
+_LIVE_RUN_OUTCOME_RES: tuple[re.Pattern[str], ...] = (
+    # Budget consumption of an execution.
+    re.compile(r"\bwithin\s+(?:its\s+|the\s+|a\s+)?budget\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:under|over|exceeds?|exhausts?|stays?\s+(?:with)?in|consumes?|spends?)\s+"
+        r"(?:its\s+|the\s+|a\s+)?(?:\w+\s+){0,2}budget\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\biteration\s+budget\b", re.IGNORECASE),
+    re.compile(r"\bhit_limit\b", re.IGNORECASE),
+    # Completeness of an artifact produced by the run.
+    re.compile(r"\bcomplete\s+artifact\b", re.IGNORECASE),
+    re.compile(r"\bproduces?\s+(?:a\s+)?complete\b", re.IGNORECASE),
+    re.compile(r"\bartifact\s+(?:is|was)\s+complete\b", re.IGNORECASE),
+    # Dollar cost and wall-clock duration — only observable by executing.
+    re.compile(r"\$\s*\d"),
+    re.compile(r"\b\d+\s*(?:minutes?|mins?|seconds?|secs?|hours?)\b", re.IGNORECASE),
+    re.compile(r"\bwall[-\s]?clock\b", re.IGNORECASE),
+    re.compile(r"\b(?:run|agent|it)\s+(?:costs?|spent|spends?)\b", re.IGNORECASE),
+)
+
+
+def _truncate_criterion(text: str, max_len: int = 240) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 1].rstrip() + "…"
+
+
+def _criterion_needs_live_evidence(bullet: str) -> bool:
+    """True when a single AC bullet asserts the recorded outcome of a live run."""
+    if not any(p.search(bullet) for p in _LIVE_RUN_SCOPE_RES):
+        return False
+    return any(p.search(bullet) for p in _LIVE_RUN_OUTCOME_RES)
+
+
+def check_criterion_needs_live_evidence(
+    title: str, body: str, labels: Iterable[str]
+) -> Reason | None:
+    """Flag acceptance criteria satisfiable only by a live run's recorded outcome.
+
+    The dev loop produces source changes, deterministic tests, and a gate exit
+    code; the reviewer sees only the resulting diff. A criterion whose
+    satisfaction depends on the cost, duration, budget consumption, or
+    produced-artifact completeness of an actual run cannot be met by any diff —
+    it is knowable from the story text at intake, so refusing here spends no dev
+    budget to learn what iteration exhaustion would otherwise teach expensively.
+
+    Bug-format issues are exempt (they use observed/expected, not acceptance
+    criteria, and their Diagnosis section legitimately references runs and
+    evidence). The check fires only on the conjunction of a live-run scope and a
+    recorded-outcome assertion within the *same* bullet, so a criterion that
+    merely mentions runs, budgets, agents, or artifacts does not trip it.
+
+    When some criteria are satisfiable and others are not, the detail names the
+    flagged criteria and notes the satisfiable remainder, so a partly-dispatchable
+    story stays distinguishable from a wholly-undispatchable one.
+    """
+    if is_bug_format_issue(body, labels):
+        return None
+    ac = extract_ac_section(body)
+    if not ac:
+        return None
+    # Use whole-bullet blocks (continuation prose included): a criterion often
+    # states its live-run scope on the first line and its recorded-outcome
+    # assertion on a wrapped continuation line, and both signals must be seen
+    # together for the conjunction to fire.
+    bullets = extract_top_level_bullet_blocks(ac)
+    if not bullets:
+        return None
+    flagged = [b for b in bullets if _criterion_needs_live_evidence(b)]
+    if not flagged:
+        return None
+
+    satisfiable = len(bullets) - len(flagged)
+    flagged_render = "; ".join(f"'{_truncate_criterion(b)}'" for b in flagged)
+    if satisfiable > 0:
+        mix_note = (
+            f" The other {satisfiable} criterion(s) are satisfiable by ordinary source "
+            "and tests and remain dispatchable once the live-run criterion(s) are split "
+            "out."
+        )
+    else:
+        mix_note = (
+            " Every acceptance criterion here depends on a live-run outcome; the issue "
+            "is wholly undispatchable to the dev loop as written."
+        )
+    return Reason(
+        code="criterion_needs_live_evidence",
+        severity=Severity.BLOCKING,
+        detail=(
+            f"{len(flagged)} of {len(bullets)} acceptance criterion(s) depend on the "
+            "recorded outcome of a live run (cost, duration, budget consumption, or the "
+            "completeness of an agent-produced artifact) rather than on inspectable "
+            "source or deterministic tests. The dev loop emits only source changes, "
+            "deterministic tests, and a gate exit code, and a reviewer sees only the "
+            f"diff — so no diff can satisfy: {flagged_render}." + mix_note
+        ),
+    )
+
+
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z\-_]+")
 
 

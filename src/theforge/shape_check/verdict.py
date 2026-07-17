@@ -17,6 +17,7 @@ _PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
     ("epic_or_tracking", ShapeVerdict.NEEDS_OPERATOR_ACTION),
     ("untriaged_finding", ShapeVerdict.NEEDS_OPERATOR_ACTION),
     ("reopened_stale_contract", ShapeVerdict.NEEDS_OPERATOR_ACTION),
+    ("criterion_needs_live_evidence", ShapeVerdict.NEEDS_OPERATOR_ACTION),
     ("missing_type", ShapeVerdict.NEEDS_TYPE),
     ("needs_diagnosis", ShapeVerdict.NEEDS_DIAGNOSIS),
     ("diagnosis_cause_unknown", ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),

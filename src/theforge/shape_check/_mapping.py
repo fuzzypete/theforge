@@ -13,6 +13,10 @@ def map_shape(reasons: tuple[Reason, ...]) -> tuple[Shape, SuggestedAction]:
         return Shape.TRACKING_ONLY, SuggestedAction.REMOVE_FROM_SPRINT
     if "untriaged_finding" in codes:
         return Shape.NEEDS_GROOMING, SuggestedAction.CLARIFY
+    if "criterion_needs_live_evidence" in codes:
+        # Split the live-run criterion out; the satisfiable remainder is
+        # dispatchable on its own.
+        return Shape.NEEDS_GROOMING, SuggestedAction.SPLIT
     if "too_many_behavioral_clusters" in codes:
         return Shape.NEEDS_GROOMING, SuggestedAction.SPLIT
     blocking = [r for r in reasons if r.severity is Severity.BLOCKING]

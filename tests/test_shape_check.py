@@ -12,11 +12,13 @@ from theforge.shape_check import (
     Severity,
     Shape,
     ShapeResult,
+    ShapeVerdict,
     SuggestedAction,
     check,
 )
 from theforge.shape_check.classifier import classify
 from theforge.shape_check.heuristics import (
+    check_criterion_needs_live_evidence,
     check_epic_or_tracking,
     check_implementation_design_dump,
     check_implementation_plan_in_body,
@@ -675,6 +677,104 @@ class TestCheckAggregation:
         assert result.shape is Shape.RUNNABLE
         assert result.suggested_action is SuggestedAction.PROCEED
         assert result.reasons == ()
+
+
+# ----- live-run evidence criterion (#1735) ----------------------------------
+
+
+# The three acceptance criteria #1425 carried, verbatim in shape. Only the
+# third depends on the recorded outcome of a live run.
+ISSUE_1425_AC = textwrap.dedent(
+    """\
+    ## What
+    Enrich the diagnose prompt with environment context.
+
+    ## Acceptance criteria
+    - The diagnose prompt includes an environment briefing section describing
+      the runtime, package layout, and available tooling.
+    - The briefing is templated from project structure, not hardcoded.
+    - A diagnose run on an issue with a sparse body (only observed/expected, no
+      evidence pointers) produces a complete artifact within budget on a
+      representative landing-failure bug.
+    """
+)
+
+
+class TestCriterionNeedsLiveEvidence:
+    def _reason(self, body: str, labels=("enhancement",)):
+        return check_criterion_needs_live_evidence("Some feature", body, list(labels))
+
+    def test_flags_live_run_outcome_criterion(self):
+        body = textwrap.dedent(
+            """\
+            ## Acceptance Criteria
+            - A diagnose run produces a complete artifact within budget on a
+              representative landing-failure bug.
+            """
+        )
+        r = self._reason(body)
+        assert r is not None
+        assert r.code == "criterion_needs_live_evidence"
+        assert r.severity is Severity.BLOCKING
+
+    def test_does_not_fire_on_mere_mention_of_runs_budgets_agents_artifacts(self):
+        # Each bullet mentions a trigger noun but describes an inspectable
+        # source feature, not the recorded outcome of a live run (AC3).
+        body = textwrap.dedent(
+            """\
+            ## Acceptance Criteria
+            - `forge run` prints config warnings at startup.
+            - The command respects the `--budget` flag and stops when exceeded.
+            - The report lists each agent's cost and duration.
+            - The dev agent produces a diff and a gate exit code.
+            - Running the test suite passes.
+            """
+        )
+        assert self._reason(body) is None
+
+    def test_1425_replay_flags_only_the_live_run_criterion(self):
+        r = self._reason(ISSUE_1425_AC)
+        assert r is not None
+        # The flagged criterion is named; the two satisfiable ones are not.
+        assert "produces a complete artifact within budget" in r.detail
+        assert "environment briefing section" not in r.detail
+        assert "templated from project structure" not in r.detail
+        assert "1 of 3" in r.detail
+        # A mix stays distinguishable: the satisfiable remainder is called out.
+        assert "remain dispatchable" in r.detail
+
+    def test_wholly_undispatchable_is_distinguishable_from_mix(self):
+        body = textwrap.dedent(
+            """\
+            ## Acceptance Criteria
+            - A diagnose run produces a complete artifact within budget.
+            - A sprint run stays within its iteration budget and costs under $5.
+            """
+        )
+        r = self._reason(body)
+        assert r is not None
+        assert "2 of 2" in r.detail
+        assert "wholly undispatchable" in r.detail
+        assert "remain dispatchable" not in r.detail
+
+    def test_bug_format_issue_is_exempt(self):
+        body = textwrap.dedent(
+            """\
+            ## What happened
+            A diagnose run produced an incomplete artifact within budget.
+
+            ## What was expected
+            The run should complete within budget.
+            """
+        )
+        assert self._reason(body, labels=["bug"]) is None
+
+    def test_check_aggregation_routes_to_split_and_operator_action(self):
+        result = check("Enrich diagnose prompt", ISSUE_1425_AC, ["enhancement"])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.suggested_action is SuggestedAction.SPLIT
+        assert any(r.code == "criterion_needs_live_evidence" for r in result.reasons)
+        assert result.verdict is ShapeVerdict.NEEDS_OPERATOR_ACTION
 
 
 # ----- classifier mode tests ------------------------------------------------

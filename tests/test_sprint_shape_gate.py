@@ -35,6 +35,20 @@ Users need a way to bypass the gate.
 
 _BAD_BODY = "just a one-liner, no acceptance criteria, no structure"
 
+# A story whose third acceptance criterion depends on the recorded outcome of a
+# live run — knowable at intake, unsatisfiable by any diff (#1735 / #1425).
+_LIVE_EVIDENCE_BODY = """## What
+
+Enrich the diagnose prompt with environment context.
+
+## Acceptance criteria
+
+- The diagnose prompt includes an environment briefing section.
+- The briefing is templated from project structure, not hardcoded.
+- A diagnose run on a sparse-body issue produces a complete artifact within
+  budget on a representative landing-failure bug.
+"""
+
 
 def _fake_detail(body: str, labels: list[str], title: str = "Some issue"):
     def _fetch(_number, _project_root):
@@ -99,6 +113,36 @@ def test_label_skip_falls_back_to_label_detail_when_live_check_is_runnable(
     assert entry.source == "label"
     assert entry.reason_codes == ("needs_grooming_label",)
     assert entry.detail == "issue carries 'needs-grooming' label"
+
+
+# ── Live-run evidence criterion (#1735) ─────────────────────────────────────
+
+
+def test_live_run_evidence_criterion_is_not_dispatched(tmp_path: Path) -> None:
+    """A story carrying a live-run-outcome criterion must not silently dispatch.
+
+    Seam test across the sprint-entry boundary: the criterion is detectable
+    from the story text, so the gate keeps the issue out of the dev loop and
+    surfaces which criterion the loop cannot satisfy before any dev budget is
+    spent.
+    """
+    issues = [{"number": 1425, "title": "Enrich diagnose prompt"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_LIVE_EVIDENCE_BODY, ["enhancement"]),
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.source == "local_check"
+    assert "criterion_needs_live_evidence" in entry.reason_codes
+    assert entry.verdict == "needs_operator_action"
+    # The operator is told which criterion cannot be satisfied and why.
+    assert "complete artifact within" in entry.detail
+    assert "remain dispatchable" in entry.detail
 
 
 # ── Intake-remediated label suppression (re-exec carry) ─────────────────────
