@@ -205,6 +205,99 @@ def _retry_transient_plan_review_failures(
     return retried_results, retry_events
 
 
+def _plan_review_parse_errors(result: "AgentResult") -> list[str]:
+    """Return parse-error strings for a reviewer completion, or [] if it parses.
+
+    Only successful-at-transport completions are eligible: transport failures are
+    owned by _retry_transient_plan_review_failures and must not be double-counted
+    here as parse failures.
+    """
+    if not result.success:
+        return []
+    parsed = parse_plan_review_output(result.output or "")
+    return [str(e) for e in parsed.parse_errors]
+
+
+def _retry_parse_failed_plan_reviews(
+    *,
+    prompt: str,
+    profiles: list[ModelProfile],
+    results: list["AgentResult"],
+    state: CoordinatorState,
+    config: ForgeConfig,
+    workspace_path: Path,
+    attempt: int,
+) -> tuple[list["AgentResult"], list[dict]]:
+    """Retry plan reviewers whose completion succeeded but produced unparseable output.
+
+    A reviewer that returns success at the transport level but emits prose or a
+    non-mapping YAML root is a transient *agent* failure, not a story failure. The
+    transport-retry path (_retry_transient_plan_review_failures) never reaches these
+    because it gates on result.success == False. Mirror it for the success-but-
+    unparseable case: re-invoke that specific reviewer in a fresh session (a stale
+    session anchors on its own bad output) up to max_plan_review_parse_retries times
+    before the minimum-reviewers gate is evaluated.
+
+    Each pre-retry result is appended to state.plan_review_results so cost and the
+    per-reviewer audit reconstruction stay consistent with the transport path.
+    """
+    max_retries = config.retry.max_plan_review_parse_retries
+    if max_retries <= 0:
+        return results, []
+
+    retried_results = list(results)
+    retry_events: list[dict] = []
+
+    for index, (profile, result) in enumerate(zip(profiles, retried_results)):
+        errors = _plan_review_parse_errors(result)
+        if not errors:
+            continue
+
+        retry_count = 0
+        current = result
+        while retry_count < max_retries and errors:
+            state.plan_review_results.append(current)
+            retry_count += 1
+            _log(
+                f"  ↻ PLAN_REVIEW   {profile.name} unparseable output "
+                f"(parse retry {retry_count}/{max_retries}): {'; '.join(errors)[:120]}"
+            )
+            retried = run_agent(
+                prompt=prompt,
+                profile=profile,
+                working_dir=workspace_path,
+                quiet=True,
+                secrets=config.secrets,
+                session_id=None,  # fresh session — prior anchors on its own bad output
+            )
+            if retried.session_id:
+                state.plan_review_session_ids[profile.name] = retried.session_id
+            _write_log_artifact(
+                state.log_dir,
+                f"plan-review/attempt-{attempt}/{profile.name}-parse-retry{retry_count}.yaml",
+                retried.output or "",
+            )
+            retry_events.append(
+                {
+                    "attempt": attempt,
+                    "reviewer": profile.name,
+                    "retry": retry_count,
+                    "errors": list(errors),
+                }
+            )
+            current = retried
+            errors = _plan_review_parse_errors(current)
+
+        if retry_count:
+            if errors:
+                _log(f"  ✗ PLAN_REVIEW   {profile.name} parse retries exhausted")
+            else:
+                _log(f"  ✓ PLAN_REVIEW   {profile.name} parse retry {retry_count} succeeded")
+        retried_results[index] = current
+
+    return retried_results, retry_events
+
+
 def _clean_stale_plan_files(workspace_path: Path) -> None:
     """Remove stale plan artifacts before starting a fresh PLAN phase."""
     for plan_path in plan_paths(workspace_path):
@@ -638,6 +731,16 @@ def _run_plan_agent_review(
             attempt=_attempt,
         )
         state.plan_review_transport_retries.extend(_transport_retry_events)
+        pr_results, _parse_retry_events = _retry_parse_failed_plan_reviews(
+            prompt=pr_prompt,
+            profiles=par_profiles,
+            results=pr_results,
+            state=state,
+            config=config,
+            workspace_path=workspace_path,
+            attempt=_attempt,
+        )
+        state.plan_review_parse_retries.extend(_parse_retry_events)
         _pr_elapsed = time.monotonic() - _pr_start
         state.plan_review_durations.append(_pr_elapsed)
 
@@ -685,7 +788,7 @@ def _run_plan_agent_review(
                     _failure_kind = _res.failure_code or "generic"
                 _retry_count = sum(
                     1
-                    for _event in _transport_retry_events
+                    for _event in (*_transport_retry_events, *_parse_retry_events)
                     if _event["attempt"] == _attempt and _event["reviewer"] == _prof.name
                 )
                 _log(

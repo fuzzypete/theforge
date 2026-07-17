@@ -163,8 +163,11 @@ def _build_plan_review_per_reviewer(state: CoordinatorState, config: ForgeConfig
             for result in state.plan_review_results
         ]
 
+    # Both retry paths append a pre-retry result to state.plan_review_results per
+    # retry, so the per-attempt chunk size in plan_review_results is
+    # pool_size + transport_retries + parse_retries for that attempt.
     retry_counts_by_attempt: dict[int, int] = {}
-    for event in state.plan_review_transport_retries:
+    for event in (*state.plan_review_transport_retries, *state.plan_review_parse_retries):
         attempt = event.get("attempt")
         if isinstance(attempt, int):
             retry_counts_by_attempt[attempt] = retry_counts_by_attempt.get(attempt, 0) + 1
@@ -670,6 +673,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 **(
                     {"transport_retries": state.plan_review_transport_retries}
                     if state.plan_review_transport_retries
+                    else {}
+                ),
+                **(
+                    {"parse_retries": state.plan_review_parse_retries}
+                    if state.plan_review_parse_retries
                     else {}
                 ),
                 **(
