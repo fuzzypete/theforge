@@ -604,7 +604,13 @@ class ForgeConfig:
     stuck_detection: StuckDetectionConfig = field(default_factory=StuckDetectionConfig)
     models_budget_usd: float | None = None  # set when models: key is used (v0.8 path)
     models_overrides: dict[str, Any] | None = None  # raw overrides: dict from v0.8 YAML
-    model_registry: dict[str, AgentSpec] = field(default_factory=dict)
+    # None = no registry supplied (a directly-constructed config that never
+    # populated one) → consumers fall back to the built-in default registry.
+    # An explicit {} is an *intentional* empty registry and is honored as-is
+    # (every model key is unknown → resolution fails clearly). Keeping this
+    # Optional is what lets the two cases be told apart; the load path always
+    # sets a populated dict (built-in + forge.yaml overlay).
+    model_registry: dict[str, AgentSpec] | None = None
     model_registry_sources: dict[str, str] = field(default_factory=dict)
     custom_models: tuple[str, ...] = ()
     diagnose: DiagnoseConfig = field(default_factory=DiagnoseConfig)

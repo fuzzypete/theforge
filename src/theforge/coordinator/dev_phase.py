@@ -898,7 +898,9 @@ def _run_dev_phase(
             if not state.dev_escalated:
                 _old_model = config.dev_profile.model
                 if config.retry.auto_model_escalation and config.models is not None:
-                    _registry = config.model_registry or None
+                    # Registry passed as-is: an explicitly empty {} stays empty
+                    # instead of collapsing to the built-in default (`... or None`).
+                    _registry = config.model_registry
                     _curr_key = _find_registry_key_for_profile(
                         config.dev_profile, registry=_registry
                     )

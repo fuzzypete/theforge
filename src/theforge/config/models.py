@@ -523,6 +523,9 @@ def model_info_view(
     With ``registry=None`` returns the built-in MODEL_REGISTRY. Pass
     ``ForgeConfig.model_registry`` (the merged built-in + forge.yaml overlay)
     so consumers see user-declared custom models as first-class entries.
+
+    An explicitly empty ``{}`` is honored as-is and returns an empty view — it is
+    not treated as "absent" (only ``None`` selects the built-in default).
     """
     if registry is None:
         return MODEL_REGISTRY
@@ -568,8 +571,12 @@ def resolve_agent_spec(
     Raises ValueError for any key not present in AGENT_REGISTRY — there is no
     provider-prefix-to-CLI guessing. To support a new model, add an explicit
     registry entry.
+
+    ``registry=None`` means "no registry supplied — use the built-in default."
+    An explicitly empty ``{}`` is honored as-is: every key is unknown, so this
+    raises ValueError rather than silently substituting the built-in registry.
     """
-    effective_registry = registry or AGENT_REGISTRY
+    effective_registry = AGENT_REGISTRY if registry is None else registry
     if model_key not in effective_registry:
         known = sorted(effective_registry)
         raise ValueError(

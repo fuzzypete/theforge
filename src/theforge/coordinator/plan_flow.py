@@ -909,7 +909,9 @@ def _run_plan_agent_review(
             state.plan_regen_count >= config.retry.plan_escalation_threshold
             and not state.plan_escalated
         ):
-            _registry = config.model_registry or None
+            # Registry passed as-is: an explicitly empty {} stays empty instead
+            # of collapsing to the built-in default (`... or None`).
+            _registry = config.model_registry
             _curr_key = _find_registry_key_for_profile(plan_profile, registry=_registry)
             if _curr_key is not None and config.models is not None:
                 _next_key = _escalate_dev_model(_curr_key, config.models, registry=_registry)

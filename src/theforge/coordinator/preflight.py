@@ -866,7 +866,10 @@ def _apply_complexity_adaptation(
     if norm is None:
         return config
 
-    _registry = config.model_registry or None
+    # Pass the registry through as-is: an explicitly empty {} must stay empty so
+    # downstream resolution fails clearly rather than silently substituting the
+    # built-in default (which `... or None` would trigger). See config.models.
+    _registry = config.model_registry
     pool_entries = _build_pool_entries(config.models, registry=_registry)
     if not pool_entries:
         return config

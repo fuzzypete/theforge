@@ -399,7 +399,7 @@ def _format_config(
         if config.custom_models:
             custom_details = []
             for model_id in config.custom_models:
-                spec = config.model_registry.get(model_id)
+                spec = (config.model_registry or {}).get(model_id)
                 if spec is None:
                     continue
                 provider_label, transport_label = _split_provider_transport(
