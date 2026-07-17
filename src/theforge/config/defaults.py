@@ -93,6 +93,7 @@ budget_usd: 50.0
 retry:
   max_dev_iterations: 3    # retries within a review cycle
   max_dev_transport_retries: 1  # retry one transient dev provider failure
+  max_plan_transport_retries: 2  # retry transient plan draft/regen provider failures
   max_review_cycles: 2     # full dev→review loops before escalation
 
 context:

@@ -676,6 +676,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     retry = RetryPolicy(
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
         max_dev_transport_retries=int(retry_data.get("max_dev_transport_retries", 1)),
+        max_plan_transport_retries=int(retry_data.get("max_plan_transport_retries", 2)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
         max_plan_review_transport_retries=int(
