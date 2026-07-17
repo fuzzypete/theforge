@@ -17,6 +17,7 @@ from theforge.cli.shared import (
     _find_config,
     _write_audit,
     check_run_preconditions,
+    load_config_checked,
 )
 from theforge.config import load_config
 from theforge.coordinator.engine import (
@@ -69,7 +70,8 @@ def cmd_run(args: "argparse.Namespace") -> int:
         return 1
 
     config = apply_base_branch_override(
-        load_config(config_path), getattr(args, "base_branch", None)
+        load_config_checked(config_path, loader=load_config),
+        getattr(args, "base_branch", None),
     )
 
     # --dev-model override: provider/model@base_url
