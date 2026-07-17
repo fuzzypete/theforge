@@ -103,6 +103,9 @@ def _handle_exception(
             exit_code=-1,
             raw={},
             profile_name=profile.name,
+            # A timeout is a distinct, retryable failure kind — classify it so
+            # the coordinator can hand back to dev instead of escalating.
+            failure_code="timeout",
         )
     if isinstance(exc, FileNotFoundError):
         return AgentResult(

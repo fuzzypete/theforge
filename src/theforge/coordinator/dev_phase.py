@@ -857,7 +857,10 @@ def _run_dev_phase(
         if any(result.cost_usd is not None for result in _dev_results_this_iteration)
         else "unknown"
     )
-    _log(f"  ✓ DEV   {_dev_cost_str}  {_fmt_duration(_dev_elapsed)}")
+    # Glyph reflects the actual outcome: a killed or crashed iteration must not
+    # be rendered with the success glyph one line above the failure it caused.
+    _dev_glyph = "✓" if dev_result.success else "✗"
+    _log(f"  {_dev_glyph} DEV   {_dev_cost_str}  {_fmt_duration(_dev_elapsed)}")
     if logger:
         logger._safe_emit(
             "phase_end",
@@ -978,7 +981,56 @@ def _run_dev_phase(
             )
 
     if not dev_result.success:
-        _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
+        _is_timeout = dev_result.failure_code == "timeout"
+        # The signal number records only what was done to the process, not what
+        # went wrong. When the runner already explained the failure in words
+        # (e.g. "TIMEOUT: Agent exceeded 900s limit"), surface that instead of
+        # the raw exit code so the operator is not left to reconstruct a fact
+        # the system already had.
+        _failure_detail = (
+            dev_result.output.strip()
+            if _is_timeout and dev_result.output and dev_result.output.strip()
+            else f"exit={dev_result.exit_code}"
+        )
+        _log_verbose(f"Dev agent failed ({_failure_detail})")
+        # ── Timeout retry (iterations remaining) ─────────────────────────
+        # A per-iteration timeout is a retryable failure, not a terminal
+        # escalation. Running out of time is not the same event as crashing or
+        # producing wrong work: it is ordinarily retryable and arrives with its
+        # own explanation. Where dev iterations remain, spend one and re-enter
+        # dev with the timeout and its limit stated in context rather than
+        # ending the story with unused budget. The empty-diff guard's job is to
+        # keep a zero-commit run from reaching APPROVE — it must not also become
+        # the thing that declares a story terminal while a safe outcome (another
+        # attempt) remained available. #1216 established this for the gate; it
+        # applies equally to the dev phase.
+        if _is_timeout and not state.budget.is_exhausted():
+            state.retry_reason = RetryReason.TIMEOUT_RESUME
+            state.human_feedback = (
+                f"Your previous dev iteration was cut off by a timeout: {_failure_detail}. "
+                "Continue from where you left off. Commit the work you already have "
+                "before doing anything else, then narrow the remaining scope so you "
+                "finish within the time limit."
+            )
+            record_dev_iteration_telemetry(
+                state,
+                workspace_path,
+                max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                gate_result="DEV_TIMEOUT",
+                is_timeout=True,
+            )
+            _log(
+                f"  ✗ DEV   TIMEOUT  (iter={state.dev_iteration} → retrying dev; "
+                f"{state.budget.remaining()} iteration(s) remaining)"
+            )
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="DEV",
+                    outcome="timeout_retry",
+                    iteration=state.dev_iteration,
+                )
+            return None
         # ── Zero-commit guard (any failed dev iteration) ─────────────────
         # If the dev agent exited with failure (non-zero or signal-killed) and
         # the worktree has no new commits ahead of base, escalate immediately
@@ -986,7 +1038,7 @@ def _run_dev_phase(
         if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
             state.phase = Phase.ESCALATE
             state.error = (
-                f"Dev agent failed (exit={dev_result.exit_code}) and produced no commits "
+                f"Dev agent failed ({_failure_detail}) and produced no commits "
                 "ahead of base — escalating to avoid an empty-diff APPROVE"
             )
             record_dev_iteration_telemetry(

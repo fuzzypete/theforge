@@ -456,7 +456,14 @@ def _coordinator_loop(
                     message=state.error,
                 )
 
-            if state.retry_reason == RetryReason.MAX_ITERATIONS_NO_SUBMIT:
+            # A dev-phase timeout retry (iterations remaining) re-enters DEV
+            # directly rather than routing through VALIDATE — the timed-out
+            # iteration may have produced no commits, and validating an
+            # unchanged worktree is pointless. Mirror the MAX_ITERATIONS retry.
+            if state.retry_reason in (
+                RetryReason.MAX_ITERATIONS_NO_SUBMIT,
+                RetryReason.TIMEOUT_RESUME,
+            ):
                 continue
 
             # ── Scrub forge-artifact commits from branch history ──
