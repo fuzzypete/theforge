@@ -16,27 +16,40 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from theforge.config import (
+sys.path.insert(0, str(Path(__file__).parent))
+
+from coord_test_helpers import (  # noqa: E402
+    _PREFLIGHT_RESULT,
+    APPROVE_REVIEW,
+    _make_agent_result,
+    _make_task,
+    _shell_with_gate,
+)
+
+from theforge.config import (  # noqa: E402
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
     ForgeConfig,
     LogConfig,
+    ModelProfile,
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.state import (
+from theforge.coordinator.engine import run_task  # noqa: E402
+from theforge.coordinator.state import (  # noqa: E402
     CoordinatorResult,
     CoordinatorState,
     Phase,
     RetryReason,
 )
-from theforge.runners import AgentResult
-from theforge.task import TaskStory
+from theforge.runners import AgentResult  # noqa: E402
+from theforge.task import TaskStory  # noqa: E402
 
 _TIMEOUT_OUTPUT = "TIMEOUT: Agent exceeded 900s limit"
 
@@ -203,3 +216,114 @@ def test_killed_iteration_not_rendered_with_success_glyph(tmp_path: Path) -> Non
     phase_line = next(m for m in dev_lines if "m " in m or "s" in m)
     assert "✓ DEV" not in phase_line
     assert "✗ DEV" in phase_line
+
+
+# ── Seam test: timeout retry through the engine loop into a 2nd DEV ──────
+
+
+def _make_seam_config(tmp_path: Path) -> ForgeConfig:
+    dev_profile = ModelProfile(
+        name="dev",
+        cli="claude",
+        model="sonnet",
+        budget_usd=30.0,
+        timeout_seconds=900,
+        timeout_medium_seconds=1200,
+        timeout_large_seconds=1800,
+        allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    )
+    review_profile = ModelProfile(
+        name="claude-opus",
+        cli="claude",
+        model="opus",
+        budget_usd=10.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    )
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=dev_profile,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[review_profile],
+        synthesis_profile=None,
+        retry=RetryPolicy(
+            max_dev_iterations=3,
+            max_review_cycles=2,
+            auto_model_escalation=True,
+        ),
+        models=["claude/sonnet", "claude/opus"],
+    )
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.util._run_shell")
+def test_timeout_retry_reenters_dev_through_engine_loop(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+) -> None:
+    """Full DEV→(retry)→DEV seam: a dev timeout on the first call re-enters DEV
+    directly (skipping VALIDATE) and the second DEV prompt carries the timeout
+    text and its limit.
+
+    This is the engine-level regression the unit tests above cannot cover: the
+    timeout must flow through run_task's coordinator loop into a *second* DEV
+    invocation, not merely be handled at the dev-phase boundary in isolation.
+    """
+    config = _make_seam_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    # The retry path skips VALIDATE after the timeout, so the gate only runs
+    # once — after the second (successful) DEV call.
+    mock_shell.side_effect = _shell_with_gate(workspace, ["PASS"])
+
+    dev_calls: list[dict] = []
+
+    def dev_side_effect(**kwargs):
+        dev_calls.append({"prompt": kwargs.get("prompt"), "profile": kwargs.get("profile")})
+        if len(dev_calls) == 1:
+            # First call: killed at its per-iteration timeout (SIGKILL, exit -9).
+            return AgentResult(
+                success=False,
+                output=_TIMEOUT_OUTPUT,
+                session_id="sess-1",
+                cost_usd=0.10,
+                exit_code=-9,
+                raw={},
+                profile_name="dev",
+                failure_code="timeout",
+            )
+        # Second call: continues from the timeout and succeeds.
+        return _make_agent_result(success=True, output="Done.", session_id="sess-1")
+
+    mock_preflight.return_value = _PREFLIGHT_RESULT
+    mock_dev.side_effect = dev_side_effect
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+    ]
+
+    result = run_task(config, task)
+
+    # ── Boundary: the run continues rather than ending on the timeout ──
+    assert result.success is True, f"Expected success, got: {result.message}"
+
+    # ── Boundary: exactly two DEV invocations occurred ─────────────────
+    assert len(dev_calls) == 2, f"Expected 2 dev calls, got {len(dev_calls)}"
+
+    # ── Boundary: the timeout and its limit reach the 2nd DEV prompt ───
+    second_prompt = dev_calls[1]["prompt"] or ""
+    assert "TIMEOUT" in second_prompt
+    assert "900s" in second_prompt
+
+    # ── Boundary: this was the dev-phase timeout retry, NOT the VALIDATE
+    # model-escalation path — no model escalation should have fired. ───
+    assert result.state.timeout_escalation_used is False
