@@ -135,13 +135,14 @@ def _forge_relpath(parts: tuple[str, ...]) -> str:
 def build_environment_briefing() -> str:
     """Return the ``== ENVIRONMENT ==`` orientation section for the prompt.
 
-    The audit/log paths and the landing-field semantics are derived from the
-    modules that own them — :mod:`theforge.coordinator.audit_substrate` for the
-    canonical audit paths and :mod:`theforge.coordinator.landing_record` for the
-    landing outcomes — rather than being hardcoded here. Adding a new audit
-    path constant or a new landing ``landing_path`` -> outcome mapping in code
-    therefore surfaces in the briefing automatically, with no hand-edit to this
-    template (issue #1425 AC2).
+    The audit paths and the landing-field semantics are derived from the modules
+    that own them — :data:`theforge.coordinator.audit_substrate.AUDIT_PATH_REGISTRY`
+    for the canonical audit paths and
+    :data:`theforge.coordinator.landing_record.LANDING_OUTCOME_BY_PATH` for the
+    landing outcomes — rather than being hardcoded here. The audit-path block is
+    rendered by *iterating* the registry, so adding a new audit path (or a new
+    landing ``landing_path`` -> outcome mapping) in code surfaces in the briefing
+    automatically, with no hand-edit to this template (issue #1425 AC2).
 
     Imports are function-local so the low-dependency prompt module does not pull
     the coordinator's audit stack in at import time.
@@ -151,11 +152,11 @@ def build_environment_briefing() -> str:
         LANDING_OUTCOME_BY_PATH,
     )
 
-    substrate = _forge_relpath(audit_substrate.SUBSTRATE_RELPATH)
-    runs = _forge_relpath(audit_substrate.RUNS_RELPATH)
-    history = _forge_relpath(audit_substrate.HISTORY_RELPATH)
     audits = _forge_relpath(audit_substrate.AUDITS_RELPATH)
 
+    audit_path_lines = "\n".join(
+        f"- {info.label}: {info.display}" for info in audit_substrate.AUDIT_PATH_REGISTRY
+    )
     landing_lines = "\n".join(
         f"    - landing_path '{path}' -> landing.outcome '{outcome}'"
         for path, outcome in LANDING_OUTCOME_BY_PATH.items()
@@ -169,12 +170,7 @@ a fixed budget, so start from the project's known layout instead of
 rediscovering it. All orchestration state lives under `.forge/`.
 
 Audit trail (where run and sprint history live):
-- Audit index (SQLite, canonical, queryable): {substrate}
-- Per-run audit records (JSON, one file per run): {runs}/*.json
-- Legacy cross-run audit history (JSONL — superseded by the index above but
-  still present on older repos): {history}
-- Sprint audit + summary YAML: {audits}/sprint-audit.yaml and
-  {audits}/run-<run-id>-sprint-audit.yaml
+{audit_path_lines}
 - Sprint run log (full agent transcript): .forge/logs/<sprint-name>/run-<run-id>.log
 - Per-story audit: .forge/logs/<sprint-name>/<slug>/audit.yaml
 - Sprint state: .forge/sprints/<sprint-id>/state.yaml

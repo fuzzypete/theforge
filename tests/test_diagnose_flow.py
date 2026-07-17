@@ -239,18 +239,34 @@ class TestEnvironmentBriefing:
         assert "landing_status" in briefing
         assert "outcome_code" in briefing
 
-    def test_audit_paths_are_templated_from_substrate_constants(self):
-        # AC2: paths are derived from the code that owns them, not re-typed.
+    def test_audit_paths_render_from_the_owning_registry(self):
+        # AC2: every path in the registry owned by audit_substrate appears in
+        # the briefing, with its human label — the briefing iterates the
+        # registry rather than repeating a parallel hand-maintained list.
         from theforge.coordinator import audit_substrate
 
         briefing = build_environment_briefing()
-        for parts in (
-            audit_substrate.SUBSTRATE_RELPATH,
-            audit_substrate.RUNS_RELPATH,
-            audit_substrate.HISTORY_RELPATH,
-            audit_substrate.AUDITS_RELPATH,
-        ):
-            assert "/".join(parts) in briefing
+        assert audit_substrate.AUDIT_PATH_REGISTRY  # guard: registry is non-empty
+        for info in audit_substrate.AUDIT_PATH_REGISTRY:
+            assert info.display in briefing
+            assert info.label in briefing
+
+    def test_new_registry_entry_surfaces_without_editing_the_prompt(self, monkeypatch):
+        # AC2 (the crux): appending a new audit path to the registry makes it
+        # appear in the diagnose briefing with no edit to the prompt builder.
+        from theforge.coordinator import audit_substrate
+
+        extra = audit_substrate.AuditPathInfo(
+            "Brand new audit surface", (".forge", "audits", "newly_added.db")
+        )
+        monkeypatch.setattr(
+            audit_substrate,
+            "AUDIT_PATH_REGISTRY",
+            (*audit_substrate.AUDIT_PATH_REGISTRY, extra),
+        )
+        briefing = build_environment_briefing()
+        assert ".forge/audits/newly_added.db" in briefing
+        assert "Brand new audit surface" in briefing
 
     def test_landing_semantics_are_templated_from_landing_record(self):
         # AC2: adding a new landing_path -> outcome mapping in landing_record

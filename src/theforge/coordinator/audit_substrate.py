@@ -51,6 +51,46 @@ AUDITS_RELPATH = (".forge", "audits")
 SECRETS_RELPATH = (".forge", ".env")
 
 
+@dataclass(frozen=True)
+class AuditPathInfo:
+    """One canonical audit-trail path plus a human label for briefings.
+
+    ``relpath`` is the repo-relative path-part tuple (the same shape as the
+    ``*_RELPATH`` constants); ``suffix`` is an optional literal appended after
+    the joined path when rendered (e.g. a ``/*.json`` glob) so the display
+    string can be more specific than the bare directory.
+    """
+
+    label: str
+    relpath: tuple[str, ...]
+    suffix: str = ""
+
+    @property
+    def display(self) -> str:
+        return "/".join(self.relpath) + self.suffix
+
+
+# Iterable registry of the canonical audit-trail paths, owned here so that
+# consumers (e.g. the diagnose environment briefing) render the *full* set by
+# iterating this tuple instead of re-listing constants by hand. Adding a new
+# audit path is a one-line append here and it surfaces everywhere the registry
+# is rendered — no downstream prompt/template edit required (issue #1425 AC2).
+AUDIT_PATH_REGISTRY: tuple[AuditPathInfo, ...] = (
+    AuditPathInfo("Audit index (SQLite, canonical, queryable)", SUBSTRATE_RELPATH),
+    AuditPathInfo("Per-run audit records (JSON, one file per run)", RUNS_RELPATH, "/*.json"),
+    AuditPathInfo(
+        "Legacy cross-run audit history (JSONL — superseded by the index above "
+        "but still present on older repos)",
+        HISTORY_RELPATH,
+    ),
+    AuditPathInfo(
+        "Sprint audit + summary YAML (also run-<run-id>-sprint-audit.yaml)",
+        AUDITS_RELPATH,
+        "/sprint-audit.yaml",
+    ),
+)
+
+
 class SubstrateError(Exception):
     """Base class for substrate-related errors."""
 
