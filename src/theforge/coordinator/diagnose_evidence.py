@@ -42,6 +42,12 @@ _MAX_LOG_TAIL_LINES = 30  # run/sprint logs: last N lines only
 _MAX_FILE_HEAD_LINES = 40  # generic audit/state files: first N lines
 _MAX_EXCERPT_CHARS = 4000  # hard char cap on any single excerpt body
 _MAX_ITEMS_PER_KIND = 5  # cap distinct references loaded per kind
+# gh-backed loaders cost a subprocess (up to 30s each) per *attempted* reference
+# whether or not it resolves. _MAX_ITEMS_PER_KIND only bounds *successful* loads,
+# so an issue body citing many unresolved branches/#NNNN could still fire one gh
+# call per reference before the agent starts. This caps attempts (resolved or
+# not) so the pre-load step's wall-clock is bounded regardless of body length.
+_MAX_GH_ATTEMPTS_PER_KIND = 5
 _MAX_TOTAL_EVIDENCE_CHARS = 20000  # cap on the whole rendered block body
 _MAX_HISTORY_LINE_MATCHES = 2  # history.jsonl lines loaded per run id
 _HISTORY_LINE_CHAR_CAP = 800  # per-line truncation of a history match
@@ -283,7 +289,10 @@ def _run_gh(args: list[str], project_root: Path) -> str | None:
 def _load_branch_history(branches: list[str], project_root: Path) -> list[_Item]:
     """For each cited branch, load its PR history via ``gh pr list --head``."""
     items: list[_Item] = []
-    for branch in branches:
+    # Bound attempts, not just successes: every iteration fires a gh call
+    # regardless of whether it resolves, so an unresolved-heavy body must not
+    # spend one subprocess timeout per reference.
+    for branch in branches[:_MAX_GH_ATTEMPTS_PER_KIND]:
         if len(items) >= _MAX_ITEMS_PER_KIND:
             break
         out = _run_gh(
@@ -316,11 +325,15 @@ def _load_pr_issue_refs(
 ) -> list[_Item]:
     """Load a bounded summary for each cited #NNNN (skipping the issue itself)."""
     items: list[_Item] = []
-    for num in numbers:
+    # Drop the self-issue first (it costs no gh call), then bound gh *attempts*:
+    # each remaining reference fires 1-2 gh subprocesses whether or not it
+    # resolves, so a body citing many unresolved #NNNN must not spend one
+    # timeout per reference before the agent starts.
+    self_ref = str(self_issue_number) if self_issue_number is not None else None
+    candidates = [num for num in numbers if num != self_ref]
+    for num in candidates[:_MAX_GH_ATTEMPTS_PER_KIND]:
         if len(items) >= _MAX_ITEMS_PER_KIND:
             break
-        if self_issue_number is not None and num == str(self_issue_number):
-            continue
         # A #NNNN can be a PR or an issue. Try PR first (richer landing signal),
         # fall back to the issue view. Both fail open.
         pr_out = _run_gh(

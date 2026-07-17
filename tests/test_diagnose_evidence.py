@@ -168,6 +168,34 @@ class TestGhBackedEvidence:
             )
         assert ev.is_empty
 
+    def test_many_unresolved_refs_are_gh_call_bounded(self, tmp_path):
+        # A body citing far more branches and #NNNN than the attempt cap must
+        # not fire an unbounded number of (up-to-30s) gh subprocesses before the
+        # agent starts. All unresolved → gh returns None every time.
+        from theforge.coordinator.diagnose_evidence import _MAX_GH_ATTEMPTS_PER_KIND
+
+        branches = " ".join(f"feat/issue-{i}" for i in range(40))
+        prs = " ".join(f"#{2000 + i}" for i in range(40))
+        calls = []
+
+        def fake_run_gh(args, project_root):
+            calls.append(args)
+            return None  # every reference unresolved
+
+        with patch("theforge.coordinator.diagnose_evidence._run_gh", side_effect=fake_run_gh):
+            ev = build_starting_evidence(
+                issue_body=f"{branches}\n{prs}",
+                project_root=tmp_path,
+            )
+        assert ev.is_empty
+        branch_calls = [a for a in calls if a[:2] == ["pr", "list"]]
+        # A #NNNN attempt is a PR view then (on failure) an issue view: 2 gh calls.
+        pr_calls = [a for a in calls if a[:2] == ["pr", "view"]]
+        issue_calls = [a for a in calls if a[:2] == ["issue", "view"]]
+        assert len(branch_calls) == _MAX_GH_ATTEMPTS_PER_KIND
+        assert len(pr_calls) == _MAX_GH_ATTEMPTS_PER_KIND
+        assert len(issue_calls) == _MAX_GH_ATTEMPTS_PER_KIND
+
 
 class TestBounding:
     def test_total_block_is_capped(self, tmp_path):
