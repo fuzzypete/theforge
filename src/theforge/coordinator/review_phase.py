@@ -78,7 +78,9 @@ def _perform_dev_model_escalation(
     model is available. Callers are responsible for updating state flags and emitting
     audit records appropriate to their escalation reason.
     """
-    registry = config.model_registry or None
+    # Pass the registry through as-is: an explicitly empty {} must stay empty
+    # rather than collapsing to the built-in default via `... or None`.
+    registry = config.model_registry
     curr_key = _find_registry_key_for_profile(config.dev_profile, registry=registry)
     if curr_key is None:
         return None
