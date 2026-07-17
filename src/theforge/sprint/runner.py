@@ -542,6 +542,28 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
                 ),
             }
 
+        if config.workspace.setup_command:
+            _log(f"Running baseline workspace setup: {config.workspace.setup_command}")
+            setup_ok, setup_out = coordinator_workspace._run_setup_split(
+                config.workspace.setup_command, baseline_worktree
+            )
+            if not setup_ok:
+                duration = time.monotonic() - started_monotonic
+                return {
+                    "status": "error",
+                    "passed": False,
+                    "exit_code": 1,
+                    "duration_seconds": round(duration, 2),
+                    "started_at": baseline_started_at,
+                    "finished_at": datetime.datetime.now(datetime.timezone.utc),
+                    "merge_base": merge_base_ref,
+                    "command": config.validation.gate_command,
+                    "message": (
+                        "Broken baseline: workspace setup command failed in the temporary "
+                        f"baseline worktree for merge base {merge_base_ref}: {setup_out}"
+                    ),
+                }
+
         decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
             config, baseline_worktree
         )
