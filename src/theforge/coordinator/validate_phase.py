@@ -19,7 +19,13 @@ from theforge.task import TaskStory
 from . import util as _cu
 from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
-from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
+from .gate import (
+    _is_gate_skip,
+    _parse_dirty_files,
+    _run_gate_debug_command,
+    _run_gate_diagnostic_pass,
+    _run_gate_full,
+)
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import (
@@ -28,7 +34,14 @@ from .review_context import (
     _latest_forge_handoff_path,
     _parse_dev_handoff,
 )
-from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
+from .state import (
+    CoordinatorResult,
+    CoordinatorState,
+    DevIterationTelemetry,
+    GateDiagnosticTelemetry,
+    Phase,
+    RetryReason,
+)
 from .util import _log, _log_phase, _log_verbose
 from .workspace import _deindex_forge_artifacts
 
@@ -242,6 +255,7 @@ def _build_timeout_rca_packet(
     gate_output_tail: str,
     gate_err: str | None,
     workspace_path: Path,
+    diagnostic: GateDiagnosticTelemetry | None = None,
 ) -> str:
     """Assemble the dev retry input for a gate-timeout-with-commits failure."""
     gate_timeout_s = config.validation.gate_timeout or 600
@@ -303,6 +317,33 @@ def _build_timeout_rca_packet(
             f"Gate debug command (`{dbg.command}`) exit={dbg.exit_code}"
             f" timeout={dbg.timeout_s}s output tail:\n{dbg.output_tail}"
         )
+    if diagnostic is not None:
+        diag_lines = [
+            f"Diagnostic re-run (`{diagnostic.command}`): serialized pytest (-n 0) with a"
+            f" {diagnostic.per_test_timeout_s}s hard per-test timeout, bounded to"
+            f" {diagnostic.budget_s}s total. A per-test timeout dumps the stack trace at the"
+            " moment of the hang; faulthandler adds C-level frames if relevant."
+        ]
+        if diagnostic.hanging_test:
+            diag_lines.append(
+                f">>> Hanging test isolated: {diagnostic.hanging_test} — start here."
+                " The serialized run named this test as the one that exceeded the per-test"
+                " timeout. Its stack trace is in the diagnostic output below."
+            )
+        elif diagnostic.timed_out:
+            diag_lines.append(
+                "The diagnostic pass itself hit its time budget before finishing, so no single"
+                " test could be isolated. The hang may be spread across setup/collection or be"
+                " concurrency-specific."
+            )
+        else:
+            diag_lines.append(
+                "No single test exceeded the per-test timeout under serialized execution."
+                " This suggests a concurrency-specific bug: the hang only reproduces under"
+                " parallel (xdist) execution, not when tests run one at a time."
+            )
+        diag_lines.append(f"Diagnostic output tail:\n{diagnostic.output_tail or '(empty)'}")
+        parts.append("\n".join(diag_lines))
     parts.append(f"Current handoff:\n{handoff_text}")
     return "\n\n".join(parts)
 
@@ -436,6 +477,29 @@ def _run_validate_phase(
             and not state.budget.is_exhausted()
             and _commits_exist_strict(workspace_path, config.workspace.base_branch)
         ):
+            # The original gate process group was already killed by
+            # _run_shell_detailed on timeout (spec step 1). Run the diagnostic
+            # re-run pass in the same worktree before constructing the retry
+            # input so the dev agent gets the hanging test + stack trace on the
+            # first retry rather than having to re-run the suite manually.
+            diagnostic = _run_gate_diagnostic_pass(
+                config,
+                workspace_path,
+                task=task,
+                iter_num=state.dev_iteration,
+            )
+            if diagnostic is not None:
+                state.gate_diagnostic_telemetry.append(diagnostic)
+                if logger:
+                    logger._safe_emit(
+                        "gate_diagnostic",
+                        iteration=diagnostic.iteration,
+                        command=diagnostic.command,
+                        exit_code=diagnostic.exit_code,
+                        timed_out=diagnostic.timed_out,
+                        hanging_test=diagnostic.hanging_test,
+                        output_tail=diagnostic.output_tail[-500:],
+                    )
             state.human_feedback = _build_timeout_rca_packet(
                 state=state,
                 config=config,
@@ -443,6 +507,7 @@ def _run_validate_phase(
                 gate_output_tail=gate_output_tail,
                 gate_err=gate_err,
                 workspace_path=workspace_path,
+                diagnostic=diagnostic,
             )
             state.retry_reason = RetryReason.GATE_FAIL
             _log(

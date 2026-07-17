@@ -262,6 +262,10 @@ validation:
   gate_timeout: 600                    # seconds; default varies
   gate_debug_command: ~                # optional: runs after gate_timeout for diagnostics
   gate_debug_timeout: ~                # seconds; default: same resolved value as gate_timeout
+  gate_diagnostic_enabled: true        # run the pytest -n 0 hang-diagnostic pass on gate timeout
+  gate_diagnostic_pytest_base: "python -m pytest"  # base pytest invocation for the diagnostic pass
+  gate_diagnostic_per_test_timeout: 10 # seconds; --timeout= applied to each test in the pass
+  gate_diagnostic_budget: 60           # seconds; hard wall-clock cap so the pass can't itself hang
   test_command: ~                      # optional command agents may run during dev
   pre_validate_command: ~              # optional: run before dirty check
   default_test_target: "."             # {test_target} substitution when no story test_target applies (e.g. baseline gate)

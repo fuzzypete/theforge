@@ -234,6 +234,16 @@ class ValidationConfig:
         None  # diagnostic command on timeout (e.g. "pytest -x -v -n 0")
     )
     gate_debug_timeout: int | None = None  # seconds; None = same resolved value as gate_timeout
+    # ── Gate-timeout diagnostic re-run (issue #1217) ──────────────────────────
+    # When the gate times out and #1216's timeout-with-diff routing fires, run a
+    # serialized pytest pass with a hard per-test timeout to surface the hanging
+    # test and its stack trace. Distinct from gate_debug_command, which is a
+    # free-form user-configured diagnostic; this pass is pytest-specific and
+    # hardcodes the -n 0 / --timeout / --timeout-method=thread instrumentation.
+    gate_diagnostic_enabled: bool = True  # run the diagnostic pass on gate timeout
+    gate_diagnostic_pytest_base: str = "python -m pytest"  # base pytest invocation
+    gate_diagnostic_per_test_timeout: int = 10  # seconds; --timeout= value per test
+    gate_diagnostic_budget: int = 60  # seconds; hard wall-clock cap for the whole pass
     test_command: str | None = None  # canonical command for intermediate test runs in dev loop
     # Substituted for {test_target} when no task is available (baseline gate) or
     # when a task has no test_target of its own.

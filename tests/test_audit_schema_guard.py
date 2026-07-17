@@ -347,3 +347,37 @@ def test_migrate_v3_to_v4_is_idempotent_when_fields_already_present() -> None:
     migrated = audit_substrate._migrate_v3_to_v4(v3_record)
 
     assert migrated["task"]["fix_ready"] is True
+
+
+def test_migrate_v4_to_v5_backfills_gate_diagnostic() -> None:
+    """v4 records lack iterations.gate_diagnostic; v5 backfills an empty list.
+
+    The diagnostic re-run pass did not exist when v4 records were written, so
+    there is nothing to recover — default to an empty list rather than
+    fabricating a diagnostic result. See issue #1217.
+    """
+    v4_record = {"iterations": {"gate_debug": [], "gate_decisions": []}}
+
+    migrated = audit_substrate._migrate_v4_to_v5(v4_record)
+
+    assert migrated["iterations"]["gate_diagnostic"] == []
+    assert migrated["iterations"]["gate_debug"] == []
+
+
+def test_migrate_v4_to_v5_is_idempotent_when_field_present() -> None:
+    """Does not clobber an existing gate_diagnostic list."""
+    existing = [{"iteration": 1, "hanging_test": "tests/test_x.py::test_hang"}]
+    v4_record = {"iterations": {"gate_diagnostic": existing}}
+
+    migrated = audit_substrate._migrate_v4_to_v5(v4_record)
+
+    assert migrated["iterations"]["gate_diagnostic"] == existing
+
+
+def test_migrate_v4_to_v5_noop_without_iterations_block() -> None:
+    """A record with no iterations block passes through unchanged."""
+    v4_record = {"task": {"slug": "test"}}
+
+    migrated = audit_substrate._migrate_v4_to_v5(v4_record)
+
+    assert migrated == v4_record

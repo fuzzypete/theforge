@@ -204,6 +204,28 @@ class GateDebugTelemetry:
 
 
 @dataclass(frozen=True)
+class GateDiagnosticTelemetry:
+    """Diagnostic re-run telemetry captured when the validation gate times out (issue #1217).
+
+    Records the serialized pytest pass (``-n 0 --timeout=N --timeout-method=thread``)
+    run after a gate timeout to surface the hanging test in isolation. Distinct
+    from GateDebugTelemetry, which records the free-form user-configured
+    gate_debug_command; this pass is the hardcoded pytest-specific instrumentation.
+    """
+
+    iteration: int
+    command: str
+    ran: bool
+    budget_s: int  # hard wall-clock cap for the whole pass
+    per_test_timeout_s: int  # --timeout= value applied to each test
+    exit_code: int | None
+    timed_out: bool  # True if the diagnostic pass itself exhausted its budget
+    hanging_test: str | None  # single test node that exceeded the per-test timeout, if identified
+    output_tail: str
+    output_truncated: bool
+
+
+@dataclass(frozen=True)
 class ReviewIterationTelemetry:
     """Per-review-cycle telemetry captured for audit output."""
 
@@ -414,6 +436,7 @@ class CoordinatorState:
     dev_handoff_snapshots: list[dict[str, Any] | None] = field(default_factory=list)
     dev_iteration_telemetry: list[DevIterationTelemetry] = field(default_factory=list)
     gate_debug_telemetry: list[GateDebugTelemetry] = field(default_factory=list)
+    gate_diagnostic_telemetry: list[GateDiagnosticTelemetry] = field(default_factory=list)
     review_iteration_telemetry: list[ReviewIterationTelemetry] = field(default_factory=list)
     context_manifests: list[dict] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
