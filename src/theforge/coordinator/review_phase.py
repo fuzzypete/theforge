@@ -1410,9 +1410,35 @@ def _run_review_phase(
     # If the synthesized verdict is REQUEST_CHANGES but all P1s are net_new (single-reviewer,
     # not in changed files, not previously raised), we treat the cycle as passing.
     # Net-new P1s are recorded in the audit trail but do not block.
-    _effective_approve = parsed_review.verdict == "APPROVE" or (
-        parsed_review.verdict == "REQUEST_CHANGES" and not _blocking_p1
+    #
+    # An unsatisfied acceptance criterion blocks on its own, independent of P1
+    # count or disposition. A review can be schema-legal with verdict APPROVE (or
+    # REQUEST_CHANGES with every P1 suppressed) and still report matches_spec=false
+    # while carrying zero blocking P1s — nothing in cross-validation forbids it.
+    # Relying only on the AC-violation override (which re-blocks P1s that exist)
+    # lets that shape reach DONE, the exact class of bug this path guards. Treat a
+    # matches_spec=false verdict as its own blocking signal so the story cannot be
+    # approved on the strength of a suppressed or absent finding.
+    #
+    # Use the merged review's story_matches (computed over valid reviewers via
+    # all(); False if any valid reviewer dissents) rather than the raw
+    # last_cycle_reviewer_results set — the latter includes parse-failed reviewers,
+    # which default story_matches=False and would spuriously block an otherwise
+    # clean fallback approval.
+    _story_criterion_unsatisfied = not parsed_review.story_matches
+    _effective_approve = not _story_criterion_unsatisfied and (
+        parsed_review.verdict == "APPROVE"
+        or (parsed_review.verdict == "REQUEST_CHANGES" and not _blocking_p1)
     )
+    if _story_criterion_unsatisfied and not _blocking_p1:
+        # No blocking P1 carried the signal (e.g. APPROVE + matches_spec=false +
+        # zero P1s): the unsatisfied criterion itself blocks. Mark it so the audit
+        # trail and downstream routing see a blocking decision, not a silent pass.
+        _blocking_p1 = True
+        _log(
+            "  ✗ REVIEW   matches_spec=false with no blocking P1 — story does not "
+            "match spec; blocking on the unsatisfied criterion itself"
+        )
 
     # ── Empty-diff guard ────────────────────────────────────────────
     # APPROVE on a branch with zero commits ahead of base is a workflow failure,
