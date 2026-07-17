@@ -29,6 +29,7 @@ from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
 from .escalation_advisor_flow import run_escalation_advisor
+from .gate_contradiction import asserts_gate_verifiable_failure
 from .logging import StructuredLogger
 from .notify import (
     _escalate_gate_interactive,
@@ -1176,53 +1177,66 @@ def _run_review_phase(
     _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
     _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
 
-    # ── Gate-contradiction downgrade ──────────────────────────────────────────
-    # If the most recent gate decision was PASS, any P1 finding whose description
-    # matches a gate-verifiable pattern (test failures, build errors, lint failures)
-    # is mechanically contradicted. Such findings are downgraded in-place to
-    # disposition gate_contradicted so they do not block approval.
-    # Pattern matching is keyword-based (conservative). False negatives are
-    # acceptable — the P1 remains blocking if no pattern matches.
+    # ── Gate-contradiction downgrade (assertion-based) ────────────────────────
+    # A PASS gate mechanically contradicts exactly one class of P1: a claim that
+    # tests/build/lint are currently FAILING.  It has no bearing on a claim that
+    # coverage is inadequate, that acceptance evidence was never produced, or that
+    # a criterion remains undemonstrated — all of which are entirely consistent
+    # with a green gate.  Suppression is therefore derived from what a finding
+    # *asserts* (asserts_gate_verifiable_failure), not from its subject matter,
+    # and it fails closed: a finding whose assertion is not established as a
+    # gate-verifiable failure keeps blocking.
     # No downgrade occurs when the gate decision is FAIL, BLOCKED, or absent.
-    _GATE_VERIFIABLE_PATTERNS = (
-        "test fail",
-        "tests fail",
-        "test failure",
-        "failing test",
-        "build fail",
-        "build error",
-        "lint fail",
-        "lint error",
-        "compilation fail",
-        "compile fail",
-        "import error",
-        "syntax error",
-        " failures",
-        "0 passed",
-        "test suite",
-        "broken build",
-        "does not compile",
-    )
     _last_gate = state.gate_decisions[-1] if state.gate_decisions else None
     if _last_gate == "PASS":
         for _rec in _classified:
             if _rec.severity != "P1":
                 continue
-            _desc_lower = _rec.description.lower()
-            _matched = next((p for p in _GATE_VERIFIABLE_PATTERNS if p in _desc_lower), None)
-            if _matched is not None:
+            if asserts_gate_verifiable_failure(_rec.description):
                 _log(
                     f"  ↷ gate_contradicted: P1 downgraded"
-                    f" (gate={_last_gate}, pattern={_matched!r}):"
+                    f" (gate={_last_gate}, asserts gate-verifiable failure):"
                     f" {_rec.description[:80]}"
                 )
                 _rec.disposition = "gate_contradicted"  # type: ignore[assignment]
+
+    # ── AC-violation override (runs after every disposition assignment) ───────
+    # A reviewer that returned matches_spec=false asserts the story was not
+    # completed correctly.  Any P1 from that reviewer must block — even one a
+    # mechanical signal downgraded to gate_contradicted, since a green gate cannot
+    # contradict a claim that acceptance evidence is missing.  This override runs
+    # AFTER the gate-contradiction downgrade and inspects P1s regardless of their
+    # current disposition, so no suppression can run ahead of the guard written to
+    # catch exactly this error, whatever order dispositions were assigned in.
+    _ac_failing_reporters = {
+        name for name, rr in state.last_cycle_reviewer_results if not rr.story_matches
+    }
+    _ac_reblocked = [
+        _rec
+        for _rec in _classified
+        if _rec.severity == "P1"
+        and _rec.reporter in _ac_failing_reporters
+        and _rec.disposition in ("net_new", "gate_contradicted")
+    ]
+    if _ac_reblocked:
+        # Persist the AC-blocking classification so the audit trail records these
+        # findings as ac_blocking rather than net_new/gate_contradicted.
+        for _rec in _ac_reblocked:
+            _rec.disposition = "ac_blocking"  # type: ignore[assignment]
+        _ac_descs = "; ".join(r.description[:80] for r in _ac_reblocked)
+        _log(
+            f"  ✗ {len(_ac_reblocked)} P1(s) blocked"
+            f" (AC-blocking: reviewer indicated matches_spec=false): {_ac_descs}"
+        )
 
     if state.review_cycle >= 2:
         # has_blocking_p1 / net_new_p1s inlined to avoid importing theforge.finding_classifier.
         # Logic is identical to the functions in finding_classifier.py.
         # gate_contradicted is intentionally excluded: these findings are mechanically
-        # disproven by a PASS gate and must not block approval.
+        # disproven by a PASS gate and must not block approval.  The AC-violation
+        # override above has already re-blocked any gate_contradicted P1 from a
+        # matches_spec=false reviewer, so only genuinely test-failure-asserting
+        # findings remain gate_contradicted here.
         _BLOCKING_DISPOSITIONS = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
         _blocking_p1 = any(
             r.severity == "P1" and r.disposition in _BLOCKING_DISPOSITIONS for r in _classified
@@ -1233,30 +1247,6 @@ def _run_review_phase(
         _gate_contradicted_p1s = [
             r for r in _classified if r.severity == "P1" and r.disposition == "gate_contradicted"
         ]
-        # AC-violation override: a net-new P1 from a reviewer who also flagged
-        # matches_spec=false is not speculative — it asserts the story was not completed
-        # correctly and must block regardless of its disposition classification.
-        # Conservative rule: if *any* reviewer in the pool returned matches_spec=false,
-        # all net-new P1s from that reviewer are treated as AC-blocking.
-        _ac_failing_reporters = {
-            name for name, rr in state.last_cycle_reviewer_results if not rr.story_matches
-        }
-        if _ac_failing_reporters:
-            _ac_blocking_p1s = [r for r in _nonblocking_p1s if r.reporter in _ac_failing_reporters]
-            _nonblocking_p1s = [
-                r for r in _nonblocking_p1s if r.reporter not in _ac_failing_reporters
-            ]
-            if _ac_blocking_p1s:
-                _blocking_p1 = True
-                # Persist the AC-blocking classification so the audit trail records
-                # these findings as ac_blocking rather than net_new.
-                for _rec in _ac_blocking_p1s:
-                    _rec.disposition = "ac_blocking"  # type: ignore[assignment]
-                _ac_descs = "; ".join(r.description[:80] for r in _ac_blocking_p1s)
-                _log(
-                    f"  ✗ {len(_ac_blocking_p1s)} net-new P1(s) blocked"
-                    f" (AC-blocking: reviewer indicated matches_spec=false): {_ac_descs}"
-                )
         # When allow_net_new_bypass is disabled, net-new P1s are treated as blocking.
         # Persist the disposition change so the audit trail records these as blocking,
         # not as net_new (which audit.py would serialize under non_blocking_p1s).
