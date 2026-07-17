@@ -356,6 +356,10 @@ class TestRunAgentClaude:
         assert result.success is False
         assert "TIMEOUT" in result.output
         assert result.exit_code == -9
+        # A timeout is a distinct, retryable failure kind — not an
+        # undifferentiated crash. The coordinator keys its retry decision off
+        # failure_code, so the runner must classify it.
+        assert result.failure_code == "timeout"
 
     def test_timeout_returns_session_id(self, tmp_path: Path) -> None:
         profile = ModelProfile(

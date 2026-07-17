@@ -616,6 +616,11 @@ class AgentLoopManager:
         failure_code = None
         if reason.startswith("Agent loop terminated: max iterations reached"):
             failure_code = "max_iterations_reached"
+        elif reason.startswith("Agent loop terminated: wall-clock timeout"):
+            # Running out of wall-clock time is a distinct, retryable failure
+            # kind — classified so the coordinator hands back to dev with the
+            # remaining iteration budget rather than escalating terminally.
+            failure_code = "timeout"
         elif reason.startswith("Agent finished without calling submit tool"):
             # The agent completed its turn cleanly but delivered no verdict —
             # a non-verdict/behavioral completion, distinct from a transport
