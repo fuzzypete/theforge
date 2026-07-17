@@ -139,6 +139,16 @@ class TestLoadConfig:
         assert "rate_limit" in config.retry.review_transient_failure_codes
         assert any("rate limit" in p for p in config.retry.review_transient_output_patterns)
 
+    def test_plan_review_parse_retries_default(self, tmp_path):
+        config_path = _write_config({"retry": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.max_plan_review_parse_retries == 2
+
+    def test_plan_review_parse_retries_override(self, tmp_path):
+        config_path = _write_config({"retry": {"max_plan_review_parse_retries": 0}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.max_plan_review_parse_retries == 0
+
     def test_auto_model_escalation_defaults_false(self, tmp_path):
         config_path = _write_config({"retry": {}}, tmp_path)
         config = load_config(config_path)

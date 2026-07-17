@@ -105,7 +105,14 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            # Default this helper to no parse retries so the many gate/recording
+            # tests built on it exercise the escalation path in isolation; the
+            # parse-retry tests opt in with an explicit positive value.
+            max_plan_review_parse_retries=0,
+        ),
         plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
         plan_agent_review=par_config,
         log=LogConfig(enabled=False),
@@ -682,7 +689,10 @@ findings:
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
-                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=1
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=1,
+                max_plan_review_parse_retries=0,
             ),
         )
         task = _make_task(tmp_path)
@@ -1319,7 +1329,10 @@ class TestPlanReviewerFailureAudit:
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
-                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=0
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=0,
             ),
         )
         task = _make_task(tmp_path)
@@ -1371,7 +1384,10 @@ class TestPlanReviewerFailureAudit:
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
-                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=0
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=0,
             ),
             plan_agent_review=PlanAgentReviewConfig(
                 enabled=True,
@@ -1949,3 +1965,196 @@ class TestPlanReviewerFailureAudit:
 
         assert result.success is True
         assert "reviewer_failures" not in audit["plan_review"]
+
+
+# ── TestPlanReviewParseRetry ──────────────────────────────────────────
+
+# Prose emitted by a reviewer that stalled instead of producing contract output
+# (mirrors issue-75: "Waiting on the verification agent's results before I
+# finalize the review.").  Parses to a non-mapping YAML root → parse error.
+PLAN_REVIEW_PROSE = "Waiting on the verification agent's results before I finalize the review."
+
+
+class TestPlanReviewParseRetry:
+    """A reviewer completion that succeeds at transport level but emits unparseable
+    output is a transient agent failure — it must be re-invoked (fresh session) up
+    to max_plan_review_parse_retries times before the min-reviewers gate escalates
+    the story (issue-1667)."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_parse_failure_retried_then_succeeds(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Single reviewer emits prose → retried once → parses → story proceeds to DONE."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        # run_agent sequence: PLAN → plan-review parse retry (now valid) → DEV
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.06,
+                profile_name="plan-review",
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        # Initial pool completion succeeds at transport level but is unparseable prose.
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_REVIEW_PROSE,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.plan_review_decision == "approve"
+        # Reviewer recovered on retry → no residual parse failure recorded.
+        assert result.state.plan_review_failures == []
+        assert len(result.state.plan_review_parse_retries) == 1
+        retry = result.state.plan_review_parse_retries[0]
+        assert retry["attempt"] == 0
+        assert retry["reviewer"] == "plan-review"
+        assert retry["retry"] == 1
+        assert retry["errors"]
+        # Both the prose completion and the successful retry are cost-tracked.
+        assert len(result.state.plan_review_results) == 2
+        assert result.state.total_plan_review_cost == pytest.approx(0.14)
+        # Fresh session on retry (session_id=None passed to run_agent). The retry
+        # is the last plan_flow.run_agent call (PLAN is the first).
+        assert mock_plan_agent.call_args_list[-1].kwargs["session_id"] is None
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["plan_review"]["parse_retries"] == result.state.plan_review_parse_retries
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_parse_failure_exhausts_retries_then_escalates(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Prose on every attempt → parse retries exhausted → min-reviewers gate escalates."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        # run_agent sequence: PLAN → two parse retries, both still unparseable prose.
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True, output=PLAN_REVIEW_PROSE, cost_usd=0.06, profile_name="plan-review"
+            ),
+            _make_agent_result(
+                success=True, output=PLAN_REVIEW_PROSE, cost_usd=0.06, profile_name="plan-review"
+            ),
+        ]
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_REVIEW_PROSE,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.plan_review_decision == "reject"
+        assert "minimum required is 1" in (result.message or "")
+        # Two fresh-session retries attempted before escalating.
+        assert len(result.state.plan_review_parse_retries) == 2
+        # Prose completion + two prose retries are all cost-tracked.
+        assert len(result.state.plan_review_results) == 3
+        assert result.state.total_plan_review_cost == pytest.approx(0.20)
+        assert len(result.state.plan_review_failures) == 1
+        failure = result.state.plan_review_failures[0]
+        assert failure["reviewer"] == "plan-review"
+        assert failure["failure_kind"] == "parse"
+        assert failure["retryable"] is False
+        # retry_count reflects the exhausted parse-retry budget, not a first-attempt fluke.
+        assert failure["retry_count"] == 2
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["plan_review"]["parse_retries"] == result.state.plan_review_parse_retries
+        # Per-reviewer reconstruction stays aligned despite the extra retry results.
+        assert audit["plan_review"]["per_reviewer"] == [
+            {
+                "attempt": 0,
+                "profile": "plan-review",
+                "verdict": "PARSE_ERROR",
+                "cost_usd": pytest.approx(0.06),
+            }
+        ]
