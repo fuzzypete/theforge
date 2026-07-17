@@ -74,7 +74,8 @@ VERDICT_DESCRIPTIONS: dict[ShapeVerdict, str] = {
         "issue spans too many behavioral clusters; split into smaller issues"
     ),
     ShapeVerdict.NEEDS_OPERATOR_ACTION: (
-        "issue requires operator triage (epic/tracking, untriaged finding, or stale reopen)"
+        "issue requires operator triage (epic/tracking, untriaged finding, stale reopen, "
+        "or an acceptance criterion the dev loop cannot satisfy)"
     ),
     ShapeVerdict.ADR_CANDIDATE: (
         "issue body contains design/implementation content; "
