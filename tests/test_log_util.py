@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from theforge.log_util import _log_line
+from theforge.log_util import _log_line, get_worker_slug, set_worker_slug
 
 _TS_RE = re.compile(r"\d{2}:\d{2}:\d{2}\.\d{3}")
 
@@ -49,3 +49,25 @@ def test_message_with_spaces(capsys: object) -> None:
     captured = capsys.readouterr()  # type: ignore[union-attr]
     line = captured.err.rstrip("\n")
     assert line.endswith("a message with spaces"), f"Full message not preserved: {line!r}"
+
+
+def test_no_slug_by_default(capsys: object) -> None:
+    assert get_worker_slug() == ""
+    _log_line("[forge]", "hello")
+    line = capsys.readouterr().err.rstrip("\n")  # type: ignore[union-attr]
+    assert "[#" not in line
+    assert line.endswith("hello")
+
+
+def test_worker_slug_prefixes_message(capsys: object) -> None:
+    try:
+        set_worker_slug("#42")
+        _log_line("[forge]", "hello")
+    finally:
+        set_worker_slug("")
+    line = capsys.readouterr().err.rstrip("\n")  # type: ignore[union-attr]
+    # Format: [forge] <ts> [#42] hello — tag first, then timestamp, then slug.
+    parts = line.split(" ", 2)
+    assert parts[0] == "[forge]"
+    assert _TS_RE.fullmatch(parts[1])
+    assert parts[2] == "[#42] hello"

@@ -742,24 +742,32 @@ class TestWorkerSlugContext:
 
         assert results == {"a": "issue-99", "b": ""}
 
-    def test_runner_log_includes_slug(self, monkeypatch, capsys) -> None:
+    def test_runner_log_includes_slug(self, capsys) -> None:
         import re
 
+        from theforge.coordinator.log_tee import set_worker_slug
         from theforge.sprint import runner
 
-        monkeypatch.setattr(runner, "get_worker_slug", lambda: "my-story")
-        runner._log("hello")
+        try:
+            set_worker_slug("my-story")
+            runner._log("hello")
+        finally:
+            set_worker_slug("")
 
         err = capsys.readouterr().err
         assert re.search(r"\[sprint\] \d{2}:\d{2}:\d{2}\.\d{3} \[my-story\] hello", err)
 
-    def test_util_log_includes_slug(self, monkeypatch, capsys) -> None:
+    def test_util_log_includes_slug(self, capsys) -> None:
         import re
 
         from theforge.coordinator import util
+        from theforge.coordinator.log_tee import set_worker_slug
 
-        monkeypatch.setattr(util, "get_worker_slug", lambda: "my-story")
-        util._log("hello")
+        try:
+            set_worker_slug("my-story")
+            util._log("hello")
+        finally:
+            set_worker_slug("")
 
         err = capsys.readouterr().err
         assert re.search(r"\[forge\] \d{2}:\d{2}:\d{2}\.\d{3} \[my-story\] hello", err)

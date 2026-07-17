@@ -128,13 +128,17 @@ class TestRunDiagnoses:
 
 
 class TestAgentThreadSlug:
-    def _run(self) -> str:
+    def _run(self) -> tuple[str, str]:
+        # fake_run_agent stands in for the real runner: it emits a progress line
+        # through the actual runner log emitter from inside the nested
+        # diagnose-agent thread, exactly where real runner logs originate.
+        from theforge.runners.cli import _log as runner_log
+
         captured: dict[str, str] = {}
 
         def fake_run_agent(*, prompt, profile, working_dir, secrets):
-            # Read the slug from inside the nested diagnose-agent thread, the
-            # thread that emits runner progress lines.
             captured["slug"] = get_worker_slug()
+            runner_log("investigating step 1")
             return SimpleNamespace(output="done")
 
         with patch.object(diagnose_flow, "run_agent", fake_run_agent):
@@ -146,16 +150,25 @@ class TestAgentThreadSlug:
             )
         return captured["slug"]
 
-    def test_nested_agent_thread_inherits_worker_slug(self):
+    def test_nested_agent_thread_inherits_worker_slug(self, capsys):
         try:
             set_worker_slug("#77")
-            assert self._run() == "#77"
+            slug = self._run()
         finally:
             set_worker_slug("")
+        assert slug == "#77"
+        # The runner progress line emitted from the nested thread must carry
+        # the issue slug so it is attributable under --parallel.
+        err = capsys.readouterr().err
+        assert "[#77] investigating step 1" in err
 
-    def test_no_slug_leaves_nested_thread_untagged(self):
+    def test_no_slug_leaves_nested_thread_untagged(self, capsys):
         set_worker_slug("")
-        assert self._run() == ""
+        slug = self._run()
+        assert slug == ""
+        err = capsys.readouterr().err
+        assert "investigating step 1" in err
+        assert "[#" not in err
 
 
 # ── Dry-run output tagging ────────────────────────────────────────────
