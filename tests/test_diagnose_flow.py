@@ -688,6 +688,89 @@ class TestDiagnoseFlow:
         assert "Partial diagnosis landed" not in result.message
 
 
+class TestStartingEvidenceInjection:
+    """Seam test for the FETCH→INVESTIGATE boundary: when the issue body cites a
+    run id whose log exists on disk, the flow pre-loads a STARTING EVIDENCE block
+    into the prompt handed to the agent and records what it injected in the
+    audit. An issue with no recognizable references leaves the prompt unchanged."""
+
+    def _write_run_log(self, tmp_path: Path, run_id: str, marker: str) -> None:
+        log = tmp_path / ".forge" / "logs" / "issues-1135" / f"run-{run_id}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(f"[forge] earlier\n[forge] {marker}\n", encoding="utf-8")
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_cited_run_id_injects_evidence_and_records_audit(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        run_id = "7cf3f238d8d8"
+        marker = "issue-1135 reached APPROVE"
+        self._write_run_log(tmp_path, run_id, marker)
+        mock_fetch.return_value = {
+            "number": 1420,
+            "title": "landing bug",
+            "body": f"Sprint run {run_id}: landing_status wrong",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1420,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        # The prompt actually handed to the agent carried the pre-loaded excerpt.
+        sent_prompt = mock_agent.call_args.kwargs["prompt"]
+        assert "== STARTING EVIDENCE" in sent_prompt
+        assert marker in sent_prompt
+        # Audit records what was injected (instrumented cross-phase data).
+        audit = tmp_path / ".forge" / "audits" / f"diagnose-issue-1420-{result.state.run_id}.yaml"
+        loaded = yaml.safe_load(audit.read_text())
+        assert loaded["starting_evidence"]["reference_labels"]
+        assert loaded["starting_evidence"]["chars"] > 0
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_no_references_leaves_prompt_and_audit_clean(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 1,
+            "title": "x",
+            "body": "Something is broken but I don't know where.",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        sent_prompt = mock_agent.call_args.kwargs["prompt"]
+        assert "== STARTING EVIDENCE" not in sent_prompt
+        audit = tmp_path / ".forge" / "audits" / f"diagnose-issue-1-{result.state.run_id}.yaml"
+        loaded = yaml.safe_load(audit.read_text())
+        assert loaded["starting_evidence"]["reference_labels"] == []
+        assert loaded["starting_evidence"]["chars"] == 0
+
+
 # ── dry-run stdout tests ──────────────────────────────────────────────
 
 
