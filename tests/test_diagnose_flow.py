@@ -30,6 +30,7 @@ from theforge.diagnose_types import (
 )
 from theforge.task.diagnose_prompts import (
     build_diagnose_prompt,
+    build_environment_briefing,
     parse_diagnose_output,
 )
 
@@ -208,6 +209,74 @@ class TestPromptBuilder:
         assert "related_findings" in prompt
         assert "boundary" in lower
         assert "scope" in lower
+
+
+class TestEnvironmentBriefing:
+    """The prompt must brief the agent on TheForge's audit/log layout, field
+    semantics, and landing/merge queries (issue #1425).  The briefing is
+    templated from project structure, not hardcoded (AC2)."""
+
+    def test_prompt_embeds_environment_section(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        assert "== ENVIRONMENT ==" in prompt
+
+    def test_briefing_names_canonical_audit_and_log_paths(self):
+        briefing = build_environment_briefing()
+        # Sprint run logs and per-story audit paths from the story example.
+        assert ".forge/logs/<sprint-name>/run-<run-id>.log" in briefing
+        assert ".forge/logs/<sprint-name>/<slug>/audit.yaml" in briefing
+        assert ".forge/sprints/<sprint-id>/state.yaml" in briefing
+
+    def test_briefing_names_landing_merge_queries(self):
+        briefing = build_environment_briefing()
+        # The one-line checks that most often crack landing-failure bugs.
+        assert "gh pr list --head <branch> --state all" in briefing
+        assert "gh issue view <N> --comments" in briefing
+
+    def test_briefing_explains_common_audit_field_semantics(self):
+        briefing = build_environment_briefing()
+        assert "merge: true" in briefing
+        assert "landing_status" in briefing
+        assert "outcome_code" in briefing
+
+    def test_audit_paths_render_from_the_owning_registry(self):
+        # AC2: every path in the registry owned by audit_substrate appears in
+        # the briefing, with its human label — the briefing iterates the
+        # registry rather than repeating a parallel hand-maintained list.
+        from theforge.coordinator import audit_substrate
+
+        briefing = build_environment_briefing()
+        assert audit_substrate.AUDIT_PATH_REGISTRY  # guard: registry is non-empty
+        for info in audit_substrate.AUDIT_PATH_REGISTRY:
+            assert info.display in briefing
+            assert info.label in briefing
+
+    def test_new_registry_entry_surfaces_without_editing_the_prompt(self, monkeypatch):
+        # AC2 (the crux): appending a new audit path to the registry makes it
+        # appear in the diagnose briefing with no edit to the prompt builder.
+        from theforge.coordinator import audit_substrate
+
+        extra = audit_substrate.AuditPathInfo(
+            "Brand new audit surface", (".forge", "audits", "newly_added.db")
+        )
+        monkeypatch.setattr(
+            audit_substrate,
+            "AUDIT_PATH_REGISTRY",
+            (*audit_substrate.AUDIT_PATH_REGISTRY, extra),
+        )
+        briefing = build_environment_briefing()
+        assert ".forge/audits/newly_added.db" in briefing
+        assert "Brand new audit surface" in briefing
+
+    def test_landing_semantics_are_templated_from_landing_record(self):
+        # AC2: adding a new landing_path -> outcome mapping in landing_record
+        # surfaces in the briefing without editing the prompt.
+        from theforge.coordinator.landing_record import LANDING_OUTCOME_BY_PATH
+
+        briefing = build_environment_briefing()
+        for path, outcome in LANDING_OUTCOME_BY_PATH.items():
+            assert path in briefing
+            assert outcome in briefing
 
 
 # ── State machine / flow tests ────────────────────────────────────────
