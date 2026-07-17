@@ -15,7 +15,8 @@ import time
 from unittest.mock import patch
 
 from theforge.cli.diagnose import _run_diagnoses, cmd_diagnose, register_parser
-from theforge.coordinator.log_tee import get_worker_slug
+from theforge.coordinator.diagnose_flow import _emit_dry_run
+from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.diagnose_types import DiagnosePhase, DiagnoseResult, DiagnoseState
 
 
@@ -120,6 +121,28 @@ class TestRunDiagnoses:
         assert slugs[101] == "#101"
 
 
+# ── Dry-run output tagging ────────────────────────────────────────────
+
+
+class TestEmitDryRun:
+    def test_no_slug_prints_verbatim(self, capsys):
+        try:
+            set_worker_slug("")
+            _emit_dry_run("line one\nline two")
+        finally:
+            set_worker_slug("")
+        assert capsys.readouterr().out == "line one\nline two\n"
+
+    def test_slug_prefixes_every_line(self, capsys):
+        try:
+            set_worker_slug("#42")
+            _emit_dry_run("## Diagnosis\n\nconfirmed cause")
+        finally:
+            set_worker_slug("")
+        out = capsys.readouterr().out
+        assert out == "[#42] ## Diagnosis\n[#42] \n[#42] confirmed cause\n"
+
+
 # ── CLI wiring ────────────────────────────────────────────────────────
 
 
@@ -199,6 +222,36 @@ class TestCmdDiagnose:
             rc = cmd_diagnose(self._args(parallel=0))
         assert rc == 1
         flow.assert_not_called()
+
+    def test_dry_run_parallel_tags_multiline_output(self, tmp_path, capsys):
+        # The dry-run markdown each worker prints must be attributable per issue
+        # under --parallel; every emitted line carries its issue's worker slug.
+        cfg_path = tmp_path / "forge.yaml"
+        cfg_path.write_text("x")
+
+        def fake_flow(*, issue_number, dry_run, **_):
+            assert dry_run is True
+            # Mirror _land_artifact's dry-run path: the worker slug is live here.
+            _emit_dry_run(f"## Diagnosis #{issue_number}\n\nbody line")
+            return _result(issue_number)
+
+        with (
+            patch("theforge.cli.diagnose._find_config", return_value=cfg_path),
+            patch("theforge.cli.diagnose.load_config", return_value=self._patched_config()),
+            patch("theforge.cli.diagnose.run_diagnose_flow", side_effect=fake_flow),
+        ):
+            rc = cmd_diagnose(self._args(dry_run=True, parallel=3))
+
+        assert rc == 0
+        out_lines = capsys.readouterr().out.splitlines()
+        # Every non-empty dry-run line is prefixed with some issue's slug.
+        content_lines = [ln for ln in out_lines if ln.strip("[]# ")]
+        assert content_lines, "expected dry-run markdown on stdout"
+        for ln in content_lines:
+            assert ln.startswith("[#1] ") or ln.startswith("[#2] ") or ln.startswith("[#3] ")
+        # Each issue's own section is present and self-tagged.
+        for n in (1, 2, 3):
+            assert f"[#{n}] ## Diagnosis #{n}" in out_lines
 
     def test_interactive_parallel_downgrades_to_serial(self, tmp_path, capsys):
         cfg_path = tmp_path / "forge.yaml"
