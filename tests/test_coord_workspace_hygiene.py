@@ -38,6 +38,21 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
 
 
+def _init_repo_no_forge_ignore(path: Path) -> None:
+    """Init a consumer repo that does NOT gitignore ``.forge/`` at all.
+
+    Reproduces the hdp #183 field condition: the gate must classify forge's
+    own runtime output correctly even when nothing in the repo's gitignore
+    covers ``.forge/`` (TheForge #1699).
+    """
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
+
+
 # ── snapshot_porcelain ────────────────────────────────────────────────
 
 
@@ -64,6 +79,23 @@ def test_snapshot_porcelain_excludes_gitignored_forge_dir(tmp_path: Path) -> Non
 
 def test_snapshot_porcelain_returns_empty_on_non_repo(tmp_path: Path) -> None:
     assert snapshot_porcelain(tmp_path) == set()
+
+
+def test_snapshot_porcelain_excludes_forge_dir_without_gitignore(tmp_path: Path) -> None:
+    """The #1699 core defect: even with NO ``.forge/`` gitignore entry, forge's
+    own runtime artifacts must not appear in the porcelain snapshot."""
+    _init_repo_no_forge_ignore(tmp_path)
+    (tmp_path / ".forge" / "quarantine").mkdir(parents=True)
+    (tmp_path / ".forge" / "quarantine" / "keep").write_text("x\n", encoding="utf-8")
+    (tmp_path / ".forge" / "escalated").write_text("marker\n", encoding="utf-8")
+    # A genuinely stray operator file at root still shows up.
+    (tmp_path / "stray.txt").write_text("oops\n", encoding="utf-8")
+
+    snap = snapshot_porcelain(tmp_path)
+    paths = {entry[3:] for entry in snap}
+
+    assert all(not p.startswith(".forge") for p in paths)
+    assert "stray.txt" in paths
 
 
 # ── unexpected_entries ────────────────────────────────────────────────
@@ -719,3 +751,93 @@ def test_run_review_phase_reverts_reviewer_tracked_mutation(
     assert outcome != _ReviewOutcome.ESCALATE or state.escalate_kind != "hygiene"
     # Suppress unused-variable warning from outcome capture.
     _ = outcome
+
+
+# ── self-artifact-proofing: forge's own .forge/ output is never contamination
+#    (issue #1699, hdp field incident #183) ─────────────────────────────────
+
+
+def test_quarantine_paths_skips_forge_runtime_paths(tmp_path: Path) -> None:
+    """The remediation machinery must never move its own bookkeeping location.
+
+    Moving ``.forge/quarantine`` into a subdirectory of itself is a
+    move-into-own-subtree OSError; the guard skips such paths so they are
+    reported as neither moved nor failed."""
+    from theforge.coordinator.workspace_hygiene import quarantine_paths  # noqa: PLC0415
+
+    _init_repo_no_forge_ignore(tmp_path)
+    (tmp_path / ".forge" / "quarantine").mkdir(parents=True)
+    (tmp_path / ".forge" / "quarantine" / "keep").write_text("x\n", encoding="utf-8")
+
+    quarantine_root = tmp_path / ".forge" / "quarantine" / "run-1" / "iter-0"
+    moved, failed = quarantine_paths(
+        tmp_path, [".forge/quarantine", ".forge/escalated"], quarantine_root
+    )
+
+    assert moved == []
+    assert failed == []
+    # The bookkeeping location is untouched — not moved into itself.
+    assert (tmp_path / ".forge" / "quarantine" / "keep").read_text() == "x\n"
+
+
+def test_enforce_pre_review_hygiene_ignores_forge_artifacts_without_gitignore(
+    tmp_path: Path,
+) -> None:
+    """Fix-success criterion: in a repo with NO ``.forge/`` gitignore entry, a
+    run that writes ``.forge/quarantine/`` and ``.forge/escalated`` passes the
+    pre-review hygiene checkpoint without quarantining or escalating."""
+    _init_repo_no_forge_ignore(tmp_path)
+    (tmp_path / ".forge" / "quarantine").mkdir(parents=True)
+    (tmp_path / ".forge" / "quarantine" / "prior").write_text("x\n", encoding="utf-8")
+    (tmp_path / ".forge" / "escalated").write_text("marker\n", encoding="utf-8")
+
+    ok, diag, audit = enforce_pre_review_hygiene(tmp_path, "run-1", cycle=1)
+
+    assert ok is True
+    assert diag is None
+    assert audit["quarantined"] == []
+    assert audit["modified"] == []
+    # Forge's own artifacts are left exactly where forge wrote them.
+    assert (tmp_path / ".forge" / "quarantine" / "prior").read_text() == "x\n"
+    assert (tmp_path / ".forge" / "escalated").read_text() == "marker\n"
+
+
+def test_enforce_pre_dev_hygiene_ignores_forge_artifacts_without_gitignore(
+    tmp_path: Path,
+) -> None:
+    """Symmetric pre-DEV counterpart: forge's own runtime output never trips
+    the DEV-entry gate, regardless of gitignore state."""
+    _init_repo_no_forge_ignore(tmp_path)
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / "escalated").write_text("marker\n", encoding="utf-8")
+
+    ok, diag, audit = enforce_pre_dev_hygiene(tmp_path, "run-1", iteration=1)
+
+    assert ok is True
+    assert diag is None
+    assert audit["quarantined"] == []
+    assert (tmp_path / ".forge" / "escalated").read_text() == "marker\n"
+
+
+def test_reconcile_post_review_ignores_forge_artifacts_without_gitignore(
+    tmp_path: Path,
+) -> None:
+    """Post-review reconciliation excludes forge's own runtime output too, so a
+    run that wrote ``.forge/`` artifacts during REVIEW is not escalated on
+    them even absent a ``.forge/`` gitignore entry."""
+    _init_repo_no_forge_ignore(tmp_path)
+    before = snapshot_porcelain(tmp_path)
+    (tmp_path / ".forge" / "quarantine").mkdir(parents=True)
+    (tmp_path / ".forge" / "quarantine" / "new").write_text("x\n", encoding="utf-8")
+    (tmp_path / ".forge" / "escalated").write_text("marker\n", encoding="utf-8")
+
+    ok, diag, offending, audit = reconcile_post_review_mutations(
+        tmp_path, before, "run-1", cycle=0
+    )
+
+    assert ok is True
+    assert diag is None
+    assert offending == []
+    assert audit["quarantined"] == []
+    assert audit["tracked_changes"] == []
+    assert (tmp_path / ".forge" / "quarantine" / "new").read_text() == "x\n"
