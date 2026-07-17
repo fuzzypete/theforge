@@ -14,6 +14,7 @@ from pathlib import Path
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
 from theforge.coordinator.diagnose_flow import run_diagnose_flow
+from theforge.coordinator.log_tee import set_worker_slug
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.diagnose_types import DIAGNOSE_OUTPUT_DESTINATIONS
 from theforge.runners import LogLevel
@@ -79,8 +80,29 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     else:
         interactive = not config.diagnose.autonomous_default
 
-    overall_ok = True
-    for number in issues:
+    # ── Concurrency ────────────────────────────────────────────────────
+    # Per-issue diagnosis is independent (fresh-context investigative agent,
+    # no shared mutable state), so it parallelizes cleanly under a worker cap
+    # that mirrors ``forge sprint --parallel``. Default (no flag) stays serial.
+    max_parallel: int | None = getattr(args, "parallel", None)
+    if max_parallel is not None and max_parallel < 1:
+        print(f"--parallel: must be >= 1, got {max_parallel}", file=sys.stderr)
+        return 1
+    effective_parallel = 1 if max_parallel is None else max_parallel
+    # Interactive mode confirms each landing on stdin; concurrent stdin prompts
+    # would interleave unreadably, so it always runs serially.
+    if interactive and effective_parallel > 1:
+        print(
+            "[forge] diagnose: --parallel is ignored in interactive mode; running issues serially",
+            file=sys.stderr,
+        )
+        effective_parallel = 1
+
+    def _diagnose_one(number: int, *, tagged: bool) -> bool:
+        # Tag every log line from this worker with its issue number so
+        # interleaved parallel output stays attributable.
+        if tagged:
+            set_worker_slug(f"#{number}")
         print(f"[forge] diagnose: starting issue #{number}", file=sys.stderr)
         result = run_diagnose_flow(
             issue_number=number,
@@ -99,10 +121,45 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             f"duration={result.state.agent_duration_s:.1f}s)",
             file=sys.stderr,
         )
-        if not result.success:
-            overall_ok = False
+        return result.success
 
+    overall_ok = _run_diagnoses(issues, _diagnose_one, effective_parallel)
     return 0 if overall_ok else 1
+
+
+def _run_diagnoses(
+    issues: list[int],
+    diagnose_one: "callable",
+    effective_parallel: int,
+) -> bool:
+    """Run ``diagnose_one(number, tagged=...)`` for each issue; return overall OK.
+
+    Serial when ``effective_parallel <= 1`` (preserving pre-feature behavior,
+    output untagged); otherwise a bounded ``ThreadPoolExecutor`` runs up to
+    ``effective_parallel`` investigations concurrently with per-issue log tags.
+    """
+    if effective_parallel <= 1 or len(issues) <= 1:
+        overall_ok = True
+        for number in issues:
+            if not diagnose_one(number, tagged=False):
+                overall_ok = False
+        return overall_ok
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    overall_ok = True
+    max_workers = min(effective_parallel, len(issues))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(diagnose_one, number, tagged=True): number for number in issues}
+        for future in as_completed(futures):
+            number = futures[future]
+            try:
+                if not future.result():
+                    overall_ok = False
+            except Exception as exc:  # noqa: BLE001 — surface, don't abort the batch
+                print(f"[forge] ✗ #{number}: diagnose crashed: {exc}", file=sys.stderr)
+                overall_ok = False
+    return overall_ok
 
 
 def register_parser(subparsers: object) -> None:
@@ -139,6 +196,13 @@ def register_parser(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Land the artifact without operator confirmation (overrides config default)",
+    )
+    p.add_argument(
+        "--parallel",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Maximum concurrent issue diagnoses (default: serial)",
     )
     p.add_argument(
         "--dry-run",
