@@ -235,6 +235,9 @@ class ValidationConfig:
     )
     gate_debug_timeout: int | None = None  # seconds; None = same resolved value as gate_timeout
     test_command: str | None = None  # canonical command for intermediate test runs in dev loop
+    # Substituted for {test_target} when no task is available (baseline gate) or
+    # when a task has no test_target of its own.
+    default_test_target: str = "."
     pre_validate_command: str | None = None  # optional command run before dirty check
     # Adaptive gate-timeout scaling under sprint --parallel N. The baseline
     # gate_timeout above is the alone-time budget. When mode == "adaptive"
