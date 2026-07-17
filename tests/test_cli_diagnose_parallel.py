@@ -12,10 +12,13 @@ from __future__ import annotations
 import argparse
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from theforge.cli.diagnose import _run_diagnoses, cmd_diagnose, register_parser
-from theforge.coordinator.diagnose_flow import _emit_dry_run
+from theforge.coordinator import diagnose_flow
+from theforge.coordinator.diagnose_flow import _emit_dry_run, _run_agent_with_heartbeat
 from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.diagnose_types import DiagnosePhase, DiagnoseResult, DiagnoseState
 
@@ -119,6 +122,40 @@ class TestRunDiagnoses:
         _run_diagnoses([100, 101], worker, effective_parallel=2)
         assert slugs[100] == "#100"
         assert slugs[101] == "#101"
+
+
+# ── Nested agent-thread slug propagation ──────────────────────────────
+
+
+class TestAgentThreadSlug:
+    def _run(self) -> str:
+        captured: dict[str, str] = {}
+
+        def fake_run_agent(*, prompt, profile, working_dir, secrets):
+            # Read the slug from inside the nested diagnose-agent thread, the
+            # thread that emits runner progress lines.
+            captured["slug"] = get_worker_slug()
+            return SimpleNamespace(output="done")
+
+        with patch.object(diagnose_flow, "run_agent", fake_run_agent):
+            _run_agent_with_heartbeat(
+                prompt="p",
+                profile=SimpleNamespace(timeout_seconds=1),
+                working_dir=Path("."),
+                secrets=None,
+            )
+        return captured["slug"]
+
+    def test_nested_agent_thread_inherits_worker_slug(self):
+        try:
+            set_worker_slug("#77")
+            assert self._run() == "#77"
+        finally:
+            set_worker_slug("")
+
+    def test_no_slug_leaves_nested_thread_untagged(self):
+        set_worker_slug("")
+        assert self._run() == ""
 
 
 # ── Dry-run output tagging ────────────────────────────────────────────

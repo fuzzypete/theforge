@@ -32,7 +32,7 @@ import yaml
 
 from theforge.config import ForgeConfig, ModelProfile
 from theforge.coordinator.diagnose_evidence import build_starting_evidence
-from theforge.coordinator.log_tee import get_worker_slug
+from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.coordinator.util import _log as _progress_log
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
@@ -596,7 +596,14 @@ def _run_agent_with_heartbeat(
         heartbeat_interval_s = _DIAGNOSE_HEARTBEAT_INTERVAL_S
     box: dict[str, object] = {}
 
+    # The worker slug is thread-local; propagate it into the nested agent
+    # thread so runner progress lines under ``forge diagnose --parallel`` stay
+    # attributed to the same issue as the caller's heartbeat lines.
+    caller_slug = get_worker_slug()
+
     def _run() -> None:
+        if caller_slug:
+            set_worker_slug(caller_slug)
         try:
             box["result"] = run_agent(
                 prompt=prompt,
