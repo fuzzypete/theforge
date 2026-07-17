@@ -14,7 +14,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from theforge.coordinator.log_tee import get_worker_slug
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 from theforge.workspace_env import build_workspace_env
@@ -63,17 +62,15 @@ def _fmt_duration(seconds: float) -> str:
 
 def _log(msg: str) -> None:
     """Print coordinator status to stderr (always shown)."""
-    slug = get_worker_slug()
-    prefix = f"[{slug}] " if slug else ""
-    _log_line("[forge]", f"{prefix}{msg}")
+    # The worker-slug prefix (parallel attribution) is applied centrally by
+    # ``_log_line``; do not prepend it here or it would double-tag.
+    _log_line("[forge]", msg)
 
 
 def _log_verbose(msg: str) -> None:
     """Print coordinator detail to stderr (verbose mode only)."""
     if _LOG_LEVEL >= LogLevel.VERBOSE:
-        slug = get_worker_slug()
-        prefix = f"[{slug}] " if slug else ""
-        _log_line("[forge]", f"{prefix}{msg}")
+        _log_line("[forge]", msg)
 
 
 def _fmt_cost(cost: float | None) -> str:

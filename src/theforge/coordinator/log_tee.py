@@ -7,20 +7,17 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+# The worker-slug thread-local now lives in the stdlib-only leaf module
+# ``theforge.log_util`` so the shared log-line emitter can prefix every line
+# (coordinator *and* runner) with it. Re-exported here for backward
+# compatibility with existing importers.
+from theforge.log_util import get_worker_slug as get_worker_slug
+from theforge.log_util import set_worker_slug as set_worker_slug
+
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
 
     from .logging import StructuredLogger
-
-_worker_ctx = threading.local()
-
-
-def set_worker_slug(slug: str) -> None:
-    _worker_ctx.slug = slug
-
-
-def get_worker_slug() -> str:
-    return getattr(_worker_ctx, "slug", "")
 
 
 def _safe_signal(signum, handler):

@@ -32,6 +32,7 @@ import yaml
 
 from theforge.config import ForgeConfig, ModelProfile
 from theforge.coordinator.diagnose_evidence import build_starting_evidence
+from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.coordinator.util import _log as _progress_log
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
@@ -595,7 +596,14 @@ def _run_agent_with_heartbeat(
         heartbeat_interval_s = _DIAGNOSE_HEARTBEAT_INTERVAL_S
     box: dict[str, object] = {}
 
+    # The worker slug is thread-local; propagate it into the nested agent
+    # thread so runner progress lines under ``forge diagnose --parallel`` stay
+    # attributed to the same issue as the caller's heartbeat lines.
+    caller_slug = get_worker_slug()
+
     def _run() -> None:
+        if caller_slug:
+            set_worker_slug(caller_slug)
         try:
             box["result"] = run_agent(
                 prompt=prompt,
@@ -626,6 +634,22 @@ def _run_agent_with_heartbeat(
 # ── Landing strategies ────────────────────────────────────────────────
 
 
+def _emit_dry_run(text: str) -> None:
+    """Print operator-facing dry-run markdown to stdout.
+
+    When a worker slug is set (``forge diagnose --parallel``), every line is
+    prefixed with the slug so concurrent multi-line output stays attributable
+    to its issue. Serial runs (no slug) print the text verbatim, unchanged from
+    pre-parallel behavior.
+    """
+    slug = get_worker_slug()
+    if not slug:
+        print(text)
+        return
+    prefix = f"[{slug}] "
+    print("\n".join(prefix + line for line in text.splitlines()))
+
+
 def _land_artifact(
     state: DiagnoseState,
     artifact: DiagnosisArtifact,
@@ -644,13 +668,13 @@ def _land_artifact(
 
     if destination == "comment":
         if dry_run:
-            print(section)
+            _emit_dry_run(section)
             return "<dry-run: comment>"
         return _gh_post_comment(state.issue_number, section, project_root)
 
     if destination == "body_section":
         if dry_run:
-            print(section)
+            _emit_dry_run(section)
             return "<dry-run: body_section>"
         new_body = upsert_diagnosis_section(state.issue_body, section)
         _gh_edit_body(state.issue_number, new_body, project_root)
@@ -662,7 +686,7 @@ def _land_artifact(
     out_dir = project_root / ".forge" / "diagnoses"
     out_path = out_dir / f"issue-{state.issue_number}.md"
     if dry_run:
-        print(section)
+        _emit_dry_run(section)
         return str(out_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     full = (
@@ -881,7 +905,7 @@ def run_diagnose_flow(
             absent=verdict.absent,
         )
         if dry_run:
-            print(report)
+            _emit_dry_run(report)
         first = verdict.absent[0]
         extra = f" (+{len(verdict.absent) - 1} more)" if len(verdict.absent) > 1 else ""
         target = f"{first.file}" + (f":{first.pattern}" if first.pattern else "")

@@ -22,7 +22,7 @@ from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
 from ..coordinator.gate import run_gate_full
-from ..coordinator.log_tee import _make_story_log_dir, get_worker_slug, set_worker_slug
+from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
@@ -84,9 +84,9 @@ log_agent_result = None
 
 
 def _log(msg: str) -> None:
-    slug = get_worker_slug()
-    prefix = f"[{slug}] " if slug else ""
-    _log_line("[sprint]", f"{prefix}{msg}")
+    # Worker-slug prefixing (parallel attribution) is applied centrally by
+    # ``_log_line``; do not prepend it here or it would double-tag.
+    _log_line("[sprint]", msg)
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
