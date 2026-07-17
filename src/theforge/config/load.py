@@ -541,6 +541,19 @@ def load_config(config_path: Path) -> ForgeConfig:
         ),
         gate_debug_command=val_data.get("gate_debug_command"),
         gate_debug_timeout=val_data.get("gate_debug_timeout"),
+        gate_diagnostic_enabled=bool(
+            val_data.get("gate_diagnostic_enabled", DEFAULT_VALIDATION.gate_diagnostic_enabled)
+        ),
+        gate_diagnostic_command=val_data.get("gate_diagnostic_command"),
+        gate_diagnostic_per_test_timeout=int(
+            val_data.get(
+                "gate_diagnostic_per_test_timeout",
+                DEFAULT_VALIDATION.gate_diagnostic_per_test_timeout,
+            )
+        ),
+        gate_diagnostic_budget=int(
+            val_data.get("gate_diagnostic_budget", DEFAULT_VALIDATION.gate_diagnostic_budget)
+        ),
         test_command=val_data.get("test_command"),
         pre_validate_command=val_data.get("pre_validate_command"),
         gate_cpu_cores=val_data.get("gate_cpu_cores"),

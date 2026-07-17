@@ -307,6 +307,17 @@ def test_run_validate_phase_timeout_with_commits_routes_to_dev_retry(tmp_path: P
         ),
         patch("theforge.coordinator.validate_phase.subprocess.run") as subproc,
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+        patch(
+            "theforge.coordinator.util._run_shell_detailed",
+            return_value=(
+                False,
+                "tests/test_hang.py::test_deadlock\n"
+                "+++++++ Timeout +++++++\n"
+                "FAILED tests/test_hang.py::test_deadlock - Failed: Timeout >10.0s",
+                1,
+                False,
+            ),
+        ) as diag_shell,
     ):
         # Stub out git rev-parse / git log calls used inside the RCA packet.
         def _fake_run(args, **kwargs):
@@ -336,6 +347,14 @@ def test_run_validate_phase_timeout_with_commits_routes_to_dev_retry(tmp_path: P
     assert "make gate" in state.human_feedback
     assert "RCA" in state.human_feedback
     assert "TIMEOUT after 45s" in state.human_feedback
+    # Diagnostic pass ran and its hanging-test highlight reached the retry packet.
+    diag_shell.assert_called_once()
+    assert "-n 0" in diag_shell.call_args.args[0]
+    assert "--timeout-method=thread" in diag_shell.call_args.args[0]
+    assert "tests/test_hang.py::test_deadlock" in state.human_feedback
+    assert "Hanging test isolated" in state.human_feedback
+    assert len(state.gate_diagnostic_telemetry) == 1
+    assert state.gate_diagnostic_telemetry[0].hanging_test == "tests/test_hang.py::test_deadlock"
     # Telemetry recorded the timeout iteration.
     assert len(state.dev_iteration_telemetry) == 1
     assert state.dev_iteration_telemetry[0].is_timeout is True
@@ -375,6 +394,10 @@ def test_run_validate_phase_timeout_rca_packet_falls_back_to_stderr(
         ),
         patch("theforge.coordinator.validate_phase.subprocess.run") as subproc,
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+        patch(
+            "theforge.coordinator.util._run_shell_detailed",
+            return_value=(True, "42 passed in 3.1s", 0, False),
+        ),
     ):
 
         def _fake_run(args, **kwargs):

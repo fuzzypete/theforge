@@ -260,7 +260,12 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 
     # ── validate ──────────────────────────────────────────────────────────────
     validate_block: dict | None = None
-    if state.gate_decisions or state.gate_debug_telemetry or state.validate_durations:
+    if (
+        state.gate_decisions
+        or state.gate_debug_telemetry
+        or state.gate_diagnostic_telemetry
+        or state.validate_durations
+    ):
         validate_block = {
             "cost_usd": 0.0,
             "duration_s": round(sum(state.validate_durations), 2)
@@ -270,6 +275,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             if state.gate_decisions
             else ("error" if state.validate_durations else None),
             "gate_debug": _serialize_gate_debug_metrics(state),
+            "gate_diagnostic": _serialize_gate_diagnostic_metrics(state),
         }
 
     # ── review ────────────────────────────────────────────────────────────────
@@ -438,6 +444,25 @@ def _serialize_gate_debug_metrics(state: CoordinatorState) -> list[dict]:
     ]
 
 
+def _serialize_gate_diagnostic_metrics(state: CoordinatorState) -> list[dict]:
+    """Serialize the gate-timeout diagnostic re-run passes (issue #1217)."""
+    return [
+        {
+            "iteration": item.iteration,
+            "command": item.command,
+            "ran": item.ran,
+            "budget_s": item.budget_s,
+            "per_test_timeout_s": item.per_test_timeout_s,
+            "exit_code": item.exit_code,
+            "timed_out": item.timed_out,
+            "hanging_test": item.hanging_test,
+            "output_tail": item.output_tail,
+            "output_truncated": item.output_truncated,
+        }
+        for item in state.gate_diagnostic_telemetry
+    ]
+
+
 def _serialize_review_iteration_metrics(state: CoordinatorState) -> list[dict]:
     return [
         {
@@ -547,6 +572,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "gate_decisions": state.gate_decisions,
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "gate_debug": _serialize_gate_debug_metrics(state),
+            "gate_diagnostic": _serialize_gate_diagnostic_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),
             "usage_summary": _build_iteration_usage_summary(state, config),
             "adaptive_limits": state.adaptive_limits_audit or None,

@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 3
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 4
+CURRENT_RECORD_SCHEMA_VERSION = 5
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -674,6 +674,23 @@ def _migrate_v3_to_v4(record: dict) -> dict:
     return {**record, "task": migrated_task}
 
 
+def _migrate_v4_to_v5(record: dict) -> dict:
+    """Add ``iterations.gate_diagnostic`` (issue #1217).
+
+    v4 records captured only ``iterations.gate_debug`` (the free-form
+    user-configured diagnostic). v5 adds ``iterations.gate_diagnostic``, the
+    hardcoded pytest ``-n 0`` diagnostic re-run pass that surfaces the hanging
+    test on a gate timeout. Older records ran before the pass existed, so
+    backfill an empty list rather than fabricating a diagnostic result.
+    """
+    iterations = record.get("iterations")
+    if not isinstance(iterations, dict):
+        return record
+    if "gate_diagnostic" in iterations:
+        return record
+    return {**record, "iterations": {**iterations, "gate_diagnostic": []}}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -686,6 +703,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
 }
 
 
