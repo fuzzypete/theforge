@@ -295,16 +295,22 @@ def _run_escalate_gate(
 
     if disposition == "preserve":
         # Timeout with no explicit selection: the contract change (#1664) is that
-        # this preserves the escalation + advisory report for an operator decision
-        # rather than auto-rejecting and discarding the work.
+        # this preserves the escalation for an operator decision rather than
+        # auto-rejecting and discarding the work. Only the pending-file path
+        # generates an advisory report; remote/interactive timeouts preserve too
+        # but without one, so vary the message on what was actually produced.
         _log("  Escalate gate: no selection (timeout) — preserving for operator decision")
-        return _make_escalate_result(
-            "advisory_pending",
-            message=(
+        if state.advisory_generated:
+            preserve_message = (
                 "Escalation preserved: an advisory report was generated and an "
                 "operator action selection is still required (no auto-reject)."
-            ),
-        )
+            )
+        else:
+            preserve_message = (
+                "Escalation preserved: an operator action selection is still "
+                "required (no auto-reject)."
+            )
+        return _make_escalate_result("advisory_pending", message=preserve_message)
 
     # reject / defer_or_abandon / any unrecognised decision
     return _make_escalate_result("reject")

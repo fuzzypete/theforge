@@ -402,3 +402,26 @@ options:
             parse_errors=[],
         )
         assert report.ok
+
+    def test_prompt_construction_exercises_1365_packet(self):
+        # Exercise the #1365 evidence packet through prompt construction (not just
+        # a prewritten report): the fresh-advisor prompt must carry the full
+        # taxonomy AND the per-cycle churn signal so a fresh model can surface the
+        # blocklist-vs-invariant framing.
+        from theforge.task.advisor_prompts import build_advisor_prompt
+
+        packet = self._packet_1365()
+        prompt = build_advisor_prompt(packet)
+
+        # The constrained taxonomy is presented to the advisor.
+        for action in ACTION_TAXONOMY:
+            assert f"`{action}`" in prompt
+        # The churn pattern (each cycle's bypass finding) is in the packet section.
+        assert "force-push" in prompt
+        assert "case-varied alias" in prompt
+        assert "Cycle 5" in prompt
+        # The end-state invariant framing from the issue body is present.
+        assert "end-state invariant" in prompt
+        # The required constrained-output contract is spelled out.
+        assert "recommendation" in prompt
+        assert "<advisory_report>" in prompt

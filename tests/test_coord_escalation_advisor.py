@@ -63,6 +63,17 @@ def _canned_report(recommendation: str = "redirect") -> AdvisoryReport:
     )
 
 
+def _report_with_errors() -> AdvisoryReport:
+    """An invalid advisory report (parse_errors set → .ok is False)."""
+    return AdvisoryReport(
+        recommendation="",
+        rationale="",
+        options=[],
+        parse_errors=["no <advisory_report> block found"],
+        raw={},
+    )
+
+
 def _pending_config(tmp_path: Path, timeout: int = 1):
     """Config that activates pending-file HITL mode (backends non-empty)."""
     base = _make_config(tmp_path)
@@ -209,6 +220,66 @@ class TestPendingEscalateGate:
                 )
         assert decision == "timeout"
 
+    def test_timeout_preserves_selectable_pending_checkpoint(self, tmp_path):
+        # P1 regression: on timeout the pending file must NOT be deleted — the
+        # operator still has to be able to select an action. It must remain on disk
+        # with the taxonomy options + advisory payload and an awaiting-decision marker.
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _escalated_state()
+        state.advisory_packet = {"cycles": []}
+        report = _canned_report("redirect")
+
+        with patch("theforge.pending.poll_pending", return_value=("timeout", None)):
+            with patch("theforge.notify_backends.send_notifications"):
+                _pending_escalate_gate(
+                    state,
+                    task,
+                    config,
+                    state.error,
+                    {"reviewer-a": "REQUEST_CHANGES"},
+                    None,
+                    run_id="run-preserve",
+                    advisory=report,
+                )
+
+        pending_file = tmp_path / ".forge" / "pending" / "run-preserve.yaml"
+        assert pending_file.exists(), "pending checkpoint must survive a timeout"
+        data = yaml.safe_load(pending_file.read_text())
+        assert data["options"] == list(rp.ACTION_TAXONOMY)
+        assert data["advisory"]["recommendation"] == "redirect"
+        assert data["timed_out_awaiting_decision"] is True
+        assert data.get("decision") is None  # still resolvable — no auto-decision written
+
+        # And the operator can still resolve it after the timeout.
+        from theforge import pending as _pending
+
+        assert _pending.resolve_pending("run-preserve", "redirect", project_root=tmp_path)
+        assert yaml.safe_load(pending_file.read_text())["decision"] == "redirect"
+
+    def test_decision_cleans_up_pending_file(self, tmp_path):
+        # The complementary case: when the operator DOES select, the resolved
+        # pending file is cleaned up (not left dangling).
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _escalated_state()
+        state.advisory_packet = {"cycles": []}
+
+        with patch("theforge.pending.poll_pending", return_value=("accept", "t")):
+            with patch("theforge.notify_backends.send_notifications"):
+                decision = _pending_escalate_gate(
+                    state,
+                    task,
+                    config,
+                    state.error,
+                    {"reviewer-a": "REQUEST_CHANGES"},
+                    None,
+                    run_id="run-decided",
+                    advisory=_canned_report("accept"),
+                )
+        assert decision == "accept"
+        assert not (tmp_path / ".forge" / "pending" / "run-decided.yaml").exists()
+
 
 # ── _run_escalate_gate: disposition normalisation ─────────────────────────────
 
@@ -220,10 +291,16 @@ class TestRunEscalateGateDispositions:
         state = _escalated_state()
 
         # Fresh advisor + pending decision are both stubbed so we exercise the
-        # normalisation logic in _run_escalate_gate deterministically.
-        monkeypatch.setattr(
-            rp, "run_escalation_advisor", lambda *a, **k: report or _canned_report("redirect")
-        )
+        # normalisation logic in _run_escalate_gate deterministically. The advisor
+        # stub sets state.advisory_generated like the real flow so the preserve
+        # message can distinguish advisory vs no-advisory timeouts.
+        def _fake_advisor(*a, **k):
+            rep = report or _canned_report("redirect")
+            state.advisory_generated = rep.ok
+            state.advisory_report = rep.to_dict()
+            return rep
+
+        monkeypatch.setattr(rp, "run_escalation_advisor", _fake_advisor)
         monkeypatch.setattr(rp, "_pending_escalate_gate", lambda *a, **k: gate_decision)
         # Approve path calls _finalize_approve — stub it to a DONE result.
         monkeypatch.setattr(
@@ -286,6 +363,21 @@ class TestRunEscalateGateDispositions:
         # Contract change: timeout preserves rather than auto-rejecting.
         assert state.escalate_decision == "advisory_pending"
         assert state.escalate_decision != "reject"
+        # Advisory was generated on this (pending-file) path — message says so.
+        assert state.advisory_generated is True
+        assert "advisory report was generated" in result.message
+
+    def test_timeout_preserve_message_omits_advisory_when_none_generated(
+        self, tmp_path, monkeypatch
+    ):
+        # Remote/interactive timeouts also preserve, but no advisory is produced
+        # there — the preserve message must not falsely claim one was generated.
+        state, result = self._call(tmp_path, monkeypatch, "timeout", report=_report_with_errors())
+        assert result.success is False
+        assert state.escalate_decision == "advisory_pending"
+        assert state.advisory_generated is False
+        assert "advisory report was generated" not in result.message
+        assert "operator action selection is still" in result.message
 
     def test_reject_policy_still_short_circuits_without_advisor(self, tmp_path, monkeypatch):
         # escalate_policy=reject must not even generate an advisory.

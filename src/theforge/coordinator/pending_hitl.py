@@ -185,18 +185,37 @@ def _pending_escalate_gate(
     waited = time.monotonic() - _poll_start
     state.human_review_waited_seconds = (state.human_review_waited_seconds or 0.0) + waited
 
-    _pending.cleanup_pending(_eff_run_id, project_root)
-
     waited_str = _cu._fmt_duration(waited)
     if decision == "timeout":
-        # Contract change (#1664): no auto-reject. Preserve the escalation and its
-        # advisory report so the operator can still select an action.
+        # Contract change (#1664): no auto-reject. PRESERVE the pending checkpoint
+        # so the operator can still select an action — do NOT delete the file here
+        # (deleting it would leave the operator with nothing to resolve). Rewrite
+        # it with a refreshed window and an awaiting-decision marker so the stale
+        # sweeper does not immediately remove the still-actionable record and the
+        # advisory report + taxonomy options remain available for selection.
+        extra["timed_out_awaiting_decision"] = True
+        preserve_reason = (
+            "ESCALATION TIMED OUT — awaiting an operator action selection "
+            "(no auto-reject).\n\n" + reason
+        )
+        _pending.write_pending(
+            run_id=_eff_run_id,
+            story=task.slug,
+            phase="ESCALATE",
+            reason=preserve_reason,
+            options=options,
+            timeout_seconds=timeout_seconds,
+            project_root=project_root,
+            extra=extra,
+        )
         _cu._log(
-            f"  Escalate gate timed out after {waited_str} — preserving for operator decision"
-            " (no auto-reject)"
+            f"  Escalate gate timed out after {waited_str} — pending checkpoint preserved"
+            f" for operator decision (no auto-reject): {_eff_run_id}"
         )
         return "timeout"
 
+    # A decision was made — clean up the resolved pending file and return it.
+    _pending.cleanup_pending(_eff_run_id, project_root)
     _cu._log(f"  Escalate gate decision: {decision!r} (waited {waited_str})")
     return decision
 

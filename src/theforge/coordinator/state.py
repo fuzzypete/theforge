@@ -414,7 +414,11 @@ class CoordinatorState:
     last_dev_start_commit: str | None = None
     # HEAD commit hash captured before each dev iteration; used by finding_classifier
     # to compute git diff --name-only for changed-file correlation.
-    escalate_decision: str | None = None  # "approve" | "reject" | "continue"
+    # Legacy values: "approve" | "reject" | "continue". Since #1664 this field may
+    # also hold a taxonomy action (see escalation_advisor.ACTION_TAXONOMY: accept,
+    # land_core_defer_edges, redirect, decompose, elevate, defer_or_abandon) or
+    # "advisory_pending" when an escalation timed out awaiting an operator decision.
+    escalate_decision: str | None = None
     escalate_reason: str | None = None  # human-readable escalation reason
     # Fresh-context escalation advisor (issue #1664). The advisor reads a prepared
     # evidence packet and emits a constrained menu of action choices; the operator
