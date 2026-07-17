@@ -28,7 +28,7 @@ Mode: {mode}
 == ISSUE #{issue_number}: {title} ==
 
 {body}
-
+{starting_evidence}
 {environment}
 
 == INSTRUCTIONS ==
@@ -206,6 +206,7 @@ def build_diagnose_prompt(
     title: str,
     body: str,
     mode: str = "autonomous",
+    starting_evidence: str = "",
 ) -> str:
     """Return the diagnose-agent prompt for one issue.
 
@@ -213,15 +214,25 @@ def build_diagnose_prompt(
     it can adjust verbosity (interactive runs may benefit from richer notes
     explaining intermediate steps).
 
+    ``starting_evidence`` is an optional, already-rendered STARTING EVIDENCE
+    block (see :func:`theforge.coordinator.diagnose_evidence.build_starting_evidence`)
+    pre-loaded from references the operator cited in the issue body. It is
+    embedded verbatim right after the issue block so the agent does not spend
+    budget rediscovering pointers the operator already provided. When empty,
+    the prompt is byte-for-byte what it was before auto-injection existed
+    (best-effort: no references → no change).
+
     The prompt embeds an environment briefing (see
     :func:`build_environment_briefing`) so the agent starts from TheForge's
     known audit/log layout instead of burning its budget rediscovering it.
     """
+    evidence_block = f"\n{starting_evidence}\n" if starting_evidence else ""
     return _DIAGNOSE_PROMPT_TEMPLATE.format(
         issue_number=issue_number,
         title=title or f"Issue #{issue_number}",
         body=body or "(issue body is empty)",
         mode=mode,
+        starting_evidence=evidence_block,
         environment=build_environment_briefing(),
     )
 

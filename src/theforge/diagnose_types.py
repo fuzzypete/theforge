@@ -224,6 +224,12 @@ class DiagnoseState:
     already_resolved: bool = False
     absent_premises: tuple[AbsentPremise, ...] = ()
     # Set when the premise check finds the cited code was removed from baseline.
+    starting_evidence_labels: list[str] = field(default_factory=list)
+    # Short labels for each excerpt auto-loaded from issue-body references and
+    # injected into the prompt as STARTING EVIDENCE. Empty when the body cited
+    # nothing recognizable. Recorded so the audit shows exactly what the
+    # orchestrator handed the agent (convention: instrument cross-phase data).
+    starting_evidence_chars: int = 0
 
     def transition(self, new_phase: DiagnosePhase, when: str) -> None:
         self.phase = new_phase

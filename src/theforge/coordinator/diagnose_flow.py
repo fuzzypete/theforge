@@ -31,6 +31,7 @@ from pathlib import Path
 import yaml
 
 from theforge.config import ForgeConfig, ModelProfile
+from theforge.coordinator.diagnose_evidence import build_starting_evidence
 from theforge.coordinator.util import _log as _progress_log
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
@@ -480,6 +481,10 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "location": state.landed_location,
         },
         "sub_investigations": list(state.sub_investigations),
+        "starting_evidence": {
+            "reference_labels": list(state.starting_evidence_labels),
+            "chars": state.starting_evidence_chars,
+        },
         "baseline": {
             "sha": state.baseline_sha,
             "captured_at": state.baseline_captured_at,
@@ -738,6 +743,27 @@ def run_diagnose_flow(
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
+    # ── STARTING EVIDENCE ─────────────────────────────────────────────
+    # Deterministic pre-load: scan the issue body for references the operator
+    # cited (run/sprint ids, branches, PR/issue numbers, audit paths) and hand
+    # the agent bounded excerpts up front, so its budget is spent on
+    # hypothesis-formation rather than rediscovering pointers already in the
+    # body. Best-effort — an issue with no recognizable references yields an
+    # empty block and the prompt is unchanged from pre-feature behavior.
+    evidence = build_starting_evidence(
+        issue_body=state.issue_body,
+        project_root=project_root,
+        self_issue_number=issue_number,
+    )
+    state.starting_evidence_labels = list(evidence.reference_labels)
+    state.starting_evidence_chars = len(evidence.text)
+    if evidence.reference_labels:
+        _progress_log(
+            f"  [diagnose] pre-loaded {len(evidence.reference_labels)} evidence "
+            f"excerpt(s) from issue-body references: "
+            f"{', '.join(evidence.reference_labels)}"
+        )
+
     # ── INVESTIGATE ───────────────────────────────────────────────────
     state.transition(DiagnosePhase.INVESTIGATE, _now_iso())
     profile = _build_diagnose_profile(config)
@@ -747,6 +773,7 @@ def run_diagnose_flow(
         title=state.issue_title,
         body=state.issue_body,
         mode=mode,
+        starting_evidence=evidence.text,
     )
 
     t0 = time.monotonic()
