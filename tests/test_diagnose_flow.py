@@ -1248,3 +1248,125 @@ class TestParseRelatedFindings:
         assert artifact is not None
         assert len(artifact.related_findings) == 1
         assert artifact.related_findings[0].summary == "dup"
+
+
+class TestDiagnoseHeartbeat:
+    """The investigative agent runs for up to the diagnose timeout; the flow must
+    emit periodic progress so a live run is distinguishable from a hang."""
+
+    def test_heartbeat_emitted_while_agent_runs(self, tmp_path):
+        import time as _time
+
+        from theforge.coordinator import diagnose_flow
+
+        profile = diagnose_flow._build_diagnose_profile(_make_config(tmp_path))
+
+        def _slow_agent(**_kwargs):
+            _time.sleep(0.18)
+            return _fake_agent_result(_agent_yaml_output())
+
+        with (
+            patch.object(diagnose_flow, "run_agent", _slow_agent),
+            patch.object(diagnose_flow, "_progress_log") as mock_log,
+        ):
+            result = diagnose_flow._run_agent_with_heartbeat(
+                prompt="p",
+                profile=profile,
+                working_dir=tmp_path,
+                secrets=None,
+                heartbeat_interval_s=0.05,
+            )
+
+        assert result is not None
+        heartbeats = [c.args[0] for c in mock_log.call_args_list]
+        assert heartbeats, "expected at least one heartbeat line"
+        assert all("still investigating" in line for line in heartbeats)
+        assert any("elapsed" in line for line in heartbeats)
+
+    def test_no_heartbeat_when_agent_returns_fast(self, tmp_path):
+        from theforge.coordinator import diagnose_flow
+
+        profile = diagnose_flow._build_diagnose_profile(_make_config(tmp_path))
+
+        def _fast_agent(**_kwargs):
+            return _fake_agent_result(_agent_yaml_output())
+
+        with (
+            patch.object(diagnose_flow, "run_agent", _fast_agent),
+            patch.object(diagnose_flow, "_progress_log") as mock_log,
+        ):
+            diagnose_flow._run_agent_with_heartbeat(
+                prompt="p",
+                profile=profile,
+                working_dir=tmp_path,
+                secrets=None,
+                heartbeat_interval_s=5.0,
+            )
+
+        assert not mock_log.called
+
+    def test_agent_exception_is_reraised(self, tmp_path):
+        from theforge.coordinator import diagnose_flow
+
+        profile = diagnose_flow._build_diagnose_profile(_make_config(tmp_path))
+
+        def _boom(**_kwargs):
+            raise RuntimeError("agent blew up")
+
+        with patch.object(diagnose_flow, "run_agent", _boom):
+            try:
+                diagnose_flow._run_agent_with_heartbeat(
+                    prompt="p",
+                    profile=profile,
+                    working_dir=tmp_path,
+                    secrets=None,
+                    heartbeat_interval_s=0.05,
+                )
+            except RuntimeError as exc:
+                assert "agent blew up" in str(exc)
+            else:
+                raise AssertionError("expected RuntimeError to propagate")
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_flow_emits_heartbeat_during_investigate(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        """Seam test: a full diagnose run whose INVESTIGATE agent is slow must
+        surface heartbeat lines between the runner's start line and the result."""
+        import time as _time
+
+        from theforge.coordinator import diagnose_flow
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 1421,
+            "title": "silent diagnose",
+            "body": "no output while model works",
+            "state": "OPEN",
+        }
+        mock_post.return_value = "https://example/comment"
+
+        def _slow_agent(**_kwargs):
+            _time.sleep(0.18)
+            return _fake_agent_result(_agent_yaml_output())
+
+        mock_agent.side_effect = _slow_agent
+
+        with (
+            patch.object(diagnose_flow, "_DIAGNOSE_HEARTBEAT_INTERVAL_S", 0.05),
+            patch.object(diagnose_flow, "_progress_log") as mock_log,
+        ):
+            result = diagnose_flow.run_diagnose_flow(
+                issue_number=1421,
+                config=config,
+                project_root=tmp_path,
+                output_destination="comment",
+            )
+
+        assert result.success
+        heartbeats = [
+            c.args[0] for c in mock_log.call_args_list if "still investigating" in c.args[0]
+        ]
+        assert heartbeats, "expected heartbeat lines during INVESTIGATE"
