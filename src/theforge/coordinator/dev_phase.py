@@ -923,8 +923,7 @@ def _run_dev_phase(
                 )
                 if _checkpointed:
                     _log(
-                        "  ⎇ DEV   checkpoint-committed stranded work before "
-                        "max-iterations retry"
+                        "  ⎇ DEV   checkpoint-committed stranded work before max-iterations retry"
                     )
                     if logger:
                         logger._safe_emit(
