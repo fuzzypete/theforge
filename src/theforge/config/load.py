@@ -1000,6 +1000,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         _no_scratch = conventions_hard_raw.get("no_scratch_files", True)
         _stack = conventions_hard_raw.get("stack", [])
         _allowed_root_files = conventions_hard_raw.get("allowed_root_files", [])
+        _package_roots = conventions_hard_raw.get("package_roots", [])
         if not isinstance(_max_module, int):
             raise ValueError(
                 "forge.yaml 'conventions.hard.max_module_lines' must be an int,"
@@ -1041,6 +1042,20 @@ def load_config(config_path: Path) -> ForgeConfig:
                 "forge.yaml 'conventions.hard.allowed_root_files' must be a list of strings,"
                 f" got {_allowed_root_files!r}"
             )
+        if not isinstance(_package_roots, list) or not all(
+            isinstance(item, str) for item in _package_roots
+        ):
+            raise ValueError(
+                "forge.yaml 'conventions.hard.package_roots' must be a list of strings,"
+                f" got {_package_roots!r}"
+            )
+        for _root in _package_roots:
+            if not (project_root / _root).exists():
+                log.warning(
+                    "forge.yaml 'conventions.hard.package_roots' entry %r does not exist "
+                    "under the project root — its checks will find nothing",
+                    _root,
+                )
         conventions_hard_cfg = HardConventionsConfig(
             max_module_lines=_max_module,
             max_test_file_lines=_max_test,
@@ -1049,6 +1064,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             no_scratch_files=_no_scratch,
             stack=normalize_root_file_stacks(_stack_items),
             allowed_root_files=tuple(_allowed_root_files),
+            package_roots=tuple(_package_roots),
         )
 
     conventions_advisory_raw = conventions_raw.get("advisory", {})

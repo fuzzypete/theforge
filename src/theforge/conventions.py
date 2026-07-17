@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import io
+import logging
 import re
 import subprocess
 import tempfile
@@ -16,6 +17,44 @@ from theforge.root_file_conventions import (
     DEFAULT_ALLOWED_ROOT_FILES,
     resolve_root_file_allowances,
 )
+
+log = logging.getLogger(__name__)
+
+# Legacy default scope when no package_roots are configured: theforge's own
+# package. Preserves historical behavior for repos that don't set the field.
+_DEFAULT_PACKAGE_ROOT = "src/theforge"
+
+
+def _resolve_package_dirs(
+    project_root: Path, package_roots: tuple[str, ...] | list[str]
+) -> list[tuple[Path, Path]]:
+    """Return ``(package_dir, import_root)`` pairs for the configured roots.
+
+    ``package_dir`` is the directory scanned for ``*.py`` files; ``import_root``
+    is the directory dotted module names are resolved against (the package's
+    parent, mirroring how Python resolves imports). An empty ``package_roots``
+    falls back to the legacy ``src/theforge`` scope so existing repos are
+    unaffected.
+
+    Configured roots that don't exist are logged (not silently dropped) so
+    enabling a check against a missing root surfaces a warning instead of a
+    no-op.
+    """
+    roots = list(package_roots) if package_roots else [_DEFAULT_PACKAGE_ROOT]
+    pairs: list[tuple[Path, Path]] = []
+    for rel in roots:
+        pkg_dir = project_root / rel
+        if not pkg_dir.exists():
+            if package_roots:
+                log.warning(
+                    "conventions: configured package_root %r does not exist under %s "
+                    "— nothing to check",
+                    rel,
+                    project_root,
+                )
+            continue
+        pairs.append((pkg_dir, pkg_dir.parent))
+    return pairs
 
 
 @dataclass
@@ -33,9 +72,9 @@ def check_hard_conventions(
     violations: list[ConventionViolation] = []
     violations.extend(_check_line_counts(config, project_root))
     if config.no_circular_imports:
-        violations.extend(_check_circular_imports(project_root))
+        violations.extend(_check_circular_imports(project_root, config.package_roots))
     if config.test_mirrors_source:
-        violations.extend(_check_test_mirrors(project_root))
+        violations.extend(_check_test_mirrors(project_root, config.package_roots))
     if config.no_scratch_files:
         violations.extend(
             _check_no_scratch_files(
@@ -106,21 +145,36 @@ def _check_line_counts(
 ) -> list[ConventionViolation]:
     violations: list[ConventionViolation] = []
 
-    src_root = project_root / "src"
     tests_root = project_root / "tests"
 
-    for py_file in sorted(src_root.rglob("*.py")):
-        line_count = len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
-        if line_count > config.max_module_lines:
-            rel = str(py_file.relative_to(project_root))
-            violations.append(
-                ConventionViolation(
-                    rule="max_module_lines",
-                    file=rel,
-                    detail=f"{rel} has {line_count} lines (limit {config.max_module_lines})",
-                    blocking=False,
+    # Module scan roots: configured package_roots (which may live outside src/),
+    # else the legacy src/** scope. Dedup by resolved path so overlapping roots
+    # (e.g. "src" and "src/pipeline") don't double-report a file.
+    if config.package_roots:
+        module_roots = [project_root / rel for rel in config.package_roots]
+    else:
+        module_roots = [project_root / "src"]
+
+    seen: set[Path] = set()
+    for module_root in module_roots:
+        if not module_root.exists():
+            continue
+        for py_file in sorted(module_root.rglob("*.py")):
+            resolved = py_file.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            line_count = len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
+            if line_count > config.max_module_lines:
+                rel = str(py_file.relative_to(project_root))
+                violations.append(
+                    ConventionViolation(
+                        rule="max_module_lines",
+                        file=rel,
+                        detail=f"{rel} has {line_count} lines (limit {config.max_module_lines})",
+                        blocking=False,
+                    )
                 )
-            )
 
     for py_file in sorted(tests_root.rglob("*.py")):
         line_count = len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
@@ -206,22 +260,24 @@ def _collect_imports(py_file: Path, src_root: Path) -> list[str]:
     return imports
 
 
-def _check_circular_imports(project_root: Path) -> list[ConventionViolation]:
-    # Spec scopes this check to src/theforge only
-    theforge_src = project_root / "src" / "theforge"
-    src_root = project_root / "src"
-    if not theforge_src.exists():
+def _check_circular_imports(
+    project_root: Path, package_roots: tuple[str, ...] | list[str] = ()
+) -> list[ConventionViolation]:
+    pairs = _resolve_package_dirs(project_root, package_roots)
+    if not pairs:
         return []
 
-    # Build adjacency: module → set of imported modules
+    # Build adjacency: module → set of imported modules. Modules from every
+    # configured root share one graph, so cycles that span roots are caught.
     adjacency: dict[str, list[str]] = {}
     file_map: dict[str, Path] = {}
 
-    for py_file in sorted(theforge_src.rglob("*.py")):
-        mod = _module_name(py_file, src_root)
-        imports = _collect_imports(py_file, src_root)
-        adjacency[mod] = imports
-        file_map[mod] = py_file
+    for pkg_dir, import_root in pairs:
+        for py_file in sorted(pkg_dir.rglob("*.py")):
+            mod = _module_name(py_file, import_root)
+            imports = _collect_imports(py_file, import_root)
+            adjacency[mod] = imports
+            file_map[mod] = py_file
 
     # DFS-based cycle detection
     visited: set[str] = set()
@@ -339,48 +395,54 @@ def _check_no_scratch_files(
 # ── Test mirror check ─────────────────────────────────────────────────
 
 
-def _check_test_mirrors(project_root: Path) -> list[ConventionViolation]:
-    src_pkg = project_root / "src" / "theforge"
+def _check_test_mirrors(
+    project_root: Path, package_roots: tuple[str, ...] | list[str] = ()
+) -> list[ConventionViolation]:
     tests_root = project_root / "tests"
-    if not src_pkg.exists() or not tests_root.exists():
+    if not tests_root.exists():
+        return []
+
+    pkg_dirs = [pkg_dir for pkg_dir, _ in _resolve_package_dirs(project_root, package_roots)]
+    if not pkg_dirs:
         return []
 
     violations: list[ConventionViolation] = []
 
-    for item in sorted(src_pkg.iterdir()):
-        if item.name == "__init__.py" or item.name == "__pycache__":
-            continue
+    for src_pkg in pkg_dirs:
+        for item in sorted(src_pkg.iterdir()):
+            if item.name == "__init__.py" or item.name == "__pycache__":
+                continue
 
-        if item.is_file() and item.suffix == ".py":
-            # src/theforge/foo.py → tests/test_foo.py
-            expected = tests_root / f"test_{item.stem}.py"
-            if not expected.exists():
-                rel = str(item.relative_to(project_root))
-                expected_rel = expected.relative_to(project_root)
-                violations.append(
-                    ConventionViolation(
-                        rule="test_mirrors_source",
-                        file=rel,
-                        detail=f"No test mirror found for {rel} (expected {expected_rel})",
+            if item.is_file() and item.suffix == ".py":
+                # <root>/foo.py → tests/test_foo.py
+                expected = tests_root / f"test_{item.stem}.py"
+                if not expected.exists():
+                    rel = str(item.relative_to(project_root))
+                    expected_rel = expected.relative_to(project_root)
+                    violations.append(
+                        ConventionViolation(
+                            rule="test_mirrors_source",
+                            file=rel,
+                            detail=f"No test mirror found for {rel} (expected {expected_rel})",
+                        )
                     )
-                )
-        elif item.is_dir():
-            # src/theforge/foo/ → tests/test_foo_*.py OR tests/test_foo/
-            pkg_name = item.name
-            mirror_dir = tests_root / f"test_{pkg_name}"
-            mirror_glob = list(tests_root.glob(f"test_{pkg_name}_*.py"))
-            if not mirror_dir.exists() and not mirror_glob:
-                rel = str(item.relative_to(project_root))
-                violations.append(
-                    ConventionViolation(
-                        rule="test_mirrors_source",
-                        file=rel,
-                        detail=(
-                            f"No test mirror found for package {rel} "
-                            f"(expected tests/test_{pkg_name}_*.py or tests/test_{pkg_name}/)"
-                        ),
+            elif item.is_dir():
+                # <root>/foo/ → tests/test_foo_*.py OR tests/test_foo/
+                pkg_name = item.name
+                mirror_dir = tests_root / f"test_{pkg_name}"
+                mirror_glob = list(tests_root.glob(f"test_{pkg_name}_*.py"))
+                if not mirror_dir.exists() and not mirror_glob:
+                    rel = str(item.relative_to(project_root))
+                    violations.append(
+                        ConventionViolation(
+                            rule="test_mirrors_source",
+                            file=rel,
+                            detail=(
+                                f"No test mirror found for package {rel} "
+                                f"(expected tests/test_{pkg_name}_*.py or tests/test_{pkg_name}/)"
+                            ),
+                        )
                     )
-                )
 
     return violations
 
