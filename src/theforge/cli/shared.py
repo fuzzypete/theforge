@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -31,6 +32,102 @@ from theforge.task import (
 )
 
 _SECRETS_FILE = ".forge/.env"
+
+# ── forge run precondition guards ──────────────────────────────────────────
+# Some machine-local state under .forge/ is catastrophic to track in git.
+# Committing worktree bookkeeping, lock files, daemon state, or pending-run
+# state assumes single-machine locality: parallel machines get false-positive
+# lock errors, nested git repos break checkout, and committed secrets leak.
+# `forge run` fails fast on these before doing any work. Noise paths (logs,
+# derived views, the SQLite index) surface a warning but do not block.
+#
+# Each entry is (display_path, is_dir). Directory entries end in "/" and match
+# any tracked file beneath them; file entries match an exact tracked path.
+_RUN_BLOCKER_PATHS: list[tuple[str, bool]] = [
+    (".forge/worktrees/", True),
+    (".forge/locks/", True),
+    (".forge/merge.lock", False),
+    (".forge/daemon.json", False),
+    (".forge/pending/", True),
+    (".forge/runs/", True),
+    (".forge/.env", False),
+    (".forge/secrets.yaml", False),
+    ("handoff.yaml", False),
+]
+
+_RUN_WARNING_PATHS: list[tuple[str, bool]] = [
+    (".forge/logs/", True),
+    # history.jsonl becomes a derived-local file after the Phase C migration;
+    # warning on it now is harmless (a warning never blocks a run) and matches
+    # the AC. If it is still legitimately tracked pre-migration the operator can
+    # ignore the notice.
+    (".forge/audits/history.jsonl", False),
+    (".forge/audits/index.sqlite", False),
+    (".forge/assignment_history.yaml", False),
+]
+
+
+def _rm_cached_command(display: str, is_dir: bool) -> str:
+    """Build the `git rm --cached` command that stops tracking a path."""
+    flag = "-r " if is_dir else ""
+    return f"git rm --cached {flag}{display}"
+
+
+def _tracked_files(project_root: Path) -> list[str] | None:
+    """Return the list of git-tracked paths under project_root.
+
+    Returns None when the directory is not a git repository or git is
+    unavailable — in that case there is nothing to guard against.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _path_is_tracked(tracked: list[str], display: str, is_dir: bool) -> bool:
+    """Report whether any tracked path matches the guarded path."""
+    if is_dir:
+        prefix = display if display.endswith("/") else display + "/"
+        return any(f.startswith(prefix) for f in tracked)
+    return display in tracked
+
+
+def check_run_preconditions(project_root: Path) -> tuple[list[str], list[str]]:
+    """Return (blocker_messages, warning_messages) for tracked catastrophic paths.
+
+    Blockers must fail the run fast; warnings surface but allow it to proceed.
+    Each message names the exact `git rm --cached` command to resolve it.
+    """
+    tracked = _tracked_files(project_root)
+    if tracked is None:
+        return [], []
+
+    blockers: list[str] = []
+    for display, is_dir in _RUN_BLOCKER_PATHS:
+        if _path_is_tracked(tracked, display, is_dir):
+            blockers.append(
+                f"{display} is tracked in git. "
+                f"Run `{_rm_cached_command(display, is_dir)}` and commit, then retry."
+            )
+
+    warnings: list[str] = []
+    for display, is_dir in _RUN_WARNING_PATHS:
+        if _path_is_tracked(tracked, display, is_dir):
+            warnings.append(
+                f"{display} is tracked in git. "
+                f"Run `{_rm_cached_command(display, is_dir)}` and commit to stop tracking it."
+            )
+
+    return blockers, warnings
 
 
 def _find_config(start: Path | None = None) -> Path | None:

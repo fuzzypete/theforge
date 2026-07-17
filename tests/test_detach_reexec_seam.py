@@ -116,7 +116,6 @@ def test_cmd_run_detached_child_skips_daemonize(tmp_path, monkeypatch):
         patch("theforge.detach.install_cleanup_handler"),
         patch("theforge.detach.write_run_ended"),
         patch("theforge.detach.remove_pid"),
-        patch("theforge.cli.run.subprocess.run", return_value=MagicMock(returncode=1)),
     ):
         rc = run_cli.cmd_run(args)
 
