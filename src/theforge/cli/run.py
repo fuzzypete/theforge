@@ -4,20 +4,19 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import subprocess
 import sys
 from pathlib import Path
 
 from theforge.artifacts import PLAN_PATH, resolve_plan_path
 from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import (
-    _SECRETS_FILE,
     _apply_dev_model_override,
     _apply_plan_model_override,
     _build_task,
     _cmd_dry_run,
     _find_config,
     _write_audit,
+    check_run_preconditions,
 )
 from theforge.config import load_config
 from theforge.coordinator.engine import (
@@ -56,20 +55,18 @@ def cmd_run(args: "argparse.Namespace") -> int:
         )
         return 1
 
-    # AC-5: warn if .forge/secrets.yaml is tracked by git (not gitignored)
-    try:
-        tracked = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", _SECRETS_FILE],
-            cwd=str(config_path.parent),
-            capture_output=True,
-        )
-        if tracked.returncode == 0:
-            print(
-                f"⚠ {_SECRETS_FILE} is not gitignored — run 'forge secrets-init' to fix",
-                file=sys.stderr,
-            )
-    except (OSError, FileNotFoundError):
-        pass  # not a git repo or git not installed — ignore
+    # Runtime precondition guards: fail fast when catastrophic machine-local
+    # state is tracked in git; warn (but proceed) on noise paths. This runs
+    # before any agent invocation, workspace mutation, detach/daemonize, or
+    # lock acquisition — see docs/plans/forge-storage-layout.md.
+    blockers, warnings = check_run_preconditions(config_path.parent)
+    for warning in warnings:
+        print(f"⚠ {warning}", file=sys.stderr)
+    if blockers:
+        print("✗ forge run aborted — catastrophic paths are tracked in git:", file=sys.stderr)
+        for blocker in blockers:
+            print(f"  ✗ {blocker}", file=sys.stderr)
+        return 1
 
     config = apply_base_branch_override(
         load_config(config_path), getattr(args, "base_branch", None)
