@@ -101,6 +101,7 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                     "line": f.line,
                     "description": f.description,
                     "reviewers": list(f.reviewers),
+                    "reporter": f.reporter,
                 }
                 for f in r.findings
             ]

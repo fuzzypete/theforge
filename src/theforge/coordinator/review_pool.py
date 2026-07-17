@@ -626,9 +626,9 @@ def _run_review_pool(
     parsed_results: list[ReviewResult] = []
     for r in successful:
         if r.structured_data:
-            parsed_results.append(parse_review_json(r.structured_data))
+            parsed_results.append(parse_review_json(r.structured_data, r.profile_name))
         else:
-            parsed_results.append(parse_review_output(r.output))
+            parsed_results.append(parse_review_output(r.output, r.profile_name))
     names = [r.profile_name for r in successful]
 
     # ── Per-reviewer parse retry (all modes) ─────────────────────────
@@ -713,7 +713,7 @@ def _run_review_pool(
                     f"  {name} retry {_retry_num} agent failed (exit={_retry_result.exit_code})"
                 )
                 break
-            _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data)
+            _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data, name)
             write_trace(
                 workspace_path
                 / ".forge/traces"

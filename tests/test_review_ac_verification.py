@@ -259,6 +259,44 @@ def test_build_reviews_emits_ac_verification_table() -> None:
     ]
 
 
+def test_build_reviews_emits_reporter_per_finding() -> None:
+    """Per-cycle review audit findings carry the reporter profile name so audit
+    consumers reading reviews[].findings can see which profile produced each one."""
+    state = CoordinatorState()
+    state.review_cycle_metadata.append(
+        ReviewCycleMetadata(
+            pool_models=["reviewer-2"],
+            successful=["reviewer-2"],
+            failed=[],
+            synthesized=False,
+        )
+    )
+    state.review_results.append(
+        ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="bug",
+            findings=[
+                ReviewFinding(
+                    severity="P1",
+                    file="src/foo.py",
+                    line=10,
+                    observed="bug",
+                    suggestion="fix",
+                    reporter="reviewer-2",
+                )
+            ],
+            story_matches=False,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+    )
+    reviews = build_reviews(state)
+    assert reviews[0]["findings"][0]["reporter"] == "reviewer-2"
+
+
 def test_build_reviews_emits_empty_ac_verification_when_absent() -> None:
     """REQUEST_CHANGES results may carry no AC table — audit emits []."""
     state = CoordinatorState()

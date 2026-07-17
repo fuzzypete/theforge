@@ -78,6 +78,7 @@ class ReviewFinding:
     expected: str = ""
     evidence: str = ""
     reviewers: tuple[str, ...] = ()  # reviewers who raised this finding (audit attribution)
+    reporter: str = ""  # reviewer profile that produced this finding (surfaced in log lines)
 
     @property
     def description(self) -> str:
@@ -187,8 +188,14 @@ def _merge_sanitization_audits(*audits: dict[str, dict[str, int]]) -> dict[str, 
 
 def _extract_review_payload(
     data: dict,
+    reporter: str = "",
 ) -> tuple[str, list[ReviewFinding], dict[str, dict[str, int]]]:
-    """Extract sanitized summary/findings payload from parsed review data."""
+    """Extract sanitized summary/findings payload from parsed review data.
+
+    ``reporter`` is the reviewer profile name that produced this output; it is
+    stamped onto every extracted finding so attribution flows through parsing to
+    the log line without consulting the finding registry.
+    """
     summary, summary_audit = sanitize_llm_text(
         data.get("summary", "(no summary)"),
         field_name="summary",
@@ -228,6 +235,7 @@ def _extract_review_payload(
                 expected=expected,
                 evidence=evidence,
                 suggestion=suggestion,
+                reporter=reporter,
             )
         )
         sanitization_audit = _merge_sanitization_audits(
@@ -260,18 +268,19 @@ def _extract_ac_verification(data: dict) -> tuple[ACVerification, ...]:
     return tuple(out)
 
 
-def parse_review_json(data: dict) -> ReviewResult:
+def parse_review_json(data: dict, reporter: str = "") -> ReviewResult:
     """Parse and validate review JSON from API response.
 
     This path is used for API-based reviewers that return structured JSON.
-    The cross-validation rules are the same as the YAML path.
+    The cross-validation rules are the same as the YAML path. ``reporter`` is the
+    reviewer profile name, stamped onto each finding for log-line attribution.
     """
     # Best-effort repair before strict validation
     repair_review_yaml(data)
     schema_errors = validate_review_yaml(data)
 
     # Extract findings
-    summary, findings, sanitization_audit = _extract_review_payload(data)
+    summary, findings, sanitization_audit = _extract_review_payload(data, reporter)
 
     # Extract story compliance (accept both story_compliance and spec_compliance for compat)
     spec = data.get("story_compliance") or data.get("spec_compliance") or {}
@@ -298,13 +307,16 @@ def parse_review_json(data: dict) -> ReviewResult:
     )
 
 
-def parse_review_output(agent_output: str) -> ReviewResult:
+def parse_review_output(agent_output: str, reporter: str = "") -> ReviewResult:
     """Extract and parse review YAML from agent output.
 
     Strategy:
     1. Look for ```yaml ... ``` fenced block
     2. Fall back to parsing entire output as YAML
     3. If all parsing fails, return REQUEST_CHANGES with parse errors
+
+    ``reporter`` is the reviewer profile name, stamped onto each finding for
+    log-line attribution.
     """
     # Try to extract YAML from markdown code fences
     yaml_match = re.search(
@@ -350,7 +362,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     schema_errors = validate_review_yaml(data)
 
     # Extract findings
-    summary, findings, sanitization_audit = _extract_review_payload(data)
+    summary, findings, sanitization_audit = _extract_review_payload(data, reporter)
 
     # Extract story compliance (accept both story_compliance and spec_compliance for compat)
     spec = data.get("story_compliance") or data.get("spec_compliance") or {}
@@ -377,12 +389,14 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     )
 
 
-def _try_parse_review(output: str, structured_data: dict | None = None) -> ReviewResult | None:
+def _try_parse_review(
+    output: str, structured_data: dict | None = None, reporter: str = ""
+) -> ReviewResult | None:
     """Parse review output; return None if any parse errors occurred."""
     if structured_data:
-        result = parse_review_json(structured_data)
+        result = parse_review_json(structured_data, reporter)
     else:
-        result = parse_review_output(output)
+        result = parse_review_output(output, reporter)
     return None if result.parse_errors else result
 
 
@@ -851,6 +865,7 @@ def _dedup_findings(reviewer_findings: list[tuple[str, ReviewFinding]]) -> list[
                 evidence=finding.evidence,
                 suggestion=finding.suggestion,
                 reviewers=tuple(seen_reviewers[key]),
+                reporter=finding.reporter,
             )
         )
     return result
