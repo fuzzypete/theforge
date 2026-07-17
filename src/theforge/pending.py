@@ -34,8 +34,14 @@ def write_pending(
     options: list[str],
     timeout_seconds: int,
     project_root: Path | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Path:
     """Write a pending decision file for the given run.
+
+    ``extra`` holds structured payload beyond the human-readable ``reason`` (for
+    example the escalation advisory report + evidence packet) so an operator or a
+    tool can inspect the machine-readable options rather than parsing prose. Keys
+    in ``extra`` never override the core fields below.
 
     Returns the path to the created file.
     """
@@ -55,6 +61,9 @@ def write_pending(
         "timeout_at": timeout_at.isoformat(),
         "pid": os.getpid(),
     }
+    if extra:
+        for key, value in extra.items():
+            data.setdefault(key, value)
 
     path = pending_dir / f"{run_id}.yaml"
     path.write_text(yaml.safe_dump(data, default_flow_style=False), encoding="utf-8")

@@ -12,6 +12,12 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig, apply_model_info
 from theforge.coordinator.context_scope import plan_file_list
+from theforge.escalation_advisor import (
+    ACTION_FORGE_OPERATIONS,
+    ACTION_LABELS,
+    ACTION_TAXONOMY,
+    action_disposition,
+)
 from theforge.review import (
     ReviewFinding,
     ReviewResult,
@@ -22,6 +28,7 @@ from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
+from .escalation_advisor_flow import run_escalation_advisor
 from .logging import StructuredLogger
 from .notify import (
     _escalate_gate_interactive,
@@ -137,15 +144,17 @@ def _run_escalate_gate(
 
     escalate_reason = state.error or "ESCALATE"
 
-    def _make_escalate_result() -> CoordinatorResult:
-        state.escalate_decision = "reject"
+    def _make_escalate_result(
+        decision: str = "reject", message: str | None = None
+    ) -> CoordinatorResult:
+        state.escalate_decision = decision
         state.escalate_reason = escalate_reason
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False,
             phase=state.phase,
             state=state,
-            message=state.error or escalate_reason,
+            message=message or state.error or escalate_reason,
         )
 
     # Policy: reject — preserve current behavior without prompting
@@ -192,8 +201,18 @@ def _run_escalate_gate(
 
     # Determine interaction method
     if _is_pending_file_mode(notify, config):
+        # Generate a fresh-context advisory report so the operator selects from the
+        # fixed action taxonomy instead of the system auto-rejecting on timeout.
+        advisory = run_escalation_advisor(state, config, task, workspace_path)
         decision = _pending_escalate_gate(
-            state, task, config, escalate_reason, reviewer_verdicts, gate_result, run_id=run_id
+            state,
+            task,
+            config,
+            escalate_reason,
+            reviewer_verdicts,
+            gate_result,
+            run_id=run_id,
+            advisory=advisory,
         )
     elif _is_remote_mode(notify, config):
         decision = _escalate_gate_remote(
@@ -210,12 +229,27 @@ def _run_escalate_gate(
 
     state.escalate_reason = escalate_reason
 
-    if decision == "approve":
+    # Normalise legacy (approve/reject/continue) and taxonomy actions into a
+    # coordinator disposition. Taxonomy actions come from the advisory-backed
+    # pending gate; approve/continue/reject may still come from interactive/remote.
+    norm = (decision or "").strip().lower()
+    if norm in ACTION_TAXONOMY:
+        state.escalate_selected_action = norm
+        disposition = action_disposition(norm)  # "approve" | "reject" | "named"
+    elif norm == "approve":
+        disposition = "approve"
+    elif norm == "continue":
+        disposition = "continue"
+    elif norm == "timeout":
+        disposition = "preserve"
+    else:
+        disposition = "reject"
+
+    if disposition == "approve":
         if not state.review_results:
             _log("  ⚠ Approve requested but no review results available — rejecting instead")
-            state.escalate_decision = "reject"
-            return _make_escalate_result()
-        state.escalate_decision = "approve"
+            return _make_escalate_result("reject")
+        state.escalate_decision = norm if norm in ACTION_TAXONOMY else "approve"
         _append_cycle_history(state, state.review_results[-1])
         return _finalize_approve(
             state,
@@ -237,15 +271,49 @@ def _run_escalate_gate(
             run_id=run_id,
         )
 
-    if decision == "continue":
+    if disposition == "continue":
         state.escalate_decision = "continue"
         _log("  Escalate gate: continue — granting one more review cycle")
         state.phase = Phase.REVIEW
         return None
 
-    # reject or any unrecognised decision
-    state.escalate_decision = "reject"
-    return _make_escalate_result()
+    if disposition == "named":
+        # A middle-taxonomy action (redirect / decompose / elevate /
+        # land-core-defer-edges): v1 names the concrete forge operation and
+        # preserves the worktree for the operator to run it — it is not an
+        # auto-reject that discards the work.
+        op = ACTION_FORGE_OPERATIONS.get(norm, norm)
+        label = ACTION_LABELS.get(norm, norm)
+        _log(f"  Escalate gate: {label} selected — next operation: {op}")
+        return _make_escalate_result(
+            norm,
+            message=(
+                f"Escalation resolved as {label}: {op}. "
+                f"Worktree preserved for the operator to run the named operation."
+            ),
+        )
+
+    if disposition == "preserve":
+        # Timeout with no explicit selection: the contract change (#1664) is that
+        # this preserves the escalation for an operator decision rather than
+        # auto-rejecting and discarding the work. Only the pending-file path
+        # generates an advisory report; remote/interactive timeouts preserve too
+        # but without one, so vary the message on what was actually produced.
+        _log("  Escalate gate: no selection (timeout) — preserving for operator decision")
+        if state.advisory_generated:
+            preserve_message = (
+                "Escalation preserved: an advisory report was generated and an "
+                "operator action selection is still required (no auto-reject)."
+            )
+        else:
+            preserve_message = (
+                "Escalation preserved: an operator action selection is still "
+                "required (no auto-reject)."
+            )
+        return _make_escalate_result("advisory_pending", message=preserve_message)
+
+    # reject / defer_or_abandon / any unrecognised decision
+    return _make_escalate_result("reject")
 
 
 def _record_review_iteration_telemetry(
