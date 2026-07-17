@@ -798,6 +798,41 @@ class TestConventionsConfig:
         assert config.conventions_hard.stack == ("python", "javascript")
         assert config.conventions_hard.allowed_root_files == ("my-project-config.yaml",)
 
+    def test_conventions_hard_package_roots_parsed(self, tmp_path):
+        """conventions.hard.package_roots parses into a tuple of strings."""
+        (tmp_path / "src" / "pipeline").mkdir(parents=True)
+        (tmp_path / "analysis").mkdir(parents=True)
+        (tmp_path / "api").mkdir(parents=True)
+        config_path = _write_config(
+            {
+                "conventions": {
+                    "hard": {
+                        "package_roots": ["src/pipeline", "analysis", "api"],
+                    }
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.conventions_hard is not None
+        assert config.conventions_hard.package_roots == ("src/pipeline", "analysis", "api")
+
+    def test_conventions_hard_package_roots_default_empty(self, tmp_path):
+        """Omitting package_roots yields an empty tuple (legacy scope preserved)."""
+        config_path = _write_config({"conventions": {"hard": {}}}, tmp_path)
+        config = load_config(config_path)
+        assert config.conventions_hard is not None
+        assert config.conventions_hard.package_roots == ()
+
+    def test_conventions_hard_package_roots_invalid_type_raises(self, tmp_path):
+        """package_roots that isn't a list of strings raises ValueError."""
+        config_path = _write_config(
+            {"conventions": {"hard": {"package_roots": "src/pipeline"}}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="package_roots"):
+            load_config(config_path)
+
     def test_conventions_absent_is_none(self, tmp_path):
         """forge.yaml without conventions section yields conventions_hard=None."""
         config_path = _write_config({}, tmp_path)

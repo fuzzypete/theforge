@@ -178,6 +178,52 @@ class TestCheckConfigHappyPath:
         assert "forge init-hooks" in out
         assert "--update" not in out
 
+    def test_package_roots_printed_and_pass(self, tmp_path: Path, capsys) -> None:
+        """check-config prints effective package_roots and exits 0 when they exist (AC1)."""
+        from theforge.config.types import HardConventionsConfig
+
+        (tmp_path / "src" / "pipeline").mkdir(parents=True)
+        (tmp_path / "analysis").mkdir(parents=True)
+        (tmp_path / "api").mkdir(parents=True)
+        config = replace(
+            _make_forge_config(tmp_path),
+            conventions_hard=HardConventionsConfig(
+                package_roots=("src/pipeline", "analysis", "api")
+            ),
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "CONVENTIONS (hard)" in out
+        assert "src/pipeline, analysis, api" in out
+        assert "WARNINGS" not in out
+
+    def test_missing_package_root_warns(self, tmp_path: Path, capsys) -> None:
+        """A configured package_root that doesn't exist surfaces a warning (exit 1)."""
+        from theforge.config.types import HardConventionsConfig
+
+        (tmp_path / "src" / "pipeline").mkdir(parents=True)
+        config = replace(
+            _make_forge_config(tmp_path),
+            conventions_hard=HardConventionsConfig(package_roots=("src/pipeline", "api")),
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "CONVENTIONS (hard)" in out
+        assert "WARNINGS" in out
+        assert "'api' does not exist" in out
+
     def test_sections_present(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)
         with (

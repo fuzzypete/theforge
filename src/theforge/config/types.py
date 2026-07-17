@@ -510,6 +510,11 @@ class HardConventionsConfig:
     no_scratch_files: bool = True
     stack: tuple[str, ...] = ()
     allowed_root_files: tuple[str, ...] = ()
+    # Repo-relative package directories scanned by the circular-import,
+    # test-mirror, and line-count checks. Empty preserves the legacy
+    # src/theforge scope; consumer projects list their own package roots
+    # (e.g. ("src/pipeline", "analysis", "api")).
+    package_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
