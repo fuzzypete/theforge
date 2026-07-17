@@ -199,6 +199,16 @@ class TestPromptBuilder:
         # Diagnose != fix; the prompt must not instruct the agent to modify code.
         assert "Do not modify any files" in prompt
 
+    def test_prompt_instructs_scope_boundary_discipline(self):
+        # The prompt must tell the agent to scope confirmed_cause to the stated
+        # symptom and surface adjacent defects as separate related_findings —
+        # the #1672 scope-creep guard.
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        lower = prompt.lower()
+        assert "related_findings" in prompt
+        assert "boundary" in lower
+        assert "scope" in lower
+
 
 # ── State machine / flow tests ────────────────────────────────────────
 
@@ -1180,3 +1190,61 @@ class TestParsePremiseAnchors:
         artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
         assert artifact is not None
         assert artifact.premise_anchors == ()
+
+
+class TestParseRelatedFindings:
+    def test_parses_related_findings_out_of_confirmed_cause(self):
+        # Boundary discipline: an adjacent defect is surfaced as a separate
+        # related finding, NOT folded into confirmed_cause.
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: the retry is missing\naffected_code_path: p\n"
+            "fix_success_criterion: f\n"
+            "related_findings:\n"
+            "  - summary: no process-group isolation on subprocess kill\n"
+            "    related: '#1649'\n"
+            "  - summary: a second adjacent problem\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1672)
+        assert artifact is not None
+        assert len(artifact.related_findings) == 2
+        assert artifact.related_findings[0].related == "#1649"
+        assert "process-group" in artifact.related_findings[0].summary
+        assert artifact.related_findings[1].related == ""
+        # The adjacent problem must not have leaked into the fix scope.
+        assert "process-group" not in artifact.confirmed_cause
+        assert artifact.confirmed_cause == "the retry is missing"
+
+    def test_related_findings_accepts_bare_string_entries(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "related_findings:\n  - just a bare string finding\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert len(artifact.related_findings) == 1
+        assert artifact.related_findings[0].summary == "just a bare string finding"
+        assert artifact.related_findings[0].related == ""
+
+    def test_missing_related_findings_is_empty_tuple(self):
+        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        assert artifact is not None
+        assert artifact.related_findings == ()
+
+    def test_blank_related_summaries_dropped_and_deduped(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "related_findings:\n"
+            "  - summary: '   '\n    related: '#9'\n"
+            "  - summary: dup\n    related: '#1'\n"
+            "  - summary: dup\n    related: '#1'\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert len(artifact.related_findings) == 1
+        assert artifact.related_findings[0].summary == "dup"

@@ -526,6 +526,9 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         "premise_anchors": [
             {"file": a.file, "pattern": a.pattern} for a in artifact.premise_anchors
         ],
+        "related_findings": [
+            {"summary": r.summary, "related": r.related} for r in artifact.related_findings
+        ],
     }
 
 

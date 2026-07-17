@@ -18,6 +18,7 @@ from theforge.diagnose_types import (
     DiagnosisArtifact,
     Hypothesis,
     PremiseAnchor,
+    RelatedFinding,
     render_already_resolved_markdown,
     render_artifact_markdown,
     upsert_diagnosis_section,
@@ -106,6 +107,73 @@ class TestPremiseAnchorField:
         assert artifact.premise_anchors[0].file == "a.py"
         # Optional metadata: does not affect completeness.
         assert artifact.is_complete()
+
+
+class TestRelatedFindingsField:
+    def _make(self, **overrides) -> DiagnosisArtifact:
+        defaults = dict(
+            issue_number=1672,
+            observed_symptom="empty plan on connection close",
+            reproduction_or_evidence="audit YAML shows empty plan",
+            hypotheses=(Hypothesis("missing retry", "confirmed", "no retry wrapper"),),
+            confirmed_cause="PLAN runner does not retry on connection-closed",
+            affected_code_path="runner_claude.py",
+            fix_success_criterion="connection-closed retries and yields a plan",
+        )
+        defaults.update(overrides)
+        return DiagnosisArtifact(**defaults)
+
+    def test_artifact_carries_related_findings(self):
+        artifact = self._make(
+            related_findings=(
+                RelatedFinding(summary="no process-group isolation", related="#1649"),
+            ),
+        )
+        assert artifact.related_findings[0].related == "#1649"
+        # Optional metadata: does not affect completeness.
+        assert artifact.is_complete()
+
+    def test_related_findings_default_empty(self):
+        assert self._make().related_findings == ()
+
+    def test_related_findings_do_not_count_as_substantive_content(self):
+        # A run that produced only adjacent findings but no diagnosis of the
+        # stated symptom has diagnosed nothing — related findings alone must not
+        # clear the content floor (mirrors the notes exclusion).
+        empty = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+            related_findings=(RelatedFinding(summary="adjacent bug", related="#1649"),),
+        )
+        assert not empty.has_substantive_content()
+
+    def test_render_surfaces_related_findings_as_out_of_scope_section(self):
+        artifact = self._make(
+            related_findings=(
+                RelatedFinding(summary="no process-group isolation", related="#1649"),
+                RelatedFinding(summary="an unlinked adjacent defect", related=""),
+            ),
+        )
+        md = render_artifact_markdown(artifact)
+        assert "### Related findings (out of scope)" in md
+        assert "out of scope for this fix" in md.lower()
+        assert "no process-group isolation (related: #1649)" in md
+        assert "- an unlinked adjacent defect" in md
+        # The out-of-scope material must live in its own section, not inside the
+        # confirmed-cause block that a dev implements.
+        cause_idx = md.index("### Confirmed cause")
+        related_idx = md.index("### Related findings")
+        assert related_idx > cause_idx
+        confirmed_block = md[cause_idx:related_idx]
+        assert "process-group" not in confirmed_block
+
+    def test_no_related_section_when_empty(self):
+        md = render_artifact_markdown(self._make())
+        assert "### Related findings" not in md
 
 
 class TestDiagnoseOutputDestinations:
