@@ -433,3 +433,54 @@ class TestNetNewAcBlocking:
         # Must NOT be approved to DONE despite the APPROVE verdict.
         assert result.success is False
         assert result.phase == Phase.ESCALATE
+
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
+    @patch("theforge.finding_classifier._get_changed_files")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_matches_spec_false_blocks_even_via_zero_findings_early_termination(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
+    ):
+        """The zero-findings early-termination branch must not finalize DONE when the
+        merged review reports matches_spec=false. The unsatisfied criterion is folded
+        into _blocking_p1 before the early-termination check, so convergence with an
+        unsatisfied criterion escalates rather than passing."""
+        base = _make_config(tmp_path)
+        config = dataclasses.replace(
+            base,
+            retry=dataclasses.replace(
+                base.retry, max_review_cycles=4, review_zero_findings_stop=2
+            ),
+            review_pool=[_make_review_profile("review", budget_usd=2.0)],
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_changed_files.return_value = frozenset(["src/changed.py"])
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        # Every cycle: APPROVE + matches_spec=false + zero findings → zero new
+        # findings each cycle → early-termination fires on cycle 2.
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=_APPROVE_MATCHES_SPEC_FALSE_NO_P1, profile_name="review"
+            )
+        ]
+
+        result = run_from_review(config, task, workspace)
+
+        # Early termination converged, but the unsatisfied criterion blocks → ESCALATE.
+        assert result.state.review_early_terminated is True
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE

@@ -1282,6 +1282,24 @@ def _run_review_phase(
             _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
 
+    # ── Unsatisfied-criterion → blocking (single source of truth) ──────────────
+    # A merged story_matches=false is blocking on its own, independent of P1 count
+    # or disposition. Fold it into _blocking_p1 HERE — before trajectory /
+    # early-termination / effective-approve — so every DONE-exit path keys on one
+    # blocking signal instead of each re-deriving the criterion check. A review can
+    # be schema-legal with verdict APPROVE (or REQUEST_CHANGES with every P1
+    # suppressed) and still report matches_spec=false with zero blocking P1s;
+    # deriving the check only at the effective-approve step let the zero-findings
+    # early-termination branch finalize DONE ahead of it. Merged story_matches is
+    # all()-over-valid-reviewers, so parse-failed reviewers (which default
+    # story_matches=False) do not spuriously block a clean fallback approval.
+    if not parsed_review.story_matches and not _blocking_p1:
+        _blocking_p1 = True
+        _log(
+            "  ✗ REVIEW   matches_spec=false — story does not match spec; blocking "
+            "approval on the unsatisfied criterion (independent of P1 count)"
+        )
+
     # ── Trajectory classification (in-process) ─────────────────────────────
     # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
     # Uses a dedicated monotonic counter (trajectory_cycle) that is never reset
@@ -1406,39 +1424,15 @@ def _run_review_phase(
             )
 
     # ── APPROVE (or disposition-gated pass) ─────────────────────────
-    # The coordinator makes the blocking decision independently of the synthesized verdict.
-    # If the synthesized verdict is REQUEST_CHANGES but all P1s are net_new (single-reviewer,
-    # not in changed files, not previously raised), we treat the cycle as passing.
-    # Net-new P1s are recorded in the audit trail but do not block.
-    #
-    # An unsatisfied acceptance criterion blocks on its own, independent of P1
-    # count or disposition. A review can be schema-legal with verdict APPROVE (or
-    # REQUEST_CHANGES with every P1 suppressed) and still report matches_spec=false
-    # while carrying zero blocking P1s — nothing in cross-validation forbids it.
-    # Relying only on the AC-violation override (which re-blocks P1s that exist)
-    # lets that shape reach DONE, the exact class of bug this path guards. Treat a
-    # matches_spec=false verdict as its own blocking signal so the story cannot be
-    # approved on the strength of a suppressed or absent finding.
-    #
-    # Use the merged review's story_matches (computed over valid reviewers via
-    # all(); False if any valid reviewer dissents) rather than the raw
-    # last_cycle_reviewer_results set — the latter includes parse-failed reviewers,
-    # which default story_matches=False and would spuriously block an otherwise
-    # clean fallback approval.
-    _story_criterion_unsatisfied = not parsed_review.story_matches
-    _effective_approve = not _story_criterion_unsatisfied and (
-        parsed_review.verdict == "APPROVE"
-        or (parsed_review.verdict == "REQUEST_CHANGES" and not _blocking_p1)
-    )
-    if _story_criterion_unsatisfied and not _blocking_p1:
-        # No blocking P1 carried the signal (e.g. APPROVE + matches_spec=false +
-        # zero P1s): the unsatisfied criterion itself blocks. Mark it so the audit
-        # trail and downstream routing see a blocking decision, not a silent pass.
-        _blocking_p1 = True
-        _log(
-            "  ✗ REVIEW   matches_spec=false with no blocking P1 — story does not "
-            "match spec; blocking on the unsatisfied criterion itself"
-        )
+    # _blocking_p1 is the single source of truth for whether this cycle may pass:
+    # it already folds in blocking P1 dispositions, the net-new/AC-blocking
+    # overrides, and (above) the unsatisfied-criterion signal. A cycle is
+    # approve-equivalent exactly when nothing blocks — this covers both a genuine
+    # APPROVE verdict and a REQUEST_CHANGES verdict whose P1s are all non-blocking
+    # net_new (net_new_pass). Cross-validation forbids APPROVE with P1 findings, so
+    # the only way an APPROVE verdict carries _blocking_p1 is the matches_spec=false
+    # fold — which must correctly deny approval.
+    _effective_approve = not _blocking_p1
 
     # ── Empty-diff guard ────────────────────────────────────────────
     # APPROVE on a branch with zero commits ahead of base is a workflow failure,
