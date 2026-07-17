@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import yaml
@@ -16,7 +18,10 @@ from theforge.artifacts import (
 from theforge.config import (
     ForgeConfig,
     _validate_plan_provider,
+    load_config,
 )
+from theforge.config.auth import check_agent_auth
+from theforge.config.types import ModelProfile
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.redact import redact
@@ -138,6 +143,94 @@ def _find_config(start: Path | None = None) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _iter_config_profiles(config: ForgeConfig) -> Iterator[tuple[str, ModelProfile]]:
+    """Yield ``(role_label, profile)`` for every ModelProfile a run/sprint uses.
+
+    Covers the dev profile, preflight (+ optional fallback), every reviewer in
+    the pool, the optional synthesis profile, and every agent-pool entry (each
+    projected to a ModelProfile). Plan/plan-review configs are validated
+    separately at load time and are not ModelProfiles, so they are not included.
+    """
+    yield ("dev", config.dev_profile)
+    yield ("preflight", config.preflight_profile)
+    if config.preflight_fallback_profile is not None:
+        yield ("preflight-fallback", config.preflight_fallback_profile)
+    for profile in config.review_pool:
+        yield ("review", profile)
+    if config.synthesis_profile is not None:
+        yield ("synthesis", config.synthesis_profile)
+    for agent in config.agents:
+        yield ("agent-pool", agent.to_model_profile())
+
+
+def _print_startup_auth_warnings(config: ForgeConfig) -> None:
+    """Print a stderr warning for every configured profile missing credentials.
+
+    Runs ``check_agent_auth`` on each profile after ``load_config`` succeeds so
+    the operator learns about a missing API key or CLI binary before the state
+    machine spends money. These are warnings only — they never block the run.
+    Sandbox readiness is intentionally excluded; this surface is about config
+    credentials, not the host environment.
+
+    Computing the warnings is itself best-effort: a profile that
+    ``check_agent_auth`` cannot classify is skipped rather than aborting the
+    run, since a genuinely malformed profile is already rejected by
+    ``load_config`` before this point. "Warnings don't block" applies to the
+    computation as much as the result.
+    """
+    try:
+        profiles = list(_iter_config_profiles(config))
+    except Exception:
+        return
+
+    seen: set[tuple[str, str]] = set()
+    for label, profile in profiles:
+        try:
+            ready, reason = check_agent_auth(
+                profile, config.secrets, include_sandbox_readiness=False
+            )
+        except Exception:
+            continue
+        if ready:
+            continue
+        dedup_key = (profile.name, reason)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        print(
+            f"⚠ config: {label} profile {profile.name!r} — {reason}",
+            file=sys.stderr,
+        )
+
+
+def load_config_checked(
+    config_path: Path,
+    *,
+    loader: Callable[[Path], ForgeConfig] | None = None,
+) -> ForgeConfig:
+    """Load config for a run/sprint entrypoint, enforcing startup contracts.
+
+    - A structural config error — a ``ValueError`` raised while ``load_config``
+      parses/validates ``forge.yaml`` — exits with code 2 instead of bubbling
+      up as a generic exit-1 crash.
+    - After a successful load, every configured profile is auth-checked and any
+      missing-credential / missing-binary warnings print to stderr before the
+      caller enters the coordinator state machine. Warnings never block.
+
+    ``loader`` lets callers pass their own module-level ``load_config`` reference
+    so it stays patchable at the call-site module (e.g. tests that mock
+    ``theforge.cli.run.load_config``). Defaults to this module's ``load_config``.
+    """
+    load = loader or load_config
+    try:
+        config = load(config_path)
+    except ValueError as exc:
+        print(f"✗ forge.yaml is invalid: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    _print_startup_auth_warnings(config)
+    return config
 
 
 def _parse_story_frontmatter(story_path: Path) -> dict:

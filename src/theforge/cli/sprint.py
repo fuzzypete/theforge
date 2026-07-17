@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from theforge.cli.overrides import apply_base_branch_override
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
@@ -89,7 +89,8 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     config = apply_base_branch_override(
-        load_config(config_path), getattr(args, "base_branch", None)
+        load_config_checked(config_path, loader=load_config),
+        getattr(args, "base_branch", None),
     )
 
     # ── Detach BEFORE any subprocess/gh work ─────────────────────────────
