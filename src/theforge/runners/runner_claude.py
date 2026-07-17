@@ -15,6 +15,7 @@ from typing import Any
 
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
+from theforge.runners.process_group import NEW_PROCESS_GROUP_KWARGS, kill_process_group
 from theforge.runners.stuck_detection import StuckTracker, build_observation
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
@@ -604,6 +605,10 @@ def _run_claude(
             text=True,
             cwd=str(working_dir),
             env=env,
+            # Own process group so timeout/stop kills reach Bash-tool-spawned
+            # descendants that would otherwise inherit stdout and hang the read
+            # past the deadline (#1672).
+            **NEW_PROCESS_GROUP_KWARGS,
         )
         assert proc.stdin is not None
         # Send the initial prompt as a stream-json user message. stdin is kept
@@ -625,12 +630,11 @@ def _run_claude(
                 if proc.poll() is not None:
                     return
                 if stop_event is not None and stop_event.is_set():
-                    proc.kill()
+                    kill_process_group(proc)
                     return
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    if proc.poll() is None:
-                        proc.kill()
+                    kill_process_group(proc)
                     return
                 time.sleep(min(0.5, remaining))
 
@@ -653,14 +657,14 @@ def _run_claude(
                     f"{stuck_monitor.iteration_count} iterations: "
                     f"{stuck_monitor.terminate_pattern}"
                 )
-                proc.kill()
+                kill_process_group(proc)
                 break
             if stop_event is not None and stop_event.is_set():
-                proc.kill()
+                kill_process_group(proc)
                 timed_out = True
                 break
             if time.monotonic() > deadline:
-                proc.kill()
+                kill_process_group(proc)
                 timed_out = True
                 break
             # Break as soon as the result event arrives — the stream is complete.

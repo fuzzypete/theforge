@@ -221,6 +221,11 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             "attempt_plans": [
                 {"attempt": i, "plan": p} for i, p in enumerate(state.plan_attempt_plans)
             ],
+            **(
+                {"transport_retries": state.plan_transport_retries}
+                if state.plan_transport_retries
+                else {}
+            ),
         }
 
     # ── plan_review ───────────────────────────────────────────────────────────

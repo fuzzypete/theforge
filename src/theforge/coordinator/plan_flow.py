@@ -101,6 +101,28 @@ _TRANSIENT_PLAN_REVIEW_ERROR_PATTERNS = (
     "timeout awaiting headers",
 )
 
+# Transient signatures for the PLAN draft/regen agent call. Extends the
+# plan-review set with connection-closed/mid-stream-disconnect wordings — the
+# exact failure that killed sprint 065a91f3caf1 was an empty plan output whose
+# only line was "API Error: Connection closed mid-response. The response above
+# may be incomplete." (#1672), which none of the review patterns above match.
+_TRANSIENT_PLAN_ERROR_PATTERNS = (
+    *_TRANSIENT_PLAN_REVIEW_ERROR_PATTERNS,
+    "connection closed",
+    "connection-closed",
+    "closed mid-response",
+    "response above may be incomplete",
+    "response may be incomplete",
+    "mid-stream disconnect",
+    "stream disconnected",
+    "stream idle timeout",
+    "partial response received",
+)
+
+# Initial backoff (seconds) before a transient plan retry; doubled per retry.
+_PLAN_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS = 2
+
+
 # ── Lazy runner slots ─────────────────────────────────────────────────
 # None until first call; tests may replace before calling run_task.
 # Patch targets:
@@ -142,6 +164,89 @@ def _summarize_plan_review_failure(result: "AgentResult") -> str:
     if output:
         parts.append(output[:200])
     return ": ".join((parts[0], " | ".join(parts[1:]))) if len(parts) > 1 else parts[0]
+
+
+def _is_transient_plan_failure(result: "AgentResult") -> bool:
+    """Return True when a failed PLAN draft/regen invocation looks transient/retryable.
+
+    A connection-closed / empty-output transport failure (exit!=0 with the error
+    banner as the only content) is retryable; a genuine planning failure or a
+    startup failure (CLI missing) is not.
+    """
+    if result.success:
+        return False
+    if getattr(result, "startup_failure", False):
+        return False
+    failure_code = (result.failure_code or "").lower()
+    if failure_code in {"rate_limit", "provider_internal_error", "connection_reset"}:
+        return True
+    output = (result.output or "").lower()
+    return any(pattern in output for pattern in _TRANSIENT_PLAN_ERROR_PATTERNS)
+
+
+def _plan_transport_retry_backoff_seconds(retry_count: int) -> int:
+    """Return the backoff delay before the next transient plan retry."""
+    return _PLAN_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS * (2 ** max(retry_count - 1, 0))
+
+
+def _run_plan_agent_with_retry(
+    *,
+    prompt: str,
+    profile: ModelProfile,
+    workspace_path: Path,
+    config: ForgeConfig,
+    state: CoordinatorState,
+    phase_label: str,
+    attempt: int,
+    session_id: str | None = None,
+) -> "AgentResult":
+    """Invoke the plan agent, retrying bounded times on transient transport failures.
+
+    Mirrors the DEV (_is_transient_dev_failure) and PLAN_REVIEW
+    (_retry_transient_plan_review_failures) resilience: a single connection-closed
+    / empty-output transport error must not escalate the story. Retries use a
+    fresh session — a resumed session anchors on its own truncated/empty output —
+    with exponential backoff, and each retry is recorded in
+    state.plan_transport_retries for the audit trail.
+
+    phase_label is "PLAN" (initial draft) or "PLAN_REGEN" (post-review regen);
+    it is used only for logging and audit provenance.
+    """
+    max_retries = max(0, config.retry.max_plan_transport_retries)
+    result = run_agent(
+        prompt=prompt,
+        profile=profile,
+        working_dir=workspace_path,
+        session_id=session_id,
+        secrets=config.secrets,
+    )
+    retry_count = 0
+    while retry_count < max_retries and _is_transient_plan_failure(result):
+        retry_count += 1
+        _summary = _summarize_plan_review_failure(result)
+        state.plan_transport_retries.append(
+            {
+                "phase": phase_label,
+                "attempt": attempt,
+                "retry": retry_count,
+                "error": _summary,
+            }
+        )
+        _log(
+            f"  ↻ {phase_label}   transient transport failure "
+            f"(retry {retry_count}/{max_retries}): {_summary}"
+        )
+        _backoff_s = _plan_transport_retry_backoff_seconds(retry_count)
+        _log_verbose(f"  {phase_label} retry backoff: {_backoff_s}s")
+        time.sleep(_backoff_s)
+        result = run_agent(
+            prompt=prompt,
+            profile=profile,
+            working_dir=workspace_path,
+            session_id=None,  # fresh session — prior anchors on its own bad/empty output
+            secrets=config.secrets,
+        )
+    return result
 
 
 def _retry_transient_plan_review_failures(
@@ -500,11 +605,14 @@ def _run_plan_phase(
 
     _plan_hygiene_before = snapshot_porcelain(workspace_path)
     _plan_start = time.monotonic()
-    plan_result = run_agent(
+    plan_result = _run_plan_agent_with_retry(
         prompt=plan_prompt,
         profile=plan_profile,
-        working_dir=workspace_path,
-        secrets=config.secrets,
+        workspace_path=workspace_path,
+        config=config,
+        state=state,
+        phase_label="PLAN",
+        attempt=0,
     )
     _plan_elapsed = time.monotonic() - _plan_start
     _plan_ok, _plan_diag, _plan_offending = check_phase_no_mutation(
@@ -1190,12 +1298,15 @@ def _run_plan_agent_review(
 
         _plan_start = time.monotonic()
         _log(f"  Starting plan regen (model={plan_profile.model}, new session)...")
-        plan_result = run_agent(
+        plan_result = _run_plan_agent_with_retry(
             prompt=regen_prompt,
             profile=plan_profile,
-            working_dir=workspace_path,
+            workspace_path=workspace_path,
+            config=config,
+            state=state,
+            phase_label="PLAN_REGEN",
+            attempt=state.plan_regen_count,
             session_id=None,  # fresh session — prior session anchors on its own wrong output
-            secrets=config.secrets,
         )
         _plan_elapsed = time.monotonic() - _plan_start
         state.plan_durations.append(_plan_elapsed)
@@ -1375,12 +1486,15 @@ def _run_human_plan_review(
                 regen_plan_prompt = plan_prompt
 
             _plan_start = time.monotonic()
-            plan_result = run_agent(
+            plan_result = _run_plan_agent_with_retry(
                 prompt=regen_plan_prompt,
                 profile=plan_profile,
-                working_dir=workspace_path,
+                workspace_path=workspace_path,
+                config=config,
+                state=state,
+                phase_label="PLAN_REGEN",
+                attempt=state.plan_regen_count,
                 session_id=state.plan_session_id,
-                secrets=config.secrets,
             )
             _plan_elapsed = time.monotonic() - _plan_start
             state.plan_durations.append(_plan_elapsed)
