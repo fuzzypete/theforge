@@ -29,6 +29,8 @@ Mode: {mode}
 
 {body}
 
+{environment}
+
 == INSTRUCTIONS ==
 
 1. Reproduce or examine evidence for the reported symptom.  Use the available
@@ -121,6 +123,87 @@ related_findings:
 """
 
 
+def _forge_relpath(parts: tuple[str, ...]) -> str:
+    """Render a repo-relative path from a path-constant tuple.
+
+    Uses forward slashes on every platform so the briefing reads identically
+    regardless of the host OS.
+    """
+    return "/".join(parts)
+
+
+def build_environment_briefing() -> str:
+    """Return the ``== ENVIRONMENT ==`` orientation section for the prompt.
+
+    The audit/log paths and the landing-field semantics are derived from the
+    modules that own them — :mod:`theforge.coordinator.audit_substrate` for the
+    canonical audit paths and :mod:`theforge.coordinator.landing_record` for the
+    landing outcomes — rather than being hardcoded here. Adding a new audit
+    path constant or a new landing ``landing_path`` -> outcome mapping in code
+    therefore surfaces in the briefing automatically, with no hand-edit to this
+    template (issue #1425 AC2).
+
+    Imports are function-local so the low-dependency prompt module does not pull
+    the coordinator's audit stack in at import time.
+    """
+    from theforge.coordinator import audit_substrate  # noqa: PLC0415
+    from theforge.coordinator.landing_record import (  # noqa: PLC0415
+        LANDING_OUTCOME_BY_PATH,
+    )
+
+    substrate = _forge_relpath(audit_substrate.SUBSTRATE_RELPATH)
+    runs = _forge_relpath(audit_substrate.RUNS_RELPATH)
+    history = _forge_relpath(audit_substrate.HISTORY_RELPATH)
+    audits = _forge_relpath(audit_substrate.AUDITS_RELPATH)
+
+    landing_lines = "\n".join(
+        f"    - landing_path '{path}' -> landing.outcome '{outcome}'"
+        for path, outcome in LANDING_OUTCOME_BY_PATH.items()
+    )
+
+    return f"""\
+== ENVIRONMENT ==
+
+This is TheForge — a Python multi-agent SDLC orchestrator. You have one shot and
+a fixed budget, so start from the project's known layout instead of
+rediscovering it. All orchestration state lives under `.forge/`.
+
+Audit trail (where run and sprint history live):
+- Audit index (SQLite, canonical, queryable): {substrate}
+- Per-run audit records (JSON, one file per run): {runs}/*.json
+- Legacy cross-run audit history (JSONL — superseded by the index above but
+  still present on older repos): {history}
+- Sprint audit + summary YAML: {audits}/sprint-audit.yaml and
+  {audits}/run-<run-id>-sprint-audit.yaml
+- Sprint run log (full agent transcript): .forge/logs/<sprint-name>/run-<run-id>.log
+- Per-story audit: .forge/logs/<sprint-name>/<slug>/audit.yaml
+- Sprint state: .forge/sprints/<sprint-id>/state.yaml
+
+Audit field semantics that commonly mislead:
+- `merge: true` only means `res.merge.get("merged")` — it does NOT distinguish a
+  fresh PR that shipped this worktree's commits from an already-merged guard
+  that discarded them. Read the structured `landing` record instead;
+  `landing.fresh_pr_created` is the trustworthy "did we ship code" signal.
+- `landing.outcome` is derived from the internal landing path:
+{landing_lines}
+- `landing_status` (per-run): 'pending_integration' | 'landed' | 'failed' | null.
+- `outcome_code`: the run's error_type when set, else the lowercased final
+  phase (e.g. 'done' | 'failed' | 'escalate' | 'skipped').
+
+Queries that most often crack landing/merge investigations fast:
+- gh pr list --head <branch> --state all   (did this branch's PR ever ship?)
+- gh pr view <PR> --json state,mergedAt,mergeCommit,title
+- gh issue view <N> --comments             (operator notes not in the body)
+- grep -rn <keyword> {audits}              (prior runs touching this story)
+
+Code locations for the major flows:
+- Coordinator engine (phase state machine): src/theforge/coordinator/engine.py
+- Story landing / merge (land_story):        src/theforge/coordinator/completion.py
+- Audit paths + field schema:                src/theforge/coordinator/audit_substrate.py
+- Sprint scheduling + audit writers:         src/theforge/sprint/
+- Agent execution / providers:               src/theforge/runners/"""
+
+
 def build_diagnose_prompt(
     *,
     issue_number: int,
@@ -133,12 +216,17 @@ def build_diagnose_prompt(
     ``mode`` is "autonomous" or "interactive"; it is conveyed to the agent so
     it can adjust verbosity (interactive runs may benefit from richer notes
     explaining intermediate steps).
+
+    The prompt embeds an environment briefing (see
+    :func:`build_environment_briefing`) so the agent starts from TheForge's
+    known audit/log layout instead of burning its budget rediscovering it.
     """
     return _DIAGNOSE_PROMPT_TEMPLATE.format(
         issue_number=issue_number,
         title=title or f"Issue #{issue_number}",
         body=body or "(issue body is empty)",
         mode=mode,
+        environment=build_environment_briefing(),
     )
 
 

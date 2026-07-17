@@ -26,7 +26,10 @@ from __future__ import annotations
 
 # Maps land_story's internal landing_path to an operator-facing outcome label.
 # Unknown paths fall through to the raw landing_path so no signal is lost.
-_OUTCOME_BY_PATH = {
+# Public so downstream consumers (e.g. the diagnose environment briefing) can
+# template the landing-field semantics from this single source instead of
+# re-listing them by hand.
+LANDING_OUTCOME_BY_PATH = {
     "fresh-merge": "merged",
     "already-merged": "already-merged-short-circuit",
     "zero-delta": "zero-delta-short-circuit",
@@ -61,7 +64,7 @@ def build_landing_record(merge: object) -> dict | None:
     if not isinstance(guard, dict):
         guard = {}
 
-    outcome = _OUTCOME_BY_PATH.get(landing_path, landing_path)
+    outcome = LANDING_OUTCOME_BY_PATH.get(landing_path, landing_path)
     # A fresh PR that GitHub queued for auto-merge has not landed yet; keep the
     # distinction so a queued PR is not conflated with already-shipped code.
     if landing_path == "fresh-merge" and merge_queued:
