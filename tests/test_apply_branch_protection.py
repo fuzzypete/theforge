@@ -33,6 +33,11 @@ def _write_fake_gh(bin_dir: Path, *, put_exit: int) -> Path:
     """
     log = bin_dir / "gh.log"
     fake = bin_dir / "gh"
+    # Drain stdin on EVERY exit path. The script under test writes the protection
+    # body via `echo "$BODY" | gh ...` under `set -o pipefail`; if this fake exits
+    # without reading stdin the writer can receive SIGPIPE and pipefail fails the
+    # pipeline nondeterministically. Reading stdin to a file (PUT) or /dev/null
+    # (non-PUT) before exiting removes that race — see docs/flake-register.md #2.
     fake.write_text(
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{log}"\n'
@@ -44,6 +49,7 @@ def _write_fake_gh(bin_dir: Path, *, put_exit: int) -> Path:
         f'    cat > "{bin_dir}/gh.put_body.json"\n'
         f"    exit {put_exit}\n"
         "else\n"
+        "    cat > /dev/null\n"
         "    exit 3\n"
         "fi\n"
     )

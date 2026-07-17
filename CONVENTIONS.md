@@ -589,6 +589,27 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
   seconds. A hanging test kills the entire gate run for every story in the sprint.
 - **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
+### Flake discipline
+
+A flaky gate is a trust violation: a red-when-it-should-be-green (or the reverse)
+gate is the gate lying, and combined with auto-merge a lucky re-run can land
+unreviewed code (this happened — see [`docs/flake-register.md`](docs/flake-register.md)).
+The rules:
+
+- **Fix flakes by removing nondeterminism, not by retrying.** Retrying a flaky
+  test masks it and trains everyone to ignore red — worse than the flake. Remove
+  the timing/ordering assumption: synchronize on the actual condition (poll the
+  observed state with a bounded timeout), not on a `sleep`, a schedule, or an
+  assumed ordering. Do **not** add retry-on-flake and do **not** widen a timeout
+  to chase a contention flake — a wider window hides the race instead of removing
+  it.
+- **A green-on-re-run after a same-SHA red is a flake signal, not a pass.** If the
+  gate goes red and a plain re-run of the *same commit* goes green, treat the test
+  that flipped as flaky. Do not merge on the green — register the flake first.
+- **Track every known flake in [`docs/flake-register.md`](docs/flake-register.md)**
+  (test id, symptom, suspected cause, owning issue) so it is burned down, never
+  silently retried into invisibility. A flake that isn't tracked rots.
+
 ## Cutting a Release
 
 The full release process is documented in [`RELEASING.md`](RELEASING.md). Use the
