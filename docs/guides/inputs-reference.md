@@ -78,6 +78,45 @@ stories:
 | `auto_merge` | No | `false` | Auto-merge approved stories to main |
 | `stories` | Yes | — | Ordered list of stories — local file paths or `{issue: N}` dicts |
 
+### Cost governance vs. per-story estimates (converged model)
+
+TheForge has one converged budget view with two distinct roles for dollar
+values. Keeping them straight explains why a sprint stops but an individual
+story never gets blocked for going "over budget."
+
+- **Sprint-level governance (enforced).** The sprint `budget_usd` is the *only*
+  post-hoc dollar enforcement. When cumulative sprint spend reaches it, no new
+  stories launch. This is the surviving cost-governance surface.
+
+- **Per-story dollar values (estimates, not enforced).** The per-story dollar
+  value is a *cost estimate* derived from historical cost data for the model and
+  complexity band (`adaptive_dev_cost_estimate_usd` in state;
+  `chosen_dev_cost_estimate_usd` in the audit trail). It informs routing,
+  timeout scaling, and telemetry — it is **not** a cap. Exceeding it is never,
+  by itself, an operator-actionable overrun; it just means the estimate was low.
+
+  - If a dev attempt exceeds its estimate **and committed usable work**, the run
+    proceeds to validate/review with no operator action. The estimate was low.
+  - If a dev attempt exceeds its estimate **and produced no commits**, the run
+    escalates as an *unproductive attempt* — the message names that no usable
+    output was produced (`Dev attempt produced no usable output (...)`), not a
+    dollar overrun.
+
+- **Pre-runaway controls (unchanged).** Iteration and timeout adaptation still
+  cap runaway loops *before* they burn cost. The adaptive routing cost target
+  (`assignment.max_cost_per_story_usd`) is likewise a *pre-run* control: it
+  shapes model selection (downgrading tiers so the estimated per-story routing
+  cost stays under the operator's configured value) before any dev/review work
+  runs. Operator and audit surfaces call it a "routing cost target," not a
+  "cap," precisely so it is not confused with post-hoc dollar governance. All of
+  these are separate from post-hoc dollar accounting and unaffected by the
+  converged model.
+
+The per-role `budget_usd` on individual profiles (below) seeds the per-story
+estimate baseline and, for reviewers, still acts as an explicit operator-set
+per-reviewer ceiling. It is not the story-level governance surface — that is the
+sprint `budget_usd` above.
+
 ### Story bundling (relational, scheduler-decided)
 
 When a sprint contains two or more eligible stories, the sprint scheduler may

@@ -1,9 +1,14 @@
-"""Adaptive resource limits: derive per-story dev budgets and review-cycle caps.
+"""Adaptive resource limits: derive per-story dev cost estimates and review caps.
 
 Pure-Python (stdlib only). Given preflight complexity and model capability
-profiles, compute per-story dev ``max_iterations``, ``timeout_seconds``, and
-``budget_usd``. Review-cycle caps continue to use the existing complexity plus
-recent audit-history signal.
+profiles, compute per-story dev ``max_iterations``, ``timeout_seconds``, and a
+per-story dollar ``cost_estimate_usd``. Review-cycle caps continue to use the
+existing complexity plus recent audit-history signal.
+
+The per-story dollar value is an *estimate* derived from historical cost data —
+it informs routing, timeout scaling, and audit telemetry. It is NOT an enforced
+budget: real post-hoc dollar governance lives at the sprint level
+(``forge.yaml: budget_usd``). Nothing here caps or blocks spend after the fact.
 
 Design:
 
@@ -34,10 +39,10 @@ _HISTORY_TAIL = 50
 
 _BAND_TO_SCORE = {"small": 2, "medium": 5, "large": 9}
 _HEADROOM_FACTOR = 1.5
-# Budget headroom is scaled by complexity band because strong-tier models on
+# Estimate headroom is scaled by complexity band because strong-tier models on
 # large stories have higher cost variance than cheap-tier models on small ones.
-# Using a flat 1.5x average produced budgets ~2x too tight for LARGE stories.
-_BUDGET_HEADROOM_BY_BAND: dict[str, float] = {"small": 1.5, "medium": 2.0, "large": 2.5}
+# Using a flat 1.5x average produced estimates ~2x too tight for LARGE stories.
+_ESTIMATE_HEADROOM_BY_BAND: dict[str, float] = {"small": 1.5, "medium": 2.0, "large": 2.5}
 _MIN_PROFILE_RUNS = 3
 
 
@@ -48,7 +53,9 @@ class AdaptiveLimits:
     dev_max: int
     review_max: int
     dev_timeout_seconds: int
-    dev_budget_usd: float
+    # Per-story dollar cost ESTIMATE (historical-cost derived), not an enforced
+    # budget. Used for routing/timeout scaling/telemetry; never caps spend.
+    dev_cost_estimate_usd: float
     audit: dict = field(default_factory=dict)
 
 
@@ -175,7 +182,7 @@ def derive_limits(
     model_provider: str | None = None,
     model_cli: str | None = None,
     base_timeout_seconds: int,
-    base_budget_usd: float,
+    base_cost_estimate_usd: float,
     static_dev_max: int,
     review_history_path: Path | None,  # repurposed: project_root (None disables history)
     model_profiles: dict | None,
@@ -207,7 +214,7 @@ def derive_limits(
         "headroom_factor": _HEADROOM_FACTOR,
         "min_profile_runs": _MIN_PROFILE_RUNS,
         "base_timeout_seconds": base_timeout_seconds,
-        "base_budget_usd": base_budget_usd,
+        "base_dev_cost_estimate_usd": base_cost_estimate_usd,
         "static_dev_max": static_dev_max,
     }
 
@@ -217,7 +224,7 @@ def derive_limits(
             dev_max=static_dev_max,
             review_max=floor_review,
             dev_timeout_seconds=base_timeout_seconds,
-            dev_budget_usd=base_budget_usd,
+            dev_cost_estimate_usd=base_cost_estimate_usd,
             audit=audit,
         )
 
@@ -230,7 +237,7 @@ def derive_limits(
             dev_max=static_dev_max,
             review_max=floor_review,
             dev_timeout_seconds=base_timeout_seconds,
-            dev_budget_usd=base_budget_usd,
+            dev_cost_estimate_usd=base_cost_estimate_usd,
             audit=audit,
         )
 
@@ -263,7 +270,7 @@ def derive_limits(
     if profile_stats is None:
         chosen_dev = static_dev_max
         chosen_timeout = base_timeout_seconds
-        chosen_budget = base_budget_usd
+        chosen_estimate = base_cost_estimate_usd
         dev_rationale = (
             "insufficient profile history for complexity band; using static configured dev limits"
         )
@@ -272,21 +279,21 @@ def derive_limits(
         chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
         timeout_per_iteration = base_timeout_seconds / max(static_dev_max, 1)
         chosen_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
-        _budget_headroom = _BUDGET_HEADROOM_BY_BAND.get(
+        _estimate_headroom = _ESTIMATE_HEADROOM_BY_BAND.get(
             (complexity_band or "").lower(), _HEADROOM_FACTOR
         )
-        chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _budget_headroom)
+        chosen_estimate = _round_money(profile_stats["avg_cost_usd"] * _estimate_headroom)
         audit["profile_raw_dev_max"] = round(raw_dev, 4)
-        audit["budget_headroom_factor"] = _budget_headroom
+        audit["estimate_headroom_factor"] = _estimate_headroom
         dev_rationale = (
             f"derived dev limits from {profile_runs} "
             f"{complexity_band or 'unknown'}-band profile runs with "
-            f"{_HEADROOM_FACTOR}x iteration headroom and {_budget_headroom}x "
-            "budget headroom; timeout scaled from static per-iteration baseline."
+            f"{_HEADROOM_FACTOR}x iteration headroom and {_estimate_headroom}x "
+            "cost-estimate headroom; timeout scaled from static per-iteration baseline."
         )
     audit["chosen_dev_max"] = chosen_dev
     audit["chosen_dev_timeout_seconds"] = chosen_timeout
-    audit["chosen_dev_budget_usd"] = round(chosen_budget, 4)
+    audit["chosen_dev_cost_estimate_usd"] = round(chosen_estimate, 4)
 
     # Review history: p75 of matching-complexity runs; records within ±1 of the score.
     history_sample = 0
@@ -322,6 +329,6 @@ def derive_limits(
         dev_max=chosen_dev,
         review_max=chosen_review,
         dev_timeout_seconds=chosen_timeout,
-        dev_budget_usd=chosen_budget,
+        dev_cost_estimate_usd=chosen_estimate,
         audit=audit,
     )

@@ -1,7 +1,14 @@
-"""Tests for coordinator dev phase: budget enforcement and dev notes.
+"""Tests for coordinator dev phase: cost governance and dev notes.
 
-Covers: budget limits for dev and review agents, dev notes injection into review
-prompts.
+Covers: per-story dev cost estimates (surfaced, not enforced), review-agent
+budget ceilings, and dev notes injection into review prompts.
+
+Per-story dollar values are historical-cost estimates, not enforced budgets.
+When a dev attempt exceeds its estimate the outcome depends on whether it
+produced usable output: committed work proceeds (the estimate was low), while a
+no-commit attempt escalates on unproductive-attempt semantics — it names that no
+usable output was produced, not a dollar overrun. Real post-hoc dollar
+governance lives at the sprint level (forge.yaml budget_usd).
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ from theforge.runners import AgentResult
 
 
 class TestCoordinatorBudgetEnforcement:
-    """Test that budget limits are enforced for dev and review agents."""
+    """Per-story dev cost is an estimate (not enforced); review budgets are ceilings."""
 
     def _make_budget_config(
         self, tmp_path: Path, dev_budget: float, review_budget: float
@@ -82,10 +89,10 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dev_budget_exceeded_first_call(
+    def test_dev_estimate_exceeded_no_commits_first_call(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Dev agent exceeds budget on first call → ESCALATE with budget error."""
+        """Dev exceeds estimate with no commits on first call → ESCALATE (unproductive)."""
         config = self._make_budget_config(tmp_path, dev_budget=0.40, review_budget=1.00)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -110,9 +117,11 @@ class TestCoordinatorBudgetEnforcement:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "budget" in result.message.lower()
+        # No commits + high spend → unproductive-attempt framing, not a dollar overrun.
+        assert "no usable output" in result.message.lower()
+        assert "no commits" in result.message.lower()
+        assert "budget" not in result.message.lower()
         assert "0.5000" in result.message
-        assert "0.4000" in result.message
         # Only one dev invocation — escalated before retry
         assert len(result.state.dev_results) == 1
 
@@ -120,10 +129,10 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dev_budget_exceeded_on_retry(
+    def test_dev_estimate_exceeded_no_commits_on_retry(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Dev agent exceeds budget on second call (retry) → ESCALATE."""
+        """Dev exceeds estimate with no commits on second call (retry) → ESCALATE."""
         config = self._make_budget_config(tmp_path, dev_budget=0.50, review_budget=1.00)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -147,7 +156,8 @@ class TestCoordinatorBudgetEnforcement:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "budget" in result.message.lower()
+        assert "no usable output" in result.message.lower()
+        assert "budget" not in result.message.lower()
         # Two dev invocations: $0.30 + $0.30 = $0.60 > $0.50
         assert len(result.state.dev_results) == 2
 
@@ -240,10 +250,10 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=False)
-    def test_dev_budget_exceeded_no_commits_escalates(
+    def test_dev_estimate_exceeded_no_commits_escalates_unproductive(
         self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Dev exceeds budget with no commits → ESCALATE (no work to salvage)."""
+        """Dev exceeds estimate with no commits → ESCALATE as unproductive (no work to salvage)."""
         config = self._make_budget_config(tmp_path, dev_budget=0.40, review_budget=1.00)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -267,7 +277,9 @@ class TestCoordinatorBudgetEnforcement:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "budget" in result.message.lower()
+        assert "no usable output" in result.message.lower()
+        assert "no commits" in result.message.lower()
+        assert "budget" not in result.message.lower()
 
 
 # ── Dev notes and handoff validation tests ──────────────────────────────

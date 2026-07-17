@@ -372,11 +372,11 @@ def _format_config(
         _cap = config.assignment.max_cost_per_story_usd
         if _cap is None:
             lines.append(
-                "Per-story routing cost cap: unset "
+                "Per-story routing cost target: unset "
                 "(adaptive routes by complexity; only budget_usd enforces spend)"
             )
         else:
-            lines.append(f"Per-story routing cost cap: ${_cap:.2f}/story")
+            lines.append(f"Per-story routing cost target: ${_cap:.2f}/story")
     lines.append("")
 
     if config.models or config.custom_models:
@@ -534,9 +534,9 @@ def _format_config(
     if config.assignment.enabled:
         a = config.assignment
         if a.max_cost_per_story_usd is None:
-            cap_str = "no per-story routing cost cap configured"
+            cap_str = "no per-story routing cost target configured"
         else:
-            cap_str = f"per-story routing cost cap=${a.max_cost_per_story_usd:.2f}/story"
+            cap_str = f"per-story routing cost target=${a.max_cost_per_story_usd:.2f}/story"
         lines.append(
             f"  assignment:    enabled  (min={a.min_reviewers}, max={a.max_reviewers}, {cap_str})"
         )

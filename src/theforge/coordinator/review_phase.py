@@ -1491,7 +1491,8 @@ def _run_review_phase(
         and _is_persistent_p1
         and not state.dev_escalated
         and (
-            state.total_dev_cost < (state.adaptive_dev_budget_usd or config.dev_profile.budget_usd)
+            state.total_dev_cost
+            < (state.adaptive_dev_cost_estimate_usd or config.dev_profile.budget_usd)
         )
     ):
         _esc = _perform_dev_model_escalation(config)

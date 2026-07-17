@@ -53,7 +53,7 @@ def test_adaptive_disabled_returns_policy_floors(tmp_path: Path):
         _policy(adaptive_iterations=False),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(),
@@ -62,7 +62,7 @@ def test_adaptive_disabled_returns_policy_floors(tmp_path: Path):
     assert result.dev_max == 3
     assert result.review_max == 2
     assert result.dev_timeout_seconds == 900
-    assert result.dev_budget_usd == 10.0
+    assert result.dev_cost_estimate_usd == 10.0
     assert result.audit["enabled"] is False
 
 
@@ -73,7 +73,7 @@ def test_no_score_uses_static_limits(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "missing.jsonl",
         model_profiles=_profiles(),
@@ -90,7 +90,7 @@ def test_profile_history_derives_dev_limits_from_headroom(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "missing.jsonl",
         model_profiles=_profiles(avg_iterations=3.2, avg_cost=1.2),
@@ -99,9 +99,9 @@ def test_profile_history_derives_dev_limits_from_headroom(tmp_path: Path):
     # Budget: medium band uses 2.0x headroom → 1.2 * 2.0 = 2.4
     assert result.dev_max == 5
     assert result.dev_timeout_seconds == 1500
-    assert result.dev_budget_usd == 2.4
+    assert result.dev_cost_estimate_usd == 2.4
     assert result.audit["profile_history_runs"] == 3
-    assert result.audit["budget_headroom_factor"] == 2.0
+    assert result.audit["estimate_headroom_factor"] == 2.0
 
 
 def test_headroom_clamps_dev_iterations_to_cap(tmp_path: Path):
@@ -111,7 +111,7 @@ def test_headroom_clamps_dev_iterations_to_cap(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "missing.jsonl",
         model_profiles=_profiles(avg_iterations=9.0, avg_cost=9.0),
@@ -127,14 +127,14 @@ def test_insufficient_profile_history_falls_back_to_static_limits(tmp_path: Path
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "missing.jsonl",
         model_profiles=_profiles(runs=2, avg_iterations=9.0, avg_cost=9.0),
     )
     assert result.dev_max == 3
     assert result.dev_timeout_seconds == 900
-    assert result.dev_budget_usd == 10.0
+    assert result.dev_cost_estimate_usd == 10.0
     assert result.review_max == 3
     assert result.audit["base_review"] == 3
     assert result.audit["profile_history_runs"] == 0
@@ -150,7 +150,7 @@ def test_deterministic_same_inputs_same_output(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "missing.jsonl",
         model_profiles=profiles,
@@ -161,7 +161,7 @@ def test_deterministic_same_inputs_same_output(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "missing.jsonl",
         model_profiles=profiles,
@@ -178,7 +178,7 @@ def test_band_fallback_when_score_none(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(),
@@ -194,7 +194,7 @@ def test_out_of_range_score_falls_back_to_band(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles={
@@ -229,7 +229,7 @@ def test_corrupt_substrate_propagates_error(tmp_path: Path):
             _policy(),
             model_name="dev",
             base_timeout_seconds=900,
-            base_budget_usd=10.0,
+            base_cost_estimate_usd=10.0,
             static_dev_max=3,
             review_history_path=tmp_path,
             model_profiles=_profiles(),
@@ -263,7 +263,7 @@ def test_insufficient_profile_history_still_uses_review_history_signal(tmp_path:
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path,
         model_profiles=_profiles(runs=2, avg_iterations=9.0, avg_cost=9.0),
@@ -286,14 +286,14 @@ def test_budget_headroom_large_band_uses_2_5x(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(band="large", avg_cost=4.0),
     )
     # large band: 4.0 * 2.5 = 10.0
-    assert result.dev_budget_usd == 10.0
-    assert result.audit["budget_headroom_factor"] == 2.5
+    assert result.dev_cost_estimate_usd == 10.0
+    assert result.audit["estimate_headroom_factor"] == 2.5
 
 
 def test_budget_headroom_medium_band_uses_2_0x(tmp_path: Path):
@@ -303,14 +303,14 @@ def test_budget_headroom_medium_band_uses_2_0x(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(band="medium", avg_cost=3.0),
     )
     # medium band: 3.0 * 2.0 = 6.0
-    assert result.dev_budget_usd == 6.0
-    assert result.audit["budget_headroom_factor"] == 2.0
+    assert result.dev_cost_estimate_usd == 6.0
+    assert result.audit["estimate_headroom_factor"] == 2.0
 
 
 def test_budget_headroom_small_band_uses_1_5x(tmp_path: Path):
@@ -320,14 +320,14 @@ def test_budget_headroom_small_band_uses_1_5x(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(band="small", avg_cost=1.0),
     )
     # small band: 1.0 * 1.5 = 1.5
-    assert result.dev_budget_usd == 1.5
-    assert result.audit["budget_headroom_factor"] == 1.5
+    assert result.dev_cost_estimate_usd == 1.5
+    assert result.audit["estimate_headroom_factor"] == 1.5
 
 
 def test_budget_headroom_unknown_band_falls_back_to_default(tmp_path: Path):
@@ -337,33 +337,35 @@ def test_budget_headroom_unknown_band_falls_back_to_default(tmp_path: Path):
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(band="medium", avg_cost=2.0),
     )
     # No band → falls back to _HEADROOM_FACTOR (1.5x): 2.0 * 1.5 = 3.0
-    assert result.dev_budget_usd == 3.0
-    assert result.audit["budget_headroom_factor"] == 1.5
+    assert result.dev_cost_estimate_usd == 3.0
+    assert result.audit["estimate_headroom_factor"] == 1.5
 
 
-def test_budget_headroom_concrete_large_scenario(tmp_path: Path):
-    # Reproduce the concrete failure from issue #1148:
-    # avg_cost $4.13, actual $8.44.  With old 1.5x: budget = $6.20 → escalate.
-    # With new 2.5x: budget = $10.33 → no escalation.
+def test_estimate_headroom_concrete_large_scenario(tmp_path: Path):
+    # Documents that the per-story dollar value is a historical-cost ESTIMATE,
+    # not a hard cap (issue #1148): avg_cost $4.13, actual $8.44. The old 1.5x
+    # estimate ($6.20) was low; the band-scaled 2.5x estimate ($10.33) tracks
+    # real large-story spend. Post-hoc dollar enforcement no longer lives here
+    # (sprint-level governance owns that), so a low estimate never escalates.
     result = derive_limits(
         9,
         "large",
         _policy(),
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=tmp_path / "none",
         model_profiles=_profiles(band="large", avg_cost=4.13),
     )
-    assert result.dev_budget_usd >= 8.44, (
-        f"Budget {result.dev_budget_usd:.4f} would have escalated the $8.44 run from issue #1148"
+    assert result.dev_cost_estimate_usd >= 8.44, (
+        f"Estimate {result.dev_cost_estimate_usd:.4f} should track the $8.44 run from issue #1148"
     )
 
 

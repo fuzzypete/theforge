@@ -75,13 +75,13 @@ def test_adaptive_limits_populated_in_audit(tmp_path: Path):
     state.adaptive_dev_max = 5
     state.adaptive_review_max = 3
     state.adaptive_dev_timeout_seconds = 1500
-    state.adaptive_dev_budget_usd = 1.8
+    state.adaptive_dev_cost_estimate_usd = 1.8
     state.adaptive_limits_audit = {
         "enabled": True,
         "chosen_dev_max": 5,
         "chosen_review_max": 3,
         "chosen_dev_timeout_seconds": 1500,
-        "chosen_dev_budget_usd": 1.8,
+        "chosen_dev_cost_estimate_usd": 1.8,
         "rationale": "complexity-derived",
     }
     audit = generate_audit_log(
@@ -141,7 +141,7 @@ def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
     assert state.adaptive_dev_timeout_seconds == round(
         config.dev_profile.timeout_seconds * LARGE_HEADROOM_FACTOR
     )
-    assert state.adaptive_dev_budget_usd == config.dev_profile.budget_usd
+    assert state.adaptive_dev_cost_estimate_usd == config.dev_profile.budget_usd
     assert state.adaptive_limits_audit.get("enabled") is True
     assert state.adaptive_limits_audit.get("complexity_score_used") == 9
 
@@ -161,14 +161,14 @@ def test_profiles_inform_adaptive_dev_limits(tmp_path: Path):
         policy,
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=None,
         model_profiles=_profiles(avg_iterations=3.2, avg_cost_usd=1.2),
     )
     assert result.dev_max == 5
     assert result.dev_timeout_seconds == 1500
-    assert result.dev_budget_usd == 2.4  # medium band: 1.2 * 2.0x headroom
+    assert result.dev_cost_estimate_usd == 2.4  # medium band: 1.2 * 2.0x headroom
     assert result.audit["profile_history_runs"] == 3
 
 
@@ -217,14 +217,14 @@ def test_fragmented_profile_aliases_inform_adaptive_dev_limits(tmp_path: Path):
         model_provider="openai",
         model_cli="codex",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=None,
         model_profiles=profiles,
     )
     assert result.dev_max == 6
     assert result.dev_timeout_seconds == 1800
-    assert result.dev_budget_usd == 2.5
+    assert result.dev_cost_estimate_usd == 2.5
     assert result.audit["profile_history_runs"] == 4
 
 
@@ -244,7 +244,7 @@ def test_determinism_seam(tmp_path: Path):
         policy,
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=None,
         model_profiles=profiles,
@@ -255,7 +255,7 @@ def test_determinism_seam(tmp_path: Path):
         policy,
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=None,
         model_profiles=profiles,
@@ -357,7 +357,7 @@ def test_adaptive_off_produces_policy_values(tmp_path: Path):
         policy,
         model_name="dev",
         base_timeout_seconds=900,
-        base_budget_usd=10.0,
+        base_cost_estimate_usd=10.0,
         static_dev_max=3,
         review_history_path=None,
         model_profiles=_profiles(),
@@ -439,5 +439,5 @@ def test_explicit_dev_override_wins_over_computed_limits(tmp_path: Path):
 
     assert state.adaptive_dev_max == 4
     assert state.adaptive_dev_timeout_seconds == round(1200 * MEDIUM_HEADROOM_FACTOR)
-    assert state.adaptive_dev_budget_usd == 12.0
+    assert state.adaptive_dev_cost_estimate_usd == 12.0
     assert "explicit dev forge.yaml override" in state.adaptive_limits_audit["rationale"]

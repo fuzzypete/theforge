@@ -29,7 +29,7 @@ def _seeded_state(tmp_path: Path) -> CoordinatorState:
     state.adaptive_dev_max = 2
     state.adaptive_review_max = 2
     state.adaptive_dev_timeout_seconds = 600
-    state.adaptive_dev_budget_usd = 1.0
+    state.adaptive_dev_cost_estimate_usd = 1.0
     return state
 
 

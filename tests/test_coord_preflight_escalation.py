@@ -643,13 +643,13 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_escalation_skipped_when_budget_exhausted(
+    def test_escalation_skipped_when_dev_attempt_unproductive(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """Budget exhausted before persistent P1 detected → no escalation, no extra dev run."""
-        # Use a very tight budget so the first dev call exhausts it
+        """No-commit dev attempt escalates as unproductive before persistent P1 fires."""
+        # Use a very tight per-story estimate so the first dev call exceeds it
         config = _make_smart_config(tmp_path, max_review_cycles=3)
-        # Override dev budget to be tiny so it's exceeded after first call
+        # Override the dev cost estimate to be tiny so it's exceeded after first call
         from dataclasses import replace as _replace
 
         tight_dev = _replace(config.dev_profile, budget_usd=0.01)
@@ -676,11 +676,12 @@ class TestDevModelEscalationIntegration:
 
         result = run_task(config, task)
 
-        # Dev budget exhausted → ESCALATE immediately after first dev run
+        # No usable output (no commits) → ESCALATE immediately after first dev run
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "budget" in result.message.lower()
-        # Escalation flag never set (budget guard fired first)
+        assert "no usable output" in result.message.lower()
+        assert "budget" not in result.message.lower()
+        # Escalation flag never set (unproductive-attempt guard fired first)
         assert result.state.dev_escalated is False
 
 

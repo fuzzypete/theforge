@@ -480,7 +480,10 @@ class CoordinatorState:
     adaptive_dev_max: int = 0
     adaptive_review_max: int = 0
     adaptive_dev_timeout_seconds: int = 0
-    adaptive_dev_budget_usd: float = 0.0
+    # Per-story dollar cost ESTIMATE (historical-cost derived), not an enforced
+    # budget. Informs routing/timeout scaling/telemetry; post-hoc dollar
+    # governance lives at the sprint level (forge.yaml budget_usd), not here.
+    adaptive_dev_cost_estimate_usd: float = 0.0
     adaptive_limits_audit: dict = field(default_factory=dict)
     review_early_terminated: bool = False  # True when early-termination triggered
     workspace_hygiene_audit: list[dict] = field(default_factory=list)
