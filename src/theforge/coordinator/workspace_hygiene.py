@@ -9,8 +9,10 @@ fail loudly with the offending paths.
 Three layers:
 
 1. ``check_phase_no_mutation``: invoked around PLAN / PLAN_REVIEW. Any change
-   to the porcelain set fails the phase. ``.forge/`` is gitignored, so
-   coordinator-driven artifact writes are naturally excluded.
+   to the porcelain set fails the phase. Paths under forge's own runtime
+   directory (``.forge/``) are excluded mechanically by ``snapshot_porcelain``
+   — regardless of the consumer repo's gitignore state — so coordinator-driven
+   artifact writes never register as mutations.
 
 2. ``enforce_pre_dev_hygiene`` / ``enforce_pre_review_hygiene``: invoked
    symmetrically before DEV iteration 1 and before each REVIEW cycle.
@@ -35,8 +37,8 @@ Three layers:
    (issue #1499) still has a real failsafe to ride on.
 
 Sanctioned scratch space (``.forge/tmp/<run-id>/``) is provisioned by
-``ensure_scratch_dir``; ``.forge/`` is already gitignored so the directory is
-invisible to git.
+``ensure_scratch_dir``; it lives under ``.forge/``, which the snapshot
+mechanically excludes, so the directory never registers with the gate.
 """
 
 from __future__ import annotations
@@ -49,14 +51,39 @@ from pathlib import Path
 # Restrict to operator-facing work artifacts; everything else is quarantined.
 _ALLOWED_ROOT_UNTRACKED: frozenset[str] = frozenset()
 
+# Forge's own runtime directory. Everything under it is coordinator-written
+# bookkeeping (quarantine dir, escalation markers, scratch, tmp) — never
+# operator contamination. Historically the gate relied on the consumer repo
+# gitignoring ``.forge/`` to keep these out of its porcelain snapshots, but
+# that assumption was unenforced: a repo that only ignores the specific
+# ``.forge/`` files known to an older forge version (or none at all) exposed
+# forge's own output as untracked "contamination", tripping quarantine and
+# escalating on artifacts forge itself wrote (hdp #183, TheForge #1699). The
+# exclusion is now mechanical and independent of gitignore state.
+_FORGE_RUNTIME_DIR = ".forge"
+_FORGE_RUNTIME_PREFIX = ".forge/"
+
+
+def _is_forge_runtime_path(path: str) -> bool:
+    """True if ``path`` (workspace-relative) is under forge's runtime dir.
+
+    Matches the directory itself and anything beneath it, so ``.forge``,
+    ``.forge/quarantine`` and ``.forge/escalated`` are all recognised as
+    forge-owned regardless of the consumer repo's gitignore contents.
+    """
+    return path == _FORGE_RUNTIME_DIR or path.startswith(_FORGE_RUNTIME_PREFIX)
+
 
 def snapshot_porcelain(workspace_path: Path) -> set[str]:
     """Return the porcelain entry set for ``workspace_path``.
 
     Each entry is the raw two-character status code plus the path
-    (``"?? foo.py"``, ``" M src/x.py"``, ...). ``.forge/`` is gitignored so
-    Forge-managed artifacts do not appear. On git failure returns an empty
-    set; callers treat that as "no snapshot" rather than crashing.
+    (``"?? foo.py"``, ``" M src/x.py"``, ...). Entries under forge's own
+    runtime directory (``.forge/``) are filtered out mechanically — they are
+    coordinator-written artifacts, never operator contamination — so the gate
+    is correct even in a consumer repo that does not gitignore ``.forge/``. On
+    git failure returns an empty set; callers treat that as "no snapshot"
+    rather than crashing.
     """
     try:
         proc = subprocess.run(
@@ -74,7 +101,9 @@ def snapshot_porcelain(workspace_path: Path) -> set[str]:
     if not raw:
         return set()
     # -z entries are NUL-terminated; renames split across two NUL fields.
-    return {entry for entry in raw.split("\0") if entry}
+    return {
+        entry for entry in raw.split("\0") if entry and not _is_forge_runtime_path(_path_of(entry))
+    }
 
 
 def _path_of(entry: str) -> str:
@@ -116,8 +145,9 @@ def check_phase_no_mutation(
 def ensure_scratch_dir(workspace_path: Path, run_id: str) -> Path:
     """Create ``.forge/tmp/<run-id>/`` and return it.
 
-    ``.forge/`` is already gitignored, so the directory is invisible to git
-    and safe for agents to use as exploratory scratch space.
+    The directory lives under ``.forge/``, which ``snapshot_porcelain``
+    excludes mechanically, so it is safe for agents to use as exploratory
+    scratch space without tripping the hygiene gate.
     """
     scratch = workspace_path / ".forge" / "tmp" / run_id
     scratch.mkdir(parents=True, exist_ok=True)
@@ -138,11 +168,22 @@ def quarantine_paths(
     Returns ``(moved, failed)``. Moves preserve the relative tree so the
     operator can locate originals. ``shutil.move`` is used so cross-device
     moves degrade to copy+delete cleanly.
+
+    Paths under forge's own runtime directory (``.forge/``) are skipped
+    outright: the quarantine root itself lives at ``.forge/quarantine/...``, so
+    remediation must never target its own bookkeeping location. Moving
+    ``.forge/quarantine`` into a subdirectory of itself is a move-into-own-
+    subtree ``OSError`` that would otherwise surface as a spurious quarantine
+    failure and escalate the phase (hdp #183, TheForge #1699). Such paths are
+    reported as neither moved nor failed — there is nothing to remediate.
     """
     quarantine_root.mkdir(parents=True, exist_ok=True)
     moved: list[str] = []
     failed: list[str] = []
     for rel_path in paths:
+        if _is_forge_runtime_path(rel_path):
+            # Never remediate forge's own runtime artifacts (see docstring).
+            continue
         src = workspace_path / rel_path
         if not src.exists() and not src.is_symlink():
             # Path appeared in porcelain but is gone now (race or untracked dir
