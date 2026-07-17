@@ -14,18 +14,13 @@ from pathlib import Path
 
 from theforge.advisory_conventions import update_advisory_violations
 from theforge.config import ForgeConfig
+from theforge.gate_diagnostics import run_gate_diagnostic_pass
 from theforge.task import TaskStory
 
 from . import util as _cu
 from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
-from .gate import (
-    _is_gate_skip,
-    _parse_dirty_files,
-    _run_gate_debug_command,
-    _run_gate_diagnostic_pass,
-    _run_gate_full,
-)
+from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import (
@@ -319,10 +314,10 @@ def _build_timeout_rca_packet(
         )
     if diagnostic is not None:
         diag_lines = [
-            f"Diagnostic re-run (`{diagnostic.command}`): serialized pytest (-n 0) with a"
-            f" {diagnostic.per_test_timeout_s}s hard per-test timeout, bounded to"
+            f"Diagnostic re-run (`{diagnostic.command}`): serialized single-worker execution"
+            f" with a {diagnostic.per_test_timeout_s}s hard per-test timeout, bounded to"
             f" {diagnostic.budget_s}s total. A per-test timeout dumps the stack trace at the"
-            " moment of the hang; faulthandler adds C-level frames if relevant."
+            " moment of the hang; faulthandler adds lower-level frames if relevant."
         ]
         if diagnostic.hanging_test:
             diag_lines.append(
@@ -340,7 +335,7 @@ def _build_timeout_rca_packet(
             diag_lines.append(
                 "No single test exceeded the per-test timeout under serialized execution."
                 " This suggests a concurrency-specific bug: the hang only reproduces under"
-                " parallel (xdist) execution, not when tests run one at a time."
+                " parallel execution, not when tests run one at a time."
             )
         diag_lines.append(f"Diagnostic output tail:\n{diagnostic.output_tail or '(empty)'}")
         parts.append("\n".join(diag_lines))
@@ -482,7 +477,7 @@ def _run_validate_phase(
             # re-run pass in the same worktree before constructing the retry
             # input so the dev agent gets the hanging test + stack trace on the
             # first retry rather than having to re-run the suite manually.
-            diagnostic = _run_gate_diagnostic_pass(
+            diagnostic = run_gate_diagnostic_pass(
                 config,
                 workspace_path,
                 task=task,

@@ -262,9 +262,9 @@ validation:
   gate_timeout: 600                    # seconds; default varies
   gate_debug_command: ~                # optional: runs after gate_timeout for diagnostics
   gate_debug_timeout: ~                # seconds; default: same resolved value as gate_timeout
-  gate_diagnostic_enabled: true        # run the pytest -n 0 hang-diagnostic pass on gate timeout
-  gate_diagnostic_pytest_base: "python -m pytest"  # base pytest invocation for the diagnostic pass
-  gate_diagnostic_per_test_timeout: 10 # seconds; --timeout= applied to each test in the pass
+  gate_diagnostic_enabled: true        # run the serialized hang-diagnostic pass on gate timeout
+  gate_diagnostic_command: ~           # override the built-in diagnostic command; ~ uses the default
+  gate_diagnostic_per_test_timeout: 10 # seconds; per-test hard timeout applied in the pass
   gate_diagnostic_budget: 60           # seconds; hard wall-clock cap so the pass can't itself hang
   test_command: ~                      # optional command agents may run during dev
   pre_validate_command: ~              # optional: run before dirty check

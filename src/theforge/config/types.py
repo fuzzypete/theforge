@@ -235,14 +235,14 @@ class ValidationConfig:
     )
     gate_debug_timeout: int | None = None  # seconds; None = same resolved value as gate_timeout
     # ── Gate-timeout diagnostic re-run (issue #1217) ──────────────────────────
-    # When the gate times out and #1216's timeout-with-diff routing fires, run a
-    # serialized pytest pass with a hard per-test timeout to surface the hanging
-    # test and its stack trace. Distinct from gate_debug_command, which is a
-    # free-form user-configured diagnostic; this pass is pytest-specific and
-    # hardcodes the -n 0 / --timeout / --timeout-method=thread instrumentation.
+    # On a gate timeout that routes back to dev, run a serialized diagnostic
+    # command with a hard per-test timeout to isolate the hanging test and
+    # capture its stack trace. The built-in default command and its output
+    # parsing live in theforge.gate_diagnostics (outside the stack-neutral core);
+    # operators override the command via gate_diagnostic_command in forge.yaml.
     gate_diagnostic_enabled: bool = True  # run the diagnostic pass on gate timeout
-    gate_diagnostic_pytest_base: str = "python -m pytest"  # base pytest invocation
-    gate_diagnostic_per_test_timeout: int = 10  # seconds; --timeout= value per test
+    gate_diagnostic_command: str | None = None  # override; None = built-in default (see module)
+    gate_diagnostic_per_test_timeout: int = 10  # seconds; per-test hard timeout in the pass
     gate_diagnostic_budget: int = 60  # seconds; hard wall-clock cap for the whole pass
     test_command: str | None = None  # canonical command for intermediate test runs in dev loop
     # Substituted for {test_target} when no task is available (baseline gate) or

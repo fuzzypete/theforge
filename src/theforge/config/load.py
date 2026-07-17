@@ -544,11 +544,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         gate_diagnostic_enabled=bool(
             val_data.get("gate_diagnostic_enabled", DEFAULT_VALIDATION.gate_diagnostic_enabled)
         ),
-        gate_diagnostic_pytest_base=str(
-            val_data.get(
-                "gate_diagnostic_pytest_base", DEFAULT_VALIDATION.gate_diagnostic_pytest_base
-            )
-        ),
+        gate_diagnostic_command=val_data.get("gate_diagnostic_command"),
         gate_diagnostic_per_test_timeout=int(
             val_data.get(
                 "gate_diagnostic_per_test_timeout",
