@@ -911,6 +911,28 @@ def _run_dev_phase(
                 "the same exploratory loop. Narrow scope, stabilize the worktree, and submit a "
                 "structured result promptly."
             )
+            # Preserve any partial edits before retrying (#1746). Like the
+            # timeout resume below, this is another retry-with-possibly-dirty-
+            # worktree case: the agent burned its internal iteration budget
+            # without committing, so whatever it produced is uncommitted
+            # working-tree state the next attempt would otherwise branch from as
+            # if empty. Checkpoint it so the retry continues from committed work.
+            if _worktree_has_changes(workspace_path):
+                _checkpointed = _checkpoint_commit(
+                    workspace_path, "max_iterations_reached without submit"
+                )
+                if _checkpointed:
+                    _log(
+                        "  ⎇ DEV   checkpoint-committed stranded work before "
+                        "max-iterations retry"
+                    )
+                    if logger:
+                        logger._safe_emit(
+                            "dev_checkpoint_commit",
+                            phase="DEV",
+                            iteration=state.dev_iteration,
+                            reason="max_iterations_reached",
+                        )
             return None
 
     if (

@@ -397,6 +397,71 @@ def test_dev_phase_timeout_retry_starts_from_checkpointed_work(tmp_path: Path) -
     assert _has_commits_ahead_of_base(tmp_path, "main") is True
 
 
+def _make_max_iterations_agent_result() -> AgentResult:
+    """Simulate a dev agent that exhausted its internal iteration budget without
+    ever calling submit — no structured handoff, partial edits left uncommitted."""
+    return AgentResult(
+        success=False,
+        output="ran out of iterations",
+        session_id=None,
+        cost_usd=0.0,
+        exit_code=1,
+        raw={},
+        profile_name="dev",
+        failure_code="max_iterations_reached",
+        dev_handoff=None,
+    )
+
+
+def test_dev_phase_checkpoints_max_iterations_no_submit_before_retry(tmp_path: Path) -> None:
+    """A max_iterations-without-submit iteration retries via return None; its
+    partial edits must be checkpoint-committed first so the retry continues from
+    committed work rather than branching from a falsely-empty base."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+
+    config = _make_config(tmp_path)
+    task = TaskStory(name="t", slug="t", story_path="specs/t.md")
+    state = CoordinatorState()
+    state.budget.max_iterations = 2
+
+    spec = tmp_path / "specs" / "t.md"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("# t\n", encoding="utf-8")
+
+    from theforge.coordinator.dev_phase import _run_dev_phase
+    from theforge.coordinator.state import RetryReason
+
+    def _burn_budget_after_editing(*_args, **_kwargs):
+        (tmp_path / "partial_fix.py").write_text("def half_done():\n    return None\n")
+        return _make_max_iterations_agent_result()
+
+    with (
+        patch(
+            "theforge.coordinator.dev_phase.run_agent",
+            side_effect=_burn_budget_after_editing,
+        ),
+        patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock()),
+    ):
+        result = _run_dev_phase(
+            state, config, task, "# t\n", tmp_path, "feat/x", notify=False, logger=None
+        )
+
+    assert result is None  # retry, not terminal
+    assert state.retry_reason == RetryReason.MAX_ITERATIONS_NO_SUBMIT
+    # The partial work was checkpoint-committed before the retry.
+    assert _last_commit_subject(tmp_path) == CHECKPOINT_COMMIT_SUBJECT
+    assert _has_commits_ahead_of_base(tmp_path, "main") is True
+    files = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "partial_fix.py" in files
+
+
 def test_dev_phase_empty_killed_iteration_still_escalates(tmp_path: Path) -> None:
     """A genuinely empty killed iteration (no worktree changes) creates no
     checkpoint commit and still escalates on the zero-commit guard — the guard's
