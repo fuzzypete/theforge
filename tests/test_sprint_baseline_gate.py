@@ -143,6 +143,28 @@ def test_baseline_gate_preserves_actual_gate_exit_code(tmp_path: Path) -> None:
     assert "boom" in str(baseline.get("output_tail", ""))
 
 
+def test_baseline_gate_substitutes_test_target_placeholder(tmp_path: Path) -> None:
+    # A gate_command that uses {test_target}/{slug} (as HDP's did) must not
+    # leak the literal placeholder text into the baseline gate's shell
+    # command, since the baseline gate has no TaskStory to source them from.
+    config, resolved, base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command="echo {test_target} {slug}",
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["merge_base"] == base_commit
+    resolved_cmd = baseline["command"]
+    assert "{test_target}" not in resolved_cmd
+    assert "{slug}" not in resolved_cmd
+
+
 def test_baseline_gate_runs_setup_command_before_gate(tmp_path: Path) -> None:
     config, resolved, base_commit = _init_repo(tmp_path)
     # setup_command bootstraps a marker the gate depends on; the merge base has

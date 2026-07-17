@@ -85,10 +85,11 @@ def run_gate_full(
         gate_cmd = task.gate_override  # type: ignore[union-attr]
     else:
         gate_cmd = config.validation.gate_command
-        if task is not None:
-            test_target = task.test_target or "."
-            gate_cmd = gate_cmd.replace("{test_target}", test_target)
-            gate_cmd = gate_cmd.replace("{slug}", task.slug)
+        default_target = config.validation.default_test_target or "."
+        test_target = (task.test_target if task is not None else None) or default_target
+        slug = task.slug if task is not None else "baseline"
+        gate_cmd = gate_cmd.replace("{test_target}", test_target)
+        gate_cmd = gate_cmd.replace("{slug}", slug)
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600

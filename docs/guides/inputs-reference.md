@@ -264,6 +264,7 @@ validation:
   gate_debug_timeout: ~                # seconds; default: same resolved value as gate_timeout
   test_command: ~                      # optional command agents may run during dev
   pre_validate_command: ~              # optional: run before dirty check
+  default_test_target: "."             # {test_target} substitution when no story test_target applies (e.g. baseline gate)
 
 # ── Retry policy ───────────────────────────────────────────
 retry:

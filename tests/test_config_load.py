@@ -1001,6 +1001,31 @@ class TestValidationTestCommand:
         with pytest.raises(ValueError, match="v0.8"):
             load_config(config_path)
 
+    def test_default_test_target_parsed_when_present(self, tmp_path):
+        config_path = _write_config(
+            {
+                "validation": {
+                    "gate_command": "make gate",
+                    "default_test_target": "tests/",
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.validation.default_test_target == "tests/"
+
+    def test_default_test_target_defaults_to_dot_when_absent(self, tmp_path):
+        config_path = _write_config(
+            {
+                "validation": {
+                    "gate_command": "make gate",
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.validation.default_test_target == "."
+
 
 class TestCliPoolCrossProviderRotation:
     """Issue #1468 — a CLI-only models: pool (claude/codex/gemini) loaded via
