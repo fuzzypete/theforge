@@ -676,7 +676,9 @@ def _enforce_budget(
             f"{cap_phrase} could not be met; estimated total ${final_total:.2f}"
         )
     if protected_roles:
-        rationale["per_story_routing_cost_target"] += f" (protected roles: {sorted(protected_roles)})"
+        rationale["per_story_routing_cost_target"] += (
+            f" (protected roles: {sorted(protected_roles)})"
+        )
 
     if not within_cap:
         warnings.warn(

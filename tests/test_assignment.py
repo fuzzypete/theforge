@@ -824,7 +824,10 @@ def test_budget_cap_records_downgrade_rationale():
 
     decision = assign_models(agents, cfg, "medium")
 
-    assert "per-story routing cost target $10.00" in decision.rationale["per_story_routing_cost_target"]
+    assert (
+        "per-story routing cost target $10.00"
+        in decision.rationale["per_story_routing_cost_target"]
+    )
     assert decision.budget_audit["downgraded"] is True
     assert decision.budget_audit["final_total_usd"] <= 10.0
     assert decision.budget_audit["steps"]
@@ -843,7 +846,9 @@ def test_budget_cap_keeps_planner_rationale_aligned_with_final_model():
     decision = assign_models(agents, cfg, "medium", complexity_score=4)
 
     assert decision.planner.model == "haiku"
-    assert "per-story routing cost target $10.00 downgraded to haiku" in decision.rationale["planner"]
+    assert (
+        "per-story routing cost target $10.00 downgraded to haiku" in decision.rationale["planner"]
+    )
     assert any(step["role"] == "planner" for step in decision.budget_audit["steps"])
 
 
