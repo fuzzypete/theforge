@@ -713,6 +713,9 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 ),
                 "gate_result": state.gate_decisions[-1] if state.gate_decisions else None,
                 "human_decision": state.escalate_decision,
+                "selected_action": state.escalate_selected_action,
+                "advisory_generated": state.advisory_generated,
+                "advisory": state.advisory_report,
                 "waited_seconds": (
                     round(state.human_review_waited_seconds, 1)
                     if state.human_review_waited_seconds is not None

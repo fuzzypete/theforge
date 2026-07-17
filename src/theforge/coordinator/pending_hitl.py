@@ -10,6 +10,7 @@ from . import util as _cu
 
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
+    from theforge.escalation_advisor import AdvisoryReport, EvidencePacket
     from theforge.review import ReviewResult
     from theforge.task import TaskStory
 
@@ -97,9 +98,25 @@ def _pending_escalate_gate(
     reviewer_verdicts: dict[str, str],
     gate_result: "str | None",
     run_id: str = "",
+    advisory: "AdvisoryReport | None" = None,
 ) -> str:
-    """Pending-file-based escalate gate. Returns 'approve' | 'reject' | 'continue'."""
+    """Pending-file-based escalate gate with a fresh-context advisory report.
+
+    When ``advisory`` is a valid report, the pending file presents the fixed
+    action taxonomy (Accept / Land-core-defer-edges / Redirect / Decompose /
+    Elevate / Defer-or-Abandon) as the options and embeds the report + evidence
+    packet as structured payload; the operator must select one of those actions.
+
+    The max-cycles path no longer auto-rejects on timeout: a timeout returns
+    ``"timeout"`` so the caller preserves the escalation for an operator decision
+    rather than discarding the work. Returns the selected taxonomy action (or a
+    legacy ``approve``/``reject``/``continue`` value), or ``"timeout"``.
+    """
     from theforge import pending as _pending
+    from theforge.escalation_advisor import (
+        ACTION_TAXONOMY,
+        render_advisory_for_pending,
+    )
     from theforge.notify_backends import send_notifications
 
     timeout_seconds = config.notifications.human_review_timeout_seconds
@@ -109,23 +126,50 @@ def _pending_escalate_gate(
         f"{approve_count}/{total_count} reviewers APPROVE" if reviewer_verdicts else "no verdicts"
     )
     gate_line = gate_result or ""
-    reason = "\n".join(filter(None, [verdict_line, gate_line, escalate_reason[:120]]))
 
     _eff_run_id = run_id or task.slug
     project_root = getattr(config, "project_root", None)
 
+    advisory_ok = advisory is not None and advisory.ok
+    if advisory_ok:
+        options = list(ACTION_TAXONOMY)
+        extra: dict = {
+            "advisory": advisory.to_dict(),
+            "evidence_packet": state.advisory_packet,
+            "decision_required": True,
+        }
+        reason = render_advisory_for_pending(advisory, _build_packet_stub(state, escalate_reason))
+    else:
+        # No usable advisory (agent failed / malformed). Still require an explicit
+        # operator decision — surface the taxonomy plus the raw escalation context.
+        options = list(ACTION_TAXONOMY)
+        extra = {"decision_required": True, "advisory_unavailable": True}
+        reason = "\n".join(
+            filter(
+                None,
+                [
+                    "ESCALATION — advisory report unavailable; select an action.",
+                    verdict_line,
+                    gate_line,
+                    escalate_reason[:200],
+                ],
+            )
+        )
+
     _cu._log("─── Pending Escalate Gate ───")
     _cu._log(f"  Run ID:  {_eff_run_id}")
     _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
+    _cu._log(f"  Options: {', '.join(options)}")
 
     _pending.write_pending(
         run_id=_eff_run_id,
         story=task.slug,
         phase="ESCALATE",
         reason=reason,
-        options=["approve", "reject", "continue"],
+        options=options,
         timeout_seconds=timeout_seconds,
         project_root=project_root,
+        extra=extra,
     )
 
     send_notifications(
@@ -145,13 +189,49 @@ def _pending_escalate_gate(
 
     waited_str = _cu._fmt_duration(waited)
     if decision == "timeout":
-        _cu._log(f"  Escalate gate timed out after {waited_str} — auto-rejecting")
-        return "reject"
+        # Contract change (#1664): no auto-reject. Preserve the escalation and its
+        # advisory report so the operator can still select an action.
+        _cu._log(
+            f"  Escalate gate timed out after {waited_str} — preserving for operator decision"
+            " (no auto-reject)"
+        )
+        return "timeout"
 
     _cu._log(f"  Escalate gate decision: {decision!r} (waited {waited_str})")
-    if decision in ("approve", "reject", "continue"):
-        return decision
-    return "reject"
+    return decision
+
+
+def _build_packet_stub(state: "_cs.CoordinatorState", escalate_reason: str) -> "EvidencePacket":
+    """Reconstruct a lightweight EvidencePacket from the serialized state payload.
+
+    ``render_advisory_for_pending`` only reads a few packet fields (story name,
+    issue ref, escalation reason, cycle count); rebuild those from the audit dict
+    stored on state so rendering does not require threading the live packet.
+    """
+    from theforge.escalation_advisor import CycleEvidence, EvidencePacket
+
+    payload = state.advisory_packet or {}
+    cycles = [
+        CycleEvidence(
+            cycle=int(c.get("cycle") or 0),
+            verdict=str(c.get("verdict") or ""),
+            summary=str(c.get("summary") or ""),
+            findings=list(c.get("findings") or []),
+        )
+        for c in (payload.get("cycles") or [])
+    ]
+    return EvidencePacket(
+        story_name=str(payload.get("story_name") or ""),
+        issue_ref=str(payload.get("issue_ref") or ""),
+        issue_body=str(payload.get("issue_body") or ""),
+        acceptance_criteria=list(payload.get("acceptance_criteria") or []),
+        cycles=cycles,
+        reviewer_verdicts=dict(payload.get("reviewer_verdicts") or {}),
+        final_verdict=payload.get("final_verdict"),
+        dev_diff=str(payload.get("dev_diff") or ""),
+        test_failures=str(payload.get("test_failures") or ""),
+        escalation_reason=str(payload.get("escalation_reason") or escalate_reason),
+    )
 
 
 def _pending_plan_review(
