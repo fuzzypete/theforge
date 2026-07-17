@@ -543,7 +543,7 @@ class TestCheckConfigAgentsSection:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
-        assert "Per-story routing cost cap: $20.00/story" in out
+        assert "Per-story routing cost target: $20.00/story" in out
 
     def test_no_budget_header_when_assignment_disabled(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)  # assignment disabled
@@ -557,7 +557,7 @@ class TestCheckConfigAgentsSection:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
-        assert "Per-story routing cost cap" not in out
+        assert "Per-story routing cost target" not in out
         assert "Budget:" not in out
 
 

@@ -103,8 +103,14 @@ story never gets blocked for going "over budget."
     dollar overrun.
 
 - **Pre-runaway controls (unchanged).** Iteration and timeout adaptation still
-  cap runaway loops *before* they burn cost. Those are separate from post-hoc
-  dollar accounting and are unaffected by the converged model.
+  cap runaway loops *before* they burn cost. The adaptive routing cost target
+  (`assignment.max_cost_per_story_usd`) is likewise a *pre-run* control: it
+  shapes model selection (downgrading tiers so the estimated per-story routing
+  cost stays under the operator's configured value) before any dev/review work
+  runs. Operator and audit surfaces call it a "routing cost target," not a
+  "cap," precisely so it is not confused with post-hoc dollar governance. All of
+  these are separate from post-hoc dollar accounting and unaffected by the
+  converged model.
 
 The per-role `budget_usd` on individual profiles (below) seeds the per-story
 estimate baseline and, for reviewers, still acts as an explicit operator-set

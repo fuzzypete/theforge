@@ -964,7 +964,7 @@ def _emit_cap_downgrade_warning(
     *,
     story_slug: str | None,
 ) -> None:
-    """Print a visible terminal warning when the per-story routing cost cap forced a downgrade.
+    """Print a visible terminal warning when the per-story routing cost target forced a downgrade.
 
     The warning fires when ``_enforce_budget`` either dropped a reviewer or
     swapped a selected role for a cheaper one — i.e. adaptive's preferred
@@ -972,7 +972,7 @@ def _emit_cap_downgrade_warning(
     """
     if not cap_audit.get("downgraded"):
         return
-    cap = cap_audit.get("cap_usd")
+    cap = cap_audit.get("target_usd")
     preferred = cap_audit.get("preferred") or {}
     if not isinstance(preferred, dict):
         return
@@ -984,9 +984,9 @@ def _emit_cap_downgrade_warning(
     pref_planner = (preferred.get("planner") or {}).get("model")
     story_label = f"story {story_slug}" if story_slug else "story"
     log(
-        f"  ⚠ {story_label}: per-story routing cost cap ${cap:.2f} forces downgrade"
+        f"  ⚠ {story_label}: per-story routing cost target ${cap:.2f} forces downgrade"
         if isinstance(cap, (int, float))
-        else f"  ⚠ {story_label}: per-story routing cost cap forces downgrade"
+        else f"  ⚠ {story_label}: per-story routing cost target forces downgrade"
     )
     pref_total_str = f" @ ~${initial_total:.2f}" if isinstance(initial_total, (int, float)) else ""
     log(
@@ -994,7 +994,7 @@ def _emit_cap_downgrade_warning(
         f"plan_reviewers={pref_pr}, code_reviewers={pref_cr}{pref_total_str}"
     )
     final_total_str = f" @ ~${final_total:.2f}" if isinstance(final_total, (int, float)) else ""
-    log(f"    after cap:         downgraded roles={sorted(downgraded_roles)}{final_total_str}")
+    log(f"    after target:         downgraded roles={sorted(downgraded_roles)}{final_total_str}")
 
 
 def _apply_preflight_config(
@@ -1154,7 +1154,7 @@ def _apply_preflight_config(
         _new_audit["final_total_usd"] = round(_runtime_total, 2)
         if _cap is not None:
             _within = _runtime_total <= _cap
-            _new_audit["within_cap"] = _within
+            _new_audit["within_target"] = _within
             if not _within:
                 _new_audit["override_forced_overrun"] = True
                 _new_audit["locked_roles"] = sorted(set(_explicit.keys()))
@@ -1254,7 +1254,7 @@ def _apply_preflight_config(
             "code_reviewers": [_assignment_entry(p) for p in _decision.code_reviewers],
         },
         "rationale": dict(_decision.rationale),
-        "per_story_routing_cost_cap": _cap_audit,
+        "per_story_routing_cost_target": _cap_audit,
         **({"config_model_routing": _existing_routing_audit} if _existing_routing_audit else {}),
     }
 

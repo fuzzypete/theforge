@@ -465,7 +465,7 @@ def _enforce_budget(
     planner_floor_tier: str | None = None,
     locked_roles: set[str] | None = None,
 ) -> AssignmentDecision:
-    """Downgrade highest-cost non-preflight model if over the per-story routing cost cap.
+    """Downgrade highest-cost non-preflight model if over the per-story routing cost target.
 
     Candidates for downgrade: planner, plan_reviewers, dev, code_reviewers.
     Preflight is excluded to preserve classification quality.
@@ -487,18 +487,18 @@ def _enforce_budget(
 
     if initial_total <= max_cost_per_story_usd:
         rationale = dict(decision.rationale)
-        rationale["per_story_routing_cost_cap"] = (
-            f"within per-story routing cost cap ${max_cost_per_story_usd:.2f} "
+        rationale["per_story_routing_cost_target"] = (
+            f"within per-story routing cost target ${max_cost_per_story_usd:.2f} "
             f"(estimated total ${initial_total:.2f})"
         )
         return _dc_replace(
             decision,
             rationale=rationale,
             budget_audit={
-                "cap_usd": max_cost_per_story_usd,
+                "target_usd": max_cost_per_story_usd,
                 "initial_total_usd": round(initial_total, 2),
                 "final_total_usd": round(initial_total, 2),
-                "within_cap": True,
+                "within_target": True,
                 "downgraded": False,
                 "steps": [],
                 "preferred": preferred_snapshot,
@@ -644,7 +644,7 @@ def _enforce_budget(
         for step in budget_steps
         if isinstance(step, dict) and step.get("role")
     }
-    cap_phrase = f"per-story routing cost cap ${max_cost_per_story_usd:.2f}"
+    cap_phrase = f"per-story routing cost target ${max_cost_per_story_usd:.2f}"
     if "planner" in impacted_roles and "planner" in rationale:
         _p = decision.planner
         rationale["planner"] += f"; {cap_phrase} downgraded to {_p.model} @ ${_p.budget_usd:.2f}"
@@ -664,32 +664,32 @@ def _enforce_budget(
             f"{[p.model for p in decision.code_reviewers]} @ ${_cr_total:.2f}"
         )
     if budget_steps:
-        rationale["per_story_routing_cost_cap"] = (
+        rationale["per_story_routing_cost_target"] = (
             f"{cap_phrase}: downgraded to ${final_total:.2f} via {len(budget_steps)} adjustment(s)"
         )
     elif within_cap:
-        rationale["per_story_routing_cost_cap"] = (
+        rationale["per_story_routing_cost_target"] = (
             f"within {cap_phrase} (estimated total ${final_total:.2f})"
         )
     else:
-        rationale["per_story_routing_cost_cap"] = (
+        rationale["per_story_routing_cost_target"] = (
             f"{cap_phrase} could not be met; estimated total ${final_total:.2f}"
         )
     if protected_roles:
-        rationale["per_story_routing_cost_cap"] += f" (protected roles: {sorted(protected_roles)})"
+        rationale["per_story_routing_cost_target"] += f" (protected roles: {sorted(protected_roles)})"
 
     if not within_cap:
         warnings.warn(
-            f"[adaptive] per-story routing cost cap ${max_cost_per_story_usd:.2f} "
+            f"[adaptive] per-story routing cost target ${max_cost_per_story_usd:.2f} "
             f"cannot be met; actual total ${final_total:.2f}",
             stacklevel=2,
         )
 
     audit: dict[str, object] = {
-        "cap_usd": max_cost_per_story_usd,
+        "target_usd": max_cost_per_story_usd,
         "initial_total_usd": round(initial_total, 2),
         "final_total_usd": round(final_total, 2),
-        "within_cap": within_cap,
+        "within_target": within_cap,
         "downgraded": bool(budget_steps),
         "steps": budget_steps,
         "preferred": preferred_snapshot,
@@ -1069,7 +1069,7 @@ def assign_models(
         rationale=rationale,
     )
 
-    # Enforce per-story routing cost cap — pass dev floor so the enforcer never
+    # Enforce per-story routing cost target — pass dev floor so the enforcer never
     # downgrades dev below the complexity-required tier.  When the cap is unset
     # (None), adaptive's selection is preserved as-is and only the sprint-wide
     # budget_usd guard remains.
@@ -1077,9 +1077,9 @@ def assign_models(
     if cap is None:
         for _role in ("planner", "dev", "plan_review", "code_review"):
             if _role in rationale:
-                rationale[_role] += "; per-story routing cost cap: unset"
-        rationale["per_story_routing_cost_cap"] = (
-            "unset — adaptive routes by complexity; no per-story cap enforcement"
+                rationale[_role] += "; per-story routing cost target: unset"
+        rationale["per_story_routing_cost_target"] = (
+            "unset — adaptive routes by complexity; no per-story routing cost target enforcement"
         )
         from dataclasses import replace as _dc_replace
 
@@ -1088,10 +1088,10 @@ def assign_models(
             decision,
             rationale=rationale,
             budget_audit={
-                "cap_usd": None,
+                "target_usd": None,
                 "initial_total_usd": round(_initial_total, 2),
                 "final_total_usd": round(_initial_total, 2),
-                "within_cap": True,
+                "within_target": True,
                 "downgraded": False,
                 "steps": [],
                 "preferred": _preferred_snapshot(decision, _initial_total),

@@ -177,11 +177,11 @@ class TestPreflightAudit:
             },
             "rationale": {
                 "dev": "complexity score 7 (MEDIUM) -> tier strong",
-                "per_story_routing_cost_cap": (
-                    "within per-story routing cost cap $30.00 (estimated total $27.00)"
+                "per_story_routing_cost_target": (
+                    "within per-story routing cost target $30.00 (estimated total $27.00)"
                 ),
             },
-            "per_story_routing_cost_cap": {"cap_usd": 30.0, "within_cap": True},
+            "per_story_routing_cost_target": {"target_usd": 30.0, "within_target": True},
         }
 
         log = generate_audit_log(
@@ -197,7 +197,7 @@ class TestPreflightAudit:
         assert routing["role_sources"]["code_review"] == "cap_downgrade"
         assert routing["assignments"]["dev"]["model"] == "opus"
         assert routing["assignments"]["dev"]["source"] == "forge.yaml"
-        assert "per_story_routing_cost_cap" in routing["rationale"]
+        assert "per_story_routing_cost_target" in routing["rationale"]
 
 
 # ── Cost.agents tests ─────────────────────────────────────────────────

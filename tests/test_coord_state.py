@@ -387,7 +387,7 @@ class TestStructuredLoggingIntegration:
         assert preflight_phase_end["complexity_routing"]["preflight"]
         assert preflight_phase_end["complexity_routing"]["plan_review"]
         assert preflight_phase_end["complexity_routing"]["code_review"]
-        assert preflight_phase_end["complexity_routing"]["per_story_routing_cost_cap"]
+        assert preflight_phase_end["complexity_routing"]["per_story_routing_cost_target"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

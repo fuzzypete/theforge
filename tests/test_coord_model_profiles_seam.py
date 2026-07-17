@@ -234,7 +234,7 @@ def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeyp
     assert audit["assignments"]["dev"]["model"] == state._adaptive_decision.dev.model
     assert audit["assignments"]["dev"]["source"] == state._adaptive_decision.dev.registry_source
     assert "dev" in audit["rationale"]
-    assert "cap_usd" in audit["per_story_routing_cost_cap"]
+    assert "target_usd" in audit["per_story_routing_cost_target"]
 
 
 def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pressure(
@@ -304,8 +304,8 @@ def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pres
     assert audit["assignments"]["planner"]["model"] == "opus"
     assert audit["rationale"]["planner"].startswith("complexity score 9 → tier strong")
     assert audit["role_sources"]["planner"] == "adaptive"
-    assert audit["per_story_routing_cost_cap"]["within_cap"] is False
-    assert "planner" in audit["per_story_routing_cost_cap"].get("protected_roles", [])
+    assert audit["per_story_routing_cost_target"]["within_target"] is False
+    assert "planner" in audit["per_story_routing_cost_target"].get("protected_roles", [])
 
 
 def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):
@@ -478,7 +478,7 @@ def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, mon
         + decision.dev.budget_usd
         + sum(p.budget_usd for p in decision.code_reviewers)
     )
-    assert audit["per_story_routing_cost_cap"]["final_total_usd"] == round(runtime_total, 2)
+    assert audit["per_story_routing_cost_target"]["final_total_usd"] == round(runtime_total, 2)
 
 
 def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_path, monkeypatch):
@@ -534,9 +534,9 @@ def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_
     audit = state.complexity_routing_audit
     assert audit is not None
     assert audit["role_sources"]["code_review"] == "explicit_override"
-    assert audit["per_story_routing_cost_cap"]["within_cap"] is False
-    assert audit["per_story_routing_cost_cap"]["override_forced_overrun"] is True
-    assert "code_review" in audit["per_story_routing_cost_cap"]["locked_roles"]
+    assert audit["per_story_routing_cost_target"]["within_target"] is False
+    assert audit["per_story_routing_cost_target"]["override_forced_overrun"] is True
+    assert "code_review" in audit["per_story_routing_cost_target"]["locked_roles"]
 
 
 def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monkeypatch):
@@ -755,13 +755,13 @@ def test_apply_preflight_emits_terminal_warning_on_cap_downgrade(tmp_path, monke
     _pf._apply_preflight_config(config, state, log=captured.append, task_slug="story-test")
 
     blob = "\n".join(captured)
-    assert "per-story routing cost cap" in blob
+    assert "per-story routing cost target" in blob
     assert "story-test" in blob
     assert "adaptive selected:" in blob
-    assert "after cap:" in blob
+    assert "after target:" in blob
     # Wording rule: cap warning lines must never use the word "budget"
     for line in captured:
-        if "per-story routing cost cap" in line or "after cap:" in line:
+        if "per-story routing cost target" in line or "after target:" in line:
             assert "budget" not in line.lower(), f"Cap warning must not say 'budget': {line!r}"
 
 
@@ -800,8 +800,8 @@ def test_apply_preflight_skips_warning_when_cap_unset(tmp_path, monkeypatch):
 
     blob = "\n".join(captured)
     assert "forces downgrade" not in blob
-    assert "after cap:" not in blob
+    assert "after target:" not in blob
     # Adaptive's selection survives — strong dev tier preserved
     assert state._adaptive_decision.dev.model == "opus"
-    assert state._adaptive_decision.budget_audit["cap_usd"] is None
+    assert state._adaptive_decision.budget_audit["target_usd"] is None
     assert state._adaptive_decision.budget_audit["downgraded"] is False

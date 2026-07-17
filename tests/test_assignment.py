@@ -599,7 +599,7 @@ def test_explicit_override_records_forced_overrun_when_budget_unmet():
         allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
     )
 
-    with pytest.warns(UserWarning, match="per-story routing cost cap"):
+    with pytest.warns(UserWarning, match="per-story routing cost target"):
         decision = assign_models(
             agents,
             cfg,
@@ -608,7 +608,7 @@ def test_explicit_override_records_forced_overrun_when_budget_unmet():
         )
 
     assert decision.dev.model == "custom-model"
-    assert decision.budget_audit["within_cap"] is False
+    assert decision.budget_audit["within_target"] is False
     assert decision.budget_audit.get("override_forced_overrun") is True
     assert "dev" in decision.budget_audit.get("locked_roles", [])
 
@@ -750,7 +750,7 @@ def test_budget_cap_downgrade_dev_respects_floor():
         f"Dev should stay strong for HIGH; got {decision.dev.name}"
     )
     # Budget cannot be met, so a warning must have been issued
-    assert any("per-story routing cost cap" in str(w.message) for w in caught), (
+    assert any("per-story routing cost target" in str(w.message) for w in caught), (
         "Expected budget-cap warning when floor prevents the cap from being met"
     )
 
@@ -806,10 +806,10 @@ def test_budget_cap_preserves_strong_planner_when_dev_is_also_strong():
 
     assert decision.dev.model == "opus"
     assert decision.planner.model == "opus"
-    assert decision.budget_audit["within_cap"] is False
+    assert decision.budget_audit["within_target"] is False
     assert "planner" in decision.budget_audit.get("protected_roles", [])
-    assert "protected roles" in decision.rationale["per_story_routing_cost_cap"]
-    assert any("per-story routing cost cap" in str(w.message) for w in caught)
+    assert "protected roles" in decision.rationale["per_story_routing_cost_target"]
+    assert any("per-story routing cost target" in str(w.message) for w in caught)
 
 
 def test_budget_cap_records_downgrade_rationale():
@@ -824,7 +824,7 @@ def test_budget_cap_records_downgrade_rationale():
 
     decision = assign_models(agents, cfg, "medium")
 
-    assert "per-story routing cost cap $10.00" in decision.rationale["per_story_routing_cost_cap"]
+    assert "per-story routing cost target $10.00" in decision.rationale["per_story_routing_cost_target"]
     assert decision.budget_audit["downgraded"] is True
     assert decision.budget_audit["final_total_usd"] <= 10.0
     assert decision.budget_audit["steps"]
@@ -843,7 +843,7 @@ def test_budget_cap_keeps_planner_rationale_aligned_with_final_model():
     decision = assign_models(agents, cfg, "medium", complexity_score=4)
 
     assert decision.planner.model == "haiku"
-    assert "per-story routing cost cap $10.00 downgraded to haiku" in decision.rationale["planner"]
+    assert "per-story routing cost target $10.00 downgraded to haiku" in decision.rationale["planner"]
     assert any(step["role"] == "planner" for step in decision.budget_audit["steps"])
 
 
@@ -1185,7 +1185,7 @@ def test_guardrail_mid_promoted_to_strong_for_large():
     assert decision.dev.name == "opus", f"Expected strong (opus) for HIGH, got {decision.dev.name}"
 
 
-# ── per-story routing cost cap (split from sprint budget) ──────────────
+# ── per-story routing cost target (split from sprint budget) ──────────────
 
 
 def test_unset_cap_preserves_adaptive_full_pool_on_high_complexity():
@@ -1213,13 +1213,13 @@ def test_unset_cap_preserves_adaptive_full_pool_on_high_complexity():
 
     assert decision.budget_audit["downgraded"] is False
     assert decision.budget_audit["steps"] == []
-    assert decision.budget_audit["cap_usd"] is None
+    assert decision.budget_audit["target_usd"] is None
     assert len(decision.code_reviewers) == len(ref_decision.code_reviewers)
     assert decision.dev.model == ref_decision.dev.model
     assert [r.model for r in decision.code_reviewers] == [
         r.model for r in ref_decision.code_reviewers
     ]
-    cap_text = decision.rationale["per_story_routing_cost_cap"]
+    cap_text = decision.rationale["per_story_routing_cost_target"]
     assert "unset" in cap_text
     assert "budget" not in cap_text.lower()
 
