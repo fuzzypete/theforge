@@ -299,7 +299,7 @@ def _coordinator_loop(
         state.adaptive_dev_max == 0
         or state.adaptive_review_max == 0
         or state.adaptive_dev_timeout_seconds == 0
-        or state.adaptive_dev_budget_usd == 0.0
+        or state.adaptive_dev_cost_estimate_usd == 0.0
     ):
         _static_dev_timeout, _timeout_override_active = resolve_timeout_with_active(
             config.dev_profile.timeout_seconds,
@@ -309,7 +309,7 @@ def _coordinator_loop(
             state.preflight_complexity_score,
         )
         _static_dev_max = config.dev_profile.max_iterations or config.retry.max_dev_iterations
-        _static_dev_budget = config.dev_profile.budget_usd
+        _static_dev_cost_estimate = config.dev_profile.budget_usd
         _explicit_dev_override = "dev" in getattr(state, "_explicit_roles", set())
         # Adaptive iterations now reads the SQLite audit substrate; we pass
         # project_root and let the helper resolve substrate access internally.
@@ -329,7 +329,7 @@ def _coordinator_loop(
             model_provider=config.dev_profile.provider,
             model_cli=config.dev_profile.cli,
             base_timeout_seconds=_static_dev_timeout,
-            base_budget_usd=_static_dev_budget,
+            base_cost_estimate_usd=_static_dev_cost_estimate,
             static_dev_max=_static_dev_max,
             review_history_path=_history_path,
             model_profiles=load_profiles(_profiles_path) if _adaptive_resource_enabled else None,
@@ -363,19 +363,19 @@ def _coordinator_loop(
                 dev_max=_static_dev_max,
                 review_max=_limits.review_max,
                 dev_timeout_seconds=_static_dev_timeout,
-                dev_budget_usd=_static_dev_budget,
+                dev_cost_estimate_usd=_static_dev_cost_estimate,
                 audit=_audit,
             )
         state.adaptive_dev_max = _limits.dev_max
         state.adaptive_review_max = _limits.review_max
         state.adaptive_dev_timeout_seconds = _limits.dev_timeout_seconds
-        state.adaptive_dev_budget_usd = _limits.dev_budget_usd
+        state.adaptive_dev_cost_estimate_usd = _limits.dev_cost_estimate_usd
         state.adaptive_limits_audit = _limits.audit
         _log_verbose(
             "  adaptive limits: "
             f"dev_max={_limits.dev_max} review_max={_limits.review_max} "
             f"dev_timeout={_limits.dev_timeout_seconds}s "
-            f"dev_budget=${_limits.dev_budget_usd:.4f} "
+            f"dev_cost_estimate=${_limits.dev_cost_estimate_usd:.4f} "
             f"({_limits.audit.get('rationale', '')})"
         )
 

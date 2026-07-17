@@ -942,20 +942,30 @@ def _run_dev_phase(
     if (
         dev_result.success
         and state.error_type != "max_iterations_no_submit"
-        and state.total_dev_cost > (state.adaptive_dev_budget_usd or config.dev_profile.budget_usd)
+        and state.total_dev_cost
+        > (state.adaptive_dev_cost_estimate_usd or config.dev_profile.budget_usd)
     ):
-        _budget_limit = state.adaptive_dev_budget_usd or config.dev_profile.budget_usd
-        _budget_msg = (
-            f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} (limit ${_budget_limit:.4f})"
-        )
-        # If the dev agent successfully committed work, honour the result rather
-        # than retroactively escalating based on post-hoc accounting. The cost is
-        # already spent; blocking PR creation would silently orphan correct work.
+        # The per-story dollar value is a historical-cost ESTIMATE, not an
+        # enforced budget. Post-hoc dollar governance lives at the sprint level
+        # (forge.yaml budget_usd); exceeding the per-story estimate is never, by
+        # itself, an operator-actionable overrun. So there are only two outcomes:
+        #   - committed work → the estimate was simply low; proceed, no action.
+        #   - no commits → the attempt produced no usable output; escalate on the
+        #     unproductive-attempt semantics (what actually went wrong), NOT a
+        #     dollar overrun.
+        _cost_estimate = state.adaptive_dev_cost_estimate_usd or config.dev_profile.budget_usd
         if _commits_exist_strict(workspace_path, config.workspace.base_branch):
-            _log(f"⚠ DEV   {_budget_msg} — committed work found, proceeding to validate/review")
+            _log_verbose(
+                f"  DEV cost ${state.total_dev_cost:.4f} exceeded the per-story estimate "
+                f"${_cost_estimate:.4f} — committed work found; estimate was low, proceeding "
+                "to validate/review (per-story estimates are not enforced budgets)"
+            )
         else:
             state.phase = Phase.ESCALATE
-            state.error = _budget_msg
+            state.error = (
+                f"Dev attempt produced no usable output "
+                f"(${state.total_dev_cost:.4f} spent, no commits)"
+            )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
                 logger._safe_emit("escalate", reason=state.error, phase="DEV")

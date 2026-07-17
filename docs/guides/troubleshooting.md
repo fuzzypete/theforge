@@ -415,7 +415,12 @@ forge run stories/my-feature.md --verbose   # no --resume
 review pools.
 
 **Fix:**
-- Set `budget_usd` in each profile (hard cap)
+- Lower the sprint `budget_usd` — this is the enforced ceiling that stops
+  launching new stories once cumulative spend is consumed
+- Note: the per-story `budget_usd` on the dev profile is a *cost estimate* used
+  for routing/timeout scaling, not a per-story hard cap. Exceeding it does not
+  block a story that produced usable work (see the converged budget model in the
+  [inputs reference](inputs-reference.md#cost-governance-vs-per-story-estimates-converged-model))
 - Use `--dry-run` to estimate prompt sizes before running
 - Use a smaller/cheaper model for dev (sonnet instead of opus)
 
