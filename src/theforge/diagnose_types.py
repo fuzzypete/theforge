@@ -78,6 +78,28 @@ class PremiseAnchor:
 
 
 @dataclass(frozen=True)
+class RelatedFinding:
+    """A real defect noticed in adjacent code that is *not* the cause of the
+    issue's stated symptom.
+
+    The diagnose flow must scope its ``confirmed_cause`` to the symptom of the
+    issue under investigation.  When the agent notices a separate, genuine
+    problem in nearby code — one that belongs to a different issue or domain —
+    it records it here instead of folding it into ``confirmed_cause``.  This
+    keeps the diagnosis boundary aligned with the issue boundary so a
+    downstream dev does not implement an adjacent problem as part of this
+    issue's fix (the #1672 scope-creep failure mode).
+
+    ``summary`` is a one-line description of the adjacent defect.  ``related``
+    is an optional pointer to the owning/related issue (e.g. ``"#1649"``) or
+    domain so the finding can be triaged separately rather than built here.
+    """
+
+    summary: str
+    related: str = ""
+
+
+@dataclass(frozen=True)
 class AbsentPremise:
     """A cited premise reference that no longer exists in the baseline.
 
@@ -123,6 +145,10 @@ class DiagnosisArtifact:
     baseline_captured_at: str = ""
     inspected_files: tuple[InspectedFile, ...] = ()
     premise_anchors: tuple[PremiseAnchor, ...] = ()
+    # Adjacent-but-unrelated defects the agent noticed in nearby code. These
+    # are surfaced as separate linked findings and MUST NOT be folded into
+    # confirmed_cause — they are not the cause of this issue's stated symptom.
+    related_findings: tuple[RelatedFinding, ...] = ()
 
     def is_complete(self) -> bool:
         """Return True only when every required field is non-empty."""
@@ -294,6 +320,28 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             "",
         ]
     )
+    if artifact.related_findings:
+        lines.extend(
+            [
+                "### Related findings (out of scope)",
+                "",
+                (
+                    "> These are adjacent problems noticed during investigation. "
+                    "They are **not** the cause of this issue's symptom and are "
+                    "**out of scope for this fix** — triage them separately under "
+                    "the linked issue. Do not implement them as part of this issue."
+                ),
+                "",
+            ]
+        )
+        for finding in artifact.related_findings:
+            summary = finding.summary.strip()
+            ref = finding.related.strip()
+            if ref:
+                lines.append(f"- {summary} (related: {ref})")
+            else:
+                lines.append(f"- {summary}")
+        lines.append("")
     if artifact.notes.strip():
         lines.extend(["### Notes", "", artifact.notes.strip(), ""])
     return "\n".join(lines)

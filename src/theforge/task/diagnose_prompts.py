@@ -14,6 +14,7 @@ from theforge.diagnose_types import (
     Hypothesis,
     InspectedFile,
     PremiseAnchor,
+    RelatedFinding,
 )
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
@@ -50,6 +51,19 @@ Mode: {mode}
    you finish: if a cited file or pattern is absent from the baseline, the run
    is reported as "already resolved" rather than landed as a live diagnosis.
    Do NOT emit a confirmed cause for code that no longer exists.
+6. **Scope the confirmed cause to THIS issue's stated symptom — nothing more.**
+   The diagnosis boundary must match the issue boundary.  While investigating
+   you may notice other real defects in nearby code that are NOT the cause of
+   this issue's symptom (a different bug, another issue's domain, a latent
+   problem you happened to see).  Do NOT fold those into ``confirmed_cause`` or
+   ``affected_code_path`` — a downstream dev implements the confirmed cause
+   verbatim, so anything you put there becomes part of THIS issue's fix and
+   over-scopes it.  Instead, record each such adjacent problem as a separate
+   entry in ``related_findings``, naming the owning/related issue if you know
+   it (e.g. ``"#1649"``).  Ask of every claim you put in ``confirmed_cause``:
+   "is this the cause of the *stated* symptom?"  If it is a neighboring problem
+   rather than the cause of what the issue reports, it belongs in
+   ``related_findings``, not in the fix scope.
 
 == OUTPUT FORMAT ==
 
@@ -95,6 +109,14 @@ premise_anchors:
   # resolved" (premise removed) instead of landed as a live confirmed cause.
   - file: "<repo-relative path the bug lives in>"
     pattern: "<exact code substring that must exist for the bug to be live>"
+related_findings:
+  # OPTIONAL. Adjacent, real defects you noticed in nearby code that are NOT
+  # the cause of THIS issue's stated symptom. Recording them here keeps them
+  # OUT of the fix scope (confirmed_cause) so the dev does not build them as
+  # part of this issue. Name the owning/related issue in `related` when known.
+  # Omit or leave empty if you noticed no separate adjacent problems.
+  - summary: "<one-line description of a separate adjacent defect>"
+    related: "<owning/related issue ref, e.g. '#1649', or empty>"
 ```
 """
 
@@ -213,6 +235,27 @@ def parse_diagnose_output(
             seen_anchors.add(key)
             anchors.append(PremiseAnchor(file=file, pattern=pattern))
 
+    raw_related = parsed.get("related_findings") or []
+    related: list[RelatedFinding] = []
+    if isinstance(raw_related, list):
+        seen_related: set[tuple[str, str]] = set()
+        for entry in raw_related:
+            if isinstance(entry, str):
+                summary = entry.strip()
+                ref = ""
+            elif isinstance(entry, dict):
+                summary = str(entry.get("summary", "")).strip()
+                ref = str(entry.get("related", "")).strip()
+            else:
+                continue
+            if not summary:
+                continue
+            key = (summary, ref)
+            if key in seen_related:
+                continue
+            seen_related.add(key)
+            related.append(RelatedFinding(summary=summary, related=ref))
+
     return DiagnosisArtifact(
         issue_number=issue_number,
         observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
@@ -225,4 +268,5 @@ def parse_diagnose_output(
         notes=str(parsed.get("notes", "")).strip(),
         inspected_files=tuple(inspected),
         premise_anchors=tuple(anchors),
+        related_findings=tuple(related),
     )
