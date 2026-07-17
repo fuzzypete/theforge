@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ from pathlib import Path
 import yaml
 
 from theforge.config import ForgeConfig, ModelProfile
+from theforge.coordinator.util import _log as _progress_log
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
     AbsentPremise,
@@ -554,6 +556,68 @@ def _build_diagnose_profile(config: ForgeConfig) -> ModelProfile:
     )
 
 
+# ── Progress heartbeat ────────────────────────────────────────────────
+#
+# Interval between diagnose progress heartbeats. The investigative agent can
+# run for the full diagnose timeout (default 600s); ``run_agent`` blocks for
+# that whole window and the diagnose flow otherwise emits nothing to the
+# console between the runner's "Starting diagnose" line and the result. That
+# silence makes a live run indistinguishable from a hang, so we emit an
+# elapsed-time line at PROGRESS level every interval.
+_DIAGNOSE_HEARTBEAT_INTERVAL_S = 30.0
+
+
+def _run_agent_with_heartbeat(
+    *,
+    prompt: str,
+    profile: ModelProfile,
+    working_dir: Path,
+    secrets: dict[str, str] | None,
+    heartbeat_interval_s: float | None = None,
+) -> "object":
+    """Run the investigative agent, emitting a periodic progress heartbeat.
+
+    ``run_agent`` blocks for the entire model run. We run it on a background
+    thread and emit an elapsed-time line every ``heartbeat_interval_s`` seconds
+    (always shown, not verbose-gated) so the operator can see the agent is still
+    working rather than staring at a silent console for up to the full timeout.
+
+    Any exception raised inside the agent thread is re-raised to the caller so
+    the existing INVESTIGATE error handling is unchanged. Returns the
+    ``AgentResult`` produced by ``run_agent``.
+    """
+    if heartbeat_interval_s is None:
+        heartbeat_interval_s = _DIAGNOSE_HEARTBEAT_INTERVAL_S
+    box: dict[str, object] = {}
+
+    def _run() -> None:
+        try:
+            box["result"] = run_agent(
+                prompt=prompt,
+                profile=profile,
+                working_dir=working_dir,
+                secrets=secrets,
+            )
+        except BaseException as exc:  # noqa: BLE001 — re-raised in caller thread
+            box["exc"] = exc
+
+    start = time.monotonic()
+    thread = threading.Thread(target=_run, name="diagnose-agent", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        thread.join(timeout=heartbeat_interval_s)
+        if thread.is_alive():
+            elapsed = int(time.monotonic() - start)
+            _progress_log(
+                f"  [diagnose] still investigating "
+                f"({elapsed}s elapsed, timeout {int(profile.timeout_seconds)}s)"
+            )
+
+    if "exc" in box:
+        raise box["exc"]  # type: ignore[misc]
+    return box["result"]
+
+
 # ── Landing strategies ────────────────────────────────────────────────
 
 
@@ -687,7 +751,7 @@ def run_diagnose_flow(
 
     t0 = time.monotonic()
     try:
-        agent_result = run_agent(
+        agent_result = _run_agent_with_heartbeat(
             prompt=prompt,
             profile=profile,
             working_dir=project_root,
