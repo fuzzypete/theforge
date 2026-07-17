@@ -143,6 +143,48 @@ def test_baseline_gate_preserves_actual_gate_exit_code(tmp_path: Path) -> None:
     assert "boom" in str(baseline.get("output_tail", ""))
 
 
+def test_baseline_gate_runs_setup_command_before_gate(tmp_path: Path) -> None:
+    config, resolved, base_commit = _init_repo(tmp_path)
+    # setup_command bootstraps a marker the gate depends on; the merge base has
+    # no such marker, so the gate can only pass if setup runs first inside the
+    # temporary baseline worktree.
+    config = replace(
+        config,
+        workspace=replace(config.workspace, setup_command="echo READY > toolchain.txt"),
+        validation=replace(
+            config.validation,
+            gate_command=(
+                'python -c "import pathlib; '
+                "print(pathlib.Path('toolchain.txt').read_text().strip())\""
+            ),
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["status"] == "pass"
+    assert baseline["merge_base"] == base_commit
+    assert "READY" in str(baseline.get("output_tail", ""))
+    # The setup marker must not leak into the project root checkout.
+    assert not (tmp_path / "toolchain.txt").exists()
+
+
+def test_baseline_gate_reports_setup_command_failure(tmp_path: Path) -> None:
+    config, resolved, base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        workspace=replace(config.workspace, setup_command="exit 3"),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is False
+    assert baseline["status"] == "error"
+    assert baseline["merge_base"] == base_commit
+    assert "workspace setup command failed" in str(baseline["message"]).lower()
+
+
 def test_baseline_gate_accepts_symlinked_project_root(tmp_path: Path) -> None:
     real_root = tmp_path / "real-root"
     real_root.mkdir()
