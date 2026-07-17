@@ -86,6 +86,25 @@ class TestLineCountCheck:
         violations = _check_line_counts(cfg, tmp_path)
         assert violations == []
 
+    def test_line_count_under_configured_root_outside_src(self, tmp_path):
+        """Oversized file under a configured root outside src/ is reported (AC3)."""
+        py_file = tmp_path / "analysis" / "big.py"
+        _write(py_file, "\n" * 501)
+        cfg = _make_config(max_module_lines=500, package_roots=("analysis",))
+        violations = _check_line_counts(cfg, tmp_path)
+        assert any(
+            v.rule == "max_module_lines" and "analysis/big.py" in v.file for v in violations
+        )
+
+    def test_line_count_configured_roots_no_double_report(self, tmp_path):
+        """Overlapping configured roots don't report the same file twice."""
+        py_file = tmp_path / "src" / "pipeline" / "big.py"
+        _write(py_file, "\n" * 501)
+        cfg = _make_config(max_module_lines=500, package_roots=("src", "src/pipeline"))
+        violations = _check_line_counts(cfg, tmp_path)
+        matches = [v for v in violations if v.rule == "max_module_lines" and "big.py" in v.file]
+        assert len(matches) == 1
+
 
 # ── Circular import tests ─────────────────────────────────────────────
 
@@ -162,6 +181,42 @@ class TestCircularImportCheck:
         violations = _check_circular_imports(tmp_path)
         assert not any(v.rule == "no_circular_imports" for v in violations)
 
+    def test_cycle_under_configured_non_default_root(self, tmp_path):
+        """A cycle under a configured non-default root is reported (AC2)."""
+        # Consumer layout: top-level 'analysis' package, not src/theforge.
+        pkg = tmp_path / "analysis"
+        pkg.mkdir(parents=True)
+        _write(pkg / "a.py", "from analysis import b\n")
+        _write(pkg / "b.py", "from analysis import a\n")
+        # No src/theforge exists — the default scope would find nothing.
+        violations = _check_circular_imports(tmp_path, ("analysis",))
+        assert any(v.rule == "no_circular_imports" for v in violations)
+
+    def test_cycle_under_configured_src_subpackage(self, tmp_path):
+        """A cycle under a configured src/ subpackage root resolves module names."""
+        pkg = tmp_path / "src" / "pipeline"
+        pkg.mkdir(parents=True)
+        _write(pkg / "a.py", "from pipeline import b\n")
+        _write(pkg / "b.py", "from pipeline import a\n")
+        violations = _check_circular_imports(tmp_path, ("src/pipeline",))
+        assert any(v.rule == "no_circular_imports" for v in violations)
+
+    def test_cycle_across_configured_roots(self, tmp_path):
+        """A cycle spanning two configured roots is caught in one shared graph."""
+        analysis = tmp_path / "analysis"
+        api = tmp_path / "api"
+        analysis.mkdir(parents=True)
+        api.mkdir(parents=True)
+        _write(analysis / "a.py", "from api import b\n")
+        _write(api / "b.py", "from analysis import a\n")
+        violations = _check_circular_imports(tmp_path, ("analysis", "api"))
+        assert any(v.rule == "no_circular_imports" for v in violations)
+
+    def test_missing_configured_root_no_crash(self, tmp_path):
+        """A configured root that doesn't exist is skipped without crashing."""
+        violations = _check_circular_imports(tmp_path, ("does/not/exist",))
+        assert violations == []
+
 
 # ── Test mirror tests ─────────────────────────────────────────────────
 
@@ -225,6 +280,20 @@ class TestTestMirrorCheck:
         """Missing src or tests dir → no crash, no violations."""
         violations = _check_test_mirrors(tmp_path)
         assert violations == []
+
+    def test_missing_mirror_under_configured_root(self, tmp_path):
+        """A module under a configured non-default root needs a test mirror."""
+        _write(tmp_path / "analysis" / "bar.py", "# module\n")
+        (tmp_path / "tests").mkdir(parents=True)
+        violations = _check_test_mirrors(tmp_path, ("analysis",))
+        assert any(v.rule == "test_mirrors_source" and "bar.py" in v.file for v in violations)
+
+    def test_mirror_ok_under_configured_root(self, tmp_path):
+        """Mirror present for a module under a configured root → no violation."""
+        _write(tmp_path / "analysis" / "bar.py", "# module\n")
+        _write(tmp_path / "tests" / "test_bar.py", "# tests\n")
+        violations = _check_test_mirrors(tmp_path, ("analysis",))
+        assert not any(v.rule == "test_mirrors_source" and "bar.py" in v.file for v in violations)
 
 
 # ── check_hard_conventions integration ───────────────────────────────
