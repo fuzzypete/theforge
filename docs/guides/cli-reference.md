@@ -307,6 +307,17 @@ Tail the log file for a running detached run.
 forge logs <run-id>
 ```
 
+During a sprint, drill into a single story instead of the interleaved
+sprint-level log:
+
+```bash
+forge logs <run-id> --story <slug>   # tail one story's run log
+forge logs <run-id> --story          # list the sprint's stories + current phase
+```
+
+`--story` with no argument prints each story slug alongside its current phase,
+so you can pick a slug without hunting for the nested log path yourself.
+
 ---
 
 ## `forge stop`

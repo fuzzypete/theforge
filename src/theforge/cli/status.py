@@ -570,6 +570,53 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
         print("\nPending decisions: (none)")
 
 
+def _find_story_log_path(project_root: Path, slug: str, sprint_name: str | None) -> Path | None:
+    """Locate the most recent per-story run log for ``slug``.
+
+    Prefers the nested sprint layout ``.forge/logs/<sprint_name>/<slug>/run-*.log``.
+    Falls back to any log directory named ``<slug>`` so standalone runs and
+    unknown sprint names still resolve. Returns the newest matching file, or
+    ``None`` if the story has no run log yet.
+    """
+    logs_dir = project_root / ".forge" / "logs"
+    if not logs_dir.exists():
+        return None
+
+    candidates: list[Path] = []
+    if sprint_name:
+        story_dir = logs_dir / sprint_name / slug
+        if story_dir.is_dir():
+            candidates = list(story_dir.glob("run-*.log"))
+    if not candidates:
+        candidates = [p for p in logs_dir.rglob("run-*.log") if p.parent.name == slug]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _list_sprint_stories(run_id: str, project_root: Path) -> int:
+    """Print each sprint story slug and its current phase for ``forge logs --story``."""
+    from theforge.sprint.status_reader import read_live_status
+
+    entries = read_live_status(run_id, project_root)
+    if not entries:
+        print(f"No live sprint stories found for run {run_id}", file=sys.stderr)
+        return 1
+
+    slug_width = max((len(e.slug) for e in entries if e.slug), default=0)
+    print(f"Stories for run {run_id}:")
+    for entry in entries:
+        if not entry.slug:
+            continue
+        phase = entry.phase or entry.status or "—"
+        print(f"  {entry.slug.ljust(slug_width)}  [{phase}]")
+    print(
+        f"\nTail a single story with: forge logs {run_id} --story <slug>",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def cmd_logs(args: object) -> int:
     """Tail the log file for a running forge process."""
     from theforge import detach as _detach
@@ -581,6 +628,32 @@ def cmd_logs(args: object) -> int:
     config = load_config(config_path)
     project_root = config.project_root
     run_id = args.run_id
+
+    story_arg = getattr(args, "story", None)
+    if story_arg is not None:
+        from theforge.sprint.status_reader import read_live_sprint_name
+
+        if story_arg == "":
+            return _list_sprint_stories(run_id, project_root)
+
+        sprint_name = read_live_sprint_name(run_id, project_root)
+        story_log = _find_story_log_path(project_root, story_arg, sprint_name)
+        if story_log is None or not story_log.exists():
+            print(
+                f"No log found for story '{story_arg}' in run {run_id}",
+                file=sys.stderr,
+            )
+            print(
+                f"List available stories with: forge logs {run_id} --story",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"[forge] Tailing {story_log} — Ctrl+C to stop", file=sys.stderr)
+        try:
+            _follow_log_with_redirect(story_log, run_id)
+        except KeyboardInterrupt:
+            pass
+        return 0
 
     # Find slug from PID file
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
@@ -921,6 +994,18 @@ def register_parsers(subparsers: object) -> None:
         help="Tail the log file for a running forge process",
     )
     logs_parser.add_argument("run_id", help="Run ID to follow logs for")
+    logs_parser.add_argument(
+        "--story",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="SLUG",
+        help=(
+            "Drill into a single sprint story. With a SLUG, tail that story's "
+            "run log instead of the interleaved sprint log. With no argument, "
+            "list the sprint's stories and each story's current phase."
+        ),
+    )
 
     # forge stop
     stop_parser = subparsers.add_parser(
