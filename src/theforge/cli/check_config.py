@@ -122,6 +122,37 @@ def _format_audit_storage(
     return lines, errors, warnings
 
 
+def _format_conventions(
+    config: ForgeConfig,
+) -> tuple[list[str], list[str]]:
+    """Build the CONVENTIONS (hard) section for check-config output.
+
+    Returns ``(lines, warnings)``. Prints the effective package roots the
+    circular-import, test-mirror, and line-count checks scan so an operator
+    can confirm a consumer layout is covered rather than silently no-oping.
+    A configured root that doesn't exist becomes a warning (bumps exit to 1).
+    """
+    hard = config.conventions_hard
+    if hard is None:
+        return [], []
+
+    lines: list[str] = ["CONVENTIONS (hard)"]
+    warnings: list[str] = []
+
+    if hard.package_roots:
+        lines.append(f"  {'package_roots:':<16}{', '.join(hard.package_roots)}")
+        for root in hard.package_roots:
+            if not (config.project_root / root).exists():
+                warnings.append(
+                    f"conventions.hard.package_roots entry '{root}' does not exist "
+                    "under the project root — its checks will find nothing"
+                )
+    else:
+        lines.append(f"  {'package_roots:':<16}src/theforge (default scope)")
+
+    return lines, warnings
+
+
 class _CapturingHandler(logging.Handler):
     """Logging handler that captures WARNING+ records into a list."""
 
@@ -507,6 +538,13 @@ def _format_config(
             if not ready:
                 warnings_list.append(f"{agent.name}: {reason} — will be skipped at runtime")
         lines.append("")
+
+    # ── CONVENTIONS (hard) ───────────────────────────────────────────────
+    conv_lines, conv_warnings = _format_conventions(config)
+    if conv_lines:
+        lines.extend(conv_lines)
+        lines.append("")
+        warnings_list.extend(conv_warnings)
 
     # ── AUDIT STORAGE ────────────────────────────────────────────────────
     audit_lines, audit_errors, audit_warnings = _format_audit_storage(config.project_root)
