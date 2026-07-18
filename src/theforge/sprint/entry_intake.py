@@ -25,6 +25,8 @@ def remediate_entry_skipped_issues(
     *,
     config: "ForgeConfig",
     log: Callable[[str], None],
+    sprint_id: str | None = None,
+    milestone: str | None = None,
 ) -> dict[int, IntakeOutcome]:
     """Run the intake remediation gate over entry-skipped issues.
 
@@ -68,6 +70,8 @@ def remediate_entry_skipped_issues(
         config=config,
         tasks=tasks,
         log=log,
+        sprint_id=sprint_id,
+        milestone=milestone,
     )
 
     outcomes: dict[int, IntakeOutcome] = {}
@@ -94,6 +98,25 @@ def remediate_entry_skipped_issues(
                     "shape_gate_detail": sk.detail,
                 },
             )
+            # The pass loop only fires on non-PASSED outcomes, so it skipped
+            # this issue while the body check was still PASSED. Now that the
+            # bridge has converted it to a declined DROPPED_SHAPE, emit the
+            # training-wheels WARNING + audit row here so the decline is not
+            # silent. Gated on grooming (the opt-in fallback this posture is
+            # about); auto_fix-only runs never emit the grooming memo.
+            if grooming_enabled:
+                from .runner import emit_inline_remediation_event  # noqa: PLC0415
+
+                emit_inline_remediation_event(
+                    config=config,
+                    issue=issue_num,
+                    slug=slug,
+                    outcome=outcome,
+                    log=log,
+                    sprint_id=sprint_id,
+                    milestone=milestone,
+                    duration_seconds=0.0,
+                )
         outcomes[issue_num] = outcome
         log(
             f"Entry shape-gate skip remediation: issue #{issue_num} "

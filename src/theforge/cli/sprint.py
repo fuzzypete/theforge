@@ -858,6 +858,8 @@ def _run_query_mode(
                 remediation_targets,
                 config=config,
                 log=lambda m: print(f"[forge] {m}", file=sys.stderr),
+                sprint_id=gate_run_id,
+                milestone=milestone,
             )
 
         # Re-add successfully remediated issues so the sprint continues without
