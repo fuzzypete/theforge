@@ -24,6 +24,7 @@ from theforge.review import (
     _best_individual_result,
     review_to_dev_handoff,
 )
+from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from .commit_guard import _has_commits_ahead_of_base
@@ -1131,6 +1132,42 @@ def _run_review_phase(
 
     # Valid verdict — increment review cycle counter
     state.review_cycle += 1
+
+    # ── Symptom-verification test escalation (bug-fix PRs only) ───────────────
+    # A reviewer finding that the seam-level integration test for the closing
+    # bug's symptom path is absent is load-bearing for shipping the fix: without
+    # it, a regression on that path reaches operators undetected (the #1402 /
+    # #1407 failure mode). For bug-class stories, escalate such a P2 to P1 so the
+    # merge blocks until the symptom-verification test lands. The escalation is
+    # applied to BOTH the merged review (drives p1/p2 counts + the per-cycle audit
+    # record) and each per-reviewer result (drives the finding classifier's
+    # disposition, which the blocking decision keys on) so every downstream signal
+    # sees a consistent P1. Generic "coverage could be higher" findings are
+    # untouched — the detector requires an explicit seam/symptom-path signal.
+    _is_bug_fix = (task.type or "").strip().lower() == "bug"
+    if _is_bug_fix:
+        _merged_findings, _symptom_escalations = escalate_symptom_test_findings(
+            parsed_review.findings, is_bug_fix=True
+        )
+        if _symptom_escalations:
+            parsed_review = _dc_replace(parsed_review, findings=_merged_findings)
+            _reescalated: list[tuple[str, ReviewResult]] = []
+            for _name, _rr in state.last_cycle_reviewer_results:
+                _rr_findings, _rr_escs = escalate_symptom_test_findings(
+                    _rr.findings, is_bug_fix=True
+                )
+                if _rr_escs:
+                    _rr = _dc_replace(_rr, findings=_rr_findings)
+                _reescalated.append((_name, _rr))
+            state.last_cycle_reviewer_results = _reescalated
+            for _esc in _symptom_escalations:
+                state.symptom_test_escalations.append({"review_cycle": state.review_cycle, **_esc})
+            _esc_descs = "; ".join(e["description"][:80] for e in _symptom_escalations)
+            _log(
+                f"  ↑ {len(_symptom_escalations)} P2→P1 escalation(s) "
+                f"(missing seam-level symptom test on bug-fix PR): {_esc_descs}"
+            )
+
     state.review_results.append(parsed_review)
 
     _review_elapsed = time.monotonic() - _review_pool_start

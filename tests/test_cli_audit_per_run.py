@@ -54,9 +54,9 @@ class TestPerRunFileWrite:
         data = json.loads(run_file.read_text())
 
         assert "schema_version" in data
-        # New per-run records are written at schema_version=5 (#1217 added
-        # iterations.gate_diagnostic); pre-slice records read as 1.
-        assert data["schema_version"] == 5
+        # New per-run records are written at schema_version=6 (#1560 added
+        # symptom_test_escalations); pre-slice records read as 1.
+        assert data["schema_version"] == 6
         assert "run_id" in data
         assert data["run_id"] == "run-envelope-001"
         assert "parent_run_id" in data

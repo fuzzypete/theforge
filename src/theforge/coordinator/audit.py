@@ -820,5 +820,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             if r.severity == "P1" and r.disposition in ("net_new", "gate_contradicted")
         ],
         "conventions": {"soft": config.conventions_soft} if config.conventions_soft else None,
+        # Symptom-verification test escalations (#1560): P2→P1 upgrades applied
+        # because a bug-fix PR's reviewer flagged an absent seam-level test for the
+        # closing bug's symptom path. Emitted so the rule's hit-rate and
+        # override-rate become queryable from the audit substrate.
+        "symptom_test_escalations": state.symptom_test_escalations
+        if state.symptom_test_escalations
+        else None,
         **_build_phases_block(state, config),
     }
