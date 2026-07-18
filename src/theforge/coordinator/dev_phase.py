@@ -284,26 +284,31 @@ def _dev_transport_retry_backoff_seconds(retry_count: int) -> int:
     return _DEV_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS * (2 ** max(retry_count - 1, 0))
 
 
-_XDIST_PREFIX_RE = re.compile(r"^\[gw\d+\]\s+")
-# Markers that identify pytest-shaped output even when nothing failed (e.g. a
-# gate that ran pytest cleanly but failed on a downstream lint/format step). Used
-# to tell "pytest ran, no test failed" apart from "output is not pytest at all".
-_PYTEST_SUMMARY_RE = re.compile(
+# Worker-prefix strip for parallel test-runner output, e.g. a leading "[gw7] "
+# emitted by pytest-xdist workers. Kept as configuration-neutral regex text; the
+# stack-specific origin is described here in a comment only.
+_WORKER_PREFIX_RE = re.compile(r"^\[gw\d+\]\s+")
+# Summary-line markers the built-in reader recognizes even when nothing failed
+# (e.g. a gate whose test run passed cleanly but then failed a downstream
+# lint/format step). These let "test runner ran, nothing failed" be told apart
+# from "output is not in the built-in grammar at all". The recognized grammar is
+# the one emitted by the built-in Python test runner this orchestrator ships with.
+_BUILTIN_SUMMARY_RE = re.compile(
     r"\b\d+\s+(passed|failed|error|errors|skipped|xfailed|xpassed|deselected|warnings?)\b",
     re.IGNORECASE,
 )
-_PYTEST_COLLECTED_RE = re.compile(r"\bcollected\s+\d+\s+items?\b", re.IGNORECASE)
+_BUILTIN_COLLECTED_RE = re.compile(r"\bcollected\s+\d+\s+items?\b", re.IGNORECASE)
 
 
-def _extract_pytest_failed_tests(gate_output_tail: str) -> list[str]:
-    """Parse failing-test identifiers from pytest summary grammar."""
+def _extract_builtin_failed_tests(gate_output_tail: str) -> list[str]:
+    """Parse failing-test identifiers from the built-in test-runner grammar."""
     failed: list[str] = []
     for raw_line in gate_output_tail.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        # Strip pytest-xdist worker prefix, e.g. "[gw7] FAILED tests/..."
-        line = _XDIST_PREFIX_RE.sub("", line)
+        # Strip a parallel-worker prefix, e.g. "[gw7] FAILED tests/...".
+        line = _WORKER_PREFIX_RE.sub("", line)
         if line.startswith(("FAILED ", "ERROR ")):
             candidate = line.split()[1].rstrip(":")
             if candidate not in failed:
@@ -315,20 +320,20 @@ def _extract_pytest_failed_tests(gate_output_tail: str) -> list[str]:
     return failed
 
 
-def _looks_like_pytest(gate_output_tail: str) -> bool:
-    """Return whether gate output carries pytest's summary grammar.
+def _output_matches_builtin_grammar(gate_output_tail: str) -> bool:
+    """Return whether gate output carries the built-in test runner's summary grammar.
 
-    This is what lets an empty failing-test list from a pytest gate (a lint-only
-    failure, say) be told apart from an empty list produced because the output
-    was never pytest at all. Deliberately narrow: xcodebuild/make style output
-    ("Testing failed:", "** TEST FAILED **", "make[2]: *** [test-ios] Error 65")
-    carries none of these markers.
+    This is what lets an empty failing-test list from a recognized gate (a
+    lint-only failure, say) be told apart from an empty list produced because the
+    output was never in the built-in grammar at all. Deliberately narrow: an
+    xcodebuild/make style gate ("Testing failed:", "** TEST FAILED **",
+    "make[2]: *** [test-ios] Error 65") carries none of these markers.
     """
     for raw_line in gate_output_tail.splitlines():
-        line = _XDIST_PREFIX_RE.sub("", raw_line.strip())
+        line = _WORKER_PREFIX_RE.sub("", raw_line.strip())
         if line.startswith(("FAILED ", "ERROR ", "PASSED ", "SKIPPED ")):
             return True
-        if _PYTEST_SUMMARY_RE.search(line) or _PYTEST_COLLECTED_RE.search(line):
+        if _BUILTIN_SUMMARY_RE.search(line) or _BUILTIN_COLLECTED_RE.search(line):
             return True
     return False
 
@@ -371,7 +376,8 @@ def extract_failed_tests(
     format. When ``failed_test_pattern`` is set the project has declared how its
     gate names failures, so extraction always "applies" (recognized) — an empty
     result then means genuinely no failing test. Otherwise core falls back to
-    its built-in pytest grammar; if that grammar is not even present in the
+    its built-in test-runner grammar (the one emitted by the Python test runner
+    this orchestrator ships with); if that grammar is not even present in the
     output, ``format_recognized`` is False so the caller can surface that
     extraction did not apply rather than treating the empty list as a real
     absence.
@@ -379,11 +385,11 @@ def extract_failed_tests(
     if failed_test_pattern:
         tests = _extract_with_custom_pattern(gate_output_tail, failed_test_pattern)
         return FailedTestExtraction(tests=tests, format_recognized=True, source="custom_pattern")
-    tests = _extract_pytest_failed_tests(gate_output_tail)
+    tests = _extract_builtin_failed_tests(gate_output_tail)
     if tests:
-        return FailedTestExtraction(tests=tests, format_recognized=True, source="pytest")
-    if _looks_like_pytest(gate_output_tail):
-        return FailedTestExtraction(tests=[], format_recognized=True, source="pytest")
+        return FailedTestExtraction(tests=tests, format_recognized=True, source="builtin")
+    if _output_matches_builtin_grammar(gate_output_tail):
+        return FailedTestExtraction(tests=[], format_recognized=True, source="builtin")
     return FailedTestExtraction(tests=[], format_recognized=False, source="unrecognized")
 
 

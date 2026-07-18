@@ -175,7 +175,7 @@ def _test_file_exists_in_head(workspace_path: Path, test_file: str) -> bool:
 
 _UNRECOGNIZED_GATE_FORMAT_NOTE = (
     "\n\nNo failing-test identifiers could be extracted from this gate's output:"
-    " its format is not recognized by core's built-in (pytest) extractor and no"
+    " its format is not recognized by core's built-in test-runner extractor and no"
     " `validation.failed_test_pattern` is configured in forge.yaml. This retry is"
     " proceeding without a focused failing-test list — read the full gate output"
     " above to find the failures yourself, and consider configuring"
@@ -766,8 +766,8 @@ def _run_validate_phase(
                     iteration=state.dev_iteration,
                     gate_output_format="unrecognized",
                     reason=(
-                        "gate output does not match core's pytest grammar and no"
-                        " validation.failed_test_pattern is configured"
+                        "gate output does not match core's built-in test-runner"
+                        " grammar and no validation.failed_test_pattern is configured"
                     ),
                 )
         state.human_feedback = (

@@ -67,7 +67,7 @@ def test_struct_pytest_failures_recognized():
     result = extract_failed_tests("FAILED tests/test_foo.py::test_bar")
     assert result.tests == ["tests/test_foo.py::test_bar"]
     assert result.format_recognized is True
-    assert result.source == "pytest"
+    assert result.source == "builtin"
 
 
 def test_struct_pytest_clean_run_is_recognized_but_empty():
@@ -75,7 +75,7 @@ def test_struct_pytest_clean_run_is_recognized_but_empty():
     result = extract_failed_tests("collected 5 items\n\n1 passed in 0.12s")
     assert result.tests == []
     assert result.format_recognized is True
-    assert result.source == "pytest"
+    assert result.source == "builtin"
 
 
 def test_struct_unrecognized_gate_format_is_not_recognized():
