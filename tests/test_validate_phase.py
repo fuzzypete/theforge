@@ -546,6 +546,7 @@ def test_run_validate_phase_already_complete_when_handoff_documents_work_done(
         "  - criterion: 'AC2 text from spec'\n"
         "    status: MET\n"
         "    notes: 'satisfied by existing commit'\n"
+        "gate_result: PASS\n"
         "story_deviations: []\n"
         "deferred_items: []\n",
         encoding="utf-8",

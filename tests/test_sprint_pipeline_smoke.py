@@ -185,6 +185,7 @@ def test_make_gate_covers_mocked_sprint_pipeline_smoke_run(tmp_path: Path) -> No
                         "notes": "Synthetic story",
                     }
                 ],
+                "gate_result": "PASS",
                 "story_deviations": "none",
                 "deferred_items": "none",
             },

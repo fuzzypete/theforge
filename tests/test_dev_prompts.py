@@ -256,6 +256,27 @@ def test_dev_prompt_uses_configured_commands_and_no_hardcoded_layout_rule(tmp_pa
     assert "4. Emit a `<forge_handoff>` block in your **final message**" in prompt
 
 
+def test_dev_prompt_requires_honest_gate_result_field(tmp_path):
+    task = _make_task(tmp_path)
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        story_content="# Spec",
+        gate_command="make gate",
+    )
+
+    # The handoff block advertises the structured gate_result field...
+    assert "gate_result: PASS | FAIL | BLOCKED" in prompt
+    # ...and forbids claiming completion without gate evidence.
+    assert "Set `gate_result: PASS` only after the gate command actually passed" in prompt
+    assert "set `gate_result: BLOCKED`" in prompt
+    # collapse whitespace to tolerate dedent/wrapping of the multi-line rule
+    _flat = " ".join(prompt.split())
+    assert "do\n" not in _flat  # sanity: flattened
+    assert "NOT mark any acceptance criterion `MET`" in _flat
+
+
 def test_dev_prompt_includes_webfetch_framing_when_tool_allowed(tmp_path):
     task = _make_task(tmp_path)
     prompt = build_dev_prompt(

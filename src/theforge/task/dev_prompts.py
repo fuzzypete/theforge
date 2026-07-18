@@ -321,6 +321,7 @@ def build_dev_prompt(
              - criterion: "AC text from the spec"
                status: MET | PARTIAL | NOT_MET
                notes: "how it was met, or why not"
+           gate_result: PASS | FAIL | BLOCKED
            story_deviations: none
            deferred_items: none
            </forge_handoff>
@@ -331,6 +332,11 @@ def build_dev_prompt(
            - Content must be valid YAML (no embedded code fences inside the block).
            - `commits` and `acceptance_criteria` must be lists (even if empty: `[]`).
            - `story_deviations` and `deferred_items` may be the word `none` or a list.
+           - Set `gate_result: PASS` only after the gate command actually passed.
+             If you genuinely cannot run the gate, set `gate_result: BLOCKED` and do
+             NOT mark any acceptance criterion `MET` — an unrun or failing gate is a
+             blocking failure, not completion, and must never be reported as done with
+             an environmental excuse attached.
 
         ## Rules
 
