@@ -566,6 +566,12 @@ class CoordinatorState:
     # | "skip_cap"), pre-pass P2 count, post-pass P2 count, budget remaining,
     # review_cycle, and dev_iteration at the decision point.
     p2_cleanup_audit: list[dict] = field(default_factory=list)
+    # ── Symptom-verification test escalations (#1560) ─────────────────────────
+    # One entry per P2→P1 escalation applied because a bug-fix PR's reviewer
+    # flagged an absent seam-level integration test for the closing bug's symptom
+    # path. Each dict carries review_cycle, file, line, reporter, description, and
+    # original/effective severity so the rule's hit-rate becomes queryable.
+    symptom_test_escalations: list[dict] = field(default_factory=list)
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.

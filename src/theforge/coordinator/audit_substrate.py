@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 3
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 5
+CURRENT_RECORD_SCHEMA_VERSION = 6
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -716,6 +716,20 @@ def _migrate_v4_to_v5(record: dict) -> dict:
     return {**record, "iterations": {**iterations, "gate_diagnostic": []}}
 
 
+def _migrate_v5_to_v6(record: dict) -> dict:
+    """Add top-level ``symptom_test_escalations`` (issue #1560).
+
+    v5 records never recorded the P2→P1 escalations applied when a bug-fix PR's
+    reviewer flagged an absent seam-level test for the closing bug's symptom
+    path. v6 adds the field so the rule's hit-rate becomes queryable. Older
+    records ran before the rule existed and never escalated, so backfill None
+    (the "no escalations" shape) rather than fabricating one.
+    """
+    if "symptom_test_escalations" in record:
+        return record
+    return {**record, "symptom_test_escalations": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -729,6 +743,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
+    5: _migrate_v5_to_v6,
 }
 
 

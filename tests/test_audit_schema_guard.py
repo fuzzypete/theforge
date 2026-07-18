@@ -381,3 +381,28 @@ def test_migrate_v4_to_v5_noop_without_iterations_block() -> None:
     migrated = audit_substrate._migrate_v4_to_v5(v4_record)
 
     assert migrated == v4_record
+
+
+def test_migrate_v5_to_v6_backfills_symptom_test_escalations() -> None:
+    """v5 records lack symptom_test_escalations; v6 backfills None.
+
+    The bug-fix symptom-test escalation rule did not exist when v5 records were
+    written, so there is nothing to recover — default to None (the "no
+    escalations" shape) rather than fabricating one. See issue #1560.
+    """
+    v5_record = {"task": {"slug": "test"}}
+
+    migrated = audit_substrate._migrate_v5_to_v6(v5_record)
+
+    assert migrated["symptom_test_escalations"] is None
+    assert migrated["task"] == {"slug": "test"}
+
+
+def test_migrate_v5_to_v6_is_idempotent_when_field_present() -> None:
+    """Does not clobber an existing symptom_test_escalations list."""
+    existing = [{"file": "tests/test_x.py", "effective_severity": "P1"}]
+    v5_record = {"symptom_test_escalations": existing}
+
+    migrated = audit_substrate._migrate_v5_to_v6(v5_record)
+
+    assert migrated["symptom_test_escalations"] == existing

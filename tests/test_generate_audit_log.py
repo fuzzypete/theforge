@@ -892,7 +892,7 @@ class TestKnowledgeCaptureLayer1:
         result = _make_coordinator_result(state)
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
 
-        assert log["schema_version"] == 5
+        assert log["schema_version"] == 6
 
     def test_run_id_from_state(self, tmp_path: Path) -> None:
         """run_id in audit record comes from state.run_id."""
