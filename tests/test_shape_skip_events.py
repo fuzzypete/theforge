@@ -72,9 +72,7 @@ def test_advisories_do_not_count_as_prior_blocks(tmp_path: Path) -> None:
     conn = create_or_open(tmp_path)
     try:
         blocking = [
-            e
-            for e in iter_shape_skip_events(conn, issue_id="42")
-            if e["severity"] == "blocking"
+            e for e in iter_shape_skip_events(conn, issue_id="42") if e["severity"] == "blocking"
         ]
     finally:
         conn.close()

@@ -183,9 +183,7 @@ def build_shape_gate_skip_block(
         conn.close()
 
     run_pairs = {(str(e.get("issue_id")), str(e.get("reason_code"))) for e in events}
-    stuck = [
-        s for s in all_stuck if (str(s["issue_id"]), str(s["reason_code"])) in run_pairs
-    ]
+    stuck = [s for s in all_stuck if (str(s["issue_id"]), str(s["reason_code"])) in run_pairs]
 
     categories = {cat: [_slim_event(e) for e in rows] for cat, rows in grouped.items()}
     return {
