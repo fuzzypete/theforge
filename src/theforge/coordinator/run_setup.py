@@ -120,6 +120,8 @@ def _deserialize_review_result(data: object) -> object | None:
         parse_errors=_deserialize_parse_errors(data.get("parse_errors")),
         raw_yaml=dict(data.get("raw_yaml") or {}),
         ac_verification=tuple(ac_verification),
+        criteria_enumerable=bool(data.get("criteria_enumerable", True)),
+        criteria_enumerable_rationale=data.get("criteria_enumerable_rationale") or "",
         sanitization_audit=dict(data.get("sanitization_audit") or {}),
     )
 

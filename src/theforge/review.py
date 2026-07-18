@@ -106,6 +106,10 @@ class ReviewResult:
     parse_errors: list[ParseError]  # non-empty if parsing/validation failed
     raw_yaml: dict  # the parsed YAML data
     ac_verification: tuple[ACVerification, ...] = ()  # per-AC verification table
+    # Escape valve: reviewer declares the issue has no enumerable acceptance
+    # criteria. Defaults to True (criteria are enumerable) for backward compat.
+    criteria_enumerable: bool = True
+    criteria_enumerable_rationale: str = ""
     sanitization_audit: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
@@ -268,6 +272,20 @@ def _extract_ac_verification(data: dict) -> tuple[ACVerification, ...]:
     return tuple(out)
 
 
+def _extract_criteria_enumerable(data: dict) -> tuple[bool, str]:
+    """Extract the criteria_enumerable escape-valve flag and its rationale.
+
+    Defaults to ``(True, "")`` — criteria are enumerable — when the field is
+    absent or malformed, matching the validator's default so downstream code
+    and audit see the same value the cross-validation used.
+    """
+    raw = data.get("criteria_enumerable", True)
+    enumerable = raw if isinstance(raw, bool) else True
+    rationale = data.get("criteria_enumerable_rationale")
+    rationale = rationale if isinstance(rationale, str) else ""
+    return enumerable, rationale
+
+
 def parse_review_json(data: dict, reporter: str = "") -> ReviewResult:
     """Parse and validate review JSON from API response.
 
@@ -292,6 +310,7 @@ def parse_review_json(data: dict, reporter: str = "") -> ReviewResult:
     test_adequate = tests.get("adequate", False) if isinstance(tests, dict) else False
     test_gaps = tests.get("gaps", []) if isinstance(tests, dict) else []
 
+    _enumerable, _enum_rationale = _extract_criteria_enumerable(data)
     return ReviewResult(
         verdict=data.get("verdict", "REQUEST_CHANGES"),
         summary=summary,
@@ -303,6 +322,8 @@ def parse_review_json(data: dict, reporter: str = "") -> ReviewResult:
         parse_errors=schema_errors,
         raw_yaml=data,
         ac_verification=_extract_ac_verification(data),
+        criteria_enumerable=_enumerable,
+        criteria_enumerable_rationale=_enum_rationale,
         sanitization_audit=sanitization_audit,
     )
 
@@ -374,6 +395,7 @@ def parse_review_output(agent_output: str, reporter: str = "") -> ReviewResult:
     test_adequate = tests.get("adequate", False) if isinstance(tests, dict) else False
     test_gaps = tests.get("gaps", []) if isinstance(tests, dict) else []
 
+    _enumerable, _enum_rationale = _extract_criteria_enumerable(data)
     return ReviewResult(
         verdict=data.get("verdict", "REQUEST_CHANGES"),
         summary=summary,
@@ -385,6 +407,8 @@ def parse_review_output(agent_output: str, reporter: str = "") -> ReviewResult:
         parse_errors=schema_errors,
         raw_yaml=data,
         ac_verification=_extract_ac_verification(data),
+        criteria_enumerable=_enumerable,
+        criteria_enumerable_rationale=_enum_rationale,
         sanitization_audit=sanitization_audit,
     )
 
@@ -948,6 +972,21 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         *(r.sanitization_audit for _, r in valid)
     )
 
+    # The merged review can only assert "no enumerable acceptance criteria" if
+    # EVERY valid reviewer said so. A single reviewer that enumerated criteria
+    # keeps the merged flag True (its entries are in the merged table, so the
+    # escape valve is neither needed nor claimed).
+    merged_enumerable = any(r.criteria_enumerable for _, r in valid)
+    merged_enum_rationale = (
+        " | ".join(
+            f"[{name}] {r.criteria_enumerable_rationale}"
+            for name, r in valid
+            if not r.criteria_enumerable and r.criteria_enumerable_rationale.strip()
+        )
+        if not merged_enumerable
+        else ""
+    )
+
     return ReviewResult(
         verdict=verdict,
         summary=summary,
@@ -959,6 +998,8 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         parse_errors=[],  # valid reviewers had no errors
         raw_yaml={},
         ac_verification=merged_ac,
+        criteria_enumerable=merged_enumerable,
+        criteria_enumerable_rationale=merged_enum_rationale,
         sanitization_audit=merged_sanitization_audit,
     )
 

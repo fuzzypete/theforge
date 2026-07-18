@@ -1017,3 +1017,90 @@ class TestParseReviewOutputStringLine:
         assert len(result.findings) == 1
         assert result.findings[0].line == 42
         assert isinstance(result.findings[0].line, int)
+
+
+APPROVE_NO_ENUMERABLE_AC = """\
+```yaml
+verdict: APPROVE
+summary: "Chore fix, nothing to enumerate"
+findings: []
+story_compliance:
+  matches_spec: true
+  mismatches: []
+test_coverage:
+  adequate: true
+  gaps: []
+ac_verification: []
+criteria_enumerable: false
+criteria_enumerable_rationale: "Dependency bump with no acceptance criteria."
+```
+"""
+
+
+class TestCriteriaEnumerableParsing:
+    def test_escape_valve_parses_without_errors(self):
+        result = parse_review_output(APPROVE_NO_ENUMERABLE_AC)
+        assert result.parse_errors == []
+        assert result.verdict == "APPROVE"
+        assert result.criteria_enumerable is False
+        assert "Dependency bump" in result.criteria_enumerable_rationale
+
+    def test_defaults_true_when_field_absent(self):
+        result = parse_review_output(VALID_APPROVE_YAML)
+        assert result.criteria_enumerable is True
+        assert result.criteria_enumerable_rationale == ""
+
+    def test_json_path_carries_escape_valve(self):
+        data = {
+            "verdict": "APPROVE",
+            "summary": "ok",
+            "findings": [],
+            "story_compliance": {"matches_spec": True, "mismatches": []},
+            "test_coverage": {"adequate": True, "gaps": []},
+            "ac_verification": [],
+            "criteria_enumerable": False,
+            "criteria_enumerable_rationale": "no enumerable AC",
+        }
+        result = parse_review_json(data)
+        assert result.parse_errors == []
+        assert result.criteria_enumerable is False
+
+
+class TestCriteriaEnumerableMerge:
+    def _reviewer(self, *, enumerable, rationale=""):
+        return ReviewResult(
+            verdict="APPROVE",
+            summary="ok",
+            findings=[],
+            story_matches=True,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+            criteria_enumerable=enumerable,
+            criteria_enumerable_rationale=rationale,
+        )
+
+    def test_all_false_merges_false(self):
+        merged = merge_review_results(
+            [
+                self._reviewer(enumerable=False, rationale="chore"),
+                self._reviewer(enumerable=False, rationale="no ACs"),
+            ],
+            ["a", "b"],
+        )
+        assert merged.criteria_enumerable is False
+        assert "chore" in merged.criteria_enumerable_rationale
+        assert "no ACs" in merged.criteria_enumerable_rationale
+
+    def test_any_enumerable_keeps_true(self):
+        merged = merge_review_results(
+            [
+                self._reviewer(enumerable=False, rationale="chore"),
+                self._reviewer(enumerable=True),
+            ],
+            ["a", "b"],
+        )
+        assert merged.criteria_enumerable is True
+        assert merged.criteria_enumerable_rationale == ""

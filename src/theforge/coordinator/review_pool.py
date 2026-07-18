@@ -75,6 +75,81 @@ def _is_transient_review_failure(result: Any, config: ForgeConfig) -> bool:
     return any(pattern in lower for pattern in config.retry.review_transient_output_patterns)
 
 
+# Corrective YAML structure appended to every review-retry prompt. Every field
+# the reviewer emitted originally appears here so "reformat" never reads as
+# "drop the sections that are hard to encode".
+_CORRECTIVE_YAML_STRUCTURE = (
+    "verdict: APPROVE | REQUEST_CHANGES\n"
+    'summary: "one-line summary"\n'
+    "findings:\n"
+    "  - severity: P1 | P2\n"
+    '    file: "path"   # null for architectural findings\n'
+    "    line: <number or null>   # null for file-scope findings "
+    "(file existence, whole-file state, structural hygiene)\n"
+    '    observed: "what is wrong"\n'
+    '    expected: "category-level rule that generalises"\n'
+    '    evidence: "file path, line, or anchor"\n'
+    '    suggestion: "how to fix (optional)"\n'
+    "story_compliance:\n"
+    "  matches_spec: true | false\n"
+    "  mismatches: []\n"
+    "test_coverage:\n"
+    "  adequate: true | false\n"
+    "  gaps: []\n"
+    "ac_verification:\n"
+    "  - criterion: \"verbatim AC text, or 'Symptom resolution: ...' for bugs\"\n"
+    "    status: VERIFIED | PARTIAL | NOT_VERIFIED\n"
+    '    evidence: "file:line diff hunks (VERIFIED) or reason (otherwise)"\n'
+    "criteria_enumerable: true   # false ONLY if the issue has no enumerable AC\n"
+    'criteria_enumerable_rationale: ""   # required (non-empty) when '
+    "criteria_enumerable is false\n"
+    "Do not drop a P1 finding to satisfy a line-number requirement: "
+    "line: null is valid when the defect is the existence, absence, mode, "
+    "or whole-file state of the path.\n"
+)
+
+
+def _build_review_retry_prompt(error_desc: str, original_output: str) -> str:
+    """Build a corrective retry prompt that anchors the reviewer's prior content.
+
+    A retry prompt that asks an agent to fix formatting must communicate that the
+    *content* of the previous output is correct and only the *encoding* needs
+    repair. Reviewers are unreliable at distinguishing "fix the quoting of this
+    value" from "emit a different value that won't have the same problem" — the
+    latter (dropping ac_verification to dodge the APPROVE-needs-verified-AC rule,
+    or flipping the verdict to dodge a cross-validation) produces an oscillation
+    trap. This prompt pins the prior output as the anchor and names dropping a
+    field as an explicitly wrong response, removing that move from the reachable
+    space. ``original_output`` is the reviewer's verbatim prior emission.
+    """
+    return (
+        "Your previous review output failed schema/parse validation:\n" + error_desc + "\n\n"
+        "The CONTENT of your previous review is correct — your verdict, your "
+        "findings, and your ac_verification entries are what you meant to say. "
+        "ONLY the ENCODING (YAML formatting) is broken. Re-emit the SAME review "
+        "with the formatting error fixed.\n\n"
+        "Preserve your previous output verbatim:\n"
+        "  - Keep the SAME verdict. Do NOT switch APPROVE <-> REQUEST_CHANGES.\n"
+        "  - Keep EVERY finding. Do NOT drop, merge, or downgrade a finding.\n"
+        "  - Keep EVERY ac_verification entry, with the same criterion, status, "
+        "and evidence.\n\n"
+        "Dropping or altering a field to make a validation error go away is a "
+        "WRONG response. If a value failed to parse, fix the QUOTING/ESCAPING of "
+        "that value — do NOT delete the value, and do NOT change the verdict to "
+        "sidestep a cross-validation rule. If your verdict is APPROVE and your "
+        "ac_verification keeps failing to encode, that is a formatting problem to "
+        "solve; it is NOT a reason to empty the table or switch to "
+        "REQUEST_CHANGES. (If the issue genuinely has no enumerable acceptance "
+        "criteria, set criteria_enumerable: false with a rationale rather than "
+        "dropping the table.)\n\n"
+        "Do NOT re-review the code.\n\n"
+        "Required YAML structure:\n"
+        + _CORRECTIVE_YAML_STRUCTURE
+        + "\n\nYour previous output (fix its formatting, keep its content):\n"
+        + original_output
+    )
+
+
 # Failure codes marking a reviewer that completed its turn without delivering a
 # verdict (no submit call). These are infrastructure/behavioral failures, not
 # review outcomes, and must not be able to kill a story on their own.
@@ -636,28 +711,6 @@ def _run_review_pool(
     # prompt via run_agent up to max_review_parse_retries times.
     # meta.parse_retries accumulates the sum of per-reviewer retries attempted.
     _profile_by_name = {p.name: p for p in pool}
-    _corrective_yaml_structure = (
-        "verdict: APPROVE | REQUEST_CHANGES\n"
-        'summary: "one-line summary"\n'
-        "findings:\n"
-        "  - severity: P1 | P2\n"
-        '    file: "path"   # null for architectural findings\n'
-        "    line: <number or null>   # null for file-scope findings "
-        "(file existence, whole-file state, structural hygiene)\n"
-        '    observed: "what is wrong"\n'
-        '    expected: "category-level rule that generalises"\n'
-        '    evidence: "file path, line, or anchor"\n'
-        '    suggestion: "how to fix (optional)"\n'
-        "story_compliance:\n"
-        "  matches_spec: true | false\n"
-        "  mismatches: []\n"
-        "test_coverage:\n"
-        "  adequate: true | false\n"
-        "  gaps: []\n"
-        "Do not drop a P1 finding to satisfy a line-number requirement: "
-        "line: null is valid when the defect is the existence, absence, mode, "
-        "or whole-file state of the path.\n"
-    )
     for i, (name, parsed) in enumerate(zip(names, parsed_results)):
         if not parsed.parse_errors:
             continue
@@ -677,27 +730,13 @@ def _run_review_pool(
                 f"(retry {_retry_num}/{max_review_parse_retries}): "
                 f"{_error_desc[:120]}"
             )
-            # Build corrective prompt — mode-specific to avoid re-review
-            if _prof.mode == "api":
-                # Include original output so the agent can reformat without re-reviewing
-                _original_output = _original_result.output or ""
-                _retry_prompt = (
-                    "Your previous output (reproduced below) had schema/parse errors:\n"
-                    + _error_desc
-                    + "\n\nReformat your output as valid YAML. Do NOT re-review the code.\n\n"
-                    "Required YAML structure:\n"
-                    + _corrective_yaml_structure
-                    + "\n\nYour previous output:\n"
-                    + _original_output
-                )
-            else:
-                # CLI: prompt is simpler — session continuity via session_id handles context
-                _retry_prompt = (
-                    "Your previous review output had schema/parse errors:\n"
-                    + _error_desc
-                    + "\n\nReformat your output as valid YAML. Do NOT re-review the code.\n\n"
-                    "Required YAML structure:\n" + _corrective_yaml_structure
-                )
+            # Build corrective prompt anchored on the reviewer's prior output.
+            # Both modes include the verbatim prior emission so "reformat" cannot
+            # be read as "drop the fields that are hard to encode". CLI mode also
+            # carries session continuity via session_id; the explicit anchor is
+            # more robust than relying on session memory alone.
+            _original_output = _original_result.output or ""
+            _retry_prompt = _build_review_retry_prompt(_error_desc, _original_output)
             _retry_result = run_agent(
                 prompt=_retry_prompt,
                 profile=_prof,

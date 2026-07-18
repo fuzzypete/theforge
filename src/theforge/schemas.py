@@ -109,6 +109,10 @@ def validate_review_yaml(data: Any) -> list[ParseError]:
     Cross-validation rules:
     - APPROVE + any P1 → error (can't approve with blocking findings)
     - REQUEST_CHANGES + zero P1s → error (must justify the request)
+    - APPROVE + empty ac_verification → error, UNLESS the reviewer declares
+      ``criteria_enumerable: false`` with a non-empty
+      ``criteria_enumerable_rationale`` (escape valve for issues with no
+      enumerable acceptance criteria).
     """
     errors: list[ParseError] = []
 
@@ -232,13 +236,41 @@ def validate_review_yaml(data: Any) -> list[ParseError]:
         if status in ("PARTIAL", "NOT_VERIFIED"):
             non_verified_count += 1
 
+    # ── criteria_enumerable escape valve ──────────────────────────
+    # A reviewer who has reviewed the code, approves, and finds the issue has
+    # no enumerable acceptance criteria (some bug fixes, chores) previously had
+    # no legal move: APPROVE demands a non-empty ac_verification table. Rather
+    # than force the reviewer to manufacture criteria — or oscillate between
+    # APPROVE (empty table) and REQUEST_CHANGES (no P1) to dodge the rules —
+    # this flag lets the reviewer declare the degenerate state explicitly. It
+    # is not a free bypass: criteria_enumerable=false requires a non-empty
+    # rationale so the assertion is deliberate and auditable.
+    criteria_enumerable = data.get("criteria_enumerable", True)
+    if not isinstance(criteria_enumerable, bool):
+        _schema("criteria_enumerable must be a boolean when provided (true/false)")
+        criteria_enumerable = True
+    rationale = data.get("criteria_enumerable_rationale")
+    if rationale is not None and not isinstance(rationale, str):
+        _schema("criteria_enumerable_rationale must be a string when provided")
+        rationale = None
+
     if verdict == "APPROVE":
         if not ac_v:
-            _cross(
-                "verdict is APPROVE but ac_verification is empty — "
-                "reviewers must enumerate each acceptance criterion (or symptom for bugs) "
-                "and mark it VERIFIED with evidence pointers"
-            )
+            if criteria_enumerable is False:
+                # Legal degenerate state — require the reviewer to say why.
+                if not isinstance(rationale, str) or not rationale.strip():
+                    _cross(
+                        "verdict is APPROVE with criteria_enumerable: false but "
+                        "criteria_enumerable_rationale is empty — the reviewer must "
+                        "state why the issue has no enumerable acceptance criteria"
+                    )
+            else:
+                _cross(
+                    "verdict is APPROVE but ac_verification is empty — "
+                    "reviewers must enumerate each acceptance criterion (or symptom for bugs) "
+                    "and mark it VERIFIED with evidence pointers, or set "
+                    "criteria_enumerable: false with a rationale if the issue has none"
+                )
         elif non_verified_count > 0:
             _cross(
                 f"verdict is APPROVE but {non_verified_count} ac_verification entry(ies) "
@@ -395,6 +427,8 @@ def review_json_schema() -> dict:
             "story_compliance",
             "test_coverage",
             "ac_verification",
+            "criteria_enumerable",
+            "criteria_enumerable_rationale",
         ],
         "properties": {
             "verdict": {
@@ -496,6 +530,25 @@ def review_json_schema() -> dict:
                         "evidence": {"type": "string"},
                     },
                 },
+            },
+            "criteria_enumerable": {
+                "type": "boolean",
+                "description": (
+                    "Whether the issue has enumerable acceptance criteria to verify. "
+                    "Set true in the normal case. Set false ONLY when the issue "
+                    "genuinely has none to enumerate (e.g. some bug fixes or chores); "
+                    "then ac_verification may be empty and you MUST supply a non-empty "
+                    "criteria_enumerable_rationale. This is not a shortcut to avoid "
+                    "verifying criteria that do exist."
+                ),
+            },
+            "criteria_enumerable_rationale": {
+                "type": "string",
+                "description": (
+                    "Required (non-empty) when criteria_enumerable is false: one "
+                    "sentence stating why the issue has no enumerable acceptance "
+                    "criteria. Empty string when criteria_enumerable is true."
+                ),
             },
         },
     }
