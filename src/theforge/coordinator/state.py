@@ -312,6 +312,14 @@ class CoordinatorState:
     dev_trace_count: int = 0  # monotonically increasing across all cycles; never reset
     dev_results: list[AgentResult] = field(default_factory=list)
     dev_durations: list[float] = field(default_factory=list)  # wall-clock seconds per dev call
+    # Sticky "the dev process was killed by its wall-clock timeout at least once"
+    # flag. Set once at kill time in dev_phase (never cleared), because the
+    # killed iteration's telemetry can be overwritten by a later VALIDATE-phase
+    # telemetry write once checkpoint-committed work lets execution fall through
+    # (#1754) — so the last telemetry entry is not a reliable kill signal. This
+    # is distinct from a VALIDATE gate/test-command timeout (a different failure
+    # class carried on DevIterationTelemetry.is_timeout).
+    dev_process_timeout_killed: bool = False
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
         default_factory=list

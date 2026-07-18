@@ -1040,6 +1040,15 @@ def _run_dev_phase(
 
     if not dev_result.success:
         _is_timeout = dev_result.failure_code == "timeout"
+        if _is_timeout:
+            # Record the wall-clock kill on state immediately, before any
+            # retry/escalate/fall-through decision runs. This is the only
+            # reliable signal that the dev process was harness-killed at its
+            # timeout: the killed iteration's telemetry entry can be overwritten
+            # by a later VALIDATE-phase write once checkpoint-committed work lets
+            # execution fall through (#1754). model_profiles_bridge reads this to
+            # segregate the run as a censored observation for the kill floor.
+            state.dev_process_timeout_killed = True
         # The signal number records only what was done to the process, not what
         # went wrong. When the runner already explained the failure in words
         # (e.g. "TIMEOUT: Agent exceeded 900s limit"), surface that instead of

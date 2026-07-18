@@ -483,6 +483,9 @@ def test_get_dev_complexity_stats_requires_band_averages():
         "runs": 3.0,
         "avg_iterations": 2.5,
         "avg_cost_usd": 1.25,
+        "max_duration_s": 0.0,
+        "duration_runs": 0.0,
+        "max_killed_timeout_s": 0.0,
     }
 
 
@@ -524,6 +527,9 @@ def test_get_dev_complexity_stats_aggregates_fragmented_aliases():
         "runs": 5.0,
         "avg_iterations": 4.2,
         "avg_cost_usd": 1.6,
+        "max_duration_s": 0.0,
+        "duration_runs": 0.0,
+        "max_killed_timeout_s": 0.0,
     }
 
 
@@ -548,3 +554,241 @@ def test_get_dev_complexity_stats_returns_none_under_min_runs():
 
 def test_complexity_bands_constant():
     assert COMPLEXITY_BANDS == ("small", "medium", "large")
+
+
+# ── Duration aggregation + censored-kill floor ────────────────────────────
+
+
+def test_completed_run_records_duration():
+    """A completed run folds its wall-clock into avg/max duration accumulators."""
+    data: dict = {"models": {}}
+    for dur in (100.0, 300.0):
+        apply_run(
+            data,
+            RunOutcome(
+                complexity="medium",
+                dev_model="sonnet",
+                dev_success=True,
+                dev_iterations=1,
+                dev_cost_usd=1.0,
+                dev_duration_s=dur,
+            ),
+        )
+    dev = data["models"]["sonnet"]["dev"]
+    assert dev["_duration_runs"] == 2
+    assert dev["_duration_sum"] == 400.0
+    assert dev["avg_duration_s"] == 200.0
+    assert dev["max_duration_s"] == 300.0
+    # No kill occurred, so the kill-floor key is never written (lazy schema).
+    assert dev.get("max_killed_timeout_s", 0.0) == 0.0
+    bc = dev["by_complexity"]["medium"]
+    assert bc["_duration_runs"] == 2
+    assert bc["avg_duration_s"] == 200.0
+    assert bc["max_duration_s"] == 300.0
+
+
+def test_killed_run_raises_kill_limit_without_touching_duration():
+    """A harness-killed run is a censored observation: it only raises
+    max_killed_timeout_s and never lowers learned duration."""
+    data: dict = {"models": {}}
+    # A fast completed run establishes a low learned duration.
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=1.0,
+            dev_duration_s=120.0,
+        ),
+    )
+    # A run killed at a 1350s limit: duration unknown, only the floor moves.
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_duration_s=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=1350,
+        ),
+    )
+    bc = data["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    # Duration learning untouched by the kill.
+    assert bc["_duration_runs"] == 1
+    assert bc["avg_duration_s"] == 120.0
+    assert bc["max_duration_s"] == 120.0
+    # The kill only bounds the timeout from below.
+    assert bc["max_killed_timeout_s"] == 1350.0
+
+
+def test_get_dev_complexity_stats_surfaces_duration_and_kill_floor():
+    data: dict = {"models": {}}
+    for dur in (100.0, 400.0, 250.0):
+        apply_run(
+            data,
+            RunOutcome(
+                complexity="medium",
+                dev_model="sonnet",
+                dev_success=True,
+                dev_iterations=1,
+                dev_cost_usd=1.0,
+                dev_duration_s=dur,
+            ),
+        )
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+        ),
+    )
+    stats = get_dev_complexity_stats(data, "sonnet", "medium", min_runs=1)
+    assert stats is not None
+    assert stats["max_duration_s"] == 400.0
+    assert stats["duration_runs"] == 3.0
+    assert stats["max_killed_timeout_s"] == 900.0
+
+
+def test_legacy_profile_without_duration_still_yields_iteration_stats():
+    """Profiles predating the duration fields must still return iteration stats
+    (duration/kill floors default to 0.0, they do not void the result)."""
+    profiles = {
+        "models": {
+            "sonnet": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 4,
+                            "avg_iterations": 3.0,
+                            "avg_cost_usd": 1.0,
+                        }
+                    }
+                }
+            }
+        }
+    }
+    stats = get_dev_complexity_stats(profiles, "sonnet", "medium", min_runs=1)
+    assert stats is not None
+    assert stats["avg_iterations"] == 3.0
+    assert stats["max_duration_s"] == 0.0
+    assert stats["duration_runs"] == 0.0
+    assert stats["max_killed_timeout_s"] == 0.0
+
+
+def test_reset_zeros_duration_fields():
+    from theforge.model_profiles import reset_profile_data
+
+    data: dict = {"models": {}}
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=1.0,
+            dev_duration_s=300.0,
+        ),
+    )
+    updated, _ = reset_profile_data(data, "sonnet", role="dev", complexity="medium")
+    bc = updated["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    assert bc["_duration_runs"] == 0
+    assert bc["_duration_sum"] == 0.0
+    assert bc["avg_duration_s"] == 0.0
+    assert bc["max_duration_s"] == 0.0
+    assert bc["max_killed_timeout_s"] == 0.0
+    # Recomputed dev section reflects the zeroed band.
+    assert updated["models"]["sonnet"]["dev"]["max_duration_s"] == 0.0
+
+
+def test_merge_preserves_duration_and_kill_floor():
+    """Merging two dev sections sums duration runs and maxes the maxima."""
+    from theforge.model_profiles import _merge_dev
+
+    src_a: dict = {"models": {}}
+    apply_run(
+        src_a,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=1.0,
+            dev_duration_s=200.0,
+        ),
+    )
+    apply_run(
+        src_a,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=800,
+        ),
+    )
+    src_b: dict = {"models": {}}
+    apply_run(
+        src_b,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=1.0,
+            dev_duration_s=500.0,
+        ),
+    )
+    target = src_a["models"]["sonnet"]["dev"]
+    _merge_dev(target, src_b["models"]["sonnet"]["dev"])
+    assert target["_duration_runs"] == 2  # two completed runs (kill excluded)
+    assert target["max_duration_s"] == 500.0
+    assert target["max_killed_timeout_s"] == 800.0
+    bc = target["by_complexity"]["medium"]
+    assert bc["_duration_runs"] == 2
+    assert bc["max_duration_s"] == 500.0
+    assert bc["max_killed_timeout_s"] == 800.0
+
+
+def test_merge_tolerates_legacy_entry_without_duration_keys():
+    """A legacy src dev section lacking the new keys merges cleanly (keys default
+    to 0) without erasing the target's learned duration."""
+    from theforge.model_profiles import _merge_dev
+
+    holder: dict = {"models": {}}
+    apply_run(
+        holder,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=1.0,
+            dev_duration_s=350.0,
+        ),
+    )
+    target = holder["models"]["sonnet"]["dev"]
+    legacy_src = {
+        "runs": 2,
+        "success_rate": 1.0,
+        "avg_iterations": 3.0,
+        "avg_cost_usd": 1.0,
+        "by_complexity": {
+            "medium": {"runs": 2, "avg_iterations": 3.0, "avg_cost_usd": 1.0},
+        },
+    }
+    _merge_dev(target, legacy_src)
+    assert target["max_duration_s"] == 350.0  # target's learned value preserved
+    assert target["_duration_runs"] == 1  # legacy src contributes 0 duration runs
