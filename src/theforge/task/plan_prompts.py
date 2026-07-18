@@ -607,9 +607,31 @@ def build_plan_prompt(
               mitigation: "<how to address it>"
         ```
 
+        ## When the Story Is Too Large
+
+        If — and only if — the story cannot be planned and implemented as a
+        single coherent unit (it bundles multiple independent deliverables that
+        each warrant their own plan and review cycle), do NOT force a plan.
+        Instead, signal that the story must be split, using this schema:
+
+        ```yaml
+        plan:
+          decompose: true
+          decompose_reason: "<why too large; name the independent pieces it should split into>"
+        ```
+
+        When you signal `decompose: true`, omit `steps` — a step plan is not
+        expected. The coordinator will escalate the story for a human to split
+        it manually; it will NOT auto-split. Use this sparingly: most stories,
+        even sizable ones, should be planned normally. Reserve the signal for
+        stories that genuinely bundle separable concerns.
+
         ## Rules
 
         - Do NOT write code. Do NOT modify files.
+        - Do NOT set `decompose: true` merely because the story is non-trivial.
+          Only use it when the story bundles independent deliverables that fight
+          each other in one implementation cycle.
         - Do NOT invent function signatures — cite what exists in the codebase.
         - Do NOT pad the plan with edge case tables or test scenario details
           that the dev agent will derive from the code. Keep it lean.

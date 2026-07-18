@@ -415,6 +415,55 @@ def _clean_stale_plan_files(workspace_path: Path) -> None:
             stale_trace.unlink()
 
 
+def _maybe_escalate_decompose(
+    state: CoordinatorState,
+    task: TaskStory,
+    plan_result: "AgentResult",
+    plan_elapsed: float,
+    notify: bool,
+    config: ForgeConfig,
+    logger: "StructuredLogger | None",
+) -> CoordinatorResult | None:
+    """Escalate when the planner signalled the story is too large to plan.
+
+    The planner emits ``decompose: true`` (with an optional ``decompose_reason``)
+    when the story bundles independent deliverables that cannot be implemented as
+    a single unit. This escalates the story for a human to split manually — the
+    coordinator does NOT auto-split (auto-decomposition is the separate #28 effort).
+
+    Returns a terminal CoordinatorResult when the signal is present, or None to
+    continue the normal PLAN → PLAN_REVIEW → DEV flow.
+    """
+    if not (state.plan_structured and state.plan_structured.get("decompose") is True):
+        return None
+
+    _reason = str(state.plan_structured.get("decompose_reason") or "").strip()
+    state.phase = Phase.ESCALATE
+    state.escalate_kind = "decompose"
+    state.escalate_reason = (
+        _reason or "Planner signalled the story is too large to plan as one unit."
+    )
+    state.error = (
+        "PLAN signalled DECOMPOSE_NEEDED — the story is too large to plan and "
+        "implement as a single unit. Split it into smaller runnable stories; the "
+        "coordinator does not auto-split."
+    )
+    if _reason:
+        state.error += f" Planner reason: {_reason}"
+    _log(f"  ⚑ PLAN   decompose signalled after {_fmt_duration(plan_elapsed)}")
+    _log(f"✗ ESCALATE   {state.error}")
+    if logger:
+        logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
+        logger._safe_emit("escalate", reason=state.error, phase="PLAN", escalate_kind="decompose")
+    _escalate_notify(task, state, notify, config)
+    return CoordinatorResult(
+        success=False,
+        phase=state.phase,
+        state=state,
+        message=state.error,
+    )
+
+
 def _run_plan_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -645,6 +694,17 @@ def _run_plan_phase(
         worktree_plan_path.write_text(plan_text, encoding="utf-8")
         state.plan_output = plan_text
         state.plan_structured = parse_plan_output(plan_text)
+
+        # Decompose signal: the planner judged the story too large to implement
+        # as one unit. Escalate for manual splitting — the coordinator does NOT
+        # auto-split (auto-decomposition is the separate #28 effort). This runs
+        # before PLAN_REVIEW/DEV so no dev budget is spent on an oversized story.
+        _decompose_result = _maybe_escalate_decompose(
+            state, task, plan_result, _plan_elapsed, notify, config, logger
+        )
+        if _decompose_result is not None:
+            return _decompose_result
+
         _log(f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}")
         if logger:
             logger._safe_emit(

@@ -29,6 +29,13 @@ class PlanData(_PlanDataRequired, total=False):
 
     criteria_mapping: list[dict]
     risks: list[dict]
+    # Decompose signal: the planner sets decompose=True when the story is too
+    # large to plan and implement as a single unit. The coordinator escalates
+    # for manual splitting rather than auto-decomposing (see #161; auto-split is
+    # the separate, deeper #28 effort). decompose_reason carries the planner's
+    # justification for the audit trail and the operator.
+    decompose: bool
+    decompose_reason: str
 
 
 def _extract_plan_block(text: str) -> str | None:
@@ -83,6 +90,20 @@ def parse_plan_output(text: str) -> PlanData | None:
     plan = data["plan"]
     if not isinstance(plan, dict):
         return None
+
+    # Decompose signal short-circuits the steps requirement: a planner that
+    # judges the story too large is not expected to produce a full step plan.
+    # Surface the signal (and reason) so the coordinator can escalate for manual
+    # splitting instead of proceeding to DEV.
+    if plan.get("decompose") is True:
+        decompose_result: PlanData = {
+            "approach": str(plan.get("approach", "")),
+            "steps": plan["steps"] if isinstance(plan.get("steps"), list) else [],
+            "decompose": True,
+        }
+        if plan.get("decompose_reason") is not None:
+            decompose_result["decompose_reason"] = str(plan["decompose_reason"])
+        return decompose_result
 
     # Validate required top-level keys
     if "approach" not in plan or "steps" not in plan:

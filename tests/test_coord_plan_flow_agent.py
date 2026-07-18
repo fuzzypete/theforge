@@ -496,6 +496,52 @@ findings:
         # plan review pool called twice; code review never reached
         assert mock_pool.call_count == 2
 
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_plan_decompose_signal_escalates_before_dev(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Planner signals decompose → coordinator escalates before PLAN_REVIEW/DEV.
+
+        Seam-level: verifies the PLAN → (PLAN_REVIEW/DEV) boundary. When the plan
+        agent emits ``decompose: true``, the coordinator must stop at PLAN and
+        escalate for manual splitting — never invoking the plan-review pool or the
+        dev phase, so no dev budget is spent on an oversized story.
+        """
+        config = _make_plan_agent_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        _decompose_plan = (
+            "plan:\n"
+            "  decompose: true\n"
+            '  decompose_reason: "Bundles an auth refactor and an unrelated API redesign."\n'
+        )
+        mock_plan_agent.return_value = _make_agent_result(
+            success=True, output=_decompose_plan, cost_usd=0.10
+        )
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.escalate_kind == "decompose"
+        assert "DECOMPOSE_NEEDED" in result.message
+        assert "auth refactor" in result.state.escalate_reason
+        # Never reached plan review or dev — no auto-split, no dev budget spent.
+        assert mock_pool.call_count == 0
+        assert mock_dev.call_count == 0
+        assert result.state.plan_structured is not None
+        assert result.state.plan_structured.get("decompose") is True
+
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
