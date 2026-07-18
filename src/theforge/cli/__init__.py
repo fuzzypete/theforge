@@ -10,8 +10,11 @@ from theforge.cli.hooks import cmd_init_hooks
 from theforge.cli.ideate import cmd_ideate
 from theforge.cli.index import cmd_index
 from theforge.cli.init_commands import (
+    _ensure_gitattributes,
     _ensure_gitignored,
     _generate_secrets_skeleton,
+    _gitattributes_block,
+    _gitignore_block,
     cmd_init,
     cmd_secrets_init,
     cmd_version,
@@ -57,9 +60,12 @@ __all__ = [
     "_apply_dev_model_override",
     "_apply_plan_model_override",
     "_build_task",
+    "_ensure_gitattributes",
     "_ensure_gitignored",
     "_find_config",
     "_generate_secrets_skeleton",
+    "_gitattributes_block",
+    "_gitignore_block",
     "_parse_story_frontmatter",
     "_write_audit",
 ]

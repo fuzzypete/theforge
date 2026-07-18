@@ -17,10 +17,15 @@ from theforge.cli import (
     _apply_dev_model_override,
     _apply_plan_model_override,
     _build_task,
+    _ensure_gitattributes,
     _ensure_gitignored,
     _find_config,
+    _gitattributes_block,
+    _gitignore_block,
     _parse_story_frontmatter,
+    build_parser,
     cmd_check_providers,
+    cmd_init,
     cmd_init_hooks,
     cmd_secrets_init,
 )
@@ -324,6 +329,204 @@ class TestSecretsInit:
         content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
         assert "*.pyc" in content
         assert ".forge/.env" in content
+
+
+# ── TestCanonicalGitignoreTemplate ────────────────────────────────────
+
+
+class TestCanonicalGitignoreTemplate:
+    """AC: forge init writes a canonical default-deny .gitignore block."""
+
+    def _init_args(self, shared_memory: bool = True) -> argparse.Namespace:
+        return argparse.Namespace(shared_memory=shared_memory)
+
+    def test_shared_memory_block_shape(self, tmp_path, monkeypatch):
+        """Default (--shared-memory) writes default-deny with all re-includes."""
+        monkeypatch.chdir(tmp_path)
+        assert cmd_init(self._init_args()) == 0
+        content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        # Default-deny rule
+        assert ".forge/**" in content
+        # Project-memory re-includes
+        assert "!.forge/audits/runs/**" in content
+        assert "!.forge/knowledge/summaries/**" in content
+        # Config re-includes
+        assert "!.forge/hooks/**" in content
+        assert "!.forge/.env.example" in content
+        # Root runtime state
+        assert "handoff.yaml" in content
+        # Prose references the design doc and the escape hatch
+        assert "docs/plans/forge-storage-layout.md" in content
+        assert "--local-memory" in content
+
+    def test_local_memory_omits_project_memory_reincludes(self, tmp_path, monkeypatch):
+        """--local-memory drops project-memory re-includes, keeps config re-includes."""
+        monkeypatch.chdir(tmp_path)
+        assert cmd_init(self._init_args(shared_memory=False)) == 0
+        content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert ".forge/**" in content
+        # Project-memory re-includes must be gone
+        assert "!.forge/audits/runs/**" not in content
+        assert "!.forge/knowledge/summaries/**" not in content
+        # Config re-includes remain
+        assert "!.forge/hooks/**" in content
+        assert "!.forge/.env.example" in content
+
+    def test_single_block_not_duplicated_on_rerun(self, tmp_path):
+        """Running the writer twice does not duplicate the block."""
+        _ensure_gitignored(tmp_path)
+        _ensure_gitignored(tmp_path)
+        content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert content.count(".forge/**") == 1
+        assert content.count("# ── TheForge") == 1
+
+    def test_local_then_shared_recognized_no_drift(self, tmp_path, capsys):
+        """A local-memory block is recognized by a later shared-memory run (no drift)."""
+        _ensure_gitignored(tmp_path, shared_memory=False)
+        before = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        status = _ensure_gitignored(tmp_path, shared_memory=True)
+        after = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert status == "current"
+        assert before == after
+
+    def test_drift_is_surfaced_not_overwritten(self, tmp_path):
+        """An edited TheForge block is reported as drift and left untouched."""
+        _ensure_gitignored(tmp_path)
+        gitignore = tmp_path / ".gitignore"
+        edited = gitignore.read_text(encoding="utf-8").replace(
+            "!.forge/hooks/**", "!.forge/hooks/**\n!.forge/custom/**"
+        )
+        gitignore.write_text(edited, encoding="utf-8")
+        status = _ensure_gitignored(tmp_path)
+        assert status == "drift"
+        # User edit preserved
+        assert gitignore.read_text(encoding="utf-8") == edited
+
+    def test_appends_below_existing_content(self, tmp_path):
+        """The block is appended below unrelated existing .gitignore content."""
+        (tmp_path / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        _ensure_gitignored(tmp_path)
+        content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert content.startswith("*.pyc\n")
+        assert ".forge/**" in content
+
+    def test_secrets_denied_by_default_deny(self, tmp_path):
+        """.forge/.env is not re-included — it stays denied by .forge/**."""
+        block = _gitignore_block(shared_memory=True)
+        assert "!.forge/.env\n" not in block
+        assert "!.forge/.env.example" in block
+
+    def test_rerun_with_existing_forge_yaml_surfaces_drift(self, tmp_path, monkeypatch, capsys):
+        """forge init on an already-initialized project still surfaces template drift."""
+        monkeypatch.chdir(tmp_path)
+        # First init writes forge.yaml and the canonical blocks.
+        assert cmd_init(argparse.Namespace(shared_memory=True)) == 0
+        # Operator edits the TheForge .gitignore block away from canonical.
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text(
+            gitignore.read_text(encoding="utf-8").replace(
+                "!.forge/hooks/**", "!.forge/hooks/**\n!.forge/custom/**"
+            ),
+            encoding="utf-8",
+        )
+        edited = gitignore.read_text(encoding="utf-8")
+        capsys.readouterr()  # clear buffered output from the first init
+
+        # Re-running init (forge.yaml already exists) must still check the block.
+        rc = cmd_init(argparse.Namespace(shared_memory=True))
+        assert rc == 1  # forge.yaml already exists → non-zero, unchanged contract
+        captured = capsys.readouterr()
+        assert "forge.yaml already exists" in captured.err
+        assert "differs from the canonical" in captured.err
+        # The user's edited block is left untouched.
+        assert gitignore.read_text(encoding="utf-8") == edited
+
+    def test_rerun_with_existing_forge_yaml_writes_missing_gitattributes(
+        self, tmp_path, monkeypatch
+    ):
+        """Re-run writes a missing .gitattributes block even when forge.yaml exists."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "forge.yaml").write_text("project: x\n", encoding="utf-8")
+        assert not (tmp_path / ".gitattributes").exists()
+        rc = cmd_init(argparse.Namespace(shared_memory=True))
+        assert rc == 1
+        assert (tmp_path / ".gitattributes").exists()
+        assert (tmp_path / ".gitignore").exists()
+
+
+# ── TestCanonicalGitattributes ────────────────────────────────────────
+
+
+class TestCanonicalGitattributes:
+    """AC: forge init writes a .gitattributes block marking runs as generated."""
+
+    def test_block_marks_generated(self, tmp_path):
+        status = _ensure_gitattributes(tmp_path)
+        assert status == "written"
+        content = (tmp_path / ".gitattributes").read_text(encoding="utf-8")
+        assert ".forge/audits/runs/**  linguist-generated=true" in content
+        assert ".forge/knowledge/summaries/**  linguist-generated=true" in content
+
+    def test_idempotent(self, tmp_path):
+        _ensure_gitattributes(tmp_path)
+        status = _ensure_gitattributes(tmp_path)
+        content = (tmp_path / ".gitattributes").read_text(encoding="utf-8")
+        assert status == "current"
+        assert content.count("# ── TheForge") == 1
+
+    def test_appends_below_existing_content(self, tmp_path):
+        (tmp_path / ".gitattributes").write_text(
+            "*.lock.yml linguist-generated=true\n", encoding="utf-8"
+        )
+        _ensure_gitattributes(tmp_path)
+        content = (tmp_path / ".gitattributes").read_text(encoding="utf-8")
+        assert content.startswith("*.lock.yml linguist-generated=true\n")
+        assert "linguist-generated=true" in _gitattributes_block()
+
+    def test_written_regardless_of_memory_mode(self, tmp_path, monkeypatch):
+        """--local-memory still writes .gitattributes (harmless if nothing tracked)."""
+        monkeypatch.chdir(tmp_path)
+        cmd_init(argparse.Namespace(shared_memory=False))
+        assert (tmp_path / ".gitattributes").exists()
+
+
+# ── TestInitMemoryFlags ───────────────────────────────────────────────
+
+
+class TestInitMemoryFlags:
+    """AC: forge init exposes mutually-exclusive --shared-memory/--local-memory."""
+
+    def test_default_is_shared_memory(self):
+        args = build_parser().parse_args(["init"])
+        assert args.shared_memory is True
+
+    def test_local_memory_flag(self):
+        args = build_parser().parse_args(["init", "--local-memory"])
+        assert args.shared_memory is False
+
+    def test_shared_memory_flag(self):
+        args = build_parser().parse_args(["init", "--shared-memory"])
+        assert args.shared_memory is True
+
+    def test_flags_mutually_exclusive(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["init", "--shared-memory", "--local-memory"])
+
+
+# ── TestSecretsInitTemplateSource ─────────────────────────────────────
+
+
+class TestSecretsInitTemplateSource:
+    """AC: forge secrets-init uses the same template source as forge init."""
+
+    def test_writes_canonical_block_and_gitattributes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        rc = cmd_secrets_init(argparse.Namespace())
+        assert rc == 0
+        gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        # Same canonical block the default forge init would write
+        assert _gitignore_block(shared_memory=True) in gitignore
+        assert (tmp_path / ".gitattributes").exists()
 
 
 # ── TestCmdCheckProviders ─────────────────────────────────────────────
