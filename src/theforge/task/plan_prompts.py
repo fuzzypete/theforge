@@ -516,6 +516,7 @@ def build_plan_prompt(
     *,
     story_content: str,
     preflight_output: str | None = None,
+    partial_preflight_evidence: str | None = None,
     assembled_context: ContextPack | None = None,
     conventions: list[str] | None = None,
     work_type: str | None = None,
@@ -524,6 +525,12 @@ def build_plan_prompt(
 
     The planning agent reads the story and produces a structured YAML plan.
     It does NOT write code.
+
+    ``partial_preflight_evidence`` is an optional pre-rendered markdown block
+    salvaged from a *failed* preflight run (issue #706) — files it already
+    inspected, tool calls, any partial conclusion — surfaced so the planner
+    can skip re-reading the same files. It is mutually informative with, and
+    independent of, ``preflight_output`` (which is only present on success).
 
     Output is ONLY the plan document in YAML format.
     """
@@ -536,6 +543,15 @@ def build_plan_prompt(
             The preflight agent already analysed the codebase:
 
             {preflight_output}
+        """)
+
+    partial_evidence_section = ""
+    if partial_preflight_evidence:
+        partial_evidence_section = dedent(f"""\
+
+            ## Partial Evidence from a Failed Preflight
+
+            {partial_preflight_evidence}
         """)
 
     work_type_instruction = ""
@@ -572,7 +588,7 @@ def build_plan_prompt(
         ## Spec
 
         {story_content}
-        {preflight_section}{context_section}{work_type_instruction}
+        {preflight_section}{partial_evidence_section}{context_section}{work_type_instruction}
         ## Output Format
 
         You MUST output ONLY a YAML block. No prose before or after.

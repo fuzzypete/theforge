@@ -52,6 +52,7 @@ from .preflight import (
     score_to_band,
 )
 from .preflight_cache import capture_preflight_cache_snapshot
+from .preflight_evidence import build_partial_evidence
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
 from .validation_complexity import (
@@ -332,15 +333,37 @@ def _run_preflight_phase(
         **{**preflight_result.__dict__, "raw": preflight_raw}
     )
 
+    def _preserve_partial_evidence() -> None:
+        # Preserve whatever exploration the preflight agent managed — files
+        # inspected, tool calls, any partial conclusion — as an audit artifact
+        # the plan phase can consume instead of re-reading the same files
+        # (issue #706). Applies both when the agent dies (timeout/SIGKILL) and
+        # when it exits cleanly but emits unparseable output: in both cases the
+        # tool trace it left behind is real, paid-for signal.
+        _partial_evidence = build_partial_evidence(
+            preflight_result, duration_s=round(_preflight_elapsed, 2)
+        )
+        if not _partial_evidence.is_empty():
+            state.preflight_partial_evidence = _partial_evidence.to_dict()
+            _log(
+                "  ⓘ PREFLIGHT partial evidence preserved: "
+                f"{len(_partial_evidence.files_inspected)} file(s) inspected, "
+                f"{len(_partial_evidence.tool_calls)} tool call(s)"
+            )
+
     if preflight_result.success:
         verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
         if _parse_degraded:
             state.preflight_degraded = True
             state.preflight_degraded_reason = "parse_error"
+            # A clean exit with malformed output is still a failed preflight —
+            # salvage the exploration the same way as a crashed run.
+            _preserve_partial_evidence()
             _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
     else:
-        # Preflight agent failed (timeout, SIGKILL, non-zero exit). Whether
-        # it is safe to fall through to a conservative PROCEED depends on
+        # Preflight agent failed (timeout, SIGKILL, non-zero exit).
+        _preserve_partial_evidence()
+        # Whether it is safe to fall through to a conservative PROCEED depends on
         # whether preflight was a confidence boost or the load-bearing check
         # that catches contract drift. Detect risk signals deterministically
         # from local state — no extra agent calls — and escalate when any
@@ -810,6 +833,7 @@ def _run_preflight_phase(
         "degraded_reason": state.preflight_degraded_reason,
         "risk_signals": list(state.preflight_risk_signals),
         "failure_action": state.preflight_failure_action,
+        "partial_evidence": state.preflight_partial_evidence,
         "attempts": attempts,
     }
     state.preflight_cache_snapshot = dict(_preflight_artifact["cache_snapshot"])
@@ -819,6 +843,16 @@ def _run_preflight_phase(
         "preflight.yaml",
         yaml.dump(_preflight_artifact, default_flow_style=False, allow_unicode=True),
     )
+    if state.preflight_partial_evidence is not None:
+        _write_log_artifact(
+            state.log_dir,
+            "preflight-partial-evidence.yaml",
+            yaml.dump(
+                state.preflight_partial_evidence,
+                default_flow_style=False,
+                allow_unicode=True,
+            ),
+        )
 
     # ── stop_phase gate ────────────────────────────────────────────────
     if stop_phase is not None and stop_phase == Phase.PREFLIGHT:
