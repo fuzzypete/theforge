@@ -80,6 +80,13 @@ class RunOutcome:
     dev_timeout_killed: bool = False
     # The granted per-story timeout (seconds) at which a killed run was terminated.
     dev_timeout_limit_s: int | None = None
+    # Why the harness ended the dev process, if it did: ``"timeout"`` (deadline
+    # kill) or ``"stuck_pattern"`` (stuck-pattern terminate); ``None`` for a run
+    # the model itself finished (success or genuine failure). A harness-imposed
+    # ending is evidence about the budget or the harness, not the model, so the
+    # aggregator segregates these runs into a visible ``harness_terminated``
+    # sub-dict and keeps them out of success_rate/avg_iterations/avg_cost stats.
+    dev_termination_cause: str | None = None
     preflight_model: str | None = None
     dev_actual_model: str | None = None
     dev_provider: str | None = None
@@ -297,6 +304,61 @@ def _fold_duration(
         )
 
 
+def _fold_harness_terminated(bucket: dict, cause: str | None, cost_usd: float | None) -> None:
+    """Record a harness-imposed termination in ``bucket['harness_terminated']``.
+
+    Harness-terminated runs (deadline kill, stuck-pattern terminate) are kept out
+    of the capability accumulators (``runs``/``_successes``/``_iterations_sum`` →
+    ``success_rate``/``avg_iterations``) entirely so the orchestrator can never
+    steer away from a model because it starved the run (#1763). They are instead
+    tallied here — visibly, with a per-cause breakdown — and their spend is folded
+    against this sub-dict so killed-run cost stays on the ledger without diluting
+    the capability ``avg_cost_usd``.
+    """
+    ht = bucket.setdefault("harness_terminated", {})
+    ht["runs"] = int(ht.get("runs", 0)) + 1
+    by_cause = ht.setdefault("by_cause", {})
+    if cause is not None:
+        by_cause[cause] = int(by_cause.get(cause, 0)) + 1
+    _fold_cost(ht, cost_usd)
+
+
+def _fold_dev_bucket(
+    bucket: dict,
+    success: bool,
+    iterations: int,
+    cost_usd: float | None,
+    duration_s: float | None,
+    timeout_killed: bool,
+    timeout_limit_s: int | None,
+    termination_cause: str | None,
+) -> None:
+    """Fold one dev run into a single dev bucket (top-level / band / score).
+
+    A harness-terminated run bypasses the capability accumulators and cost fold
+    entirely (recorded via :func:`_fold_harness_terminated`); only the duration
+    fold still runs with ``duration_s=None`` so a timeout kill can raise
+    ``max_killed_timeout_s`` without touching completed-run duration stats.
+    """
+    if termination_cause is not None:
+        _fold_harness_terminated(bucket, termination_cause, cost_usd)
+        # duration_s=None: skip the completed-duration branch for BOTH timeout and
+        # stuck; the killed/limit branch still raises max_killed_timeout_s for a
+        # timeout (timeout_killed=True carries the kill floor).
+        _fold_duration(bucket, None, timeout_killed, timeout_limit_s)
+        return
+    runs = int(bucket.get("runs", 0)) + 1
+    successes = int(bucket.get("_successes", 0)) + (1 if success else 0)
+    iter_sum = float(bucket.get("_iterations_sum", 0.0)) + float(iterations)
+    bucket["runs"] = runs
+    bucket["_successes"] = successes
+    bucket["_iterations_sum"] = iter_sum
+    bucket["success_rate"] = round(successes / runs, 4)
+    bucket["avg_iterations"] = round(iter_sum / runs, 4)
+    _fold_cost(bucket, cost_usd)
+    _fold_duration(bucket, duration_s, timeout_killed, timeout_limit_s)
+
+
 def _update_dev(
     entry: dict,
     complexity: str,
@@ -307,6 +369,7 @@ def _update_dev(
     duration_s: float | None = None,
     timeout_killed: bool = False,
     timeout_limit_s: int | None = None,
+    termination_cause: str | None = None,
 ) -> None:
     if cost_usd is None:
         log.warning(
@@ -316,44 +379,44 @@ def _update_dev(
             complexity,
         )
     dev = entry.setdefault("dev", {})
-    runs = int(dev.get("runs", 0)) + 1
-    successes = int(dev.get("_successes", 0)) + (1 if success else 0)
-    iter_sum = float(dev.get("_iterations_sum", 0.0)) + float(iterations)
-    dev["runs"] = runs
-    dev["_successes"] = successes
-    dev["_iterations_sum"] = iter_sum
-    dev["success_rate"] = round(successes / runs, 4)
-    dev["avg_iterations"] = round(iter_sum / runs, 4)
-    _fold_cost(dev, cost_usd)
-    _fold_duration(dev, duration_s, timeout_killed, timeout_limit_s)
+    _fold_dev_bucket(
+        dev,
+        success,
+        iterations,
+        cost_usd,
+        duration_s,
+        timeout_killed,
+        timeout_limit_s,
+        termination_cause,
+    )
 
     by = dev.setdefault("by_complexity", {})
     bc = by.setdefault(complexity, {})
-    bc_runs = int(bc.get("runs", 0)) + 1
-    bc_successes = int(bc.get("_successes", 0)) + (1 if success else 0)
-    bc_iter_sum = float(bc.get("_iterations_sum", 0.0)) + float(iterations)
-    bc["runs"] = bc_runs
-    bc["_successes"] = bc_successes
-    bc["_iterations_sum"] = bc_iter_sum
-    bc["success_rate"] = round(bc_successes / bc_runs, 4)
-    bc["avg_iterations"] = round(bc_iter_sum / bc_runs, 4)
-    _fold_cost(bc, cost_usd)
-    _fold_duration(bc, duration_s, timeout_killed, timeout_limit_s)
+    _fold_dev_bucket(
+        bc,
+        success,
+        iterations,
+        cost_usd,
+        duration_s,
+        timeout_killed,
+        timeout_limit_s,
+        termination_cause,
+    )
 
     if complexity_score is not None:
         score_key = str(int(complexity_score))
         by_score = dev.setdefault("by_complexity_score", {})
         sc = by_score.setdefault(score_key, {})
-        sc_runs = int(sc.get("runs", 0)) + 1
-        sc_successes = int(sc.get("_successes", 0)) + (1 if success else 0)
-        sc_iter_sum = float(sc.get("_iterations_sum", 0.0)) + float(iterations)
-        sc["runs"] = sc_runs
-        sc["_successes"] = sc_successes
-        sc["_iterations_sum"] = sc_iter_sum
-        sc["success_rate"] = round(sc_successes / sc_runs, 4)
-        sc["avg_iterations"] = round(sc_iter_sum / sc_runs, 4)
-        _fold_cost(sc, cost_usd)
-        _fold_duration(sc, duration_s, timeout_killed, timeout_limit_s)
+        _fold_dev_bucket(
+            sc,
+            success,
+            iterations,
+            cost_usd,
+            duration_s,
+            timeout_killed,
+            timeout_limit_s,
+            termination_cause,
+        )
 
 
 def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float | None) -> None:
@@ -402,6 +465,13 @@ def _zero_dev_bucket(bucket: dict) -> None:
     bucket["avg_duration_s"] = 0.0
     bucket["max_duration_s"] = 0.0
     bucket["max_killed_timeout_s"] = 0.0
+    bucket["harness_terminated"] = {
+        "runs": 0,
+        "by_cause": {},
+        "_cost_sum": 0.0,
+        "_cost_unknown_runs": 0,
+        "avg_cost_usd": 0.0,
+    }
 
 
 def _zero_review_section(section: dict) -> None:
@@ -431,6 +501,10 @@ def _recompute_dev_section(section: dict) -> None:
     duration_runs = 0
     max_duration = 0.0
     max_killed_timeout = 0.0
+    ht_runs = 0
+    ht_by_cause: dict[str, int] = {}
+    ht_cost_sum = 0.0
+    ht_cost_unknown = 0
     for band in COMPLEXITY_BANDS:
         bucket = by.setdefault(band, {})
         runs += int(bucket.get("runs", 0))
@@ -444,6 +518,13 @@ def _recompute_dev_section(section: dict) -> None:
         max_killed_timeout = max(
             max_killed_timeout, float(bucket.get("max_killed_timeout_s", 0.0))
         )
+        ht = bucket.get("harness_terminated") or {}
+        if isinstance(ht, dict):
+            ht_runs += int(ht.get("runs", 0))
+            ht_cost_sum += float(ht.get("_cost_sum", 0.0))
+            ht_cost_unknown += int(ht.get("_cost_unknown_runs", 0))
+            for cause, count in (ht.get("by_cause") or {}).items():
+                ht_by_cause[cause] = ht_by_cause.get(cause, 0) + int(count)
     section["runs"] = runs
     section["_successes"] = successes
     section["_iterations_sum"] = iterations
@@ -460,6 +541,14 @@ def _recompute_dev_section(section: dict) -> None:
     )
     section["max_duration_s"] = max_duration
     section["max_killed_timeout_s"] = max_killed_timeout
+    ht_measured = ht_runs - ht_cost_unknown
+    section["harness_terminated"] = {
+        "runs": ht_runs,
+        "by_cause": ht_by_cause,
+        "_cost_sum": ht_cost_sum,
+        "_cost_unknown_runs": ht_cost_unknown,
+        "avg_cost_usd": round(ht_cost_sum / ht_measured, 6) if ht_measured > 0 else 0.0,
+    }
 
 
 def apply_run(data: dict, outcome: RunOutcome) -> dict:
@@ -482,6 +571,7 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         duration_s=outcome.dev_duration_s,
         timeout_killed=outcome.dev_timeout_killed,
         timeout_limit_s=outcome.dev_timeout_limit_s,
+        termination_cause=outcome.dev_termination_cause,
     )
     if outcome.preflight_model:
         pf_entry = _ensure_model(
@@ -1122,6 +1212,40 @@ def _merge_duration(target: dict, src: dict) -> None:
     )
 
 
+def _merge_harness_terminated(target: dict, src: dict) -> None:
+    """Combine the ``harness_terminated`` sub-dicts of two dev buckets.
+
+    Sums the run tally, the per-cause counts, and the segregated cost ledger.
+    Legacy entries predating #1763 lack the sub-dict entirely, so every read
+    tolerates absence — a merge from such a ``src`` is a no-op.
+    """
+    src_ht = src.get("harness_terminated")
+    if not isinstance(src_ht, dict):
+        return
+    tgt_ht = target.setdefault(
+        "harness_terminated",
+        {
+            "runs": 0,
+            "by_cause": {},
+            "_cost_sum": 0.0,
+            "_cost_unknown_runs": 0,
+            "avg_cost_usd": 0.0,
+        },
+    )
+    tgt_ht["runs"] = int(tgt_ht.get("runs", 0)) + int(src_ht.get("runs", 0))
+    tgt_by_cause = tgt_ht.setdefault("by_cause", {})
+    for cause, count in (src_ht.get("by_cause") or {}).items():
+        tgt_by_cause[cause] = int(tgt_by_cause.get(cause, 0)) + int(count)
+    cost_sum = float(tgt_ht.get("_cost_sum", 0.0)) + float(src_ht.get("_cost_sum", 0.0))
+    cost_unknown = int(tgt_ht.get("_cost_unknown_runs", 0)) + int(
+        src_ht.get("_cost_unknown_runs", 0)
+    )
+    tgt_ht["_cost_sum"] = cost_sum
+    tgt_ht["_cost_unknown_runs"] = cost_unknown
+    measured = int(tgt_ht.get("runs", 0)) - cost_unknown
+    tgt_ht["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+
+
 def _merge_dev(target: dict, src: dict) -> None:
     runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
     successes = int(target.get("_successes", 0)) + int(src.get("_successes", 0))
@@ -1163,6 +1287,7 @@ def _merge_dev(target: dict, src: dict) -> None:
         measured = runs - cost_unknown
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
     _merge_duration(target, src)
+    _merge_harness_terminated(target, src)
 
     src_by = src.get("by_complexity") or {}
     if src_by:
@@ -1206,6 +1331,7 @@ def _merge_dev(target: dict, src: dict) -> None:
                     round(bc_cost / bc_measured, 6) if bc_measured > 0 else 0.0
                 )
             _merge_duration(bc_target, bc_src)
+            _merge_harness_terminated(bc_target, bc_src)
 
     src_by_score = src.get("by_complexity_score") or {}
     if src_by_score:
@@ -1249,6 +1375,7 @@ def _merge_dev(target: dict, src: dict) -> None:
                     round(sc_cost / sc_measured, 6) if sc_measured > 0 else 0.0
                 )
             _merge_duration(sc_target, sc_src)
+            _merge_harness_terminated(sc_target, sc_src)
 
 
 def _merge_review(target: dict, src: dict) -> None:

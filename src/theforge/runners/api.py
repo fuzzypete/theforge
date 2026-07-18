@@ -454,7 +454,8 @@ class AgentLoopManager:
                 )
                 return self._failure_result(
                     f"Agent loop terminated: {stuck_terminate} "
-                    f"(at iteration {iterations}, {self._total_tool_calls} tool calls)"
+                    f"(at iteration {iterations}, {self._total_tool_calls} tool calls)",
+                    failure_code_override="stuck_pattern",
                 )
             if stuck_nudge is not None:
                 messages = list(messages)
@@ -610,11 +611,15 @@ class AgentLoopManager:
             structured_data=structured_data,
         )
 
-    def _failure_result(self, reason: str) -> AgentResult:
+    def _failure_result(
+        self, reason: str, *, failure_code_override: str | None = None
+    ) -> AgentResult:
         usage = self._usage.to_model_usage(self._profile.model, self._provider)
         usage, cost = self._zero_cost_if_local(usage)
-        failure_code = None
-        if reason.startswith("Agent loop terminated: max iterations reached"):
+        failure_code = failure_code_override
+        if failure_code is not None:
+            pass
+        elif reason.startswith("Agent loop terminated: max iterations reached"):
             failure_code = "max_iterations_reached"
         elif reason.startswith("Agent loop terminated: wall-clock timeout"):
             # Running out of wall-clock time is a distinct, retryable failure

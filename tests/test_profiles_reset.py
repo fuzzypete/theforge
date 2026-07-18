@@ -295,3 +295,35 @@ def test_profiles_list_shows_zeroed_bucket_after_reset(capsys, tmp_path):
     assert "small" in stdout
     assert "anthropic/sonnet/cli  dev   small" in stdout
     assert "0          0     —" in stdout
+
+
+def test_profiles_list_shows_harness_terminated_column(capsys, tmp_path):
+    """The dev-role table surfaces a per-band harness-terminated tally so an
+    operator can see kills are recorded but excluded from `rate` (#1763)."""
+    fixture = _profiles_fixture()
+    fixture["models"][CANONICAL_ID]["dev"]["by_complexity"]["medium"]["harness_terminated"] = {
+        "runs": 2,
+        "by_cause": {"timeout": 2},
+    }
+    project_root = _write_profiles(tmp_path, fixture)
+
+    parser = build_parser()
+    list_args = parser.parse_args(
+        [
+            "profiles",
+            "list",
+            "--project-root",
+            str(project_root),
+            "--model",
+            CANONICAL_ID,
+            "--role",
+            "dev",
+        ]
+    )
+    assert cmd_profiles(list_args) == 0
+
+    stdout = capsys.readouterr().out
+    assert "terminated" in stdout  # header rendered
+    # The medium band shows its 2 terminations; capability rate is unchanged.
+    lines = [ln for ln in stdout.splitlines() if "medium" in ln]
+    assert lines and lines[0].rstrip().endswith("2")

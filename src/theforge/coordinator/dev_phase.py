@@ -1049,6 +1049,14 @@ def _run_dev_phase(
             # execution fall through (#1754). model_profiles_bridge reads this to
             # segregate the run as a censored observation for the kill floor.
             state.dev_process_timeout_killed = True
+        if dev_result.failure_code == "stuck_pattern":
+            # Record the stuck-pattern terminate on state immediately, before any
+            # retry/escalate/fall-through decision runs — same rationale as the
+            # timeout flag above (#1754 lets execution fall through, overwriting
+            # the terminated iteration's telemetry). model_profiles_bridge reads
+            # this to segregate the run as a harness-imposed termination that must
+            # not contaminate the model's capability statistics.
+            state.dev_process_stuck_terminated = True
         # The signal number records only what was done to the process, not what
         # went wrong. When the runner already explained the failure in words
         # (e.g. "TIMEOUT: Agent exceeded 900s limit"), surface that instead of
