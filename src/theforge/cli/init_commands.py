@@ -262,18 +262,32 @@ def cmd_secrets_init(args: "argparse.Namespace") -> int:
     return 0
 
 
+def _apply_git_templates(project_root: Path, *, shared_memory: bool) -> None:
+    """Write (or drift-check) the canonical .gitignore/.gitattributes blocks."""
+    _report_template_status(
+        ".gitignore", _ensure_gitignored(project_root, shared_memory=shared_memory)
+    )
+    _report_template_status(".gitattributes", _ensure_gitattributes(project_root))
+
+
 def cmd_init(args: "argparse.Namespace") -> int:
     """Generate a starter forge.yaml in the current directory."""
 
-    target = Path.cwd() / "forge.yaml"
+    project_root = Path.cwd()
+    shared_memory = getattr(args, "shared_memory", True)
+
+    target = project_root / "forge.yaml"
     if target.exists():
         print(f"forge.yaml already exists: {target}", file=sys.stderr)
+        # Still validate the git templates on re-run so drift is surfaced and
+        # missing blocks are written even though forge.yaml is left alone.
+        _apply_git_templates(project_root, shared_memory=shared_memory)
         return 1
 
     target.write_text(generate_default_config(), encoding="utf-8")
     print(f"Created {target}")
 
-    stories_dir = Path.cwd() / "stories"
+    stories_dir = project_root / "stories"
     stories_dir.mkdir(exist_ok=True)
     template_path = stories_dir / "TEMPLATE.md"
     if not template_path.exists():
@@ -282,11 +296,7 @@ def cmd_init(args: "argparse.Namespace") -> int:
 
     print("Edit forge.yaml to match your project, then run: forge run <story-file>")
 
-    shared_memory = getattr(args, "shared_memory", True)
-    _report_template_status(
-        ".gitignore", _ensure_gitignored(Path.cwd(), shared_memory=shared_memory)
-    )
-    _report_template_status(".gitattributes", _ensure_gitattributes(Path.cwd()))
+    _apply_git_templates(project_root, shared_memory=shared_memory)
     return 0
 
 

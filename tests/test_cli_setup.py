@@ -416,6 +416,43 @@ class TestCanonicalGitignoreTemplate:
         assert "!.forge/.env\n" not in block
         assert "!.forge/.env.example" in block
 
+    def test_rerun_with_existing_forge_yaml_surfaces_drift(self, tmp_path, monkeypatch, capsys):
+        """forge init on an already-initialized project still surfaces template drift."""
+        monkeypatch.chdir(tmp_path)
+        # First init writes forge.yaml and the canonical blocks.
+        assert cmd_init(argparse.Namespace(shared_memory=True)) == 0
+        # Operator edits the TheForge .gitignore block away from canonical.
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text(
+            gitignore.read_text(encoding="utf-8").replace(
+                "!.forge/hooks/**", "!.forge/hooks/**\n!.forge/custom/**"
+            ),
+            encoding="utf-8",
+        )
+        edited = gitignore.read_text(encoding="utf-8")
+        capsys.readouterr()  # clear buffered output from the first init
+
+        # Re-running init (forge.yaml already exists) must still check the block.
+        rc = cmd_init(argparse.Namespace(shared_memory=True))
+        assert rc == 1  # forge.yaml already exists → non-zero, unchanged contract
+        captured = capsys.readouterr()
+        assert "forge.yaml already exists" in captured.err
+        assert "differs from the canonical" in captured.err
+        # The user's edited block is left untouched.
+        assert gitignore.read_text(encoding="utf-8") == edited
+
+    def test_rerun_with_existing_forge_yaml_writes_missing_gitattributes(
+        self, tmp_path, monkeypatch
+    ):
+        """Re-run writes a missing .gitattributes block even when forge.yaml exists."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "forge.yaml").write_text("project: x\n", encoding="utf-8")
+        assert not (tmp_path / ".gitattributes").exists()
+        rc = cmd_init(argparse.Namespace(shared_memory=True))
+        assert rc == 1
+        assert (tmp_path / ".gitattributes").exists()
+        assert (tmp_path / ".gitignore").exists()
+
 
 # ── TestCanonicalGitattributes ────────────────────────────────────────
 
