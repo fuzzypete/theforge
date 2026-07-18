@@ -1651,28 +1651,35 @@ def _skip_last_status(
     issue_id: str,
     prior_count: int,
     last_blocked_at: str | None,
+    current_emitted_at: str,
 ) -> str:
     """Return the issue's last unblocked-or-still-blocked status for this skip code.
 
     ``NO_PRIOR_BLOCK`` when this is the first block. Otherwise the issue is
-    ``UNBLOCKED`` when a ``RUNNABLE`` shape-verdict event was emitted after the
-    previous block (the gate cleared it, and it has now tripped again — the shape
-    of #1135/#1405, an issue that repeatedly passes and re-blocks); else
-    ``STILL_BLOCKED`` (continuously blocked since the previous block). A RUNNABLE
-    verdict clears every code, so it is a sound per-code unblock signal.
+    ``UNBLOCKED`` when *any* ``RUNNABLE`` shape-verdict event was emitted in the
+    open interval ``(last_blocked_at, current_emitted_at)`` — the gate cleared it
+    between the previous block and this one, and it has now tripped again (the
+    #1135/#1405 pass-then-reblock shape); else ``STILL_BLOCKED`` (continuously
+    blocked since the previous block).
+
+    Checking for *any* runnable in the window — not the latest verdict — is what
+    makes the clear-and-reblock case correct: at sprint runtime the current
+    non-runnable verdict is emitted before this skip record, and a later
+    non-runnable verdict must not mask an earlier runnable one. Bounding the
+    upper end at ``current_emitted_at`` excludes the current block's own verdict
+    from the window. A RUNNABLE verdict clears every code, so it is a sound
+    per-code unblock signal.
     """
     if prior_count <= 0:
         return SKIP_STATUS_NO_PRIOR
     row = conn.execute(
-        "SELECT verdict FROM shape_verdict_events "
-        "WHERE issue_id = ? AND emitted_at > ? "
-        "ORDER BY emitted_at DESC, event_id DESC LIMIT 1",
-        (issue_id, last_blocked_at or ""),
+        "SELECT 1 FROM shape_verdict_events "
+        "WHERE issue_id = ? AND emitted_at > ? AND emitted_at < ? "
+        "AND LOWER(verdict) = 'runnable' LIMIT 1",
+        (issue_id, last_blocked_at or "", current_emitted_at),
     ).fetchone()
     if row is not None:
-        verdict = row[0] if not isinstance(row, sqlite3.Row) else row["verdict"]
-        if str(verdict or "").lower() == "runnable":
-            return SKIP_STATUS_UNBLOCKED
+        return SKIP_STATUS_UNBLOCKED
     return SKIP_STATUS_STILL_BLOCKED
 
 
@@ -1701,7 +1708,7 @@ def record_shape_skip_event(project_root: Path, event: dict) -> int:
         prior_count, first_blocked, last_blocked = _skip_prior_block_history(
             conn, issue_id, reason_code
         )
-        last_status = _skip_last_status(conn, issue_id, prior_count, last_blocked)
+        last_status = _skip_last_status(conn, issue_id, prior_count, last_blocked, emitted_at)
         # Fold the computed history back into the persisted raw_json so the
         # canonical record and the indexed columns agree.
         enriched = dict(event)

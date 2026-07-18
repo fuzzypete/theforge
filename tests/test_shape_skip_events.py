@@ -180,6 +180,51 @@ def test_last_status_unblocked_after_runnable_verdict(tmp_path: Path) -> None:
     assert events[-1]["last_status"] == SKIP_STATUS_UNBLOCKED
 
 
+def test_last_status_unblocked_despite_later_nonrunnable_verdict(tmp_path: Path) -> None:
+    """Clear-and-reblock: a runnable verdict followed by a later non-runnable one.
+
+    The status must be ``unblocked`` — the issue cleared the gate between blocks —
+    even though the most recent verdict before the new skip is non-runnable.
+    Regression guard for the iter-2 P1: the old "latest verdict" lookup reported
+    ``still_blocked`` here and hid the exact pass/re-block pattern the story wants.
+    """
+    _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
+    record_shape_verdict_event(
+        tmp_path, {"issue_id": "1", "verdict": "runnable", "emitted_at": "2026-05-02T00:00:00Z"}
+    )
+    record_shape_verdict_event(
+        tmp_path, {"issue_id": "1", "verdict": "needs_type", "emitted_at": "2026-05-03T00:00:00Z"}
+    )
+    _emit(tmp_path, "1", "c", "r4", "2026-05-04T00:00:00Z")
+
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, issue_id="1"))
+    finally:
+        conn.close()
+    assert events[-1]["last_status"] == SKIP_STATUS_UNBLOCKED
+
+
+def test_last_status_ignores_current_run_nonrunnable_verdict(tmp_path: Path) -> None:
+    """Sprint-runtime ordering: the current block's own non-runnable verdict is
+    emitted *before* the skip record. It must not be mistaken for a clear, and —
+    with no prior runnable — the status stays ``still_blocked``.
+    """
+    _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
+    # Current run: the gate emits the non-runnable verdict, then the skip record.
+    record_shape_verdict_event(
+        tmp_path, {"issue_id": "1", "verdict": "needs_type", "emitted_at": "2026-05-02T00:00:00Z"}
+    )
+    _emit(tmp_path, "1", "c", "r2", "2026-05-02T00:00:01Z")
+
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, issue_id="1"))
+    finally:
+        conn.close()
+    assert events[-1]["last_status"] == SKIP_STATUS_STILL_BLOCKED
+
+
 def test_last_status_persisted_in_indexed_column(tmp_path: Path) -> None:
     _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
     _emit(tmp_path, "1", "c", "r2", "2026-05-02T00:00:00Z")
