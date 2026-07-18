@@ -863,6 +863,28 @@ def test_run_shell_timeout_ignores_missing_process_group(tmp_path):
     proc.wait.assert_called_once_with()
 
 
+def test_run_shell_timeout_refuses_broadcast_pgid(tmp_path):
+    """A pgid <= 1 (e.g. an unset mock pid coerced through __index__ to 1) must
+    never reach killpg: os.killpg(1, ...) is kill(-1, ...), a session-wide
+    broadcast SIGKILL (#1793). The kill falls back to terminating the child."""
+    proc = mock.Mock()
+    proc.pid = 4321
+    proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="pytest -n auto", timeout=1)
+
+    with (
+        patch("theforge.coordinator.util.subprocess.Popen", return_value=proc),
+        patch("theforge.coordinator.util.os.getpgid", return_value=1) as mock_getpgid,
+        patch("theforge.coordinator.util.os.killpg") as mock_killpg,
+    ):
+        ok, output = _cu._run_shell("pytest -n auto --dist worksteal", tmp_path, timeout=1)
+
+    assert ok is False
+    mock_getpgid.assert_called_once_with(4321)
+    mock_killpg.assert_not_called()
+    proc.terminate.assert_called_once_with()
+    proc.wait.assert_called_once_with()
+
+
 def test_run_shell_kills_process_group_on_keyboard_interrupt(tmp_path):
     proc = mock.MagicMock()
     proc.pid = 4321
