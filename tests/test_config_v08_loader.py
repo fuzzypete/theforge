@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from theforge.config import load_config
+from theforge.config.profiles import override_constrains_model
 from theforge.coordinator.preflight import _apply_preflight_config
 from theforge.coordinator.state import CoordinatorState
 
@@ -124,6 +125,40 @@ plan_agent_review:
     assert profiles[0].model == "sonnet"
 
 
+# ── override_constrains_model ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"timeout_seconds": 1200},
+        {"timeout_medium_seconds": 1800, "timeout_large_seconds": 3600},
+        {"budget_usd": 20.0},
+        {"sandbox_mode": "read-only"},
+        {"allowed_tools": ["Read"]},
+        {},
+        None,
+    ],
+)
+def test_override_constrains_model_false_for_non_model_keys(data):
+    assert override_constrains_model(data) is False
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"model": "opus"},
+        {"models": ["opus", "sonnet"]},
+        {"fallback_models": ["sonnet"]},
+        {"provider": "anthropic"},
+        {"cli": "codex"},
+        {"timeout_seconds": 1200, "model": "opus"},
+    ],
+)
+def test_override_constrains_model_true_for_model_keys(data):
+    assert override_constrains_model(data) is True
+
+
 # ── Simple mode + overrides ───────────────────────────────────────────────────
 
 
@@ -143,6 +178,110 @@ overrides:
         cfg = load_config(cfg_path)
 
     assert cfg.dev_profile.timeout_seconds == 1200
+
+
+def test_v08_timeout_only_dev_override_keeps_routing_active(tmp_path):
+    """A resource-only overrides.dev (timeouts) must not pin the dev model.
+
+    Regression for #1764: raising the dev timeout is a statement about budgets,
+    not model selection, so complexity-aware dev routing stays active.
+    """
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+  - claude/opus
+overrides:
+  dev:
+    timeout_medium_seconds: 1800
+    timeout_large_seconds: 3600
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+
+    assert cfg.dev_profile_is_default is True
+    # Operator's timeout override is still applied to the derived dev profile.
+    assert cfg.dev_profile.timeout_medium_seconds == 1800
+    assert cfg.dev_profile.timeout_large_seconds == 3600
+
+
+def test_v08_model_dev_override_pins_routing(tmp_path):
+    """A model-constraining overrides.dev pins the role and disables routing."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+  - claude/opus
+overrides:
+  dev:
+    model: opus
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+
+    assert cfg.dev_profile_is_default is False
+    assert cfg.dev_profile.model == "opus"
+
+
+def test_v08_timeout_only_dev_override_routes_and_preserves_timeout_seam(tmp_path):
+    """Seam: load → complexity adaptation with a timeout-only dev override.
+
+    A large story must route dev to the strong model (routing active) while the
+    operator's timeout override survives the model reassignment (#1764).
+    """
+    from theforge.coordinator.preflight import _apply_complexity_adaptation
+
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+  - claude/opus
+overrides:
+  dev:
+    timeout_large_seconds: 3600
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+
+    # Static derivation picks the cheapest dev-capable model.
+    assert cfg.dev_profile.model == "sonnet"
+
+    updated = _apply_complexity_adaptation(cfg, "large", complexity_score=10)
+
+    # Routing stayed active → hardest story routes to the strong model...
+    assert updated.dev_profile.model == "opus"
+    # ...and the operator's timeout override is preserved across the swap.
+    assert updated.dev_profile.timeout_large_seconds == 3600
+
+
+def test_v08_model_dev_override_bypasses_routing_seam(tmp_path):
+    """Seam: a pinned dev model is not rewritten by complexity adaptation."""
+    from theforge.coordinator.preflight import _apply_complexity_adaptation
+
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+  - claude/opus
+overrides:
+  dev:
+    model: sonnet
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+
+    updated = _apply_complexity_adaptation(cfg, "large", complexity_score=10)
+
+    # Pinned model survives — routing did not upgrade it to opus.
+    assert updated.dev_profile.model == "sonnet"
 
 
 def test_v08_overrides_preflight_timeout(tmp_path):

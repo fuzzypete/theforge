@@ -121,6 +121,31 @@ def _parse_model_spec(
 _VALID_SANDBOX_MODES = {"workspace-write", "read-only", "none"}
 
 
+# Override keys that select or constrain which model runs. When a role override
+# contains any of these, the operator has expressed a preference about model
+# identity/transport, so complexity-aware routing must not overwrite it.
+# Resource-only keys (timeout*, budget) express a preference about limits, not
+# model choice, and must leave routing active. See #1764.
+_MODEL_SELECTION_KEYS: frozenset[str] = frozenset(
+    {"model", "models", "fallback_models", "provider", "cli"}
+)
+
+
+def override_constrains_model(data: dict[str, Any] | None) -> bool:
+    """Return True if a role-override block pins/constrains model identity.
+
+    An override that touches only resource limits (``timeout_seconds``,
+    ``timeout_medium_seconds``, ``timeout_large_seconds``, ``budget_usd``) or
+    other non-model fields expresses a preference about budgets, not model
+    selection, so it must not suppress complexity-aware model routing. Only an
+    override that names a model, model list, fallbacks, provider, or cli pins
+    the role. See #1764.
+    """
+    if not isinstance(data, dict):
+        return False
+    return any(key in _MODEL_SELECTION_KEYS for key in data)
+
+
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile.
 

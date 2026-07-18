@@ -42,6 +42,7 @@ from .profiles import (
     _apply_profile_overrides,
     _apply_provider_fallback,
     _parse_provider_fallbacks,
+    override_constrains_model,
 )
 from .role_derivation import derive_roles
 from .secrets import _parse_notifications
@@ -659,8 +660,11 @@ def load_config(config_path: Path) -> ForgeConfig:
             provider_fallbacks = {**auto_provider_fallbacks, **provider_fallbacks}
         # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
         # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
-        # roles so explicit overrides bypass routing.
-        _dev_profile_is_default = "dev" not in overrides
+        # roles so explicit overrides bypass routing. A dev override that only tunes
+        # resource limits (timeouts, budget) expresses a preference about budgets, not
+        # model selection, and must leave routing active — only a model-constraining
+        # override pins the role. See #1764.
+        _dev_profile_is_default = not override_constrains_model(overrides.get("dev"))
         _review_pool_is_default = "review_pool" not in overrides
 
     else:
