@@ -297,6 +297,27 @@ Operator-action queue (2 issues):
   blocked  #1480  Cut v0.11.0rc1 (deps: #1450 open, #1469 open - 2 pending)
 ```
 
+### Ready-for-next-sprint set
+
+```bash
+forge status --ready                       # all open `ready`-labeled issues
+forge status --ready --milestone v0.10.0   # scoped to one milestone
+```
+
+Lists open issues carrying the `ready` label — the set eligible for the *next*
+sprint via normal selection. This surfaces the mid-sprint
+[groom-and-ready convention](authoring.md#mid-sprint-workflow) without inventing
+a new command: there is **no `forge queue`**, and this listing adds no ordering
+or priority semantics. It is simply the current eligible set, recomputed from
+GitHub on each invocation.
+
+```
+$ forge status --ready --milestone v0.10.0
+Ready for next sprint in v0.10.0 (2 issues):
+  #1487  bug   ready  status --watch blank during preflight
+  #1512  bug   ready  cut-rc.sh shim wrapper regression
+```
+
 ---
 
 ## `forge logs`
@@ -422,6 +443,27 @@ Every invocation writes a row into the audit substrate's `shape_events`
 table (issue number, input source, classification, confidence, ambiguity
 question count, whether `--apply` mutated the issue).
 
+`forge shape` is the first step of the mid-sprint capture flow — see
+[Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full
+`capture → shape → diagnose → groom → ready` sequence.
+
+---
+
+## `forge diagnose`
+
+Discover the root cause of a symptom-only bug so it can move from
+investigation-ready to implementation-ready. Bugs without a confirmed cause
+cannot be labeled `ready` (see `forge groom` below).
+
+```bash
+forge diagnose <issue>          # investigate one issue
+forge diagnose <issue> --interactive
+```
+
+`forge diagnose` is the third step of the mid-sprint capture flow — see
+[Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full
+`capture → shape → diagnose → groom → ready` sequence.
+
 ---
 
 ## `forge groom`
@@ -460,6 +502,10 @@ extension may follow when auto-routing in v0.12+ needs it.
 Every invocation emits a `groom` row to the SQLite audit substrate
 (`.forge/audits/index.sqlite`, table `readiness_events`) so refusal counts
 and investigation-ready piles are queryable.
+
+`forge groom` is the fourth step of the mid-sprint capture flow — see
+[Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full
+`capture → shape → diagnose → groom → ready` sequence.
 
 ---
 

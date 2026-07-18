@@ -416,6 +416,59 @@ Groom does **not** invoke `forge diagnose` or `forge shape` for you; the
 operator runs them in order (`shape → diagnose → groom`).
 
 ---
+
+## Mid-sprint workflow
+
+When a running sprint surfaces a new bug or work item, you do **not** stop the
+sprint or edit its selected work. You capture the item, bring it to a runnable,
+`ready` state through the normal intake steps, and let the *next* sprint pick it
+up by ordinary selection. The running sprint's topology is never modified.
+
+The canonical step sequence, in order:
+
+1. **Capture** — file the issue (`gh issue create`).
+2. **Shape** — classify it into a typed work object (`forge shape`).
+3. **Diagnose** — for bug-typed items that need root cause (`forge diagnose`).
+4. **Groom** — repair the body to a runnable verdict (`forge groom`).
+5. **Ready** — apply the `ready` label so the next sprint is eligible to select
+   it (`gh issue edit --add-label ready`).
+
+```bash
+gh issue create --label bug --title "..." --body "..."   # capture → returns #1512
+forge shape 1512                                          # classify (often immediate)
+forge diagnose 1512                                       # if bug-typed and needs a cause
+forge groom 1512                                          # repair body → runnable verdict
+gh issue edit 1512 --add-label ready                      # eligible for the next sprint
+```
+
+Not every step applies to every item — a cleanly-captured enhancement may skip
+`forge diagnose`, and `forge shape` may classify immediately. Run the steps the
+item needs; the order above is the pipeline, not a mandatory checklist.
+
+### There is no `forge queue` command
+
+"Queue for next sprint" is a convention, not a command. There is **no
+`forge queue`** and no queue ordering, priority, or cross-sprint dependency
+semantics. The `ready` label *is* the eligibility signal: an open, `ready`-labeled
+issue is what normal sprint selection considers. To see the current eligible set,
+use `forge status --ready` (scope it with `--milestone`):
+
+```
+$ forge status --ready --milestone v0.10.0
+Ready for next sprint in v0.10.0 (2 issues):
+  #1487  bug   ready  status --watch blank during preflight
+  #1512  bug   ready  cut-rc.sh shim wrapper regression
+```
+
+### Live sprint injection is out of scope
+
+Modifying a *running* sprint's selected work — injecting the new item into the
+sprint already in flight — is deliberately **out of scope** here. It belongs to
+the v0.12+ autonomy roadmap, where the orchestrator may re-plan in-flight work.
+Until then, the boundary is firm: mid-sprint discoveries are groomed-and-readied
+for the *next* sprint, never injected into the current one.
+
+---
 ## Operator-action issues
 
 Some work cannot be performed by a dev agent — running real validation
