@@ -210,7 +210,7 @@ def test_build_run_outcome_populates_duration_from_dev_durations():
     state.dev_durations = [120.5, 200.25]
     outcome = build_run_outcome(_Cfg(), state, success=True)
     assert outcome.dev_duration_s == 320.75
-    # No timeout telemetry → not a censored kill.
+    # No timeout kill flag → not a censored kill.
     assert outcome.dev_timeout_killed is False
 
 
@@ -225,18 +225,37 @@ def test_build_run_outcome_marks_timeout_killed_and_limit():
     state = _state_with_dev_costs([0.30])
     state.dev_durations = [1349.9]
     state.adaptive_dev_timeout_seconds = 1350
-    state.dev_iteration_telemetry = [_dev_telemetry(is_timeout=True)]
+    state.dev_process_timeout_killed = True
     outcome = build_run_outcome(_Cfg(), state, success=False)
     assert outcome.dev_timeout_killed is True
     assert outcome.dev_timeout_limit_s == 1350
 
 
-def test_build_run_outcome_last_iteration_not_timeout_is_not_killed():
+def test_build_run_outcome_reads_sticky_kill_flag_not_last_telemetry():
+    """The censored-kill signal is the sticky state flag set at kill time, NOT
+    the is_timeout of whichever telemetry entry happens to be last. A later
+    VALIDATE-phase telemetry write (no is_timeout) must not erase the kill —
+    the checkpoint-commit terminal-kill scenario from the spec (#1754)."""
     state = _state_with_dev_costs([0.30])
+    state.adaptive_dev_timeout_seconds = 1350
+    # Dev was killed at its timeout (flag set in dev_phase)...
+    state.dev_process_timeout_killed = True
+    # ...but execution fell through to VALIDATE, whose telemetry entry (no
+    # is_timeout) is now the tail of dev_iteration_telemetry.
     state.dev_iteration_telemetry = [
         _dev_telemetry(is_timeout=True),
         _dev_telemetry(is_timeout=False),
     ]
     outcome = build_run_outcome(_Cfg(), state, success=True)
-    # Only the LAST iteration's is_timeout marks a censored kill.
+    assert outcome.dev_timeout_killed is True
+    assert outcome.dev_timeout_limit_s == 1350
+
+
+def test_build_run_outcome_no_kill_flag_is_not_killed_despite_stale_timeout_tail():
+    """Absent the sticky flag, a stale is_timeout on the last telemetry entry
+    (e.g. a VALIDATE gate/test-command timeout) does not mark a censored kill."""
+    state = _state_with_dev_costs([0.30])
+    state.dev_process_timeout_killed = False
+    state.dev_iteration_telemetry = [_dev_telemetry(is_timeout=True)]
+    outcome = build_run_outcome(_Cfg(), state, success=True)
     assert outcome.dev_timeout_killed is False

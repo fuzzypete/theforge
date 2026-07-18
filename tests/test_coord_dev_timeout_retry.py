@@ -41,6 +41,7 @@ from theforge.config import (  # noqa: E402
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.commit_guard import _has_commits_ahead_of_base  # noqa: E402
 from theforge.coordinator.engine import run_task  # noqa: E402
 from theforge.coordinator.state import (  # noqa: E402
     CoordinatorResult,
@@ -165,6 +166,60 @@ def test_timeout_with_iterations_remaining_retries_not_escalates(tmp_path: Path)
     # The killed iteration is counted as spent.
     assert len(state.dev_iteration_telemetry) == 1
     assert state.dev_iteration_telemetry[-1].is_timeout is True
+
+
+def test_timeout_kill_sets_sticky_state_flag_on_retry_path(tmp_path: Path) -> None:
+    """A dev wall-clock timeout sets state.dev_process_timeout_killed at kill time,
+    independent of which downstream branch (retry here) runs. This is the signal
+    model_profiles_bridge reads to segregate the run as a censored observation."""
+    config, task, state = _setup(tmp_path)
+    state.budget.max_iterations = 3
+    state.budget.consume(review_cycle=0)
+
+    assert state.dev_process_timeout_killed is False
+    _run_dev(config, task, state, tmp_path, _timeout_agent_result())
+
+    assert state.dev_process_timeout_killed is True
+
+
+def test_terminal_timeout_with_checkpointed_work_sets_kill_flag_and_falls_through(
+    tmp_path: Path,
+) -> None:
+    """The exact reported scenario (#1754): a dev iteration is killed at its
+    timeout with the budget exhausted AND checkpoint-committed work present, so
+    neither the timeout-retry branch nor the zero-commit guard fires and
+    execution falls through to VALIDATE. No telemetry entry with is_timeout=True
+    is recorded for the killed iteration, yet the sticky state flag must still
+    mark the kill so max_killed_timeout_s is populated for this run."""
+    config, task, state = _setup(tmp_path)
+    state.adaptive_dev_timeout_seconds = 900
+    # Exhaust the budget so the timeout-retry branch is skipped (terminal kill).
+    state.budget.max_iterations = 1
+    state.budget.consume(review_cycle=0)
+    # Stranded work in the worktree → checkpoint-commit salvages it, so the run
+    # HAS commits ahead of base and the zero-commit guard does not fire. Use a
+    # tracked-file edit (an untracked stray file would be quarantined first).
+    (tmp_path / "README.md").write_text("seed\nsalvaged work\n", encoding="utf-8")
+
+    result = _run_dev(config, task, state, tmp_path, _timeout_agent_result())
+
+    # Fell through to VALIDATE (no terminal escalation).
+    assert result is None
+    assert state.phase != Phase.ESCALATE
+    # The checkpoint commit put real work ahead of base.
+    assert _has_commits_ahead_of_base(tmp_path, "main") is True
+    # No dev telemetry entry recorded is_timeout=True on this fall-through path...
+    assert not any(t.is_timeout for t in state.dev_iteration_telemetry)
+    # ...but the sticky kill flag still marks the wall-clock kill.
+    assert state.dev_process_timeout_killed is True
+
+    # And the bridge turns that into a censored-observation RunOutcome with the
+    # granted timeout as the kill limit.
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+
+    outcome = build_run_outcome(config, state, success=False)
+    assert outcome.dev_timeout_killed is True
+    assert outcome.dev_timeout_limit_s == 900
 
 
 def test_timeout_when_iterations_exhausted_escalates_naming_timeout(tmp_path: Path) -> None:
