@@ -2726,13 +2726,16 @@ def run_sprint(
                                 dep, StoryOutcome.MERGE_FAILED, phase=dep_result.phase.name
                             )
                             del queued_prs[dep]
-                            # The parent reached a terminal-but-not-merged state:
-                            # its changes never landed, so the base is exactly the
-                            # clean state a collision soft edge guards. Record the
-                            # parent in the DAG's _finished set (not _completed) so
-                            # dag.ready() releases any collision (soft) dependent on
-                            # the next loop pass while a genuine depends_on (hard)
-                            # dependent stays blocked (still requires _completed).
+                            # Defensive/idempotent: the parent is normally already
+                            # in the DAG's _finished set (added when its PR was
+                            # queued, via the pending_integration classify branch),
+                            # so its collision (soft) edge is already released. This
+                            # call guarantees _finished membership on any path that
+                            # queued without that classification. _finished (not
+                            # _completed) is what keeps a genuine depends_on (hard)
+                            # dependent blocked. The redispatch of the released
+                            # dependent onto the current base is driven by the
+                            # dag.ready() re-check before the deadlock-cleanup sweep.
                             dag.mark_skipped(dep)
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                             _log(
@@ -2928,11 +2931,15 @@ def run_sprint(
                             _qp_slug, StoryOutcome.MERGE_FAILED, phase=_qp_result.phase.name
                         )
                         del queued_prs[_qp_slug]
-                        # Parent ended without merging; release its collision
-                        # (soft) edge by recording it in _finished. On the next
-                        # loop pass dag.ready() returns the released dependent and
-                        # it is dispatched onto the current (unchanged) base rather
-                        # than falling into the deadlock-cleanup skip below.
+                        # Defensive/idempotent: the parent is normally already in
+                        # _finished (added when its PR was queued), so its collision
+                        # (soft) edge is already released; this guarantees it on any
+                        # path that skipped that classification. _finished (not
+                        # _completed) is what still blocks a hard depends_on
+                        # dependent. Actual redispatch of a released dependent onto
+                        # the current base comes from the dag.ready() re-check at the
+                        # top of the deadlock-cleanup branch, reached after the
+                        # `continue` below.
                         dag.mark_skipped(_qp_slug)
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
