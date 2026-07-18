@@ -43,7 +43,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Simple subcommands with no arguments
-    subparsers.add_parser("init", help="Generate a starter forge.yaml")
+    init_parser = subparsers.add_parser("init", help="Generate a starter forge.yaml")
+    memory_group = init_parser.add_mutually_exclusive_group()
+    memory_group.add_argument(
+        "--shared-memory",
+        dest="shared_memory",
+        action="store_true",
+        default=True,
+        help="Track project memory (audit runs + knowledge summaries) in git (default)",
+    )
+    memory_group.add_argument(
+        "--local-memory",
+        dest="shared_memory",
+        action="store_false",
+        help="Keep project memory local — omit the project-memory .gitignore re-includes",
+    )
     subparsers.add_parser(
         "secrets-init",
         help="Create .forge/.env skeleton and update .gitignore",
