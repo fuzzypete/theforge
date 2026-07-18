@@ -74,8 +74,24 @@ class TestValidateDevHandoff:
         assert errors == []
 
     def test_valid_gate_result_fail(self):
+        # gate_result FAIL is a valid value on a non-completion handoff
+        # (no acceptance criterion marked MET).
         data = _valid_handoff()
+        data["acceptance_criteria"] = [
+            {"criterion": "Feature X works", "status": "NOT_MET", "notes": "gate failed"}
+        ]
         data["gate_result"] = "FAIL"
+        errors = validate_dev_handoff(data)
+        assert errors == []
+
+    def test_valid_gate_result_blocked(self):
+        # BLOCKED is an accepted gate_result value for a handoff that could not
+        # run the gate — it must not mark any criterion MET.
+        data = _valid_handoff()
+        data["acceptance_criteria"] = [
+            {"criterion": "Feature X works", "status": "PARTIAL", "notes": "gate unrunnable"}
+        ]
+        data["gate_result"] = "BLOCKED"
         errors = validate_dev_handoff(data)
         assert errors == []
 
@@ -171,8 +187,14 @@ class TestValidateDevHandoff:
         errors = validate_dev_handoff(data)
         assert any("mapping" in e for e in errors)
 
-    def test_missing_gate_result(self):
+    def test_missing_gate_result_ok_for_non_completion(self):
+        # gate_result stays optional when the handoff makes no completion claim
+        # (all acceptance criteria PARTIAL/NOT_MET).
         data = _valid_handoff()
+        data["acceptance_criteria"] = [
+            {"criterion": "AC 1", "status": "PARTIAL", "notes": "in progress"},
+            {"criterion": "AC 2", "status": "NOT_MET", "notes": "blocked"},
+        ]
         del data["gate_result"]
         errors = validate_dev_handoff(data)
         assert errors == []
@@ -182,6 +204,42 @@ class TestValidateDevHandoff:
         data["gate_result"] = "SUCCESS"
         errors = validate_dev_handoff(data)
         assert any("gate_result" in e for e in errors)
+
+    # ── cross-field: completion claim requires gate PASS ────────────
+
+    def test_completion_with_gate_pass_is_valid(self):
+        data = _valid_handoff()  # AC MET + gate_result PASS
+        errors = validate_dev_handoff(data)
+        assert errors == []
+
+    def test_completion_missing_gate_result_rejected(self):
+        data = _valid_handoff()  # AC MET
+        del data["gate_result"]
+        errors = validate_dev_handoff(data)
+        assert any("MET but gate_result is not PASS" in e for e in errors)
+
+    def test_completion_gate_fail_rejected(self):
+        data = _valid_handoff()  # AC MET
+        data["gate_result"] = "FAIL"
+        errors = validate_dev_handoff(data)
+        assert any("MET but gate_result is not PASS" in e for e in errors)
+
+    def test_completion_gate_blocked_rejected(self):
+        data = _valid_handoff()  # AC MET
+        data["gate_result"] = "BLOCKED"
+        errors = validate_dev_handoff(data)
+        assert any("MET but gate_result is not PASS" in e for e in errors)
+
+    def test_partial_completion_still_requires_gate(self):
+        # Even one MET criterion among others is a completion claim.
+        data = _valid_handoff()
+        data["acceptance_criteria"] = [
+            {"criterion": "AC 1", "status": "MET", "notes": "done"},
+            {"criterion": "AC 2", "status": "PARTIAL", "notes": "wip"},
+        ]
+        del data["gate_result"]
+        errors = validate_dev_handoff(data)
+        assert any("MET but gate_result is not PASS" in e for e in errors)
 
     def test_missing_story_deviations(self):
         data = _valid_handoff()
@@ -600,8 +658,8 @@ class TestParseDevHandoff:
             '    message: "wip"\n'
             "acceptance_criteria:\n"
             '  - criterion: "AC 1"\n'
-            "    status: MET\n"
-            '    notes: "done"\n'
+            "    status: PARTIAL\n"
+            '    notes: "in progress"\n'
             '  - criterion: "AC 2"\n'
             "    status: NOT_MET\n"
             '    notes: "blocked"\n'
@@ -614,6 +672,42 @@ class TestParseDevHandoff:
         assert result.gate_result == "FAIL"
         assert len(result.acceptance_criteria) == 2
         assert result.acceptance_criteria[1]["status"] == "NOT_MET"
+
+    def test_parse_unproven_completion_populates_errors(self):
+        # A completion claim (AC MET) with no gate_result must surface as a
+        # parse/validation error, not a clean handoff.
+        text = (
+            'summary: "Claims done."\n'
+            "commits:\n"
+            '  - sha: "abc"\n'
+            '    message: "feat: thing"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "AC 1"\n'
+            "    status: MET\n"
+            '    notes: "done"\n'
+            "spec_deviations: none\n"
+            "deferred_items: none\n"
+        )
+        result = parse_dev_handoff(text)
+        assert any("MET but gate_result is not PASS" in e for e in result.parse_errors)
+
+    def test_parse_gate_result_blocked_round_trips(self):
+        text = (
+            'summary: "Could not run gate."\n'
+            "commits:\n"
+            '  - sha: "abc"\n'
+            '    message: "wip"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "AC 1"\n'
+            "    status: PARTIAL\n"
+            '    notes: "gate unrunnable"\n'
+            "spec_deviations: none\n"
+            "deferred_items: none\n"
+            "gate_result: BLOCKED\n"
+        )
+        result = parse_dev_handoff(text)
+        assert result.parse_errors == []
+        assert result.gate_result == "BLOCKED"
 
 
 # ── Formatting ────────────────────────────────────────────────────────

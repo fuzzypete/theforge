@@ -282,7 +282,29 @@ def validate_review_yaml(data: Any) -> list[ParseError]:
 
 
 VALID_AC_STATUSES = ("MET", "PARTIAL", "NOT_MET")
-VALID_GATE_RESULTS = ("PASS", "FAIL")
+VALID_GATE_RESULTS = ("PASS", "FAIL", "BLOCKED")
+
+
+def dev_handoff_claims_unproven_completion(data: dict) -> bool:
+    """Return True when a dev handoff claims completion without gate evidence.
+
+    A completion claim is any acceptance_criteria entry marked ``status: MET``.
+    Such a claim is only proven when ``gate_result`` is exactly ``"PASS"``. A
+    missing gate_result, ``"FAIL"``, or ``"BLOCKED"`` all leave the completion
+    unproven — the gate was never shown to pass, so the claim lacks evidence.
+
+    Handoffs that make no completion claim (all criteria PARTIAL/NOT_MET) never
+    trip this check: gate_result stays optional for them.
+    """
+    if not isinstance(data, dict):
+        return False
+    criteria = data.get("acceptance_criteria")
+    if not isinstance(criteria, list):
+        return False
+    claims_met = any(isinstance(ac, dict) and ac.get("status") == "MET" for ac in criteria)
+    if not claims_met:
+        return False
+    return data.get("gate_result") != "PASS"
 
 
 def validate_dev_handoff(data: Any) -> list[str]:
@@ -353,13 +375,29 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(notes, str) or not notes.strip():
                 errors.append(f"acceptance_criteria[{i}].notes must be a non-empty string")
 
-    # ── gate_result (optional; coordinator is source of truth) ───────
+    # ── gate_result ─────────────────────────────────────────────────
+    # Optional for a non-completion handoff, but load-bearing for a completion
+    # claim: an acceptance criterion marked MET requires gate_result: PASS as
+    # evidence (see the cross-field check below).
     gate_result = data.get("gate_result")
     if gate_result is not None and (
         not isinstance(gate_result, str) or gate_result not in VALID_GATE_RESULTS
     ):
         errors.append(
             f"gate_result must be one of {VALID_GATE_RESULTS} when provided, got: {gate_result!r}"
+        )
+
+    # ── cross-field: completion claim requires gate evidence ─────────
+    # A MET acceptance criterion is a completion claim; it is only proven when
+    # the gate actually passed. Reject a completion claim whose gate_result is
+    # absent, FAIL, or BLOCKED — an unrun or failing gate is a blocking failure,
+    # not completion.
+    if dev_handoff_claims_unproven_completion(data):
+        errors.append(
+            "acceptance_criteria mark MET but gate_result is not PASS — a completion "
+            "claim requires gate evidence (set gate_result: PASS after the gate passes, "
+            "or gate_result: BLOCKED and do not mark criteria MET if the gate could not "
+            "be run)"
         )
 
     # ── story_deviations (accept spec_deviations for backward compat) ─

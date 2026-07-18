@@ -17,6 +17,7 @@ from theforge.config.auth import sandbox_available_for_profile
 from theforge.config.types import StuckDetectionConfig
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import append_convention_retry_findings
+from theforge.schemas import dev_handoff_claims_unproven_completion
 from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
@@ -873,6 +874,37 @@ def _run_dev_phase(
             outcome="success" if dev_result.success else "failure",
             cost_usd=_dev_cost_total if _dev_cost_str != "unknown" else None,
             duration_s=round(_dev_elapsed, 2),
+        )
+
+    # ── Unproven-completion guard (successful dev only) ──────────────
+    # Fail closed at the dev seam: a dev that exits successfully but hands off a
+    # completion claim (an acceptance criterion marked MET) without gate PASS
+    # evidence has reported done without proving the gate ran. Escalate rather
+    # than accept an unverified completion and waste a downstream gate run
+    # rediscovering the failure. This is the coordinator catching what the dev
+    # should have declared as a blocking failure (gate_result: BLOCKED).
+    if dev_result.success and dev_handoff_claims_unproven_completion(dev_result.dev_handoff or {}):
+        state.phase = Phase.ESCALATE
+        state.error = (
+            "Dev handoff claims completion (acceptance criteria MET) without gate PASS "
+            "evidence — the gate was not proven to pass; refusing to accept an "
+            "unverified completion"
+        )
+        record_dev_iteration_telemetry(
+            state,
+            workspace_path,
+            max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+            gate_result="HANDOFF_NO_GATE_EVIDENCE",
+        )
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("escalate", reason=state.error, phase="DEV")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
         )
 
     if not dev_result.success:
