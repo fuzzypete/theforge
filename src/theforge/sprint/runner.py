@@ -264,12 +264,6 @@ def _emit_inline_remediation_events(
     write failures are observability-only: they log a WARNING and never abort
     the sprint.
     """
-    from ..coordinator.audit_substrate import (  # noqa: PLC0415
-        SubstrateError,
-        record_inline_remediation_event,
-    )
-
-    logger = logging.getLogger("theforge.intake")
     slug_to_issue = {t.slug: getattr(t, "github_issue", None) for t in tasks}
     for slug, outcome in outcomes.items():
         # Production outcomes are always IntakeOutcome; guard so a caller that
@@ -278,40 +272,85 @@ def _emit_inline_remediation_events(
             continue
         if outcome.kind is IntakeOutcomeKind.PASSED:
             continue
-        issue = slug_to_issue.get(slug)
-        issue_ref = f"#{issue}" if issue is not None else slug
-        groom_ref = str(issue) if issue is not None else slug
-        line1 = f"Inline intake remediation ran at sprint entry for {issue_ref}."
-        line2 = f"Intended workflow: run `forge groom {groom_ref}` before sprint selection."
-        # Operator-facing sprint log (matches the ADR `[forge]` example) …
-        log(line1)
-        log(line2)
-        # … and a WARNING-level record so the message carries severity.
-        logger.warning("%s %s", line1, line2)
-
-        codes = _intake_finding_codes(outcome)
-        remediation_source = (
-            outcome.audit.get("remediation_source") if isinstance(outcome.audit, dict) else None
+        emit_inline_remediation_event(
+            config=config,
+            issue=slug_to_issue.get(slug),
+            slug=slug,
+            outcome=outcome,
+            log=log,
+            sprint_id=sprint_id,
+            milestone=milestone,
+            duration_seconds=duration_seconds,
         )
-        event = {
-            "issue_id": str(issue) if issue is not None else slug,
-            "sprint_id": sprint_id,
-            "milestone": milestone,
-            "shape_verdict": codes[0] if codes else outcome.kind.value,
-            "shape_verdict_codes": codes,
-            "action": outcome.kind.value,
-            "succeeded": outcome.kind is IntakeOutcomeKind.REMEDIATED,
-            "cost_usd": _intake_outcome_cost(outcome),
-            "duration_seconds": duration_seconds,
-            "remediation_source": remediation_source,
-            "detail": outcome.detail,
-        }
-        try:
-            record_inline_remediation_event(config.project_root, event)
-        except SubstrateError as exc:
-            msg = f"inline-remediation substrate write failed (continuing): {exc}"
-            log(f"WARNING: {msg}")
-            logger.warning(msg)
+
+
+def emit_inline_remediation_event(
+    *,
+    config: ForgeConfig,
+    issue: int | None,
+    slug: str,
+    outcome: IntakeOutcome,
+    log: Callable[[str], None],
+    sprint_id: str | None,
+    milestone: str | None,
+    duration_seconds: float,
+) -> None:
+    """Emit the ADR-0001 training-wheels WARNING + one audit record for a firing.
+
+    A single inline-remediation firing (one issue). Shared by the in-pass loop
+    and the entry-shape-gate bridge, which converts a body-PASSED outcome into
+    a ``declined`` DROPPED_SHAPE *after* the pass loop has skipped it (that
+    conversion path has no other firing hook). The ``remediation_source`` in
+    the outcome's audit block drives the recorded ``action``: a ``declined``
+    source records ``action="declined"`` and takes the triggering verdict from
+    the shape-gate reason codes the bridge stashed in ``audit`` (the body
+    checks produced no findings). Substrate write failures are
+    observability-only.
+    """
+    from ..coordinator.audit_substrate import (  # noqa: PLC0415
+        SubstrateError,
+        record_inline_remediation_event,
+    )
+
+    logger = logging.getLogger("theforge.intake")
+    issue_ref = f"#{issue}" if issue is not None else slug
+    groom_ref = str(issue) if issue is not None else slug
+    line1 = f"Inline intake remediation ran at sprint entry for {issue_ref}."
+    line2 = f"Intended workflow: run `forge groom {groom_ref}` before sprint selection."
+    # Operator-facing sprint log (matches the ADR `[forge]` example) …
+    log(line1)
+    log(line2)
+    # … and a WARNING-level record so the message carries severity.
+    logger.warning("%s %s", line1, line2)
+
+    audit = outcome.audit if isinstance(outcome.audit, dict) else {}
+    remediation_source = audit.get("remediation_source")
+    codes = _intake_finding_codes(outcome)
+    if not codes:
+        shape_gate_codes = audit.get("shape_gate_codes")
+        if isinstance(shape_gate_codes, list) and shape_gate_codes:
+            codes = [str(c) for c in shape_gate_codes]
+    declined = remediation_source == "declined"
+    action = "declined" if declined else outcome.kind.value
+    event = {
+        "issue_id": str(issue) if issue is not None else slug,
+        "sprint_id": sprint_id,
+        "milestone": milestone,
+        "shape_verdict": codes[0] if codes else outcome.kind.value,
+        "shape_verdict_codes": codes,
+        "action": action,
+        "succeeded": outcome.kind is IntakeOutcomeKind.REMEDIATED,
+        "cost_usd": _intake_outcome_cost(outcome),
+        "duration_seconds": duration_seconds,
+        "remediation_source": remediation_source,
+        "detail": outcome.detail,
+    }
+    try:
+        record_inline_remediation_event(config.project_root, event)
+    except SubstrateError as exc:
+        msg = f"inline-remediation substrate write failed (continuing): {exc}"
+        log(f"WARNING: {msg}")
+        logger.warning(msg)
 
 
 def _intake_outcome_cost(outcome: IntakeOutcome) -> float:

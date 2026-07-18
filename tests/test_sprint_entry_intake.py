@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from theforge.config import (
     DEFAULT_VALIDATION,
@@ -15,6 +19,10 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.config.types import IntakeConfig
+from theforge.coordinator.audit_substrate import (
+    iter_inline_remediation_events,
+    substrate_path,
+)
 from theforge.intake import IntakeOutcome, IntakeOutcomeKind
 from theforge.sprint.entry_intake import remediate_entry_skipped_issues
 from theforge.sprint.shape_gate import SkippedIssue
@@ -113,6 +121,80 @@ def test_passing_body_with_entry_skip_records_declined(tmp_path: Path) -> None:
     assert outcome.audit["shape_gate_codes"] == ["reopened_stale_contract"]
     # Operator-visible log line ensures non-silence.
     assert any("issue #1135" in line for line in logs)
+
+
+def test_declined_entry_skip_emits_warning_and_records(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A body-PASSED outcome converted to a declined DROPPED_SHAPE must still
+    emit the training-wheels WARNING and write an inline_remediation_events
+    row with action='declined' — the pass loop skipped it while PASSED."""
+    config = _make_config(
+        tmp_path,
+        intake=IntakeConfig(grooming=True, auto_fix=False, auto_fix_mode="comment"),
+    )
+
+    def fake_pass(*, config, tasks, log, **_kwargs):  # noqa: ARG001
+        return {t.slug: IntakeOutcome(slug=t.slug, kind=IntakeOutcomeKind.PASSED) for t in tasks}
+
+    logs: list[str] = []
+    with (
+        patch("theforge.sprint.runner._run_intake_remediation_pass", side_effect=fake_pass),
+        caplog.at_level(logging.WARNING, logger="theforge.intake"),
+    ):
+        outcomes = remediate_entry_skipped_issues(
+            [_skipped(1135, "reopened_stale_contract")],
+            config=config,
+            log=logs.append,
+            sprint_id="sprint-decl",
+            milestone="v0.11.0",
+        )
+
+    assert outcomes[1135].kind is IntakeOutcomeKind.DROPPED_SHAPE
+
+    joined = "\n".join(logs)
+    assert "Inline intake remediation ran at sprint entry for #1135." in joined
+    assert "run `forge groom 1135` before sprint selection." in joined
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("forge groom 1135" in m for m in warnings)
+
+    conn = sqlite3.connect(str(substrate_path(tmp_path)))
+    try:
+        events = list(iter_inline_remediation_events(conn, milestone="v0.11.0"))
+    finally:
+        conn.close()
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["issue_id"] == "1135"
+    assert ev["sprint_id"] == "sprint-decl"
+    assert ev["action"] == "declined"
+    assert ev["shape_verdict"] == "reopened_stale_contract"
+    assert ev["succeeded"] is False
+
+
+def test_declined_entry_skip_no_emit_when_grooming_disabled(tmp_path: Path) -> None:
+    """auto_fix-only runs (grooming off) still record the declined outcome but
+    do not emit the grooming training-wheels WARNING or an audit row."""
+    config = _make_config(
+        tmp_path,
+        intake=IntakeConfig(grooming=False, auto_fix=True, auto_fix_mode="comment"),
+    )
+
+    def fake_pass(*, config, tasks, log, **_kwargs):  # noqa: ARG001
+        return {t.slug: IntakeOutcome(slug=t.slug, kind=IntakeOutcomeKind.PASSED) for t in tasks}
+
+    logs: list[str] = []
+    with patch("theforge.sprint.runner._run_intake_remediation_pass", side_effect=fake_pass):
+        outcomes = remediate_entry_skipped_issues(
+            [_skipped(1136, "reopened_stale_contract")],
+            config=config,
+            log=logs.append,
+        )
+
+    assert outcomes[1136].kind is IntakeOutcomeKind.DROPPED_SHAPE
+    assert not any("forge groom" in line for line in logs)
+    assert not substrate_path(tmp_path).exists()
 
 
 def test_remediation_outcome_passes_through(tmp_path: Path) -> None:
