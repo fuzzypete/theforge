@@ -135,6 +135,39 @@ def run_gate_full(
     return decision, None, output_tail, gate_cmd, exit_code
 
 
+def format_gate_failure_summary(
+    header: str,
+    *,
+    exit_code: int | None,
+    output_tail: str,
+    tail_chars: int,
+    trace_path: str | None = None,
+) -> str:
+    """Attach gate triage evidence to a terminal gate-failure outcome string.
+
+    ``header`` is the verdict phrase (e.g. "Gate returned FAIL after 3
+    attempts"). The gate exit code and output tail are appended verbatim so a
+    reader of ``forge status`` detail or the escalation issue comment can tell a
+    compile error from a flake from an infrastructure failure without opening
+    the run log — the evidence travels with the verdict rather than sitting in a
+    file the outcome never references. When a full-output trace was written its
+    path is named too (it survives worktree cleanup only for preserved ESCALATE
+    worktrees, so the tail is always carried inline as well). Nothing here
+    interprets the output; it is copied as-is, so the summary is independent of
+    the gate command, language, and toolchain.
+    """
+    header_line = header if exit_code is None else f"{header} (gate exit code {exit_code})"
+    parts = [header_line]
+    tail = (output_tail or "").strip()
+    if tail:
+        parts.append(f"Gate output tail (last {tail_chars} chars):\n{tail}")
+    else:
+        parts.append("Gate captured no output.")
+    if trace_path:
+        parts.append(f"Full gate output trace: {trace_path}")
+    return "\n".join(parts)
+
+
 def _run_gate_debug_command(
     config: ForgeConfig,
     workspace_path: Path,
@@ -174,22 +207,6 @@ def _run_gate_debug_command(
         output_tail=output_tail,
         output_truncated=len(output) > len(output_tail),
     )
-
-
-def _run_gate_full(
-    config: ForgeConfig,
-    workspace_path: Path,
-    task: TaskStory | None = None,
-    iter_num: int | None = None,
-) -> tuple[str | None, str | None, str, str]:
-    """Backward-compatible wrapper for callers that do not need exit_code."""
-    decision, error, output_tail, resolved_gate_cmd, _exit_code = run_gate_full(
-        config,
-        workspace_path,
-        task,
-        iter_num,
-    )
-    return decision, error, output_tail, resolved_gate_cmd
 
 
 def _run_gate(

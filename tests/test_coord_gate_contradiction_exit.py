@@ -17,7 +17,7 @@ from coord_test_helpers import (
     _write_handoff,
 )
 
-from theforge.coordinator.gate import _run_gate_full
+from theforge.coordinator.gate import run_gate_full
 from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.coordinator.validate_phase import _run_validate_phase, _ValidateOutcome
 
@@ -25,7 +25,7 @@ from theforge.coordinator.validate_phase import _run_validate_phase, _ValidateOu
 
 
 class TestGateDecision:
-    """_run_gate_full trusts exit code as sole gate signal."""
+    """run_gate_full trusts exit code as sole gate signal."""
 
     def test_gate_plain_fail_unchanged(self, tmp_path: Path):
         """Exit non-zero with genuine failure output → FAIL."""
@@ -37,7 +37,7 @@ class TestGateDecision:
         with patch("theforge.coordinator.gate._cu._run_shell") as mock_shell:
             mock_shell.return_value = (False, "2 failed, 1 passed\nERROR: test_foo")
             with patch("theforge.coordinator.gate._cu._log"):
-                decision, error, _tail, _cmd = _run_gate_full(config, workspace)
+                decision, error, _tail, _cmd, _exit = run_gate_full(config, workspace)
 
         assert decision == "FAIL"
         assert error is None
@@ -52,7 +52,7 @@ class TestGateDecision:
         with patch("theforge.coordinator.gate._cu._run_shell") as mock_shell:
             mock_shell.return_value = (True, "All checks passed!")
             with patch("theforge.coordinator.gate._cu._log"):
-                decision, error, _tail, _cmd = _run_gate_full(config, workspace)
+                decision, error, _tail, _cmd, _exit = run_gate_full(config, workspace)
 
         assert decision == "PASS"
         assert error is None
@@ -75,7 +75,7 @@ class TestGateDecision:
                 "All checks passed!\n2 failed, 3 passed\nFAILED tests/test_foo.py::test_bar",
             )
             with patch("theforge.coordinator.gate._cu._log"):
-                decision, error, _tail, _cmd = _run_gate_full(config, workspace)
+                decision, error, _tail, _cmd, _exit = run_gate_full(config, workspace)
 
         assert decision == "FAIL"
         assert error is None
@@ -95,7 +95,7 @@ def _make_state(config) -> CoordinatorState:
 class TestValidatePhaseFailRetries:
     """Validate phase retries dev on FAIL."""
 
-    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
     @patch("theforge.coordinator.validate_phase._escalate_notify")
     def test_plain_fail_still_retries(
@@ -108,7 +108,7 @@ class TestValidatePhaseFailRetries:
         workspace.mkdir()
         _write_handoff(workspace, "FAIL")
 
-        mock_gate.return_value = ("FAIL", None, "2 failed, 1 passed", "make gate")
+        mock_gate.return_value = ("FAIL", None, "2 failed, 1 passed", "make gate", 1)
         mock_conventions.return_value = None
 
         state = _make_state(config)
