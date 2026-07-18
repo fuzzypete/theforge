@@ -62,6 +62,7 @@ from .plan_trajectory import (
     record_plan_attempt,
 )
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
+from .preflight_evidence import render_partial_evidence
 from .remote_gates import _plan_review_remote
 from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
 from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout_with_active
@@ -642,6 +643,7 @@ def _run_plan_phase(
         preflight_output=(
             preflight_result.output if preflight_result and preflight_result.success else None
         ),
+        partial_preflight_evidence=render_partial_evidence(state.preflight_partial_evidence),
         assembled_context=plan_context,
         conventions=config.conventions_soft,
         work_type=state.preflight_work_type,

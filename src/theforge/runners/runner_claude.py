@@ -503,6 +503,57 @@ def _extract_stream_output(lines: list[str]) -> str | None:
     return "".join(lines).strip() or None
 
 
+def _tool_call_target(inp: dict[str, Any]) -> str | None:
+    """Return the file/path/pattern a tool call operated on, or None.
+
+    Prefers the concrete file argument shared by the read/edit/write tools,
+    then falls back to search targets (``path``/``pattern``). Kept
+    stack-neutral so it works for any tool the agent happens to invoke.
+    """
+    if not isinstance(inp, dict):
+        return None
+    for key in ("file_path", "notebook_path", "path", "pattern"):
+        value = inp.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def extract_tool_trace(lines: list[str]) -> tuple[dict[str, Any], ...]:
+    """Extract observed tool calls from accumulated Claude stream-json lines.
+
+    Claude emits ``assistant`` events whose ``message.content`` holds one or
+    more ``tool_use`` items (``name`` + ``input``). This retains the ordered
+    sequence of calls — ``{"tool": <name>, "target": <path/pattern or None>}``
+    — so a crashed run's exploration is not lost. Best-effort: malformed lines
+    are skipped, never raising.
+    """
+    trace: list[dict[str, Any]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message", {})
+        content = message.get("content", []) if isinstance(message, dict) else []
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                trace.append(
+                    {
+                        "tool": str(item.get("name", "?")),
+                        "target": _tool_call_target(item.get("input", {})),
+                    }
+                )
+    return tuple(trace)
+
+
 def _build_no_text_marker(reason: str, *, subtype: str | None = None) -> str:
     """Return a machine-readable marker for streams that contained no text output."""
     marker = f"CLAUDE_STREAM_NO_TEXT: reason={reason}"
@@ -717,6 +768,8 @@ def _run_claude(
             model_usage=_stuck_usage,
             failure_code="stuck_pattern",
             dev_handoff=_try_parse_handoff(partial_output),
+            tool_trace=extract_tool_trace(lines),
+            partial_output=_extract_stream_output(lines),
         )
 
     if timed_out or (time.monotonic() - start) >= profile.timeout_seconds * 1.05:
@@ -744,6 +797,8 @@ def _run_claude(
             model_usage=_timeout_usage,
             failure_code="timeout",
             dev_handoff=_try_parse_handoff(partial_output),
+            tool_trace=extract_tool_trace(lines),
+            partial_output=_extract_stream_output(lines),
         )
 
     elapsed = time.monotonic() - start
@@ -793,6 +848,8 @@ def _run_claude(
             profile_name=profile.name,
             model_usage=_noresult_usage,
             dev_handoff=_try_parse_handoff(_noresult_output),
+            tool_trace=extract_tool_trace(lines),
+            partial_output=None if proc.returncode == 0 else _extract_stream_output(lines),
         )
 
     try:
@@ -816,4 +873,5 @@ def _run_claude(
         profile_name=profile.name,
         model_usage=_parse_model_usage(result_json),
         dev_handoff=_try_parse_handoff(_success_output),
+        tool_trace=extract_tool_trace(lines),
     )

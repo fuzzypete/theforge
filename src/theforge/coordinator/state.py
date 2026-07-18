@@ -381,6 +381,12 @@ class CoordinatorState:
     # conservative PROCEED) or "escalate" (risk signals present → BLOCKED).
     # None when preflight did not fail.
     preflight_failure_action: str | None = None
+    # Partial-evidence artifact salvaged from a failed preflight run (#706):
+    # files inspected, tool calls, and any partial conclusion the agent reached
+    # before crashing/timing out. The serialized (to_dict) form; None when
+    # preflight succeeded or the failed run left nothing observable. Consumed by
+    # the PLAN phase to avoid re-reading the same files.
+    preflight_partial_evidence: dict | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
         None  # contents of the worktree plan file, passed to dev (raw string for audit)

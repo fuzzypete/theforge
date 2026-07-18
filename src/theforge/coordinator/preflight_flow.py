@@ -52,6 +52,7 @@ from .preflight import (
     score_to_band,
 )
 from .preflight_cache import capture_preflight_cache_snapshot
+from .preflight_evidence import build_partial_evidence
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
 from .validation_complexity import (
@@ -339,8 +340,21 @@ def _run_preflight_phase(
             state.preflight_degraded_reason = "parse_error"
             _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
     else:
-        # Preflight agent failed (timeout, SIGKILL, non-zero exit). Whether
-        # it is safe to fall through to a conservative PROCEED depends on
+        # Preflight agent failed (timeout, SIGKILL, non-zero exit). Preserve
+        # whatever exploration it managed before dying — files inspected, tool
+        # calls, any partial conclusion — as an audit artifact the plan phase
+        # can consume instead of re-reading the same files (issue #706).
+        _partial_evidence = build_partial_evidence(
+            preflight_result, duration_s=round(_preflight_elapsed, 2)
+        )
+        if not _partial_evidence.is_empty():
+            state.preflight_partial_evidence = _partial_evidence.to_dict()
+            _log(
+                "  ⓘ PREFLIGHT partial evidence preserved: "
+                f"{len(_partial_evidence.files_inspected)} file(s) inspected, "
+                f"{len(_partial_evidence.tool_calls)} tool call(s)"
+            )
+        # Whether it is safe to fall through to a conservative PROCEED depends on
         # whether preflight was a confidence boost or the load-bearing check
         # that catches contract drift. Detect risk signals deterministically
         # from local state — no extra agent calls — and escalate when any
@@ -810,6 +824,7 @@ def _run_preflight_phase(
         "degraded_reason": state.preflight_degraded_reason,
         "risk_signals": list(state.preflight_risk_signals),
         "failure_action": state.preflight_failure_action,
+        "partial_evidence": state.preflight_partial_evidence,
         "attempts": attempts,
     }
     state.preflight_cache_snapshot = dict(_preflight_artifact["cache_snapshot"])
@@ -819,6 +834,16 @@ def _run_preflight_phase(
         "preflight.yaml",
         yaml.dump(_preflight_artifact, default_flow_style=False, allow_unicode=True),
     )
+    if state.preflight_partial_evidence is not None:
+        _write_log_artifact(
+            state.log_dir,
+            "preflight-partial-evidence.yaml",
+            yaml.dump(
+                state.preflight_partial_evidence,
+                default_flow_style=False,
+                allow_unicode=True,
+            ),
+        )
 
     # ── stop_phase gate ────────────────────────────────────────────────
     if stop_phase is not None and stop_phase == Phase.PREFLIGHT:

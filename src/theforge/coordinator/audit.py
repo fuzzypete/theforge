@@ -621,6 +621,9 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "degraded_reason": state.preflight_degraded_reason,
                 "risk_signals": list(state.preflight_risk_signals),
                 "failure_action": state.preflight_failure_action,
+                # Exploration salvaged from a failed preflight run (#706): files
+                # inspected, tool calls, partial conclusion. None on success.
+                "partial_evidence": state.preflight_partial_evidence,
                 "attempts": (
                     list(state.preflight_result.raw.get("attempts", []))
                     if state.preflight_result is not None
