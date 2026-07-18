@@ -125,12 +125,19 @@ def build_synthesis_prompt(
               tests covering the issue's specific failure mode (signature, error
               string, retry context). Pointers must be concrete, not generic.
               For PARTIAL or NOT_VERIFIED: explain what is missing.>
+        criteria_enumerable: true
+        criteria_enumerable_rationale: ""
         ```
 
         ## Rules
 
         - verdict MUST be `APPROVE` if there are zero P1 findings AND every
           ac_verification entry is VERIFIED
+        - If the issue genuinely has NO enumerable acceptance criteria (some bug
+          fixes, chores), you MAY APPROVE with an empty `ac_verification` by
+          setting `criteria_enumerable: false` and giving a one-sentence
+          `criteria_enumerable_rationale`. Use this only when there is truly
+          nothing to enumerate — never to skip verifying criteria that exist.
         - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists OR any
           ac_verification entry is PARTIAL or NOT_VERIFIED
         - Reconcile per-AC verification across reviewers — if any reviewer
@@ -336,7 +343,15 @@ def build_review_prompt(
               tests covering the issue's specific failure mode (signature, error
               string, retry context). Pointers must be concrete, not generic.
               For PARTIAL or NOT_VERIFIED: explain what is missing.>
+        criteria_enumerable: true
+        criteria_enumerable_rationale: ""
         ```
+
+        If the issue genuinely has NO enumerable acceptance criteria (some bug
+        fixes, chores), you MAY APPROVE with an empty `ac_verification` by setting
+        `criteria_enumerable: false` and a one-sentence
+        `criteria_enumerable_rationale`. Use this only when there is truly nothing
+        to enumerate — never to skip verifying criteria that exist.
     """)
     if mode == "api":
         output_format_section = dedent("""\
@@ -528,7 +543,9 @@ def build_review_prompt(
         - **Cross-validation enforced**: APPROVE with any PARTIAL or
           NOT_VERIFIED ac_verification entry will be rejected by the schema
           validator and your review will be discarded — do not produce that
-          combination.
+          combination. APPROVE with an empty ac_verification is also rejected
+          UNLESS you set `criteria_enumerable: false` with a rationale (only
+          legitimate when the issue has no enumerable criteria).
         - **YAML safety**: In `description` and `suggestion` fields, do NOT use
           backslashes or double-quote characters inside double-quoted strings —
           they break YAML parsing. Use single quotes or paraphrase instead.

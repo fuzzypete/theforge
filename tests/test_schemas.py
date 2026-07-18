@@ -195,6 +195,53 @@ class TestValidateReviewYaml:
         errors = validate_review_yaml(data)
         assert any("APPROVE" in e and "ac_verification" in e for e in errors)
 
+    def test_approve_empty_ac_with_criteria_enumerable_false_is_valid(self):
+        """Escape valve: APPROVE + empty ac_verification is legal when the
+        reviewer declares no enumerable criteria and gives a rationale."""
+        data = _valid_review()
+        data["ac_verification"] = []
+        data["criteria_enumerable"] = False
+        data["criteria_enumerable_rationale"] = (
+            "Chore-style fix with no acceptance criteria to enumerate."
+        )
+        errors = validate_review_yaml(data)
+        assert errors == []
+
+    def test_approve_criteria_enumerable_false_without_rationale_is_error(self):
+        """The escape valve is not a free bypass — it requires a rationale."""
+        data = _valid_review()
+        data["ac_verification"] = []
+        data["criteria_enumerable"] = False
+        data["criteria_enumerable_rationale"] = ""
+        errors = validate_review_yaml(data)
+        assert any("criteria_enumerable" in e and "rationale" in e for e in errors)
+
+    def test_approve_empty_ac_default_enumerable_still_errors(self):
+        """Without the flag, APPROVE + empty ac_verification stays an error
+        (default criteria_enumerable is True)."""
+        data = _valid_review()
+        data["ac_verification"] = []
+        errors = validate_review_yaml(data)
+        assert any("APPROVE" in e and "ac_verification" in e for e in errors)
+
+    def test_criteria_enumerable_non_bool_is_error(self):
+        data = _valid_review()
+        data["criteria_enumerable"] = "false"
+        errors = validate_review_yaml(data)
+        assert any("criteria_enumerable" in e and "boolean" in e for e in errors)
+
+    def test_criteria_enumerable_false_does_not_bypass_non_verified(self):
+        """The flag only rescues the empty-table case — a populated table with a
+        NOT_VERIFIED entry still fails even with criteria_enumerable false."""
+        data = _valid_review()
+        data["criteria_enumerable"] = False
+        data["criteria_enumerable_rationale"] = "n/a"
+        data["ac_verification"] = [
+            {"criterion": "Foo", "status": "NOT_VERIFIED", "evidence": "missing"},
+        ]
+        errors = validate_review_yaml(data)
+        assert any("APPROVE" in e and "NOT_VERIFIED" in e for e in errors)
+
     def test_approve_with_partial_ac_is_error(self):
         """APPROVE with any PARTIAL entry fails — silent contract swap guard."""
         data = _valid_review()
@@ -383,3 +430,23 @@ class TestRepairReviewYaml:
         errors = validate_review_yaml(data)
         assert any("APPROVE" in error and "P1" in error for error in errors)
         assert data["verdict"] == "APPROVE"
+
+
+class TestReviewJsonSchemaEscapeValve:
+    """The exported strict JSON schema must expose the escape-valve fields so
+    API (forced-tool) reviewers can reach the same degenerate state as CLI ones."""
+
+    def test_schema_declares_criteria_enumerable_fields(self):
+        from theforge.schemas import review_json_schema
+
+        schema = review_json_schema()
+        props = schema["properties"]
+        assert props["criteria_enumerable"]["type"] == "boolean"
+        assert props["criteria_enumerable_rationale"]["type"] == "string"
+
+    def test_strict_schema_lists_new_fields_as_required(self):
+        """OpenAI strict mode requires every property in `required`."""
+        from theforge.schemas import review_json_schema
+
+        schema = review_json_schema()
+        assert set(schema["properties"]) == set(schema["required"])

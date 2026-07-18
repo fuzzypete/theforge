@@ -925,3 +925,91 @@ class TestReviewPoolResilience:
         # Best individual is reviewer-a's APPROVE → task succeeds
         assert result.success is True
         assert result.phase == Phase.DONE
+
+
+_ESCAPE_VALVE_APPROVE = (
+    "```yaml\n"
+    "verdict: APPROVE\n"
+    'summary: "Dependency bump, nothing to enumerate"\n'
+    "findings: []\n"
+    "story_compliance:\n"
+    "  matches_spec: true\n"
+    "  mismatches: []\n"
+    "test_coverage:\n"
+    "  adequate: true\n"
+    "  gaps: []\n"
+    "ac_verification: []\n"
+    "criteria_enumerable: false\n"
+    'criteria_enumerable_rationale: "Chore with no acceptance criteria."\n'
+    "```\n"
+)
+
+
+class TestCriteriaEnumerableEscapeValveSeam:
+    """Seam-level: the escape valve is review-phase output data that flows to
+    gating and the audit trail. Verify APPROVE-with-empty-AC passes the review
+    phase (no oscillation retry) and the flag reaches the audit."""
+
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_escape_valve_approve_passes_without_retry(
+        self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_engine_agent.return_value = _make_agent_result()
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=_ESCAPE_VALVE_APPROVE, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        assert result.success is True
+        assert result.state.review_cycle == 1
+        # No oscillation retry — the escape valve made APPROVE-with-empty-AC legal.
+        assert result.state.review_cycle_metadata[0].parse_retries == 0
+        # The reviewer's retry entrypoint was never called.
+        mock_review_agent.assert_not_called()
+        # The flag is surfaced in the audit trail.
+        assert audit["reviews"][0]["criteria_enumerable"] is False
+
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_retry_prompt_anchors_prior_content(
+        self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
+    ):
+        """When a reviewer output needs a parse retry, the corrective prompt sent
+        to run_agent must anchor the prior output and forbid dropping fields."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_engine_agent.return_value = _make_agent_result()
+
+        broken = _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="review")
+        mock_pool.return_value = [broken]
+        mock_review_agent.return_value = _make_agent_result(output=APPROVE_REVIEW)
+
+        run_task(config, task)
+
+        assert mock_review_agent.called
+        retry_prompt = mock_review_agent.call_args.kwargs["prompt"]
+        # Anchors prior content and forecloses the field-dropping interpretation.
+        assert "CONTENT" in retry_prompt and "ENCODING" in retry_prompt
+        assert "WRONG" in retry_prompt
+        assert PARSE_ERROR_OUTPUT in retry_prompt
