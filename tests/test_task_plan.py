@@ -209,6 +209,69 @@ plan:
         assert result is not None
 
 
+class TestParsePlanDecomposeSignal:
+    """Tests for the decompose signal in parse_plan_output()."""
+
+    def test_decompose_true_parsed_without_steps(self):
+        text = (
+            'plan:\n  decompose: true\n  decompose_reason: "Bundles two independent features."\n'
+        )
+        result = parse_plan_output(text)
+        assert result is not None
+        assert result["decompose"] is True
+        assert result["decompose_reason"] == "Bundles two independent features."
+        # No steps required when decomposing.
+        assert result["steps"] == []
+
+    def test_decompose_reason_optional(self):
+        text = "plan:\n  decompose: true\n"
+        result = parse_plan_output(text)
+        assert result is not None
+        assert result["decompose"] is True
+        assert "decompose_reason" not in result
+
+    def test_decompose_false_falls_through_to_normal_validation(self):
+        # decompose: false must not short-circuit; a plan without steps is still
+        # rejected as a malformed normal plan.
+        text = "plan:\n  decompose: false\n  approach: do it\n"
+        assert parse_plan_output(text) is None
+
+    def test_decompose_absent_is_normal_plan(self):
+        result = parse_plan_output(_VALID_PLAN_YAML)
+        assert result is not None
+        assert "decompose" not in result
+
+    def test_decompose_preserves_steps_when_present(self):
+        text = (
+            "plan:\n"
+            "  decompose: true\n"
+            '  decompose_reason: "Too big."\n'
+            "  approach: partial\n"
+            "  steps:\n"
+            "    - id: 1\n"
+            "      description: something\n"
+            "      files: [src/foo.py]\n"
+            "      action: modify\n"
+            "      details: detail\n"
+        )
+        result = parse_plan_output(text)
+        assert result is not None
+        assert result["decompose"] is True
+        assert len(result["steps"]) == 1
+
+
+class TestBuildPlanPromptDecompose:
+    """The plan prompt must teach the planner the decompose signal."""
+
+    def test_prompt_documents_decompose_signal(self, tmp_path: Path):
+        from theforge.task import build_plan_prompt
+
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(task, story_content="# Spec\n\nHuge story.")
+        assert "decompose: true" in prompt
+        assert "decompose_reason" in prompt
+
+
 class TestBuildDevPromptStructuredPlan:
     """Tests for build_dev_prompt() with PlanData dict as plan_output."""
 

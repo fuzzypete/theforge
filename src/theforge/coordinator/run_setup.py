@@ -196,7 +196,7 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         ]
     if "surviving_families" in data and isinstance(data["surviving_families"], list):
         state.surviving_families = data["surviving_families"]
-    if data.get("escalate_kind") in ("hygiene", "content"):
+    if data.get("escalate_kind") in ("hygiene", "content", "decompose"):
         state.escalate_kind = data["escalate_kind"]
     if isinstance(data.get("hygiene_escalation_dev_commit_sha"), str):
         state.hygiene_escalation_dev_commit_sha = data["hygiene_escalation_dev_commit_sha"]
