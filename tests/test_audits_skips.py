@@ -98,3 +98,28 @@ def test_missing_substrate_errors(tmp_path: Path, capsys) -> None:
     rc = audits_cli.cmd_audits(_args(forge_yaml))
     assert rc == 1
     assert "audit substrate not found" in capsys.readouterr().err
+
+
+def test_rebuild_preserves_skip_events_for_query(tmp_path: Path, capsys) -> None:
+    from theforge.coordinator.audit_substrate import runs_dir
+
+    forge_yaml = _setup_project(tmp_path)
+    runs_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        _emit(tmp_path, "1135", "reopened_stale_contract", f"r{i}", f"2026-05-0{i + 4}T00:00:00Z")
+
+    rebuild_args = SimpleNamespace(
+        config=str(forge_yaml),
+        audits_command="rebuild",
+        include_legacy_history=False,
+    )
+    assert audits_cli.cmd_audits(rebuild_args) == 0
+    capsys.readouterr()  # discard rebuild noise
+
+    # The stuck pattern must still be queryable after a rebuild — otherwise the
+    # durable query surface silently loses the history it exists to expose.
+    rc = audits_cli.cmd_audits(_args(forge_yaml, stuck=True, threshold=3))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "#1135" in out
+    assert "1 stuck pattern(s)" in out

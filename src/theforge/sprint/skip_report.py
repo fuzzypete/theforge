@@ -143,6 +143,7 @@ def _slim_event(event: dict) -> dict:
         "category": event.get("category"),
         "four_question_axis": event.get("four_question_axis"),
         "prior_block_count": event.get("prior_block_count", 0),
+        "last_status": event.get("last_status"),
     }
 
 

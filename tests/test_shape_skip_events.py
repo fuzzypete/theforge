@@ -12,11 +12,17 @@ from pathlib import Path
 import pytest
 
 from theforge.coordinator.audit_substrate import (
+    SKIP_STATUS_NO_PRIOR,
+    SKIP_STATUS_STILL_BLOCKED,
+    SKIP_STATUS_UNBLOCKED,
     SubstrateError,
     create_or_open,
     iter_shape_skip_events,
+    rebuild_from_runs,
     record_shape_skip_event,
+    record_shape_verdict_event,
     repeated_shape_skip_blocks,
+    runs_dir,
 )
 
 
@@ -131,3 +137,94 @@ def test_repeated_block_threshold_excludes_below(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert stuck == []
+
+
+# ── last_status (AC1: "last unblocked-or-still-blocked status") ────────────────
+
+
+def test_last_status_no_prior_block(tmp_path: Path) -> None:
+    _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, issue_id="1"))
+    finally:
+        conn.close()
+    assert events[0]["last_status"] == SKIP_STATUS_NO_PRIOR
+
+
+def test_last_status_still_blocked_when_never_cleared(tmp_path: Path) -> None:
+    _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
+    _emit(tmp_path, "1", "c", "r2", "2026-05-02T00:00:00Z")
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, issue_id="1"))
+    finally:
+        conn.close()
+    # No intervening RUNNABLE verdict — the second block is continuous.
+    assert events[-1]["last_status"] == SKIP_STATUS_STILL_BLOCKED
+
+
+def test_last_status_unblocked_after_runnable_verdict(tmp_path: Path) -> None:
+    _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
+    # The issue cleared the gate between blocks (a RUNNABLE shape verdict).
+    record_shape_verdict_event(
+        tmp_path, {"issue_id": "1", "verdict": "runnable", "emitted_at": "2026-05-02T00:00:00Z"}
+    )
+    _emit(tmp_path, "1", "c", "r3", "2026-05-03T00:00:00Z")
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, issue_id="1"))
+    finally:
+        conn.close()
+    # Cleared then re-blocked — the #1135/#1405 pass/re-block shape.
+    assert events[-1]["last_status"] == SKIP_STATUS_UNBLOCKED
+
+
+def test_last_status_persisted_in_indexed_column(tmp_path: Path) -> None:
+    _emit(tmp_path, "1", "c", "r1", "2026-05-01T00:00:00Z")
+    _emit(tmp_path, "1", "c", "r2", "2026-05-02T00:00:00Z")
+    conn = create_or_open(tmp_path)
+    try:
+        rows = conn.execute(
+            "SELECT last_status FROM shape_skip_events "
+            "WHERE issue_id = '1' ORDER BY emitted_at ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    # Both the indexed column and raw_json carry the status.
+    assert [r[0] for r in rows] == [SKIP_STATUS_NO_PRIOR, SKIP_STATUS_STILL_BLOCKED]
+
+
+# ── rebuild preservation (AC6: skip history is durable audit output) ──────────
+
+
+def test_rebuild_preserves_shape_skip_events(tmp_path: Path) -> None:
+    runs_dir(tmp_path).mkdir(parents=True, exist_ok=True)  # rebuild scans this dir
+    _emit(tmp_path, "1135", "reopened_stale_contract", "r1", "2026-05-04T00:00:00Z")
+    _emit(tmp_path, "1135", "reopened_stale_contract", "r2", "2026-05-05T00:00:00Z")
+    record_shape_verdict_event(
+        tmp_path,
+        {"issue_id": "1135", "verdict": "runnable", "emitted_at": "2026-05-06T00:00:00Z"},
+    )
+    _emit(tmp_path, "1135", "reopened_stale_contract", "r3", "2026-05-07T00:00:00Z")
+
+    rebuild_from_runs(tmp_path)
+
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, issue_id="1135"))
+        stuck = repeated_shape_skip_blocks(conn, threshold=3)
+    finally:
+        conn.close()
+
+    # All three skip rows survive with their computed history/status intact.
+    assert len(events) == 3
+    assert [e["prior_block_count"] for e in events] == [0, 1, 2]
+    assert [e["last_status"] for e in events] == [
+        SKIP_STATUS_NO_PRIOR,
+        SKIP_STATUS_STILL_BLOCKED,
+        SKIP_STATUS_UNBLOCKED,
+    ]
+    # And the stuck-issue query still fires post-rebuild — the whole point.
+    assert len(stuck) == 1
+    assert stuck[0]["block_count"] == 3
