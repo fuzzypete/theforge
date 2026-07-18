@@ -131,6 +131,43 @@ def test_auto_fix_comment_mode_posts_replacement_and_drops():
     assert edit_calls == []
 
 
+def test_comment_mode_rerun_failure_persists_candidate_artifact(tmp_path):
+    """Comment mode: when the agent's rewrite still fails the rerun gate, the
+    rejected rewrite + unmet components must be persisted to a durable audit
+    artifact so the refusal is inspectable (#1629 AC5)."""
+    task = _make_task()
+    post_comment, post_calls = _record_calls()
+
+    candidate = "## What\n\nstill not enough\n"
+
+    def agent(body, findings, comments=()):
+        return AgentRewriteResult(replacement=candidate, detail="agent produced replacement")
+
+    outcomes = run_intake_remediation(
+        [task],
+        tmp_path,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="comment",
+        agent_caller=agent,
+        fetch_detail=_make_fetch({"title": "T", "body": _FAILING_BODY, "labels": ["enhancement"]}),
+        post_comment=post_comment,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.proposed_replacement == candidate
+    artifact_path = out.audit["candidate_artifact_path"]
+    assert artifact_path is not None
+    from pathlib import Path
+
+    artifact = Path(artifact_path)
+    assert artifact.exists()
+    contents = artifact.read_text(encoding="utf-8")
+    assert candidate in contents
+    assert "Remaining blocking findings" in contents
+    assert artifact_path in out.detail
+
+
 def test_auto_fix_edit_mode_updates_body_and_remediates():
     task = _make_task()
     post_comment, post_calls = _record_calls()

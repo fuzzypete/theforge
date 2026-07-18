@@ -150,3 +150,15 @@ class TestFindingMessageQuotesLiteralLabel:
         result = check("Bug: foo", _LABEL_MISMATCH_BODY, ["bug"])
         assert result.shape is Shape.NEEDS_GROOMING
         assert any(r.code == "needs_diagnosis" for r in result.reasons)
+
+    def test_no_section_message_quotes_every_literal_label_and_example(self) -> None:
+        # AC3: the completely-absent-section branch must also quote the literal
+        # labels + examples from the spec, not bare component names — the
+        # producer must see the same target the validator checks (iter 1 P1).
+        reason = check_bug_missing_diagnosis("T", "## What\nprose only", ["bug"])
+        assert reason is not None
+        assert reason.code == "needs_diagnosis"
+        for component in REQUIRED_DIAGNOSIS_COMPONENTS:
+            assert f'"**{component.label}:**"' in reason.detail
+            assert component.example in reason.detail
+        assert BUG_SHAPE_REFERENCE_PATH in reason.detail

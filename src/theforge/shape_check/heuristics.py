@@ -501,13 +501,17 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
             severity=Severity.BLOCKING,
             detail=(
                 "Bug has no Diagnosis section — not fix-ready. Add a '## Diagnosis' "
-                "section containing observed symptom, evidence, ruled-out hypotheses, "
-                "confirmed cause, affected code path, and fix-success criterion before "
-                "sprinting (or run `forge diagnose` when available). The confirmed-cause "
-                "value may be a specific claim or a non-assertion phrase such as "
-                "'unknown', 'not yet identified', 'pending investigation', or 'TBD' — "
-                "investigation-ready bugs are admissible; only symptom-only bodies are "
-                "refused."
+                "section containing "
+                # Derive the full required-component list from the single spec so
+                # the no-section message quotes the same literal labels + examples
+                # the validator checks (#1629), not a hand-maintained name list.
+                f"{describe_missing(required_diagnosis_tokens())} "
+                "before sprinting (or run `forge diagnose` when available). The "
+                "confirmed-cause value may be a specific claim or a non-assertion "
+                "phrase such as 'unknown', 'not yet identified', 'pending "
+                "investigation', or 'TBD' — investigation-ready bugs are admissible; "
+                "only symptom-only bodies are refused. "
+                f"Full shape reference: {BUG_SHAPE_REFERENCE_PATH}"
             ),
         )
     if _diagnosis_cause_unknown(body):
