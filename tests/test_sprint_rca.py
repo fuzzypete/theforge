@@ -254,6 +254,35 @@ def test_ambiguous_429_yields_to_captured_non_provider_error(tmp_path: Path) -> 
     assert not any("quota" in a.lower() for a in entry["recommended_next_actions"])
 
 
+def test_corroborated_429_classifies_despite_captured_error(tmp_path: Path) -> None:
+    """A bare 429 corroborated by a strong phrase in the same source still classifies.
+
+    When a scanned provider log carries both an ambiguous status code and an
+    unambiguous provider-limit phrase ("HTTP 429 ... overloaded"), the hit is
+    corroborated and must classify provider_quota even though the story summary
+    holds an unrelated captured error — the ambiguity guard applies only to
+    uncorroborated bare status codes.
+    """
+    empty_worktree_err = (
+        "Gate exited PASS but branch has no commits ahead of base — "
+        "treating empty worktree as missing-work failure"
+    )
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1324", "outcome": "FAILED", "error": empty_worktree_err}]),
+    )
+    story_dir = d / "issue-1324"
+    story_dir.mkdir(parents=True, exist_ok=True)
+    (story_dir / "dev.log").write_text(
+        "Provider returned HTTP 429\nModel is overloaded, retry later\n", encoding="utf-8"
+    )
+    entry = _build(d)["stories"]["issue-1324"]
+    assert entry["primary_failure_class"] == "provider_quota"
+    assert {ev["rule_id"] for ev in entry["evidence"]} >= {"provider_usage_limit"}
+    assert any("quota" in a.lower() for a in entry["recommended_next_actions"])
+
+
 def test_error_prose_mentioning_cost_is_preserved(tmp_path: Path) -> None:
     """Telemetry redaction keys on field names, not the word 'cost' in prose.
 

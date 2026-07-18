@@ -633,11 +633,14 @@ def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str
             continue
         for src in sources:
             lowered = src.text.lower()
-            matched_pattern = next(
-                (p for p in rule.patterns if _pattern_matches(p, lowered)), None
-            )
-            if matched_pattern is None:
+            matched = [p for p in rule.patterns if _pattern_matches(p, lowered)]
+            if not matched:
                 continue
+            # Prefer an unambiguous (non-numeric) pattern so a source that also
+            # contains a strong provider phrase (e.g. "HTTP 429 overloaded") is
+            # not reduced to its bare status code — otherwise the ambiguity guard
+            # would wrongly demote a genuinely-corroborated provider-limit hit.
+            matched_pattern = next((p for p in matched if not p.isdigit()), matched[0])
             excerpt = _first_matching_line(src.text, rule.patterns)
             hits.append((rule.rule_id, src.source, excerpt, matched_pattern))
             break  # one evidence per rule is enough
