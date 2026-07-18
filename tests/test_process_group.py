@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -153,6 +154,50 @@ class TestRegistry:
         process_group.register_agent_group(1234, sandbox_dir=tmp_path)
         process_group.unregister_agent_group(1234)
         assert not (tmp_path / ".forge").exists()
+
+
+# ---------------------------------------------------------------------------
+# kill_agent_group guard (issue #1793)
+# ---------------------------------------------------------------------------
+
+
+class TestKillAgentGroupGuard:
+    """``kill_agent_group`` must never hand a pgid <= 1 (or a non-int) to killpg.
+
+    ``os.killpg(1, sig)`` is ``kill(-1, sig)`` — a broadcast SIGKILL to every
+    process the user can signal — and ``os.killpg(0, sig)`` targets the caller's
+    own group. A subprocess test double whose ``pid`` is unset coerces through
+    ``__index__`` to 1, so ``os.getpgid(pid)`` returns 1 with no error; without
+    the guard the watchdog then broadcast-kills the whole session (the Linux CI
+    hang this bug was filed for).
+    """
+
+    @pytest.mark.parametrize("bad_pgid", [1, 0, -1, "1", None])
+    def test_unsafe_pgid_never_reaches_killpg(
+        self, bad_pgid: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[object, int]] = []
+        monkeypatch.setattr(process_group.os, "killpg", lambda pg, sig: calls.append((pg, sig)))
+        process_group.kill_agent_group(bad_pgid)  # type: ignore[arg-type]
+        assert calls == [], f"killpg was invoked for unsafe pgid={bad_pgid!r}"
+
+    def test_real_group_is_killed(self) -> None:
+        """A genuine spawned group (pgid > 1) is still SIGKILL-ed."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        assert pgid > 1
+        try:
+            process_group.kill_agent_group(pgid)
+            assert _wait_until(lambda: proc.poll() is not None), "real group not killed"
+        finally:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait(timeout=5)
 
 
 # ---------------------------------------------------------------------------

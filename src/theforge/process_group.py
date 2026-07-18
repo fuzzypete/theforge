@@ -166,8 +166,31 @@ def unregister_agent_group(pgid: int) -> None:
         pass
 
 
+def _is_killable_pgid(pgid: object) -> bool:
+    """True only for a pgid that can denote a real, spawned agent group.
+
+    A group launched via ``start_new_session=True`` is led by its child, so its
+    pgid equals that child's pid and is always ``> 1``. Values ``<= 1`` are never
+    an agent group and are catastrophic as ``killpg`` targets: ``os.killpg(0)``
+    signals the *caller's own* group, and ``os.killpg(1)`` is ``kill(-1, …)`` — a
+    broadcast to every process the user may signal. A non-int (e.g. a test
+    double's unset ``pid`` coerced through ``__index__`` to ``1``) is likewise not
+    a real group. Refusing these keeps a bogus pgid from taking down the process
+    tree (issue #1793).
+    """
+    return isinstance(pgid, int) and pgid > 1
+
+
 def kill_agent_group(pgid: int) -> None:
-    """Best-effort ``SIGKILL`` of an entire agent process group."""
+    """Best-effort ``SIGKILL`` of an entire agent process group.
+
+    A pgid ``<= 1`` (or a non-int) is treated as "no group to kill" rather than
+    passed to ``killpg``: ``os.killpg(1, …)`` is ``kill(-1, …)``, a broadcast
+    SIGKILL that would take down the whole process tree — including sibling test
+    workers and the CI runner (issue #1793).
+    """
+    if not _is_killable_pgid(pgid):
+        return
     try:
         os.killpg(pgid, signal.SIGKILL)
     except OSError:
