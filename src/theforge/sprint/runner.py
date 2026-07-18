@@ -2726,6 +2726,17 @@ def run_sprint(
                                 dep, StoryOutcome.MERGE_FAILED, phase=dep_result.phase.name
                             )
                             del queued_prs[dep]
+                            # Defensive/idempotent: the parent is normally already
+                            # in the DAG's _finished set (added when its PR was
+                            # queued, via the pending_integration classify branch),
+                            # so its collision (soft) edge is already released. This
+                            # call guarantees _finished membership on any path that
+                            # queued without that classification. _finished (not
+                            # _completed) is what keeps a genuine depends_on (hard)
+                            # dependent blocked. The redispatch of the released
+                            # dependent onto the current base is driven by the
+                            # dag.ready() re-check before the deadlock-cleanup sweep.
+                            dag.mark_skipped(dep)
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                             _log(
                                 f"✗ {dep}: queued PR {poll_result['status']} "
@@ -2837,6 +2848,13 @@ def run_sprint(
                 f" queued_prs={list(queued_prs.keys())}"
             )
             if not active and not queued_prs:
+                # A terminal-but-not-merged soft-edge parent may have just
+                # released a dependent's collision edge. Before declaring a
+                # deadlock and sweeping remaining tasks into SKIP, re-enter
+                # dispatch for anything now schedulable so a released, ready
+                # story runs on the current base instead of being skipped.
+                if any(t.slug not in active for t in dag.ready()):
+                    continue
                 # Deadlock: remaining tasks have unmet or budget-blocked deps
                 # Release any pending plan gates so worker threads can exit
                 for g_slug, _gate in plan_gates.items():
@@ -2844,6 +2862,12 @@ def run_sprint(
                     _gate.set()
                 plan_gates.clear()
                 for t in dag.remaining():
+                    # A mark_skipped earlier in THIS sweep can release a
+                    # sibling's soft edge; if that makes any task schedulable,
+                    # stop skipping and re-enter dispatch on the next loop pass
+                    # rather than sweeping the just-released sibling into a SKIP.
+                    if any(r.slug not in active for r in dag.ready()):
+                        break
                     unmet = dag.unmet_deps(t.slug)
                     if unmet:
                         dep_list = ", ".join(unmet)
@@ -2861,7 +2885,9 @@ def run_sprint(
                         _record_current_story_entry(t.slug, "SKIPPED", error="blocked")
                         _set_outcome(t.slug, StoryOutcome.SKIPPED, reason="blocked")
                     dag.mark_skipped(t.slug)
-                break
+                else:
+                    break
+                continue
 
             # No active workers but queued PRs are still in flight.
             # Poll each queued PR directly so dependents can be dispatched
@@ -2905,6 +2931,16 @@ def run_sprint(
                             _qp_slug, StoryOutcome.MERGE_FAILED, phase=_qp_result.phase.name
                         )
                         del queued_prs[_qp_slug]
+                        # Defensive/idempotent: the parent is normally already in
+                        # _finished (added when its PR was queued), so its collision
+                        # (soft) edge is already released; this guarantees it on any
+                        # path that skipped that classification. _finished (not
+                        # _completed) is what still blocks a hard depends_on
+                        # dependent. Actual redispatch of a released dependent onto
+                        # the current base comes from the dag.ready() re-check at the
+                        # top of the deadlock-cleanup branch, reached after the
+                        # `continue` below.
+                        dag.mark_skipped(_qp_slug)
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
                 continue

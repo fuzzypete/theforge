@@ -607,6 +607,136 @@ class TestParallelDependencyGating:
         assert sprint.specs_succeeded == 1
         assert sprint.specs_skipped == 0
 
+    def test_collision_dependent_runs_on_current_base_when_queued_parent_times_out(
+        self, tmp_path: Path
+    ) -> None:
+        """Issue #1792: a collision (soft-edge) dependent must be dispatched onto
+        the current base when its queued-PR parent times out into MERGE_FAILED.
+
+        The collision DAG links story-b to story-a via ``collision_deps`` (a soft
+        edge whose sole purpose is to stop story-b from building on story-a's
+        *unmerged* changes). story-a is approved and its PR auto-merge-queued, but
+        the merge never lands: ``_poll_queued_pr`` reports ``timeout``. Because
+        story-a's changes never reached the base, the base is exactly the clean
+        state the soft edge was guarding, so story-b must run there — not be
+        marked SKIPPED(blocked) as it was before the fix.
+
+        This exercises the ready-loop queued-PR gate: story-b becomes ready the
+        instant story-a is queued (terminal-but-not-merged), the gate polls the
+        parent's PR, sees the timeout, marks story-a MERGE_FAILED, and re-enters
+        dispatch so story-b runs on the current base.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # story-a: approved, deferred merge queued (pending_integration).
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+        # story-b: clean run once dispatched onto the current base.
+        result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        run_order: list[str] = []
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            run_order.append(task.slug)
+            return {"story-a": result_a, "story-b": result_b}[task.slug]
+
+        def _fake_land_story(*args, **kwargs):  # noqa: ANN002, ANN003
+            return (
+                {"merge_queued": True, "pr_url": "https://github.com/x/y/pull/1"},
+                "pending_integration",
+            )
+
+        def _fake_poll(*args, **kwargs):  # noqa: ANN002, ANN003
+            run_order.append("poll")
+            return {"status": "timeout"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch(
+                "theforge.sprint.runner.compute_synthetic_edges",
+                return_value={"story-b": ["story-a"]},
+            ),
+            patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
+            patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # The parent's queued PR timed out (MERGE_FAILED); the dependent was still
+        # dispatched onto the current base and ran to success — not skipped.
+        assert "story-b" in run_order
+        assert run_order.index("story-b") > run_order.index("poll")
+        assert sprint.specs_failed == 1  # story-a MERGE_FAILED
+        assert sprint.specs_succeeded == 1  # story-b ran on the clean base
+        assert sprint.specs_skipped == 0  # story-b was NOT stranded
+
+    def test_hard_dependent_still_skipped_when_queued_parent_times_out(
+        self, tmp_path: Path
+    ) -> None:
+        """Issue #1792 (soft/hard distinction): a genuine ``depends_on`` (hard)
+        dependent of a queued parent that times out into MERGE_FAILED must stay
+        SKIPPED — only a collision soft edge dissolves on parent failure.
+
+        story-h needs story-p's *result*, so a terminal-but-not-merged story-p
+        must propagate its failure to story-h. story-h is never ready while
+        story-p is only queued (a hard dep requires the parent to be *completed*,
+        which queuing does not provide), so the parent is polled from the
+        no-active-workers branch; when it times out, story-p is marked MERGE_FAILED
+        and story-h remains blocked and is skipped.
+        """
+        _make_spec_file(tmp_path, "Story P", "story-p")
+        _make_spec_file(tmp_path, "Story H", "story-h", depends_on=["story-p"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-p.md", "story-h.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # story-p: approved, deferred merge queued.
+        result_p = _make_coordinator_result(success=True, cost=1.0)
+        result_p.landing_status = "pending_integration"
+        result_p.merge = {"action": "merge", "pending": True}
+        result_h = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        run_order: list[str] = []
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            run_order.append(task.slug)
+            return {"story-p": result_p, "story-h": result_h}[task.slug]
+
+        def _fake_land_story(*args, **kwargs):  # noqa: ANN002, ANN003
+            return (
+                {"merge_queued": True, "pr_url": "https://github.com/x/y/pull/2"},
+                "pending_integration",
+            )
+
+        def _fake_poll(*args, **kwargs):  # noqa: ANN002, ANN003
+            run_order.append("poll")
+            return {"status": "timeout"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
+            patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # The hard dependent never ran; its parent's failure propagated as a skip.
+        assert "story-h" not in run_order
+        assert sprint.specs_failed == 1  # story-p MERGE_FAILED
+        assert sprint.specs_skipped == 1  # story-h blocked by failed hard dep
+        assert sprint.specs_succeeded == 0
+
     def test_resume_at_review_dependent_waits_for_queued_parent(self, tmp_path: Path) -> None:
         """Issue #1609 (incident path): a dependent re-entering via resume triage
         at REVIEW must honor the queued-parent reachability gate.
