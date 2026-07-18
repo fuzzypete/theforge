@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-SUBSTRATE_SCHEMA_VERSION = 3
+SUBSTRATE_SCHEMA_VERSION = 4
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -231,6 +231,25 @@ CREATE INDEX IF NOT EXISTS idx_shape_skip_events_code ON shape_skip_events(reaso
 CREATE INDEX IF NOT EXISTS idx_shape_skip_events_category ON shape_skip_events(category);
 CREATE INDEX IF NOT EXISTS idx_shape_skip_events_run ON shape_skip_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_shape_skip_events_emitted ON shape_skip_events(emitted_at);
+CREATE TABLE IF NOT EXISTS inline_remediation_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT NOT NULL,
+    sprint_id TEXT,
+    milestone TEXT,
+    shape_verdict TEXT,
+    action TEXT NOT NULL,
+    succeeded INTEGER NOT NULL,
+    cost_usd REAL,
+    duration_seconds REAL,
+    emitted_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inline_remediation_events_milestone
+    ON inline_remediation_events(milestone);
+CREATE INDEX IF NOT EXISTS idx_inline_remediation_events_issue
+    ON inline_remediation_events(issue_id);
+CREATE INDEX IF NOT EXISTS idx_inline_remediation_events_action
+    ON inline_remediation_events(action);
 """
 
 
@@ -1869,6 +1888,110 @@ def repeated_shape_skip_blocks(
                 "run_ids": run_ids,
             }
         )
+    return out
+
+
+def record_inline_remediation_event(project_root: Path, event: dict) -> int:
+    """Insert an inline-remediation event row into the audit substrate.
+
+    Inline intake remediation is the opt-in ``intake.grooming`` fallback that
+    fires at sprint entry when pre-sprint ``forge groom`` was skipped
+    (ADR-0001, "Inline intake remediation posture"). Each firing writes one
+    structured record here so the refusal-economics metric — the
+    remediation-to-runnable cost ratio — can be queried from a single table
+    rather than reconstructed from scattered WARNING logs.
+
+    The ``milestone`` and ``cost_usd`` columns are indexed/summable so
+    ``count(inline_remediation_events) per milestone`` and
+    ``total_cost(inline_remediation_events) per milestone`` are direct SQL
+    (see :func:`inline_remediation_rollup_by_milestone`).
+
+    Required keys: ``issue_id``, ``action``. ``succeeded`` is coerced to a
+    0/1 integer. Returns the inserted row's ``event_id``. Raises
+    :class:`SubstrateError` on missing required keys or I/O failure so the
+    caller can decide whether to swallow (sprint treats this as
+    observability, not gating).
+    """
+    required = {"issue_id", "action"}
+    missing = required - set(event)
+    if missing:
+        raise SubstrateError(f"inline remediation event missing required keys: {sorted(missing)}")
+    raw_json = _canonical_json(event)
+    emitted_at = event.get("emitted_at") or _now_iso()
+    raw_cost = event.get("cost_usd")
+    try:
+        cost_usd = float(raw_cost) if raw_cost is not None else None
+    except (TypeError, ValueError):
+        cost_usd = None
+    raw_duration = event.get("duration_seconds")
+    try:
+        duration_seconds = float(raw_duration) if raw_duration is not None else None
+    except (TypeError, ValueError):
+        duration_seconds = None
+    conn = create_or_open(project_root)
+    try:
+        cur = conn.execute(
+            "INSERT INTO inline_remediation_events "
+            "(issue_id, sprint_id, milestone, shape_verdict, action, succeeded, "
+            "cost_usd, duration_seconds, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(event["issue_id"]),
+                event.get("sprint_id"),
+                event.get("milestone"),
+                event.get("shape_verdict"),
+                str(event["action"]),
+                1 if event.get("succeeded") else 0,
+                cost_usd,
+                duration_seconds,
+                emitted_at,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def iter_inline_remediation_events(
+    conn: sqlite3.Connection,
+    *,
+    milestone: str | None = None,
+) -> Iterable[dict]:
+    """Yield inline-remediation event dicts (parsed from raw_json), oldest first."""
+    sql = "SELECT raw_json FROM inline_remediation_events"
+    params: tuple = ()
+    if milestone is not None:
+        sql += " WHERE milestone = ?"
+        params = (milestone,)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, params):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def inline_remediation_rollup_by_milestone(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Return ``{milestone: {"count": int, "total_cost_usd": float}}``.
+
+    The postmortem refusal-economics numerator: how many inline-remediation
+    events fired per milestone and what they cost. A ``None`` milestone is
+    keyed under the empty string so callers can still surface un-milestoned
+    events. Costs recorded as NULL contribute 0.0.
+    """
+    rows = conn.execute(
+        "SELECT COALESCE(milestone, ''), COUNT(*), COALESCE(SUM(cost_usd), 0.0) "
+        "FROM inline_remediation_events GROUP BY milestone"
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for milestone, count, total_cost in rows:
+        out[str(milestone)] = {
+            "count": int(count),
+            "total_cost_usd": float(total_cost),
+        }
     return out
 
 

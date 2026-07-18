@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import shutil
 import subprocess
@@ -173,12 +174,22 @@ def _run_intake_remediation_pass(
     tasks: list[TaskStory],
     log: Callable[[str], None],
     force: bool = False,
+    sprint_id: str | None = None,
+    milestone: str | None = None,
 ) -> dict[str, IntakeOutcome]:
     """Run the intake remediation pass on the normalized task list.
 
     Returns an empty dict when intake is fully disabled (grooming + auto_fix
     both False) — the runner skips the dropped/remediated bookkeeping in
     that case, preserving today's behavior exactly.
+
+    When ``intake.grooming`` is enabled and remediation actually fires for an
+    issue (a non-PASSED outcome), each firing emits the ADR-0001 training-
+    wheels WARNING naming ``forge groom`` and writes a structured record to
+    the audit substrate (``inline_remediation_events``). ``sprint_id`` and
+    ``milestone`` label those records for per-milestone refusal-economics
+    rollups; both default to ``None`` for the entry-shape-gate bridge path,
+    which has no sprint id in scope.
     """
     intake_cfg = getattr(config, "intake", None)
     grooming_raw = getattr(intake_cfg, "grooming", False)
@@ -207,7 +218,8 @@ def _run_intake_remediation_pass(
             config=config,
             log=log,
         )
-    return run_intake_remediation(
+    _remediation_started = time.monotonic()
+    outcomes = run_intake_remediation(
         tasks,
         config.project_root,
         grooming_enabled=grooming_enabled,
@@ -217,6 +229,89 @@ def _run_intake_remediation_pass(
         missing_agent_detail=missing_agent_detail,
         force=force,
     )
+    _remediation_duration = time.monotonic() - _remediation_started
+    # Training-wheels posture (ADR-0001): when the opt-in grooming fallback
+    # fires inline, tell the operator the intended pre-sprint path and record
+    # the event for refusal-economics rollups. Gated on grooming_enabled so
+    # auto_fix-only runs (a distinct opt-in) don't emit the grooming memo.
+    if grooming_enabled:
+        _emit_inline_remediation_events(
+            config=config,
+            tasks=tasks,
+            outcomes=outcomes,
+            log=log,
+            sprint_id=sprint_id,
+            milestone=milestone,
+            duration_seconds=_remediation_duration,
+        )
+    return outcomes
+
+
+def _emit_inline_remediation_events(
+    *,
+    config: ForgeConfig,
+    tasks: list[TaskStory],
+    outcomes: dict[str, IntakeOutcome],
+    log: Callable[[str], None],
+    sprint_id: str | None,
+    milestone: str | None,
+    duration_seconds: float,
+) -> None:
+    """Emit the ADR-0001 training-wheels WARNING + audit record per firing.
+
+    "Firing" = a non-PASSED outcome (blocking findings triggered remediation).
+    PASSED outcomes did nothing, so they neither warn nor record. Substrate
+    write failures are observability-only: they log a WARNING and never abort
+    the sprint.
+    """
+    from ..coordinator.audit_substrate import (  # noqa: PLC0415
+        SubstrateError,
+        record_inline_remediation_event,
+    )
+
+    logger = logging.getLogger("theforge.intake")
+    slug_to_issue = {t.slug: getattr(t, "github_issue", None) for t in tasks}
+    for slug, outcome in outcomes.items():
+        # Production outcomes are always IntakeOutcome; guard so a caller that
+        # passes a stub/placeholder (only tests do) never trips substrate I/O.
+        if not isinstance(outcome, IntakeOutcome):
+            continue
+        if outcome.kind is IntakeOutcomeKind.PASSED:
+            continue
+        issue = slug_to_issue.get(slug)
+        issue_ref = f"#{issue}" if issue is not None else slug
+        groom_ref = str(issue) if issue is not None else slug
+        line1 = f"Inline intake remediation ran at sprint entry for {issue_ref}."
+        line2 = f"Intended workflow: run `forge groom {groom_ref}` before sprint selection."
+        # Operator-facing sprint log (matches the ADR `[forge]` example) …
+        log(line1)
+        log(line2)
+        # … and a WARNING-level record so the message carries severity.
+        logger.warning("%s %s", line1, line2)
+
+        codes = _intake_finding_codes(outcome)
+        remediation_source = (
+            outcome.audit.get("remediation_source") if isinstance(outcome.audit, dict) else None
+        )
+        event = {
+            "issue_id": str(issue) if issue is not None else slug,
+            "sprint_id": sprint_id,
+            "milestone": milestone,
+            "shape_verdict": codes[0] if codes else outcome.kind.value,
+            "shape_verdict_codes": codes,
+            "action": outcome.kind.value,
+            "succeeded": outcome.kind is IntakeOutcomeKind.REMEDIATED,
+            "cost_usd": _intake_outcome_cost(outcome),
+            "duration_seconds": duration_seconds,
+            "remediation_source": remediation_source,
+            "detail": outcome.detail,
+        }
+        try:
+            record_inline_remediation_event(config.project_root, event)
+        except SubstrateError as exc:
+            msg = f"inline-remediation substrate write failed (continuing): {exc}"
+            log(f"WARNING: {msg}")
+            logger.warning(msg)
 
 
 def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
@@ -1915,6 +2010,7 @@ def run_sprint(
         tasks=dispatch_tasks,
         log=_log,
         force=force,
+        sprint_id=_sprint_id,
     )
     # Intake remediation agent spend (auto_fix LLM rewrites) must roll up
     # into the sprint total. Without this, sprint.total_cost_usd silently

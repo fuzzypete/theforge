@@ -27,6 +27,19 @@ never auto-invoked — you run it.
 Once `forge shape` has put the issue in a typed bucket, the per-use-case
 rules below apply.
 
+### Groom before the sprint, not during it
+
+Making a typed issue shape-gate-clean is the job of **`forge groom <issue>`**,
+run *before* sprint selection. Sprint entry is the final readiness *check*, not
+the place readiness gets created.
+
+Inline remediation is the fallback when pre-sprint grooming was skipped, not the
+primary workflow. The `intake.grooming` flag (disabled by default) exists as an
+opt-in safety net for incident-time pressure; when it fires it warns you to run
+`forge groom` next time. Do not treat it as a substitute for grooming. See
+[ADR-0001](../adr/0001-intake-readiness-workflow.md) and the
+[`intake.grooming` reference](inputs-reference.md#inline-intake-remediation-intakegrooming).
+
 ## Storage: GitHub issue vs local story file
 
 TheForge accepts the same content in two storage backends:

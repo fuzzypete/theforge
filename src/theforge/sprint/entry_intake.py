@@ -25,6 +25,8 @@ def remediate_entry_skipped_issues(
     *,
     config: "ForgeConfig",
     log: Callable[[str], None],
+    sprint_id: str | None = None,
+    milestone: str | None = None,
 ) -> dict[int, IntakeOutcome]:
     """Run the intake remediation gate over entry-skipped issues.
 
@@ -68,6 +70,8 @@ def remediate_entry_skipped_issues(
         config=config,
         tasks=tasks,
         log=log,
+        sprint_id=sprint_id,
+        milestone=milestone,
     )
 
     outcomes: dict[int, IntakeOutcome] = {}

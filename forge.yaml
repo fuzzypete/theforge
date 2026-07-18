@@ -59,10 +59,10 @@ provider_fallbacks:
 
 budget_usd: 50.0
 
-intake:
-  grooming: true
-  auto_fix: true
-  auto_fix_mode: edit
+# Inline intake remediation (intake.grooming) is intentionally left at the
+# schema default (false) — see ADR-0001 "Inline intake remediation posture".
+# This repo runs `forge groom` as the primary pre-sprint readiness path, so no
+# dogfood override is set here; the repo behaves like any fresh consumer.
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"

@@ -93,7 +93,7 @@ def test_passing_body_with_entry_skip_records_declined(tmp_path: Path) -> None:
         intake=IntakeConfig(grooming=True, auto_fix=False, auto_fix_mode="comment"),
     )
 
-    def fake_pass(*, config, tasks, log):  # noqa: ARG001
+    def fake_pass(*, config, tasks, log, **_kwargs):  # noqa: ARG001
         return {t.slug: IntakeOutcome(slug=t.slug, kind=IntakeOutcomeKind.PASSED) for t in tasks}
 
     logs: list[str] = []
@@ -122,7 +122,7 @@ def test_remediation_outcome_passes_through(tmp_path: Path) -> None:
         intake=IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="comment"),
     )
 
-    def fake_pass(*, config, tasks, log):  # noqa: ARG001
+    def fake_pass(*, config, tasks, log, **_kwargs):  # noqa: ARG001
         return {
             tasks[0].slug: IntakeOutcome(
                 slug=tasks[0].slug,

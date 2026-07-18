@@ -368,6 +368,13 @@ notifications:
     priority: high
     # url resolved from NTFY_URL in .forge/.env
 
+# ── Inline intake remediation (optional, opt-in fallback) ──
+# Defaults to disabled. See "Inline intake remediation" below.
+intake:
+  grooming: false             # opt-in inline shape/grooming repair at sprint entry
+  auto_fix: false             # allow a single agent rewrite pass on failure
+  auto_fix_mode: comment      # "comment" (post + drop) | "edit" (rewrite body, rerun once)
+
 # ── Secrets (optional) ────────────────────────────────────
 # API keys are read from .forge/.env (run `forge secrets-init` to create)
 ```
@@ -382,6 +389,40 @@ notifications:
 | When to use | Dev agent (needs full editor access) | Reviewers (read-only analysis) |
 | `allowed_tools` | Forwarded to CLI as flags | TheForge executes tools locally |
 | Cost tracking | Parsed from CLI output | Calculated from token usage |
+
+### Inline intake remediation (`intake.grooming`)
+
+`intake.grooming` is an **opt-in fallback**, not the primary readiness workflow.
+It is disabled by default (`grooming: false` in the schema), and the recommended
+path is to make an issue shape-gate-clean with **`forge groom <issue>` before
+sprint selection**.
+
+When enabled, an issue that fails the shape gate at sprint entry gets an inline
+remediation pass instead of being dropped immediately. Each time it fires, the
+daemon emits a WARNING naming `forge groom` as the intended path:
+
+```
+[forge] Inline intake remediation ran at sprint entry for #1497.
+[forge] Intended workflow: run `forge groom 1497` before sprint selection.
+```
+
+Treat this as training wheels for the operator who skipped pre-sprint grooming
+(e.g. incident-time pressure) — not as a reason to skip it routinely. Every
+firing is also recorded in the SQLite audit substrate
+(`inline_remediation_events`) with the issue id, sprint id, triggering
+shape-gate verdict, action taken, success, and the time/cost spent, so the
+remediation-to-runnable cost ratio is queryable per milestone.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `intake.grooming` | `false` | Enable the opt-in inline shape/grooming repair pass at sprint entry. |
+| `intake.auto_fix` | `false` | Allow a single agent rewrite pass when the gate fails. |
+| `intake.auto_fix_mode` | `comment` | `comment` posts the candidate and drops the story; `edit` rewrites the issue body in place and reruns the gate once. |
+
+Canonical design: **ADR-0001 — Intake Readiness Workflow**
+(`docs/adr/0001-intake-readiness-workflow.md`), "Inline intake remediation
+posture". `forge init` and generated templates emit no `intake.grooming` line
+(so it resolves to `false`); there is no migration path.
 
 ---
 
