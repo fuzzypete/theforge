@@ -191,3 +191,52 @@ def test_mixed_measured_and_unmeasured_dev_costs_are_unknown_aggregate():
     state = _state_with_dev_costs([0.30, None])
     outcome = build_run_outcome(_Cfg(), state, success=True)
     assert outcome.dev_cost_usd is None
+
+
+def _dev_telemetry(*, is_timeout: bool):
+    from theforge.coordinator.state import DevIterationTelemetry
+
+    return DevIterationTelemetry(
+        iteration=1,
+        max_iterations=3,
+        cost_usd=0.10,
+        duration_s=42.0,
+        is_timeout=is_timeout,
+    )
+
+
+def test_build_run_outcome_populates_duration_from_dev_durations():
+    state = _state_with_dev_costs([0.30])
+    state.dev_durations = [120.5, 200.25]
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    assert outcome.dev_duration_s == 320.75
+    # No timeout telemetry → not a censored kill.
+    assert outcome.dev_timeout_killed is False
+
+
+def test_build_run_outcome_no_durations_yields_none():
+    state = _state_with_dev_costs([0.30])
+    assert state.dev_durations == []
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    assert outcome.dev_duration_s is None
+
+
+def test_build_run_outcome_marks_timeout_killed_and_limit():
+    state = _state_with_dev_costs([0.30])
+    state.dev_durations = [1349.9]
+    state.adaptive_dev_timeout_seconds = 1350
+    state.dev_iteration_telemetry = [_dev_telemetry(is_timeout=True)]
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_timeout_killed is True
+    assert outcome.dev_timeout_limit_s == 1350
+
+
+def test_build_run_outcome_last_iteration_not_timeout_is_not_killed():
+    state = _state_with_dev_costs([0.30])
+    state.dev_iteration_telemetry = [
+        _dev_telemetry(is_timeout=True),
+        _dev_telemetry(is_timeout=False),
+    ]
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    # Only the LAST iteration's is_timeout marks a censored kill.
+    assert outcome.dev_timeout_killed is False

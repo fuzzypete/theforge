@@ -278,19 +278,60 @@ def derive_limits(
         raw_dev = profile_stats["avg_iterations"] * _HEADROOM_FACTOR
         chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
         timeout_per_iteration = base_timeout_seconds / max(static_dev_max, 1)
-        chosen_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
+        iteration_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
+        # An adaptively-learned wall-clock limit must follow from observations of
+        # the wall-clock it bounds, not from an iteration count scaled by a static
+        # per-iteration baseline. Floor the iteration-derived value by:
+        #   - observed completed-run duration + headroom (success must never make
+        #     the granted time shrink below what success was observed to need), and
+        #   - the max limit that killed comparable runs (a censored observation
+        #     can never drive the limit below the value at which it was killed), and
+        #   - the operator-configured base timeout (now a hard floor).
+        observed_floor = _ceil_int(profile_stats.get("max_duration_s", 0.0) * _HEADROOM_FACTOR)
+        kill_floor = _ceil_int(profile_stats.get("max_killed_timeout_s", 0.0))
+        # ``_ceil_int`` floors at 1; a genuine no-data signal is 0, so drop the
+        # floor to 0 when the underlying observation is absent.
+        if not profile_stats.get("max_duration_s", 0.0):
+            observed_floor = 0
+        if not profile_stats.get("max_killed_timeout_s", 0.0):
+            kill_floor = 0
+        chosen_timeout = max(iteration_timeout, observed_floor, kill_floor, base_timeout_seconds)
         _estimate_headroom = _ESTIMATE_HEADROOM_BY_BAND.get(
             (complexity_band or "").lower(), _HEADROOM_FACTOR
         )
         chosen_estimate = _round_money(profile_stats["avg_cost_usd"] * _estimate_headroom)
         audit["profile_raw_dev_max"] = round(raw_dev, 4)
         audit["estimate_headroom_factor"] = _estimate_headroom
+        audit["iteration_derived_timeout_seconds"] = iteration_timeout
+        audit["profile_max_duration_s"] = round(float(profile_stats.get("max_duration_s", 0.0)), 4)
+        audit["profile_max_killed_timeout_s"] = round(
+            float(profile_stats.get("max_killed_timeout_s", 0.0)), 4
+        )
+        audit["duration_floor_seconds"] = observed_floor
+        audit["kill_floor_seconds"] = kill_floor
+        floored_on_duration = observed_floor > iteration_timeout and observed_floor >= kill_floor
+        floored_on_kill = kill_floor > iteration_timeout and kill_floor > observed_floor
+        audit["timeout_floored_on_observation"] = chosen_timeout > iteration_timeout
         dev_rationale = (
             f"derived dev limits from {profile_runs} "
             f"{complexity_band or 'unknown'}-band profile runs with "
             f"{_HEADROOM_FACTOR}x iteration headroom and {_estimate_headroom}x "
-            "cost-estimate headroom; timeout scaled from static per-iteration baseline."
+            "cost-estimate headroom"
         )
+        if floored_on_kill:
+            dev_rationale += (
+                f"; timeout floored on the {kill_floor}s limit that killed comparable runs."
+            )
+        elif floored_on_duration:
+            dev_rationale += (
+                f"; timeout floored on observed run duration+headroom ({observed_floor}s)."
+            )
+        elif chosen_timeout > iteration_timeout:
+            dev_rationale += (
+                f"; timeout floored on the operator-configured base ({base_timeout_seconds}s)."
+            )
+        else:
+            dev_rationale += "; timeout scaled from static per-iteration baseline."
     audit["chosen_dev_max"] = chosen_dev
     audit["chosen_dev_timeout_seconds"] = chosen_timeout
     audit["chosen_dev_cost_estimate_usd"] = round(chosen_estimate, 4)

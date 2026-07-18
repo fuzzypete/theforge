@@ -49,6 +49,18 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     # ``dev_trace_count`` is the only monotonic dev-iteration counter (never reset
     # on cycle boundaries) so it captures total dev attempts across the run.
     dev_iterations = max(int(state.dev_trace_count or 0), 1)
+    # Observed wall-clock of the dev phase (sum of per-call durations). None when
+    # nothing was recorded so learning never treats "unknown" as a $0-style zero.
+    dev_duration_s = round(sum(state.dev_durations), 2) if state.dev_durations else None
+    # A harness kill at the timeout is a censored observation: the last dev
+    # iteration's ``is_timeout`` flag marks it, and the granted timeout is the
+    # limit that terminated it — a floor the next timeout can never fall below.
+    dev_timeout_killed = bool(
+        state.dev_iteration_telemetry and state.dev_iteration_telemetry[-1].is_timeout
+    )
+    dev_timeout_limit_s = (
+        int(state.adaptive_dev_timeout_seconds) if state.adaptive_dev_timeout_seconds else None
+    )
     return RunOutcome(
         complexity=complexity,
         complexity_score=state.preflight_complexity_score,
@@ -58,6 +70,9 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         dev_cli=getattr(config.dev_profile, "cli", None),
         dev_success=bool(success),
         dev_iterations=dev_iterations,
+        dev_duration_s=dev_duration_s,
+        dev_timeout_killed=dev_timeout_killed,
+        dev_timeout_limit_s=dev_timeout_limit_s,
         # Pass the cost-unknown signal through (None) instead of coercing to
         # $0.00, so unmeasured CLI-transport runs are recorded as unmeasured.
         dev_cost_usd=state.total_dev_cost_measured,

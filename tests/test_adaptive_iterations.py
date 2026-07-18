@@ -397,6 +397,109 @@ def test_read_history_tail_returns_empty_for_truly_fresh_repo(tmp_path: Path):
     assert _read_history_tail(tmp_path) == []
 
 
+# ── Duration-aware timeout floor (issue #1762) ────────────────────────────
+
+
+def _profiles_with_duration(
+    *,
+    band: str = "medium",
+    runs: int = 7,
+    avg_iterations: float = 1.0,
+    avg_cost: float = 1.0,
+    max_duration_s: float = 0.0,
+    duration_runs: int = 0,
+    max_killed_timeout_s: float = 0.0,
+):
+    return {
+        "models": {
+            "dev": {
+                "dev": {
+                    "by_complexity": {
+                        band: {
+                            "runs": runs,
+                            "avg_iterations": avg_iterations,
+                            "avg_cost_usd": avg_cost,
+                            "_duration_runs": duration_runs,
+                            "max_duration_s": max_duration_s,
+                            "max_killed_timeout_s": max_killed_timeout_s,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+def test_timeout_floored_by_observed_duration_for_fast_converging_runs(tmp_path: Path):
+    """Fast-converging (low-iteration) runs whose observed durations approach a
+    large value must not shrink the timeout below observed duration + headroom."""
+    result = derive_limits(
+        5,
+        "medium",
+        _policy(max_dev_iterations=1, max_dev_iterations_cap=6),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_duration(
+            avg_iterations=1.0, max_duration_s=1207.0, duration_runs=7
+        ),
+    )
+    # avg_iterations=1.0 → iteration-derived timeout would be ~600s; the observed
+    # duration floor (1207 * 1.5 = 1811) dominates.
+    assert result.dev_timeout_seconds >= 1207
+    assert result.dev_timeout_seconds == 1811
+    assert result.audit["timeout_floored_on_observation"] is True
+    assert result.audit["duration_floor_seconds"] == 1811
+    assert result.audit["profile_max_duration_s"] == 1207.0
+    assert "observed run duration" in result.audit["rationale"]
+
+
+def test_timeout_never_below_kill_limit(tmp_path: Path):
+    """A profile containing a timeout-killed run yields a timeout >= the kill
+    limit — a censored observation can never drive the limit below where it died."""
+    result = derive_limits(
+        5,
+        "medium",
+        _policy(max_dev_iterations=1, max_dev_iterations_cap=6),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_duration(
+            avg_iterations=1.0,
+            max_duration_s=200.0,
+            duration_runs=6,
+            max_killed_timeout_s=1350.0,
+        ),
+    )
+    assert result.dev_timeout_seconds >= 1350
+    assert result.audit["kill_floor_seconds"] == 1350
+    assert result.audit["profile_max_killed_timeout_s"] == 1350.0
+    assert "killed comparable runs" in result.audit["rationale"]
+
+
+def test_timeout_never_below_base_timeout(tmp_path: Path):
+    """chosen_timeout is floored by the operator-configured base timeout."""
+    result = derive_limits(
+        5,
+        "medium",
+        _policy(max_dev_iterations=1, max_dev_iterations_cap=6),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_duration(
+            avg_iterations=1.0, max_duration_s=50.0, duration_runs=6
+        ),
+    )
+    # Iteration-derived (~600) and duration floor (~75) both below base 900.
+    assert result.dev_timeout_seconds == 900
+
+
 def test_read_history_tail_reads_native_substrate_rows(tmp_path: Path):
     """Substrate-only fixture: native rows surface as story-level history records."""
     from theforge.coordinator import audit_substrate

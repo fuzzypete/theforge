@@ -71,6 +71,15 @@ class RunOutcome:
     dev_iterations: int
     dev_cost_usd: float | None  # None = the transport could not measure cost
     complexity_score: int | None = None
+    # Observed wall-clock of the completed dev phase (seconds); None when unknown
+    # or when the run was harness-killed (a kill's true duration is unknown).
+    dev_duration_s: float | None = None
+    # True when the harness terminated the dev phase at its timeout limit. Such a
+    # run is a censored observation: its duration only bounds the timeout from
+    # below and must never lower learned duration.
+    dev_timeout_killed: bool = False
+    # The granted per-story timeout (seconds) at which a killed run was terminated.
+    dev_timeout_limit_s: int | None = None
     preflight_model: str | None = None
     dev_actual_model: str | None = None
     dev_provider: str | None = None
@@ -256,6 +265,38 @@ def _fold_cost(bucket: dict, cost_usd: float | None, *, unknown_count: int = 1) 
     bucket["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
 
 
+def _fold_duration(
+    bucket: dict,
+    duration_s: float | None,
+    killed: bool,
+    limit_s: int | None,
+) -> None:
+    """Fold one dev run's wall-clock signal into ``bucket``.
+
+    Two disjoint cases, kept segregated so harness-killed runs never contaminate
+    learned completed-run duration (see #1763):
+
+    - A COMPLETED run (``not killed``) with a known ``duration_s`` accumulates
+      into ``_duration_sum``/``_duration_runs`` (→ ``avg_duration_s``) and raises
+      ``max_duration_s``.
+    - A harness-KILLED run only raises ``max_killed_timeout_s`` (the limit that
+      terminated it). Its true duration is unknown and only bounds the timeout
+      from below — it never touches the duration accumulators, so a kill can
+      never lower learned duration.
+    """
+    if not killed and duration_s is not None:
+        dur_sum = float(bucket.get("_duration_sum", 0.0)) + float(duration_s)
+        dur_runs = int(bucket.get("_duration_runs", 0)) + 1
+        bucket["_duration_sum"] = dur_sum
+        bucket["_duration_runs"] = dur_runs
+        bucket["avg_duration_s"] = round(dur_sum / dur_runs, 4) if dur_runs > 0 else 0.0
+        bucket["max_duration_s"] = max(float(bucket.get("max_duration_s", 0.0)), float(duration_s))
+    if killed and limit_s is not None:
+        bucket["max_killed_timeout_s"] = max(
+            float(bucket.get("max_killed_timeout_s", 0.0)), float(limit_s)
+        )
+
+
 def _update_dev(
     entry: dict,
     complexity: str,
@@ -263,6 +304,9 @@ def _update_dev(
     iterations: int,
     cost_usd: float | None,
     complexity_score: int | None = None,
+    duration_s: float | None = None,
+    timeout_killed: bool = False,
+    timeout_limit_s: int | None = None,
 ) -> None:
     if cost_usd is None:
         log.warning(
@@ -281,6 +325,7 @@ def _update_dev(
     dev["success_rate"] = round(successes / runs, 4)
     dev["avg_iterations"] = round(iter_sum / runs, 4)
     _fold_cost(dev, cost_usd)
+    _fold_duration(dev, duration_s, timeout_killed, timeout_limit_s)
 
     by = dev.setdefault("by_complexity", {})
     bc = by.setdefault(complexity, {})
@@ -293,6 +338,7 @@ def _update_dev(
     bc["success_rate"] = round(bc_successes / bc_runs, 4)
     bc["avg_iterations"] = round(bc_iter_sum / bc_runs, 4)
     _fold_cost(bc, cost_usd)
+    _fold_duration(bc, duration_s, timeout_killed, timeout_limit_s)
 
     if complexity_score is not None:
         score_key = str(int(complexity_score))
@@ -307,6 +353,7 @@ def _update_dev(
         sc["success_rate"] = round(sc_successes / sc_runs, 4)
         sc["avg_iterations"] = round(sc_iter_sum / sc_runs, 4)
         _fold_cost(sc, cost_usd)
+        _fold_duration(sc, duration_s, timeout_killed, timeout_limit_s)
 
 
 def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float | None) -> None:
@@ -350,6 +397,11 @@ def _zero_dev_bucket(bucket: dict) -> None:
     bucket["success_rate"] = 0.0
     bucket["avg_iterations"] = 0.0
     bucket["avg_cost_usd"] = 0.0
+    bucket["_duration_sum"] = 0.0
+    bucket["_duration_runs"] = 0
+    bucket["avg_duration_s"] = 0.0
+    bucket["max_duration_s"] = 0.0
+    bucket["max_killed_timeout_s"] = 0.0
 
 
 def _zero_review_section(section: dict) -> None:
@@ -375,6 +427,10 @@ def _recompute_dev_section(section: dict) -> None:
     iterations = 0.0
     cost = 0.0
     cost_unknown = 0
+    duration_sum = 0.0
+    duration_runs = 0
+    max_duration = 0.0
+    max_killed_timeout = 0.0
     for band in COMPLEXITY_BANDS:
         bucket = by.setdefault(band, {})
         runs += int(bucket.get("runs", 0))
@@ -382,6 +438,12 @@ def _recompute_dev_section(section: dict) -> None:
         iterations += float(bucket.get("_iterations_sum", 0.0))
         cost += float(bucket.get("_cost_sum", 0.0))
         cost_unknown += int(bucket.get("_cost_unknown_runs", 0))
+        duration_sum += float(bucket.get("_duration_sum", 0.0))
+        duration_runs += int(bucket.get("_duration_runs", 0))
+        max_duration = max(max_duration, float(bucket.get("max_duration_s", 0.0)))
+        max_killed_timeout = max(
+            max_killed_timeout, float(bucket.get("max_killed_timeout_s", 0.0))
+        )
     section["runs"] = runs
     section["_successes"] = successes
     section["_iterations_sum"] = iterations
@@ -391,6 +453,13 @@ def _recompute_dev_section(section: dict) -> None:
     section["avg_iterations"] = round(iterations / runs, 4) if runs > 0 else 0.0
     measured = runs - cost_unknown
     section["avg_cost_usd"] = round(cost / measured, 6) if measured > 0 else 0.0
+    section["_duration_sum"] = duration_sum
+    section["_duration_runs"] = duration_runs
+    section["avg_duration_s"] = (
+        round(duration_sum / duration_runs, 4) if duration_runs > 0 else 0.0
+    )
+    section["max_duration_s"] = max_duration
+    section["max_killed_timeout_s"] = max_killed_timeout
 
 
 def apply_run(data: dict, outcome: RunOutcome) -> dict:
@@ -410,6 +479,9 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         outcome.dev_iterations,
         outcome.dev_cost_usd,
         complexity_score=outcome.complexity_score,
+        duration_s=outcome.dev_duration_s,
+        timeout_killed=outcome.dev_timeout_killed,
+        timeout_limit_s=outcome.dev_timeout_limit_s,
     )
     if outcome.preflight_model:
         pf_entry = _ensure_model(
@@ -561,6 +633,9 @@ def get_dev_complexity_stats(
     measured_runs = 0
     iterations_sum = 0.0
     cost_sum = 0.0
+    duration_runs = 0
+    max_duration_s = 0.0
+    max_killed_timeout_s = 0.0
     for _, entry in matching:
         dev = entry.get("dev")
         if not isinstance(dev, dict):
@@ -581,12 +656,22 @@ def get_dev_complexity_stats(
         measured_runs += entry_runs - int(bc.get("_cost_unknown_runs", 0))
         iterations_sum += entry_iterations
         cost_sum += entry_cost
+        # Duration/kill floors: legacy profiles predate these fields, so a missing
+        # key defaults to 0 rather than voiding the whole (iteration) result.
+        duration_runs += int(bc.get("_duration_runs", 0))
+        max_duration_s = max(max_duration_s, float(bc.get("max_duration_s", 0.0)))
+        max_killed_timeout_s = max(
+            max_killed_timeout_s, float(bc.get("max_killed_timeout_s", 0.0))
+        )
     if runs < min_runs or runs <= 0:
         return None
     return {
         "runs": float(runs),
         "avg_iterations": round(iterations_sum / runs, 4),
         "avg_cost_usd": round(cost_sum / measured_runs, 6) if measured_runs > 0 else 0.0,
+        "max_duration_s": round(max_duration_s, 4),
+        "duration_runs": float(duration_runs),
+        "max_killed_timeout_s": round(max_killed_timeout_s, 4),
     }
 
 
@@ -1016,6 +1101,27 @@ def _bucket_summary(entry: dict) -> dict[str, float | int]:
     }
 
 
+def _merge_duration(target: dict, src: dict) -> None:
+    """Combine the duration/kill accumulators of two dev buckets.
+
+    Sums the completed-run accumulators, maxes the maxima, and recomputes
+    ``avg_duration_s``. Legacy entries predating these fields lack the keys, so
+    every read tolerates absence via ``.get(..., 0)``.
+    """
+    dur_sum = float(target.get("_duration_sum", 0.0)) + float(src.get("_duration_sum", 0.0))
+    dur_runs = int(target.get("_duration_runs", 0)) + int(src.get("_duration_runs", 0))
+    target["_duration_sum"] = dur_sum
+    target["_duration_runs"] = dur_runs
+    target["avg_duration_s"] = round(dur_sum / dur_runs, 4) if dur_runs > 0 else 0.0
+    target["max_duration_s"] = max(
+        float(target.get("max_duration_s", 0.0)), float(src.get("max_duration_s", 0.0))
+    )
+    target["max_killed_timeout_s"] = max(
+        float(target.get("max_killed_timeout_s", 0.0)),
+        float(src.get("max_killed_timeout_s", 0.0)),
+    )
+
+
 def _merge_dev(target: dict, src: dict) -> None:
     runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
     successes = int(target.get("_successes", 0)) + int(src.get("_successes", 0))
@@ -1056,6 +1162,7 @@ def _merge_dev(target: dict, src: dict) -> None:
         target["avg_iterations"] = round(iter_sum / runs, 4)
         measured = runs - cost_unknown
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+    _merge_duration(target, src)
 
     src_by = src.get("by_complexity") or {}
     if src_by:
@@ -1098,6 +1205,7 @@ def _merge_dev(target: dict, src: dict) -> None:
                 bc_target["avg_cost_usd"] = (
                     round(bc_cost / bc_measured, 6) if bc_measured > 0 else 0.0
                 )
+            _merge_duration(bc_target, bc_src)
 
     src_by_score = src.get("by_complexity_score") or {}
     if src_by_score:
@@ -1140,6 +1248,7 @@ def _merge_dev(target: dict, src: dict) -> None:
                 sc_target["avg_cost_usd"] = (
                     round(sc_cost / sc_measured, 6) if sc_measured > 0 else 0.0
                 )
+            _merge_duration(sc_target, sc_src)
 
 
 def _merge_review(target: dict, src: dict) -> None:
