@@ -139,6 +139,93 @@ def test_dirty_synced_forge_yaml_excluded_from_story_commit(tmp_path):
     assert _git(workspace, "show", "HEAD:forge.yaml") == committed_forge
 
 
+def test_resume_rebase_succeeds_when_base_forge_yaml_diverged(tmp_path):
+    """Seam regression for issue #1772: a resumed worktree whose committed
+    forge.yaml predates a forge.yaml change on the base branch must complete the
+    pre-dev rebase without ESCALATE, while operator config still never lands in a
+    story commit.
+
+    Drives the real seam — run_setup's sync (which flags the synced file
+    skip-worktree, issue #1627) → _rebase_onto_main's fetch+rebase onto
+    origin/main — over a real git repo with a diverged origin base branch.
+    Without the detach/reattach handling the skip-worktree'd working-tree
+    forge.yaml aborts the rebase ("local changes ... would be overwritten by
+    checkout").
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _init_repo(origin)
+
+    # Baseline on origin/main: the mainline forge.yaml plus a story file.
+    committed_forge = "project: mainline\nmodel_order: [full, mini]\n"
+    (origin / "forge.yaml").write_text(committed_forge, encoding="utf-8")
+    (origin / "story.py").write_text("# story baseline\n", encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "baseline")
+
+    # The worktree is cloned/branched from this baseline (predates the change).
+    workspace = tmp_path / "workspace"
+    _git(tmp_path, "clone", "-q", str(origin), str(workspace))
+    _git(workspace, "config", "user.email", "test@example.com")
+    _git(workspace, "config", "user.name", "Test")
+    _git(workspace, "checkout", "-q", "-b", "forge/test-task")
+    # Story work that does NOT touch forge.yaml.
+    (workspace / "story.py").write_text("# story in progress\n", encoding="utf-8")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "wip story")
+
+    # The base branch then diverges on forge.yaml — an everyday forge-managed change.
+    updated_forge = "project: mainline\nmodel_order: [full, mini, nano]\n"
+    (origin / "forge.yaml").write_text(updated_forge, encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "bump forge.yaml on main")
+
+    # Operator's live working-tree config at project root — never committed.
+    experiment_forge = "project: mainline\nmodel_order: [mini, full]  # EXPERIMENT\n"
+    (tmp_path / "forge.yaml").write_text(experiment_forge, encoding="utf-8")
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    # Real git runs (no _run_shell mock) so skip-worktree is actually applied.
+    result = _setup_resume_entry(
+        config,
+        task,
+        workspace,
+        initial_phase=Phase.DEV,
+        notify=False,
+        run_id="test-run-id",
+    )
+    assert isinstance(result, tuple)
+
+    # The pre-dev rebase must succeed — no manufactured conflict.
+    from theforge.coordinator.run_setup import _rebase_onto_main
+
+    rebase_ok, rebase_err = _rebase_onto_main(str(workspace), "main", None)
+    assert rebase_ok, rebase_err
+
+    # The base-branch forge.yaml change was applied to the branch tip.
+    assert _git(workspace, "show", "HEAD:forge.yaml") == updated_forge
+    # The story's own work survived the rebase.
+    assert "# story in progress\n" == (workspace / "story.py").read_text(encoding="utf-8")
+
+    # The run still sees operator config in the working tree...
+    assert (workspace / "forge.yaml").read_text(encoding="utf-8") == experiment_forge
+    # ...and it remains hidden from dirty detection (skip-worktree re-set).
+    status = _git(workspace, "status", "--porcelain")
+    assert "forge.yaml" not in _parse_dirty_files(status)
+
+    # A subsequent indiscriminate ``git add -A`` auto-commit omits forge.yaml.
+    (workspace / "story.py").write_text("# story implemented\n", encoding="utf-8")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "acceptance_criteria:")
+    committed = _git(workspace, "show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert "story.py" in committed
+    assert "forge.yaml" not in committed
+    # The branch's forge.yaml is the rebased base content, not operator config.
+    assert _git(workspace, "show", "HEAD:forge.yaml") == updated_forge
+
+
 def test_setup_returns_escalate_when_workspace_missing(tmp_path):
     """Returns CoordinatorResult when workspace_path doesn't exist."""
     config = _make_config(tmp_path)
