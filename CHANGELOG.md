@@ -20,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot on demand. `forge init`/`forge secrets-init` now ignore the file
   in fresh repositories by default.
 
+### Fixed
+
+- **Failing-test extraction no longer silently assumes pytest (#1738):** the
+  gate-failure retry path extracted failing-test identifiers using pytest's
+  summary grammar only, so a project whose gate speaks another toolchain
+  (xcodebuild, `make`, etc.) got an empty failed-test list on every failure —
+  indistinguishable from a genuine no-test-failure gate error, and with no
+  signal that the retry was running degraded. Extraction now (a) reports
+  whether it recognized the gate's output format, surfacing an explicit note in
+  the dev retry, a `⚠` log line, a `failed_test_extraction_skipped` audit event,
+  and a `gate_output_format_recognized` field on dev-iteration telemetry when it
+  did not apply; and (b) honors a new optional `validation.failed_test_pattern`
+  regex so a project can declare how its gate names failures and point retries
+  at the exact failing tests. Pytest projects are unaffected.
+
 <!-- v0.10.0 content forward-ported from release/v0.10; promote-rc.sh renames
      the release branch's section at promotion — reconcile then. -->
 

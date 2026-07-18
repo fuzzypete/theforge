@@ -161,6 +161,25 @@ class PlanFindingRecord:
 
 
 @dataclass(frozen=True)
+class FailedTestExtraction:
+    """Result of parsing failing-test identifiers out of gate output.
+
+    ``format_recognized`` is the distinguishing signal the extractor owes its
+    caller: an empty ``tests`` list means "no failing tests" only when
+    ``format_recognized`` is True. When it is False the extractor could not
+    parse the gate's output at all (an unrecognized toolchain), so the empty
+    list is a *silent absence*, not a genuine one. ``source`` records which
+    reader produced the result: ``"pytest"`` (built-in grammar),
+    ``"custom_pattern"`` (project-configured ``failed_test_pattern``), or
+    ``"unrecognized"`` (nothing applied).
+    """
+
+    tests: list[str]
+    format_recognized: bool
+    source: str
+
+
+@dataclass(frozen=True)
 class DevIterationTelemetry:
     """Per-dev-iteration telemetry captured for audit output."""
 
@@ -171,6 +190,12 @@ class DevIterationTelemetry:
     cycle: int = 0  # which review cycle this dev iteration belongs to
     gate_result: str | None = None
     failed_tests: list[str] = field(default_factory=list)
+    # Tri-state signal distinguishing "extraction ran and the gate reported no
+    # failing tests" from "the gate output was in a format the extractor does
+    # not recognize, so extraction did not apply." None means there was no
+    # failing-gate output to parse (e.g. a PASS). True/False let the audit trail
+    # tell a genuine empty ``failed_tests`` from a silently-degraded one.
+    gate_output_format_recognized: bool | None = None
     existing_test_failures: bool = False
     is_timeout: bool = False
     files_changed: list[str] = field(default_factory=list)

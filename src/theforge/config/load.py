@@ -6,6 +6,7 @@ import dataclasses
 import importlib
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -456,6 +457,30 @@ def _parse_stuck_detection(raw: Any) -> "StuckDetectionConfig":
     return StuckDetectionConfig(**kwargs)
 
 
+def _validated_failed_test_pattern(raw: Any) -> str | None:
+    """Validate the optional ``validation.failed_test_pattern`` regex.
+
+    Returns the pattern unchanged when it is a compilable regex, ``None`` when
+    unset. A malformed pattern is a config error the operator must fix, so it
+    fails loudly at load time rather than silently disabling extraction at
+    runtime.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError(
+            "forge.yaml validation.failed_test_pattern must be a string regex, "
+            f"got {type(raw).__name__}."
+        )
+    try:
+        re.compile(raw)
+    except re.error as exc:
+        raise ValueError(
+            f"forge.yaml validation.failed_test_pattern is not a valid regex: {exc}"
+        ) from exc
+    return raw
+
+
 def _resolve_project_root(config_path: Path) -> Path:
     """Resolve the project root for a given forge.yaml path.
 
@@ -557,6 +582,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         ),
         test_command=val_data.get("test_command"),
         pre_validate_command=val_data.get("pre_validate_command"),
+        failed_test_pattern=_validated_failed_test_pattern(val_data.get("failed_test_pattern")),
         gate_cpu_cores=val_data.get("gate_cpu_cores"),
         gate_timeout_scale=str(val_data.get("gate_timeout_scale", "adaptive")),
         default_test_target=str(

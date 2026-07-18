@@ -407,6 +407,7 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "max_iterations": item.max_iterations,
             "gate_result": item.gate_result,
             "failed_tests": item.failed_tests,
+            "gate_output_format_recognized": item.gate_output_format_recognized,
             "cost_usd": item.cost_usd,
             "duration_s": round(item.duration_s, 2),
             "meaningful_progress": item.meaningful_progress,

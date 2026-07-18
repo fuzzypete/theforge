@@ -78,6 +78,24 @@ class TestLoadConfig:
         assert config.review_pool == [DEFAULT_REVIEW_PROFILE]
         assert config.synthesis_profile is None
 
+    def test_failed_test_pattern_valid_regex_loads(self, tmp_path):
+        config_path = _write_config(
+            {"validation": {"failed_test_pattern": r"Test Case .*(?P<test>\w+)\] failed"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.validation.failed_test_pattern == r"Test Case .*(?P<test>\w+)\] failed"
+
+    def test_failed_test_pattern_default_is_none(self, tmp_path):
+        config_path = _write_config({"project": "p"}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.failed_test_pattern is None
+
+    def test_failed_test_pattern_invalid_regex_raises(self, tmp_path):
+        config_path = _write_config({"validation": {"failed_test_pattern": r"("}}, tmp_path)
+        with pytest.raises(ValueError, match="failed_test_pattern is not a valid regex"):
+            load_config(config_path)
+
     def test_custom_workspace(self, tmp_path):
         config_path = _write_config(
             {
