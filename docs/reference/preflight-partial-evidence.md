@@ -8,9 +8,13 @@ crashing; that exploration correctly identified the relevant files, and it was
 thrown away. The **partial-evidence artifact** preserves that exploration so the
 PLAN phase can consume it instead of starting from scratch.
 
-This artifact is produced *only* on a failed preflight run (`success is False`).
-A successful preflight already surfaces its analysis through `preflight_output`
-and `likely_files`; this artifact fills the gap the failure path left open.
+This artifact is produced on any *failed* preflight run. A failure is either a
+hard failure (`success is False` — timeout, crash, non-zero exit) or a clean
+exit that emits unparseable / non-YAML output (`success is True` but the verdict
+does not parse, the `parse_error` degrade path). Both discard the run's verdict,
+so both salvage the exploration. A preflight that parses a valid verdict already
+surfaces its analysis through `preflight_output` and `likely_files`; this
+artifact fills the gap the failure paths left open.
 
 ## Where it lives
 

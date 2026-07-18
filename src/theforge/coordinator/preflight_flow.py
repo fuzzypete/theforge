@@ -333,17 +333,13 @@ def _run_preflight_phase(
         **{**preflight_result.__dict__, "raw": preflight_raw}
     )
 
-    if preflight_result.success:
-        verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
-        if _parse_degraded:
-            state.preflight_degraded = True
-            state.preflight_degraded_reason = "parse_error"
-            _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
-    else:
-        # Preflight agent failed (timeout, SIGKILL, non-zero exit). Preserve
-        # whatever exploration it managed before dying — files inspected, tool
-        # calls, any partial conclusion — as an audit artifact the plan phase
-        # can consume instead of re-reading the same files (issue #706).
+    def _preserve_partial_evidence() -> None:
+        # Preserve whatever exploration the preflight agent managed — files
+        # inspected, tool calls, any partial conclusion — as an audit artifact
+        # the plan phase can consume instead of re-reading the same files
+        # (issue #706). Applies both when the agent dies (timeout/SIGKILL) and
+        # when it exits cleanly but emits unparseable output: in both cases the
+        # tool trace it left behind is real, paid-for signal.
         _partial_evidence = build_partial_evidence(
             preflight_result, duration_s=round(_preflight_elapsed, 2)
         )
@@ -354,6 +350,19 @@ def _run_preflight_phase(
                 f"{len(_partial_evidence.files_inspected)} file(s) inspected, "
                 f"{len(_partial_evidence.tool_calls)} tool call(s)"
             )
+
+    if preflight_result.success:
+        verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
+        if _parse_degraded:
+            state.preflight_degraded = True
+            state.preflight_degraded_reason = "parse_error"
+            # A clean exit with malformed output is still a failed preflight —
+            # salvage the exploration the same way as a crashed run.
+            _preserve_partial_evidence()
+            _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
+    else:
+        # Preflight agent failed (timeout, SIGKILL, non-zero exit).
+        _preserve_partial_evidence()
         # Whether it is safe to fall through to a conservative PROCEED depends on
         # whether preflight was a confidence boost or the load-bearing check
         # that catches contract drift. Detect risk signals deterministically

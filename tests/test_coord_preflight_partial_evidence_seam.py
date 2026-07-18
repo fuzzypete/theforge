@@ -100,6 +100,73 @@ def test_failed_preflight_evidence_reaches_plan_prompt(tmp_path):
     assert "The adapter path routes plan review through _resolve_model_info." in plan_prompt
 
 
+# A preflight run that exited cleanly (success=True, exit 0) but emitted
+# unparseable, non-YAML output after inspecting two files — the parse_error
+# degrade path. The tool trace it left behind is still real, paid-for signal.
+_MALFORMED_PREFLIGHT = AgentResult(
+    success=True,
+    output="I looked at the adapters but I'm not sure — no YAML block here, sorry.",
+    session_id=None,
+    cost_usd=1.87,
+    exit_code=0,
+    raw={},
+    profile_name="preflight",
+    tool_trace=(
+        {"tool": "Read", "target": "src/theforge/runners/adapters/anthropic.py"},
+        {"tool": "Grep", "target": "plan_review"},
+        {"tool": "Read", "target": "src/theforge/coordinator/plan_flow.py"},
+    ),
+)
+
+
+def test_malformed_preflight_evidence_reaches_plan_prompt(tmp_path):
+    """A clean exit with unparseable output still salvages partial evidence."""
+    config = _make_plan_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    captured: dict[str, str | None] = {}
+
+    def _plan_side_effect(**kwargs):
+        captured["prompt"] = kwargs.get("prompt")
+        return _make_agent_result(success=True, output="Implemented.")
+
+    with (
+        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+        patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+        patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+    ):
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _MALFORMED_PREFLIGHT
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = _plan_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+    # The malformed run degraded on parse_error but its exploration survived.
+    assert result.state.preflight_degraded is True
+    assert result.state.preflight_degraded_reason == "parse_error"
+    evidence = result.state.preflight_partial_evidence
+    assert evidence is not None
+    assert evidence["files_inspected"] == [
+        "src/theforge/runners/adapters/anthropic.py",
+        "src/theforge/coordinator/plan_flow.py",
+    ]
+    assert evidence["cost_usd"] == 1.87
+
+    # And it is surfaced into the plan prompt so planning skips the re-read.
+    assert "prompt" in captured, "plan agent was not invoked"
+    plan_prompt = captured["prompt"] or ""
+    assert "Partial Evidence from a Failed Preflight" in plan_prompt
+    assert "src/theforge/runners/adapters/anthropic.py" in plan_prompt
+
+
 def test_successful_preflight_leaves_no_partial_evidence(tmp_path):
     """A clean preflight must not produce a partial-evidence artifact."""
     config = _make_plan_config(tmp_path)
