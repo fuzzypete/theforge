@@ -9,6 +9,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from theforge.shape_check.diagnosis_spec import (
+    BUG_SHAPE_REFERENCE_PATH,
+    describe_missing,
+    required_diagnosis_tokens,
+)
 from theforge.shape_check.parsing import (
     extract_ac_section,
     extract_bullets,
@@ -210,14 +215,12 @@ def _find_tracking_body_declaration(body: str) -> tuple[str, str] | None:
 
 
 DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
-REQUIRED_DIAGNOSIS_TOKENS: tuple[str, ...] = (
-    "observed symptom",
-    "evidence",
-    "ruled out",
-    "confirmed cause",
-    "affected code path",
-    "fix-success criterion",
-)
+
+# Derived from the single declarative spec (diagnosis_spec.py) — this module
+# must not carry its own independent list of required components. Kept as a
+# module-level name for backward-compatible imports; the spec is the source of
+# truth (#1629).
+REQUIRED_DIAGNOSIS_TOKENS: tuple[str, ...] = required_diagnosis_tokens()
 
 # Non-assertion vocabulary admissible as the value of the "confirmed cause" field.
 # A bug whose Diagnosis section has every other component but states the cause is
@@ -520,8 +523,9 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
         code="needs_diagnosis",
         severity=Severity.BLOCKING,
         detail=(
-            "Bug Diagnosis section is incomplete — missing required component(s): "
-            f"{', '.join(missing)}."
+            "Bug Diagnosis section is incomplete — missing "
+            f"{describe_missing(missing)}. "
+            f"Full shape reference: {BUG_SHAPE_REFERENCE_PATH}"
         ),
     )
 

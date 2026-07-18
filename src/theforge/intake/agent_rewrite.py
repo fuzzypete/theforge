@@ -9,9 +9,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..shape_check.diagnosis_spec import render_diagnosis_requirements_block
 from .findings import IntakeFinding
 
 _NO_REMEDIATION_PREFIX = "NO_REMEDIATION:"
+
+# Finding codes whose remediation requires a complete bug Diagnosis section.
+# When present, the prompt embeds the diagnosis spec's labels + examples so the
+# agent aims at exactly the target the validator checks (#1629).
+_DIAGNOSIS_FINDING_CODES: frozenset[str] = frozenset({"needs_diagnosis"})
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,14 @@ def build_agent_rewrite_prompt(
     ]
     for finding in findings:
         lines.append(f"- `{finding.code}` at `{finding.location}`: {finding.problem}")
+    if any(finding.code in _DIAGNOSIS_FINDING_CODES for finding in findings):
+        lines.extend(
+            [
+                "",
+                "Diagnosis section requirements:",
+                render_diagnosis_requirements_block(),
+            ]
+        )
     lines.extend(
         [
             "",

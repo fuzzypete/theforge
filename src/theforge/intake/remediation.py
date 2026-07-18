@@ -418,9 +418,18 @@ def _remediate_one(
     if auto_fix_mode == "edit":
         if rerun_blocking:
             # Don't edit a body that still fails — but do not silently discard
-            # the candidate either. Post the proposed replacement plus the
-            # remaining blocking findings as a comment so the operator can
-            # continue from the candidate instead of redoing the rewrite.
+            # the candidate either. Always persist the rejected rewrite and the
+            # specific unmet components to a durable audit artifact so the
+            # refusal is inspectable after the sprint (#1629 AC5 — #1627 dropped
+            # a rewrite that could never be re-examined). Also post the
+            # candidate as an issue comment when possible so the operator finds
+            # it on the thread.
+            artifact_path = _write_candidate_artifact(
+                issue_number=issue_number,
+                candidate_body=proposed_body,
+                findings=rerun_blocking,
+                project_root=project_root,
+            )
             salvage_comment = _format_remediation_comment(
                 rerun_blocking,
                 proposed_body,
@@ -432,22 +441,15 @@ def _remediate_one(
                 ),
             )
             posted = post_comment(issue_number, salvage_comment, project_root)
-            artifact_path: str | None = None
-            if not posted:
-                # Fallback persistence: comment post failed, so the operator
-                # cannot find the candidate on the issue thread. Write a
-                # durable artifact instead so proposed_replacement is never
-                # silently lost.
-                artifact_path = _write_candidate_artifact(
-                    issue_number=issue_number,
-                    candidate_body=proposed_body,
-                    findings=rerun_blocking,
-                    project_root=project_root,
+            if posted and artifact_path is not None:
+                detail = (
+                    "rerun gate still failing; candidate posted as issue comment and "
+                    f"persisted to {artifact_path} for operator review"
                 )
-            if posted:
+            elif posted:
                 detail = (
                     "rerun gate still failing; candidate posted as issue comment "
-                    "for operator review"
+                    "for operator review (artifact write failed)"
                 )
             elif artifact_path is not None:
                 detail = (
@@ -510,21 +512,32 @@ def _remediate_one(
     comment = _format_remediation_comment(blocking, proposed_body)
     posted = post_comment(issue_number, comment, project_root)
     if rerun_blocking:
+        # Persist the rejected rewrite + unmet components as a durable audit
+        # artifact so the refusal is inspectable regardless of comment I/O
+        # (#1629 AC5).
+        artifact_path = _write_candidate_artifact(
+            issue_number=issue_number,
+            candidate_body=proposed_body,
+            findings=rerun_blocking,
+            project_root=project_root,
+        )
+        detail = "comment mode: posted replacement; rerun gate still failing"
+        if artifact_path is not None:
+            detail += f"; candidate persisted to {artifact_path}"
+        detail += _grooming_divergence_suffix(rerun_blocking)
         return IntakeOutcome(
             slug=slug,
             kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
             findings=tuple(rerun_blocking),
             proposed_replacement=proposed_body,
-            detail=(
-                "comment mode: posted replacement; rerun gate still failing"
-                + _grooming_divergence_suffix(rerun_blocking)
-            ),
+            detail=detail,
             audit=_build_audit(
                 consumed=_consumed,
                 semantic_remaining=semantic_remaining,
                 agent=agent_result,
                 remediation_source=("agent" if agent_result is not None else "mechanical"),
                 comment_posted=posted,
+                candidate_artifact_path=artifact_path,
             ),
         )
     return IntakeOutcome(

@@ -158,7 +158,7 @@ def test_auto_fix_edit_mode_updates_body_and_remediates():
     assert post_calls == []
 
 
-def test_auto_fix_edit_mode_keeps_failing_body_off_issue():
+def test_auto_fix_edit_mode_keeps_failing_body_off_issue(tmp_path):
     task = _make_task()
     post_comment, _ = _record_calls()
     edit_body, edit_calls = _record_calls()
@@ -168,7 +168,7 @@ def test_auto_fix_edit_mode_keeps_failing_body_off_issue():
 
     outcomes = run_intake_remediation(
         [task],
-        None,
+        tmp_path,
         grooming_enabled=True,
         auto_fix_enabled=True,
         auto_fix_mode="edit",
@@ -182,7 +182,7 @@ def test_auto_fix_edit_mode_keeps_failing_body_off_issue():
     assert edit_calls == []  # never wrote a still-failing body
 
 
-def test_grooming_only_drop_surfaces_shape_check_divergence():
+def test_grooming_only_drop_surfaces_shape_check_divergence(tmp_path):
     """When a rerun drop is driven solely by the grooming gate (groom_* codes),
     the outcome detail must state that this is NOT corroborated by the
     shape-check gate — otherwise the shape-check Action ('runnable') and the
@@ -199,7 +199,7 @@ def test_grooming_only_drop_surfaces_shape_check_divergence():
 
     outcomes = run_intake_remediation(
         [task],
-        None,
+        tmp_path,
         grooming_enabled=True,
         auto_fix_enabled=True,
         auto_fix_mode="edit",
@@ -219,7 +219,7 @@ def test_grooming_only_drop_surfaces_shape_check_divergence():
     assert "shape-check" in out.detail
 
 
-def test_shape_backed_drop_does_not_claim_divergence():
+def test_shape_backed_drop_does_not_claim_divergence(tmp_path):
     """A drop whose rerun findings include a shape-check code IS corroborated by
     the shape-check gate, so the divergence note must NOT be attached."""
     task = _make_task()
@@ -232,7 +232,7 @@ def test_shape_backed_drop_does_not_claim_divergence():
 
     outcomes = run_intake_remediation(
         [task],
-        None,
+        tmp_path,
         grooming_enabled=True,
         auto_fix_enabled=True,
         auto_fix_mode="edit",
@@ -333,10 +333,11 @@ def test_mechanical_only_remediation_is_distinguished_from_agent_flow():
     assert post_calls
 
 
-def test_edit_mode_rerun_failure_persists_candidate_as_comment():
+def test_edit_mode_rerun_failure_persists_candidate_as_comment(tmp_path):
     """When the edit-mode rerun gate still fails, the candidate body must not
     be silently discarded — it must be posted as an issue comment with the
-    remaining blocking findings so the operator can act on it.
+    remaining blocking findings AND persisted to a durable audit artifact so
+    the refusal is inspectable after the sprint (#1629 AC5).
     """
     task = _make_task()
     post_comment, post_calls = _record_calls()
@@ -349,7 +350,7 @@ def test_edit_mode_rerun_failure_persists_candidate_as_comment():
 
     outcomes = run_intake_remediation(
         [task],
-        None,
+        tmp_path,
         grooming_enabled=True,
         auto_fix_enabled=True,
         auto_fix_mode="edit",
@@ -369,6 +370,17 @@ def test_edit_mode_rerun_failure_persists_candidate_as_comment():
     assert "Remaining blocking findings" in posted_body
     assert out.audit["comment_posted"] is True
     assert "candidate posted" in out.detail
+    # The rejected rewrite + unmet components are also persisted durably, even
+    # though the comment post succeeded (#1629 AC5).
+    artifact_path = out.audit["candidate_artifact_path"]
+    assert artifact_path is not None
+    from pathlib import Path
+
+    artifact = Path(artifact_path)
+    assert artifact.exists()
+    contents = artifact.read_text(encoding="utf-8")
+    assert candidate in contents
+    assert "Remaining blocking findings" in contents
 
 
 def test_edit_mode_rerun_failure_falls_back_to_artifact_when_post_fails(tmp_path):
