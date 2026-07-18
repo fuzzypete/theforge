@@ -34,7 +34,7 @@ class TestConventionParallelCheck:
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._get_handoff_content")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
-    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
     def test_gate_fail_includes_convention_violations(
         self,
         mock_gate,
@@ -55,7 +55,7 @@ class TestConventionParallelCheck:
 
         viol = _make_violation()
         state.budget.max_iterations = config.retry.max_dev_iterations
-        mock_gate.return_value = ("FAIL", None, "test output: 1 failed", "make gate")
+        mock_gate.return_value = ("FAIL", None, "test output: 1 failed", "make gate", 1)
         mock_cv.return_value = ([viol], [viol])
         mock_handoff.return_value = "handoff content"
 
@@ -84,7 +84,7 @@ class TestConventionParallelCheck:
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
-    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
     @patch("theforge.coordinator.validate_phase._cu._run_shell")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
     def test_gate_pass_convention_violation_still_blocks(
@@ -108,7 +108,7 @@ class TestConventionParallelCheck:
 
         viol = _make_violation(blocking=True)
         state.budget.max_iterations = config.retry.max_dev_iterations
-        mock_gate.return_value = ("PASS", None, "", "make gate")
+        mock_gate.return_value = ("PASS", None, "", "make gate", 0)
         mock_cv.return_value = ([viol], [viol])
         mock_shell.return_value = (True, "")  # clean worktree
 
@@ -131,7 +131,7 @@ class TestConventionParallelCheck:
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase.update_advisory_violations")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
-    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
     @patch("theforge.coordinator.validate_phase._cu._run_shell")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
     def test_gate_pass_followup_only_violations_proceed_to_pass(
@@ -157,7 +157,7 @@ class TestConventionParallelCheck:
         # LOC violations are non-blocking follow-ups
         viol = _make_violation(rule="max_module_lines", blocking=False)
         state.budget.max_iterations = config.retry.max_dev_iterations
-        mock_gate.return_value = ("PASS", None, "", "make gate")
+        mock_gate.return_value = ("PASS", None, "", "make gate", 0)
         mock_cv.return_value = ([viol], [viol])
         mock_shell.return_value = (True, "")  # clean worktree
         mock_update_advisory.return_value = {
@@ -200,7 +200,7 @@ class TestConventionParallelCheck:
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
-    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
     @patch("theforge.coordinator.validate_phase._cu._run_shell")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
     def test_gate_pass_mixed_violations_blocks_on_blocking_only(
@@ -225,7 +225,7 @@ class TestConventionParallelCheck:
         blocking_viol = _make_violation(rule="no_circular_imports", file="src/a.py", blocking=True)
         followup_viol = _make_violation(rule="max_module_lines", file="src/big.py", blocking=False)
         state.budget.max_iterations = config.retry.max_dev_iterations
-        mock_gate.return_value = ("PASS", None, "", "make gate")
+        mock_gate.return_value = ("PASS", None, "", "make gate", 0)
         mock_cv.return_value = ([blocking_viol, followup_viol], [blocking_viol, followup_viol])
         mock_shell.return_value = (True, "")  # clean worktree
 
@@ -254,7 +254,7 @@ class TestConventionParallelCheck:
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._get_handoff_content")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
-    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
     def test_no_conventions_configured_unchanged(
         self,
         mock_gate,
@@ -271,7 +271,7 @@ class TestConventionParallelCheck:
         state = _make_state()
 
         state.budget.max_iterations = config.retry.max_dev_iterations
-        mock_gate.return_value = ("FAIL", None, "1 failed", "make gate")
+        mock_gate.return_value = ("FAIL", None, "1 failed", "make gate", 1)
         mock_cv.return_value = None  # None because conventions_hard is None
         mock_handoff.return_value = "handoff"
 

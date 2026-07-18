@@ -9,8 +9,10 @@ from unittest.mock import patch
 
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
+from theforge.coordinator.gate import format_gate_failure_summary
 from theforge.coordinator.state import CoordinatorState, DevIterationTelemetry
 from theforge.coordinator.validate_phase import (
+    _gate_trace_path,
     _get_convention_baseline_ref,
     _is_identical_failure,
     _run_validate_phase,
@@ -64,8 +66,14 @@ def test_run_validate_phase_records_failed_gate_iteration_telemetry(tmp_path: Pa
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("FAIL", None, "FAILED tests/test_alpha.py::test_one", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=(
+                "FAIL",
+                None,
+                "FAILED tests/test_alpha.py::test_one",
+                "pytest tests/",
+                1,
+            ),
         ),
         patch(
             "theforge.coordinator.validate_phase._get_handoff_content",
@@ -115,8 +123,8 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("PASS", None, "OK", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch(
             "theforge.coordinator.validate_phase._get_raw_dev_notes",
@@ -161,8 +169,8 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
     )
 
     with patch(
-        "theforge.coordinator.validate_phase._run_gate_full",
-        return_value=(None, "gate crashed", "traceback tail", "pytest tests/"),
+        "theforge.coordinator.validate_phase.run_gate_full",
+        return_value=(None, "gate crashed", "traceback tail", "pytest tests/", None),
     ):
         outcome, result = _run_validate_phase(
             state,
@@ -210,12 +218,13 @@ def test_run_validate_phase_runs_gate_debug_command_on_timeout(tmp_path: Path) -
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
+            "theforge.coordinator.validate_phase.run_gate_full",
             return_value=(
                 None,
                 "Gate timed out after 120s",
                 "TIMEOUT after 120s: pytest tests/",
                 "pytest tests/",
+                None,
             ),
         ),
         patch("theforge.coordinator.util._run_shell_detailed", side_effect=shell_side_effect),
@@ -257,8 +266,8 @@ def test_run_validate_phase_timeout_without_gate_debug_command_is_unchanged(
     state.last_dev_start_commit = "HEAD"
 
     with patch(
-        "theforge.coordinator.validate_phase._run_gate_full",
-        return_value=(None, "Gate timed out after 120s", "", "pytest tests/"),
+        "theforge.coordinator.validate_phase.run_gate_full",
+        return_value=(None, "Gate timed out after 120s", "", "pytest tests/", None),
     ):
         outcome, result = _run_validate_phase(
             state,
@@ -289,12 +298,13 @@ def test_run_validate_phase_timeout_with_commits_routes_to_dev_retry(tmp_path: P
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
+            "theforge.coordinator.validate_phase.run_gate_full",
             return_value=(
                 None,
                 "Gate timed out after 45s",
                 "TIMEOUT after 45s: pytest tests/test_hang.py",
                 "make gate",
+                None,
             ),
         ),
         patch(
@@ -376,12 +386,13 @@ def test_run_validate_phase_timeout_rca_packet_falls_back_to_stderr(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
+            "theforge.coordinator.validate_phase.run_gate_full",
             return_value=(
                 None,
                 "Gate timed out after 45s: FATAL pytest internal error, exit code 3",
                 "",
                 "make gate",
+                None,
             ),
         ),
         patch(
@@ -439,8 +450,8 @@ def test_run_validate_phase_timeout_without_commits_still_escalates(tmp_path: Pa
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=(None, "Gate timed out after 45s", "", "make gate"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=(None, "Gate timed out after 45s", "", "make gate", None),
         ),
         patch(
             "theforge.coordinator.validate_phase._commits_exist_strict",
@@ -477,8 +488,8 @@ def test_run_validate_phase_timeout_with_commits_but_budget_exhausted_escalates(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=(None, "Gate timed out after 45s", "", "make gate"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=(None, "Gate timed out after 45s", "", "make gate", None),
         ),
         patch(
             "theforge.coordinator.validate_phase._commits_exist_strict",
@@ -557,8 +568,8 @@ def test_run_validate_phase_already_complete_when_handoff_documents_work_done(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("PASS", None, "OK", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
         # _check_conventions_parallel runs in a thread; stub it out so the test
@@ -611,8 +622,8 @@ def test_run_validate_phase_empty_worktree_without_handoff_still_escalates(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("PASS", None, "OK", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
         patch(
@@ -685,8 +696,8 @@ def test_run_validate_phase_empty_worktree_handoff_partial_ac_escalates(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("PASS", None, "OK", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
         patch(
@@ -752,8 +763,8 @@ def test_run_validate_phase_empty_worktree_handoff_unverifiable_sha_escalates(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("PASS", None, "OK", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
         patch(
@@ -831,8 +842,8 @@ def test_run_validate_phase_empty_worktree_handoff_off_branch_sha_escalates(
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("PASS", None, "OK", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
         patch(
@@ -909,13 +920,14 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
+            "theforge.coordinator.validate_phase.run_gate_full",
             return_value=(
                 "FAIL",
                 None,
                 "FAILED tests/test_existing.py::test_breaks\n"
                 "FAILED generated/test_new.py::test_agent",
                 "pytest tests/",
+                1,
             ),
         ),
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
@@ -1066,12 +1078,13 @@ def test_run_validate_phase_escalates_on_identical_gate_fail(tmp_path: Path) -> 
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
+            "theforge.coordinator.validate_phase.run_gate_full",
             return_value=(
                 "FAIL",
                 None,
                 "FAILED tests/test_alpha.py::test_one",
                 "pytest tests/",
+                1,
             ),
         ),
         patch(
@@ -1096,6 +1109,99 @@ def test_run_validate_phase_escalates_on_identical_gate_fail(tmp_path: Path) -> 
     assert "Remaining retry budget:" in result.message
 
 
+def test_format_gate_failure_summary_carries_exit_code_tail_and_trace() -> None:
+    """The summary attaches the exit code, output tail, and trace to the verdict phrase."""
+    summary = format_gate_failure_summary(
+        "Gate returned FAIL after 3 attempts",
+        exit_code=65,
+        output_tail="** TEST FAILED **\nmake[2]: *** [test-ios] Error 65",
+        tail_chars=2000,
+        trace_path=".forge/traces/3-gate.txt",
+    )
+    assert "Gate returned FAIL after 3 attempts (gate exit code 65)" in summary
+    assert "Gate output tail (last 2000 chars):" in summary
+    assert "** TEST FAILED **" in summary
+    assert "make[2]: *** [test-ios] Error 65" in summary
+    assert ".forge/traces/3-gate.txt" in summary
+
+
+def test_format_gate_failure_summary_baseline_without_exit_code_or_trace() -> None:
+    """A None exit code / trace (baseline gate, iter_num None) still carries the tail inline."""
+    summary = format_gate_failure_summary(
+        "Gate returned FAIL after 1 attempts",
+        exit_code=None,
+        output_tail="",
+        tail_chars=2000,
+        trace_path=None,
+    )
+    # No exit-code parenthetical, no trace line, but the outcome is still explicit.
+    assert summary == "Gate returned FAIL after 1 attempts\nGate captured no output."
+
+
+def test_gate_trace_path_none_for_baseline_run() -> None:
+    """No trace artifact is named when the gate ran without an iteration number."""
+    assert _gate_trace_path(None) is None
+    assert _gate_trace_path(2) == ".forge/traces/2-gate.txt"
+
+
+def test_run_validate_phase_gate_fail_escalation_carries_evidence(tmp_path: Path) -> None:
+    """Budget-exhausted gate FAIL escalation carries exit code, output tail, and trace.
+
+    Regression for issue #1736: the terminal outcome recorded only 'Gate
+    returned FAIL after N attempts' with no reference to the exit code, output
+    tail, or trace the gate already captured, so an operator reading `forge
+    status` detail or the escalation issue comment could not tell a compile
+    error from a flake from an infrastructure failure.
+    """
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    gate_tail = (
+        "HealthKitSyncServiceTests.swift:126:10: note: add '@MainActor'\n"
+        "Testing failed:\n** TEST FAILED **\nmake[2]: *** [test-ios] Error 65"
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("FAIL", None, gate_tail, "make gate", 65),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: pending",
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    # The record consumed by forge status / the escalation comment is state.error.
+    assert result.message == state.error
+    # Verdict phrase preserved for existing readers.
+    assert "Gate returned FAIL after 2 attempts" in state.error
+    # Exit code travels with the verdict.
+    assert "gate exit code 65" in state.error
+    # Output tail carried inline — a compile error is identifiable without the run log.
+    assert "** TEST FAILED **" in state.error
+    assert "make[2]: *** [test-ios] Error 65" in state.error
+    # The full-output trace is named as the artifact holding the complete output.
+    assert ".forge/traces/2-gate.txt" in state.error
+
+
 def test_run_validate_phase_escalates_on_consecutive_timeouts(tmp_path: Path) -> None:
     """Circuit breaker escalates when two consecutive gate errors are both timeouts."""
     config = _make_config(tmp_path)
@@ -1118,8 +1224,8 @@ def test_run_validate_phase_escalates_on_consecutive_timeouts(tmp_path: Path) ->
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=(None, "gate timed out after 120s", "", "pytest tests/"),
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=(None, "gate timed out after 120s", "", "pytest tests/", None),
         ),
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
     ):
@@ -1163,12 +1269,13 @@ def test_run_validate_phase_retries_when_failures_differ(tmp_path: Path) -> None
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full",
+            "theforge.coordinator.validate_phase.run_gate_full",
             return_value=(
                 "FAIL",
                 None,
                 "FAILED tests/test_alpha.py::test_two",
                 "pytest tests/",
+                1,
             ),
         ),
         patch(

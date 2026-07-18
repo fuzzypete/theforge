@@ -20,7 +20,13 @@ from theforge.task import TaskStory
 from . import util as _cu
 from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
-from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
+from .gate import (
+    _is_gate_skip,
+    _parse_dirty_files,
+    _run_gate_debug_command,
+    format_gate_failure_summary,
+    run_gate_full,
+)
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import (
@@ -145,6 +151,21 @@ def _is_identical_failure(telemetry: list[DevIterationTelemetry]) -> bool:
     if curr.failed_tests and set(curr.failed_tests) == set(prev.failed_tests):
         return True
     return False
+
+
+def _gate_trace_path(iter_num: int | None) -> str | None:
+    """Return the worktree-relative gate trace path written for this iteration.
+
+    Mirrors ``run_gate_full``'s trace-write gate: a trace is persisted only when
+    ``iter_num is not None``. Baseline gate runs (``iter_num is None``) produce
+    no trace, so no artifact is named and the terminal outcome falls back to its
+    inline tail. The path is relative to the worktree root
+    (``.forge/traces/{iter}-gate.txt``); ESCALATE worktrees are preserved, so it
+    remains resolvable for the surfaces that read an escalation.
+    """
+    if iter_num is None:
+        return None
+    return f".forge/traces/{iter_num}-gate.txt"
 
 
 def _test_file_exists_in_head(workspace_path: Path, test_file: str) -> bool:
@@ -381,6 +402,7 @@ def _run_validate_phase(
     _gate_start = time.monotonic()
     gate_override = task.gate_override
     gate_output_tail: str = ""
+    gate_exit_code: int | None = None
     gate_result_for_telemetry: str | None = None
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
@@ -394,8 +416,8 @@ def _run_validate_phase(
             _log(f"  Gate: {gate_override} (story override)")
         else:
             _log_phase(state.phase, "running gate...")
-        gate_decision, gate_err, gate_output_tail, resolved_gate_cmd = _run_gate_full(
-            config, workspace_path, task=task, iter_num=state.dev_iteration
+        gate_decision, gate_err, gate_output_tail, resolved_gate_cmd, gate_exit_code = (
+            run_gate_full(config, workspace_path, task=task, iter_num=state.dev_iteration)
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
@@ -670,7 +692,13 @@ def _run_validate_phase(
     elif gate_decision in ("FAIL", "BLOCKED"):
         if state.budget.is_exhausted():
             state.phase = Phase.ESCALATE
-            state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
+            state.error = format_gate_failure_summary(
+                f"Gate returned {gate_decision} after {state.dev_iteration} attempts",
+                exit_code=gate_exit_code,
+                output_tail=gate_output_tail,
+                tail_chars=config.validation.gate_output_tail_chars,
+                trace_path=_gate_trace_path(state.dev_iteration),
+            )
             _log(f"✗ ESCALATE   {state.error}")
             record_dev_iteration_telemetry(
                 state,
@@ -718,10 +746,14 @@ def _run_validate_phase(
             )
         if _is_identical_failure(state.dev_iteration_telemetry):
             state.phase = Phase.ESCALATE
-            state.error = (
+            state.error = format_gate_failure_summary(
                 f"Identical gate failure on consecutive iterations"
                 f" (iteration {state.dev_iteration}): gate returned {gate_decision}."
-                f" Remaining retry budget: {state.budget.remaining()}."
+                f" Remaining retry budget: {state.budget.remaining()}.",
+                exit_code=gate_exit_code,
+                output_tail=gate_output_tail,
+                tail_chars=config.validation.gate_output_tail_chars,
+                trace_path=_gate_trace_path(state.dev_iteration),
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
