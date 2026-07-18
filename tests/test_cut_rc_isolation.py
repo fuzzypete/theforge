@@ -34,6 +34,18 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "cut-rc.sh"
+APPLY_BRANCH_PROTECTION = REPO_ROOT / "scripts" / "apply-branch-protection.sh"
+
+
+def _provision_apply_branch_protection_sibling(script_copy: Path) -> None:
+    """Copy the real apply-branch-protection.sh next to a fixture's cut-rc.sh
+    copy. cut-rc.sh's self-isolation resolves the sibling relative to the
+    original ``$0`` dir (see CUT_RC_ORIGINAL_SCRIPT_DIR), so fixtures that
+    exercise past step 8b (branch protection) must provide it there too.
+    """
+    sibling = script_copy.parent / "apply-branch-protection.sh"
+    sibling.write_text(APPLY_BRANCH_PROTECTION.read_text(encoding="utf-8"))
+    sibling.chmod(0o755)
 
 
 def test_script_does_not_pip_install_into_operator_default_env() -> None:
@@ -258,6 +270,7 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
     )
     script_copy.write_text(script_text)
     script_copy.chmod(0o755)
+    _provision_apply_branch_protection_sibling(script_copy)
 
     proc = subprocess.run(
         ["bash", str(script_copy), "0.99.0", "0"],
@@ -440,6 +453,7 @@ def test_full_execution_refuses_to_clobber_venv_resident_forge(tmp_path: Path) -
     )
     script_copy.write_text(script_text)
     script_copy.chmod(0o755)
+    _provision_apply_branch_protection_sibling(script_copy)
 
     proc = subprocess.run(
         ["bash", str(script_copy), "0.99.0", "0"],
@@ -624,6 +638,7 @@ def _build_cut_rc_fixture(
     )
     script_copy.write_text(script_text)
     script_copy.chmod(0o755)
+    _provision_apply_branch_protection_sibling(script_copy)
 
     return script_copy, env, fake_home, fake_venv
 
@@ -1027,6 +1042,52 @@ def test_running_interpreter_survives_swapping_on_disk_script(tmp_path: Path) ->
     )
 
 
+def test_branch_protection_step_uses_original_script_dir_not_self_copy() -> None:
+    """The apply-branch-protection.sh invocation must resolve against the
+    original checkout's scripts/ dir (captured before the self-isolation
+    re-exec), not BASH_SOURCE[0] post-re-exec — which points at the temp
+    self-copy and never receives sibling scripts. Regression for the
+    'apply-branch-protection.sh: No such file or directory' failure on a
+    fresh RC cut.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+
+    # The original scripts/ dir must be captured (via $0, before the
+    # mktemp self-copy) and exported so the re-exec'd child can see it.
+    self_copy_pos = body.find("CUT_RC_SELF_COPY_PATH=")
+    capture_pos = body.find("CUT_RC_ORIGINAL_SCRIPT_DIR")
+    assert capture_pos != -1, (
+        "cut-rc.sh must capture the original scripts/ dir before self-isolation "
+        "so sibling scripts remain resolvable after the re-exec"
+    )
+    assert capture_pos < body.find("exec bash"), (
+        "CUT_RC_ORIGINAL_SCRIPT_DIR must be captured before the re-exec"
+    )
+    assert self_copy_pos < capture_pos
+
+    # The branch-protection invocation must prefer the captured original dir.
+    protect_call = re.search(
+        r'SCRIPT_DIR="\$\{CUT_RC_ORIGINAL_SCRIPT_DIR:-.*\}"\n'
+        r".*?\n.*?\n.*?\n"
+        r'"\$SCRIPT_DIR/apply-branch-protection\.sh"',
+        body,
+    )
+    assert protect_call is not None, (
+        "cut-rc.sh must resolve apply-branch-protection.sh via "
+        "CUT_RC_ORIGINAL_SCRIPT_DIR, not a post-re-exec BASH_SOURCE-derived dir"
+    )
+
+
+def test_branch_protection_failure_is_not_silently_swallowed() -> None:
+    """A missing/failed apply-branch-protection.sh invocation must not be
+    hidden behind `|| true` — it should surface as a real script failure.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+    assert '"$SCRIPT_DIR/apply-branch-protection.sh" "${PROTECT_ARGS[@]}" || true' not in body, (
+        "apply-branch-protection.sh failures must not be swallowed by `|| true`"
+    )
+
+
 def test_script_parses_resume_flag() -> None:
     """The script must accept a ``--resume`` flag and a corresponding
     ``RESUME`` state variable. This is the surface contract for
@@ -1241,6 +1302,7 @@ def test_resume_skips_mutating_steps_and_reaches_install(tmp_path: Path) -> None
     )
     script_copy.write_text(script_text)
     script_copy.chmod(0o755)
+    _provision_apply_branch_protection_sibling(script_copy)
 
     proc = subprocess.run(
         ["bash", str(script_copy), "--resume", "0.99.0", "0"],
