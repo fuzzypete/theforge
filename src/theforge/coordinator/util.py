@@ -16,6 +16,7 @@ from pathlib import Path
 
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
+from theforge.process_group import is_killable_pgid
 from theforge.workspace_env import build_workspace_env
 
 # Stable reference captured at import time so test patches that replace the
@@ -153,12 +154,23 @@ def resolve_timeout_with_active(
 
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:
-    """Best-effort kill for a spawned shell process group."""
+    """Best-effort kill for a spawned shell process group.
+
+    Only ``killpg`` a pgid that denotes a real group (``> 1``); a bogus ``<= 1``
+    value would broadcast SIGKILL across the whole session (see
+    ``process_group.is_killable_pgid`` / #1793). Fall back to terminating just the
+    direct child when the group id is unknown or unkillable.
+    """
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        return
+        pgid = os.getpgid(proc.pid)
     except OSError:
-        pass
+        pgid = None
+    if is_killable_pgid(pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except OSError:
+            pass
     try:
         proc.terminate()
     except OSError:

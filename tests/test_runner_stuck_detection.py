@@ -840,6 +840,11 @@ class TestClaudeCliStuckDetection:
         mock_proc.returncode = 0
         mock_proc.wait.return_value = 0
         mock_proc.poll.return_value = 0
+        # No such process → os.getpgid raises, so the runner's kill takes its
+        # documented direct-child fallback (proc.kill) instead of killpg-ing a
+        # bogus group id derived from a mock pid. The real group-kill path is
+        # covered by the fake-CLI subprocess tests in test_process_group.py.
+        mock_proc.pid = 2_000_000_000
 
         with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
             result = _run_claude(

@@ -14,6 +14,11 @@ Codex (FAKE_CODEX_MODE):
                   v0.142.x human summary (a bare `tokens used` total, no split)
                   to stdout, so tests can assert it is recorded cost-unknown
                   rather than fabricating a cost from a total alone
+  grandchild_hang
+                — spawn a long-sleeping grandchild in the same process group
+                  (mirroring npm→node→codex), write its PID to
+                  $FAKE_GRANDCHILD_PID_FILE, then hang past the runner timeout.
+                  Proves the group kill reaches past `npm exec` to the leaf.
 
 Gemini (FAKE_GEMINI_MODE):
   happy  — print {"response": "Task complete."} to stdout, exit 0 (default)
@@ -22,7 +27,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import time
 
 args = sys.argv[1:]
 
@@ -70,6 +77,17 @@ if "@openai/codex" in args:
         # Real Codex CLI v0.142.x human summary: a bare total on its own line.
         print("tokens used")
         print("11,374")
+        sys.exit(0)
+    if mode == "grandchild_hang":
+        grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
+        if pidfile:
+            with open(pidfile, "w") as fh:
+                fh.write(str(grandchild.pid))
+        # Hang past the runner timeout so the group-kill path fires.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
         sys.exit(0)
     sys.stderr.write(f"fake npx(codex): unknown FAKE_CODEX_MODE={mode!r}\n")
     sys.exit(1)

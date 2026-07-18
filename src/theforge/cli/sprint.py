@@ -239,6 +239,15 @@ def cmd_sprint(args: object) -> int:
         run_id = _generate_run_id()
         slug = manifest_path.stem
 
+    # Publish run context for agent process-group registration. setup_detached_child
+    # already exports on the detached path; this covers the --fg path (idempotent).
+    _detach.export_run_context(run_id, config.project_root)
+    # Reap any agent groups orphaned by an abruptly-killed prior sprint before we
+    # launch new work (the guaranteed path for the SIGKILL-parent case).
+    from theforge import process_group as _process_group  # noqa: PLC0415
+
+    _process_group.reap_orphan_agents(config.project_root)
+
     if getattr(args, "detach", False) and _daemon.is_daemon_running(config.project_root):
         release_story_locks(locked_fds)
         sprint_args: dict = {
@@ -792,6 +801,14 @@ def _run_query_mode(
     gate_run_id = (
         (args.__dict__.get("_detached_run_id") or _generate_run_id()) if not dry_run else None
     )
+    if not dry_run and gate_run_id is not None:
+        # Publish run context for agent process-group registration (idempotent with
+        # setup_detached_child) and reap groups orphaned by an abruptly-killed
+        # prior sprint before launching new work.
+        _detach.export_run_context(gate_run_id, config.project_root)
+        from theforge import process_group as _process_group  # noqa: PLC0415
+
+        _process_group.reap_orphan_agents(config.project_root)
     gate_sprint_name = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
     # Carry-across-re-exec: a prior process may have intake-remediated some
     # issues and stashed their numbers in the environment before re-exec.

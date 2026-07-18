@@ -7,12 +7,14 @@ streams JSONL events, and returns an AgentResult.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
+from theforge import process_group
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
 from theforge.runners.stuck_detection import StuckTracker, build_observation
@@ -646,7 +648,14 @@ def _run_claude(
     deadline = start + profile.timeout_seconds
     timed_out = False
     stuck_monitor = _ClaudeStreamMonitor(profile)
+    # Track the spawned process group so every teardown branch kills the whole
+    # node/tool grandchild tree (not just the direct child) and the reaper can
+    # clean up if the sprint is SIGKILL-ed mid-run. Defined before the try so the
+    # finally can unregister even if Popen itself raises.
+    pgid: int | None = None
     try:
+        # start_new_session=True isolates the CLI (and its node/tool children)
+        # into their own process group, making the whole tree killable at once.
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -655,7 +664,45 @@ def _run_claude(
             text=True,
             cwd=str(working_dir),
             env=env,
+            start_new_session=True,
         )
+    except FileNotFoundError:
+        return AgentResult(
+            success=False,
+            output="ERROR: 'claude' CLI not found. Is it installed?",
+            session_id=None,
+            cost_usd=None,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+            startup_failure=True,
+        )
+
+    def _kill_group() -> None:
+        # Kill the whole process group so node/tool grandchildren die too — a
+        # bare proc.kill() reaches only the direct child. Fall back to the
+        # direct child if the pgid is unknown or already gone.
+        if pgid is not None:
+            process_group.kill_agent_group(pgid)
+        else:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    # Any exception raised after spawn — the SystemExit that detach.py's SIGTERM
+    # handler raises while this thread is blocked reading stdout, a
+    # KeyboardInterrupt, or any error — must kill the whole group before the
+    # finally drops the sidecar; otherwise the agent tree reparents to init still
+    # holding its workspace-write sandbox, with no record left for the reaper.
+    try:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (OSError, TypeError):
+            # OSError: child already gone. TypeError: non-int pid (test doubles).
+            pgid = None
+        if pgid is not None:
+            process_group.register_agent_group(pgid, sandbox_dir=working_dir)
         assert proc.stdin is not None
         # Send the initial prompt as a stream-json user message. stdin is kept
         # open so stuck-detection nudges can be injected as additional user
@@ -676,12 +723,12 @@ def _run_claude(
                 if proc.poll() is not None:
                     return
                 if stop_event is not None and stop_event.is_set():
-                    proc.kill()
+                    _kill_group()
                     return
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     if proc.poll() is None:
-                        proc.kill()
+                        _kill_group()
                     return
                 time.sleep(min(0.5, remaining))
 
@@ -704,14 +751,14 @@ def _run_claude(
                     f"{stuck_monitor.iteration_count} iterations: "
                     f"{stuck_monitor.terminate_pattern}"
                 )
-                proc.kill()
+                _kill_group()
                 break
             if stop_event is not None and stop_event.is_set():
-                proc.kill()
+                _kill_group()
                 timed_out = True
                 break
             if time.monotonic() > deadline:
-                proc.kill()
+                _kill_group()
                 timed_out = True
                 break
             # Break as soon as the result event arrives — the stream is complete.
@@ -732,17 +779,16 @@ def _run_claude(
         except (BrokenPipeError, ValueError, OSError):
             pass
         proc.wait()
-    except FileNotFoundError:
-        return AgentResult(
-            success=False,
-            output="ERROR: 'claude' CLI not found. Is it installed?",
-            session_id=None,
-            cost_usd=None,
-            exit_code=-1,
-            raw={},
-            profile_name=profile.name,
-            startup_failure=True,
-        )
+    except BaseException:
+        # SIGTERM→SystemExit, KeyboardInterrupt, or any post-spawn error: kill the
+        # whole group so it cannot outlive this process, then re-raise.
+        _kill_group()
+        raise
+    finally:
+        # The group is dead by now (normal exit, an in-loop _kill_group, or the
+        # except above); drop its sidecar so the reaper doesn't chase a dead pgid.
+        if pgid is not None:
+            process_group.unregister_agent_group(pgid)
 
     if stuck_monitor.should_terminate:
         partial_output = "".join(lines)

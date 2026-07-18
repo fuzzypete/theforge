@@ -13,6 +13,9 @@ import pytest
 from theforge.config import ModelProfile
 from theforge.runners.runner_codex import _run_codex
 
+# Spawn seam patched by the argv-construction tests below.
+_RUN_TARGET = "theforge.runners.runner_codex.process_group.run_in_process_group"
+
 
 def _make_profile(
     sandbox_mode: str = "workspace-write",
@@ -39,7 +42,7 @@ def _make_subprocess_mock(returncode: int = 0) -> MagicMock:
 
 
 def _extract_codex_cmd(mock_run: MagicMock) -> list[str]:
-    """Return the cmd list from the subprocess.run call."""
+    """Return the cmd list from the process_group.run_in_process_group call."""
     return mock_run.call_args[0][0]
 
 
@@ -50,11 +53,9 @@ class TestCodexSandboxFlag:
         """sandbox_mode=workspace-write → --sandbox workspace-write in cmd."""
         profile = _make_profile(sandbox_mode="workspace-write")
         mock_proc = _make_subprocess_mock()
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_RUN_TARGET, return_value=mock_proc):
             with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
-                with patch(
-                    "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-                ) as mock_run:
+                with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
                     _run_codex(
                         prompt="implement the thing",
                         profile=profile,
@@ -70,9 +71,7 @@ class TestCodexSandboxFlag:
         profile = _make_profile(sandbox_mode="read-only")
         mock_proc = _make_subprocess_mock()
         with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
-            with patch(
-                "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-            ) as mock_run:
+            with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
                 _run_codex(
                     prompt="review only",
                     profile=profile,
@@ -88,9 +87,7 @@ class TestCodexSandboxFlag:
         profile = _make_profile(sandbox_mode="none")
         mock_proc = _make_subprocess_mock()
         with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
-            with patch(
-                "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-            ) as mock_run:
+            with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
                 _run_codex(
                     prompt="debug run",
                     profile=profile,
@@ -103,9 +100,7 @@ class TestCodexSandboxFlag:
         """Resume path omits --sandbox because current Codex CLI rejects it there."""
         profile = _make_profile(sandbox_mode="workspace-write")
         mock_proc = _make_subprocess_mock()
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
             _run_codex(
                 prompt="continue",
                 profile=profile,
@@ -120,9 +115,7 @@ class TestCodexSandboxFlag:
         """sandbox_mode=none omits --sandbox on resume too."""
         profile = _make_profile(sandbox_mode="none")
         mock_proc = _make_subprocess_mock()
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
             _run_codex(
                 prompt="continue",
                 profile=profile,
@@ -137,9 +130,7 @@ class TestCodexSandboxFlag:
         """`codex exec resume` does not accept -C; working dir is passed via cwd= instead."""
         profile = _make_profile(sandbox_mode="workspace-write")
         mock_proc = _make_subprocess_mock()
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
             _run_codex(
                 prompt="continue",
                 profile=profile,
@@ -154,9 +145,7 @@ class TestCodexSandboxFlag:
         """Resume command keeps flags before the positional session id."""
         profile = _make_profile(sandbox_mode="workspace-write")
         mock_proc = _make_subprocess_mock()
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
             _run_codex(
                 prompt="continue",
                 profile=profile,
@@ -175,9 +164,7 @@ class TestCodexSandboxFlag:
         mock_proc = _make_subprocess_mock()
 
         with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
-            with patch(
-                "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-            ) as mock_run:
+            with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
                 _run_codex(
                     prompt="debug run",
                     profile=profile,

@@ -120,6 +120,9 @@ def cmd_run(args: "argparse.Namespace") -> int:
             # daemonize_run never returns in the parent.
     else:
         run_id = _generate_run_id()
+        # --fg / --dry-run stay in the foreground (no setup_detached_child), so
+        # publish the run context here too for agent process-group registration.
+        _detach.export_run_context(run_id, config.project_root)
 
     import theforge
 

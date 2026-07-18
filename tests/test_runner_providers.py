@@ -16,6 +16,9 @@ from theforge.config import ApiFallbackConfig, ModelProfile
 from theforge.log_level import LogLevel, set_log_level
 from theforge.runners import log_agent_result, run_agent
 
+# Codex spawn seam patched by the tests below.
+_CODEX_RUN_TARGET = "theforge.runners.runner_codex.process_group.run_in_process_group"
+
 
 def _make_stream_mock(lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
     """Return a mock Popen object whose stdout yields the given JSONL lines."""
@@ -41,7 +44,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="Code looks good.", stderr=""
         )
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc):
             result = run_agent(
                 prompt="review this code",
                 profile=codex_profile,
@@ -57,7 +60,7 @@ class TestRunCodex:
 
     def test_codex_timeout(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runners.runner_codex.subprocess.run",
+            _CODEX_RUN_TARGET,
             side_effect=subprocess.TimeoutExpired(cmd="npx", timeout=300),
         ):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
@@ -69,7 +72,7 @@ class TestRunCodex:
 
     def test_codex_not_found(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runners.runner_codex.subprocess.run",
+            _CODEX_RUN_TARGET,
             side_effect=FileNotFoundError(),
         ):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
@@ -80,9 +83,7 @@ class TestRunCodex:
 
     def test_codex_command_structure(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -101,7 +102,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="fallback stdout", stderr=""
         )
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
 
         assert result.output == "fallback stdout"
@@ -110,7 +111,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="partial work", stderr=""
         )
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -124,7 +125,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="codex error"
         )
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
 
         assert result.output == "codex error"
@@ -140,9 +141,7 @@ class TestRunCodex:
             reasoning_effort="high",
         )
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -154,9 +153,7 @@ class TestRunCodex:
         self, codex_profile: ModelProfile, tmp_path: Path
     ) -> None:
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -174,9 +171,7 @@ class TestRunCodex:
             reasoning_effort="medium",
         )
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch(
-            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -194,7 +189,7 @@ class TestRunCodex:
             args=[], returncode=0, stdout="reviewed", stderr=""
         )
         # Patch _get_codex_session_id to prove it is never called in pool mode.
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc):
             with patch(
                 "theforge.runners.runner_codex._get_codex_session_id", return_value="some-uuid"
             ) as mock_extract:
@@ -215,7 +210,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="reviewed", stderr=""
         )
-        with patch("theforge.runners.runner_codex.subprocess.run", return_value=mock_proc):
+        with patch(_CODEX_RUN_TARGET, return_value=mock_proc):
             with patch(
                 "theforge.runners.runner_codex._get_codex_session_id", return_value="abc-123"
             ) as mock_extract:

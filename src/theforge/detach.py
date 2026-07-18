@@ -24,6 +24,9 @@ from typing import Any
 _DETACHED_ENV = "FORGE_DETACHED"
 _DETACHED_RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
 _DETACHED_SLUG_ENV = "FORGE_DETACHED_SLUG"
+# Orchestrator project root, published so deep-in-stack runners can locate the
+# .forge/runs/agents sidecar dir for process-group registration.
+_PROJECT_ROOT_ENV = "FORGE_PROJECT_ROOT"
 
 # Module-level list to prevent GC of App Nap activity tokens
 _APP_NAP_ACTIVITIES: list[Any] = []
@@ -364,6 +367,20 @@ def is_detached_child() -> bool:
     return os.environ.get(_DETACHED_ENV) == "1"
 
 
+def export_run_context(run_id: str, project_root: Path) -> None:
+    """Publish (run_id, project_root) into the environment for deep-in-stack code.
+
+    The CLI runners spawn agent subprocesses far below where ``project_root`` is
+    known; they need it to register spawned process groups into the orchestrator's
+    ``.forge/runs/agents`` sidecar dir (see ``theforge.process_group``). Export it
+    here rather than threading it through the runner API. ``FORGE_DETACHED_RUN_ID``
+    is already set on the detached path; set it too so the foreground/``--fg`` path
+    records the run id as well.
+    """
+    os.environ[_PROJECT_ROOT_ENV] = str(project_root)
+    os.environ.setdefault(_DETACHED_RUN_ID_ENV, run_id)
+
+
 def setup_detached_child(
     run_id: str, slug: str, project_root: Path, *, is_sprint: bool = False
 ) -> None:
@@ -377,6 +394,7 @@ def setup_detached_child(
     log_file = project_root / ".forge" / "logs" / slug / f"run-{run_id}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    export_run_context(run_id, project_root)
     write_pid(run_id, slug, project_root)
     if is_sprint:
         write_sprint_marker(run_id, project_root)
