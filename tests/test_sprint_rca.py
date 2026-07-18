@@ -169,6 +169,111 @@ def test_provider_quota_with_gate_timeout(tmp_path: Path) -> None:
     assert "usage limit" in quota_ev["excerpt"].lower()
 
 
+# ── Engine: ambiguous "429" must not match inside cost/duration floats ────────
+
+
+def test_bare_429_in_cost_float_not_provider_quota(tmp_path: Path) -> None:
+    """The reported bug: a cost_usd float whose digits contain "429" must not be
+    classified provider_quota, and no "wait for quota reset" remediation fires.
+
+    Reproduces sprint 493cd6ae81e4 / #1747: the real failure is an empty-worktree
+    missing-work escalate, but ``cost_usd: 0.6659942999999999`` contains the
+    substring ``429`` and previously drove a spurious provider_usage_limit hit.
+    """
+    empty_worktree_err = (
+        "Gate exited PASS but branch has no commits ahead of base — "
+        "treating empty worktree as missing-work failure"
+    )
+    d = _sprint_dir(tmp_path, name="issues-927,1773,1747")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1747", "outcome": "FAILED", "error": empty_worktree_err}]),
+    )
+    _write(
+        d / "issue-1747" / "audit.yaml",
+        {
+            "error": empty_worktree_err,
+            "error_type": None,
+            "cost": {"cost_usd": 0.6659942999999999, "dev_invocations": 1},
+        },
+    )
+    entry = _build(d)["stories"]["issue-1747"]
+    assert entry["primary_failure_class"] != "provider_quota"
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "provider_usage_limit" not in rule_ids
+    assert not any("quota" in a.lower() for a in entry["recommended_next_actions"])
+    # The real captured error is still surfaced as baseline evidence.
+    assert any("empty worktree" in ev["excerpt"].lower() for ev in entry["evidence"])
+
+
+def test_standalone_429_status_still_detected(tmp_path: Path) -> None:
+    """A genuine standalone HTTP 429 in captured provider output still classifies.
+
+    Anchoring must not blind the rule to real rate-limit responses — only to
+    digit runs inside unrelated numbers.
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1324", "outcome": "ESCALATE"}]),
+    )
+    cycle_dir = d / "issue-1324" / "review-cycle-1"
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    (cycle_dir / "openai-gpt.yaml").write_text(
+        "output: |\n  Provider returned HTTP 429 Too Many Requests\n",
+        encoding="utf-8",
+    )
+    entry = _build(d)["stories"]["issue-1324"]
+    assert entry["primary_failure_class"] == "provider_quota"
+    quota_ev = next(ev for ev in entry["evidence"] if ev["rule_id"] == "provider_usage_limit")
+    assert "429" in quota_ev["excerpt"]
+
+
+def test_ambiguous_429_yields_to_captured_non_provider_error(tmp_path: Path) -> None:
+    """A bare 429 hit must not outrank an explicit captured non-provider error.
+
+    Even when a standalone 429 appears in a scanned file, a concrete captured
+    terminal error describing a different cause takes precedence — the story is
+    not attributed to provider_quota and no quota remediation is emitted.
+    """
+    empty_worktree_err = (
+        "Gate exited PASS but branch has no commits ahead of base — "
+        "treating empty worktree as missing-work failure"
+    )
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1747", "outcome": "FAILED", "error": empty_worktree_err}]),
+    )
+    story_dir = d / "issue-1747"
+    story_dir.mkdir(parents=True, exist_ok=True)
+    (story_dir / "dev.log").write_text("transient blip: code 429 seen once\n", encoding="utf-8")
+    entry = _build(d)["stories"]["issue-1747"]
+    assert entry["primary_failure_class"] != "provider_quota"
+    assert not any("quota" in a.lower() for a in entry["recommended_next_actions"])
+
+
+def test_error_prose_mentioning_cost_is_preserved(tmp_path: Path) -> None:
+    """Telemetry redaction keys on field names, not the word 'cost' in prose.
+
+    An unambiguous provider phrase in an error message that also mentions cost
+    must still classify provider_quota.
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1324", "outcome": "ESCALATE"}]),
+    )
+    story_dir = d / "issue-1324"
+    story_dir.mkdir(parents=True, exist_ok=True)
+    (story_dir / "dev.log").write_text(
+        "The provider hit its usage limit before any cost accrued\n", encoding="utf-8"
+    )
+    entry = _build(d)["stories"]["issue-1324"]
+    assert entry["primary_failure_class"] == "provider_quota"
+
+
 # ── Engine: worker timeout + partial value ────────────────────────────────────
 
 
