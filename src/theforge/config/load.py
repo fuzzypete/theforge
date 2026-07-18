@@ -961,7 +961,21 @@ def load_config(config_path: Path) -> ForgeConfig:
             "forge.yaml 'shape_check.classifier' must be a non-empty string, "
             f"got {shape_check_classifier!r}"
         )
-    shape_check_cfg = ShapeCheckConfig(classifier=shape_check_classifier.strip())
+    shape_check_threshold = shape_check_data.get("stuck_issue_threshold", 3)
+    if isinstance(shape_check_threshold, bool) or not isinstance(shape_check_threshold, int):
+        raise ValueError(
+            "forge.yaml 'shape_check.stuck_issue_threshold' must be an integer, "
+            f"got {shape_check_threshold!r}"
+        )
+    if shape_check_threshold < 1:
+        raise ValueError(
+            "forge.yaml 'shape_check.stuck_issue_threshold' must be >= 1, "
+            f"got {shape_check_threshold!r}"
+        )
+    shape_check_cfg = ShapeCheckConfig(
+        classifier=shape_check_classifier.strip(),
+        stuck_issue_threshold=shape_check_threshold,
+    )
 
     intake_data = raw.get("intake", {}) or {}
     if not isinstance(intake_data, dict):

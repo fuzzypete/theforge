@@ -207,6 +207,30 @@ CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_verdict ON shape_verdict_eve
 CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_issue ON shape_verdict_events(issue_id);
 CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_milestone ON shape_verdict_events(milestone);
 CREATE INDEX IF NOT EXISTS idx_shape_verdict_events_run ON shape_verdict_events(run_id);
+CREATE TABLE IF NOT EXISTS shape_skip_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    source TEXT,
+    severity TEXT,
+    category TEXT,
+    four_question_axis TEXT,
+    run_id TEXT,
+    sprint_id TEXT,
+    sprint_name TEXT,
+    milestone TEXT,
+    prior_block_count INTEGER NOT NULL DEFAULT 0,
+    first_blocked_at TEXT,
+    last_blocked_at TEXT,
+    last_status TEXT,
+    emitted_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shape_skip_events_issue ON shape_skip_events(issue_id);
+CREATE INDEX IF NOT EXISTS idx_shape_skip_events_code ON shape_skip_events(reason_code);
+CREATE INDEX IF NOT EXISTS idx_shape_skip_events_category ON shape_skip_events(category);
+CREATE INDEX IF NOT EXISTS idx_shape_skip_events_run ON shape_skip_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_shape_skip_events_emitted ON shape_skip_events(emitted_at);
 """
 
 
@@ -227,6 +251,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE audit_records ADD COLUMN verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
+        "ALTER TABLE shape_skip_events ADD COLUMN last_status TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -921,9 +946,18 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     readers across normal runtime operations. The legacy import flag
     is also carried forward so a subsequent operator-driven import is
     still considered already-done.
+
+    Shape-gate skip events (``shape_skip_events``, issue #1453) are likewise
+    snapshotted and re-applied. They are the canonical per-skip audit record
+    and are not derivable from the per-run JSON files, so a rebuild that
+    dropped them would lose the very skip history the observability layer
+    exists to expose — including the repeated-block patterns that surfaced
+    #1135 and #1405. Rows are restored verbatim (prior-block counts and
+    computed status preserved) rather than recomputed.
     """
     path = substrate_path(project_root)
     legacy_snapshot: list[tuple[str, str, str | None, float | None]] = []
+    skip_event_snapshot: list[tuple] = []
     legacy_import_done: str | None = None
     if path.exists():
         try:
@@ -946,6 +980,7 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
                             row["source_mtime"],
                         )
                     )
+                skip_event_snapshot = _snapshot_shape_skip_events(existing_conn)
                 legacy_import_done = _meta_get(existing_conn, "legacy_import_done")
             finally:
                 existing_conn.close()
@@ -954,6 +989,7 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
             # must run `forge audits rebuild --include-legacy-history`
             # explicitly to recover legacy data.
             legacy_snapshot = []
+            skip_event_snapshot = []
             legacy_import_done = None
         path.unlink()
     conn = create_or_open(project_root)
@@ -1012,12 +1048,66 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
             )
         except sqlite3.DatabaseError:
             continue
+    # Restore preserved shape-skip events. Re-applied verbatim (no history
+    # recomputation) so counts/status match what was recorded at emit time.
+    _restore_shape_skip_events(conn, skip_event_snapshot)
     if legacy_import_done is not None:
         _meta_set(conn, "legacy_import_done", legacy_import_done)
     _meta_set(conn, "last_rebuild_at", _now_iso())
     conn.commit()
     conn.close()
     return summary
+
+
+# Column order shared by the shape-skip snapshot/restore pair so the two stay in
+# lockstep — a column added to one must be added to the other.
+_SHAPE_SKIP_SNAPSHOT_COLUMNS = (
+    "issue_id",
+    "reason_code",
+    "source",
+    "severity",
+    "category",
+    "four_question_axis",
+    "run_id",
+    "sprint_id",
+    "sprint_name",
+    "milestone",
+    "prior_block_count",
+    "first_blocked_at",
+    "last_blocked_at",
+    "last_status",
+    "emitted_at",
+    "raw_json",
+)
+
+
+def _snapshot_shape_skip_events(conn: sqlite3.Connection) -> list[tuple]:
+    """Return every ``shape_skip_events`` row (sans ``event_id``) for rebuild.
+
+    Ordered by ``emitted_at`` so restore re-inserts them chronologically and any
+    auto-assigned ``event_id`` preserves emission order.
+    """
+    cols = ", ".join(_SHAPE_SKIP_SNAPSHOT_COLUMNS)
+    try:
+        rows = conn.execute(
+            f"SELECT {cols} FROM shape_skip_events ORDER BY emitted_at ASC, event_id ASC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Substrate predates the table — nothing to preserve.
+        return []
+    return [tuple(row) for row in rows]
+
+
+def _restore_shape_skip_events(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    """Re-insert snapshotted ``shape_skip_events`` rows verbatim after a rebuild."""
+    if not rows:
+        return
+    cols = ", ".join(_SHAPE_SKIP_SNAPSHOT_COLUMNS)
+    placeholders = ", ".join("?" for _ in _SHAPE_SKIP_SNAPSHOT_COLUMNS)
+    conn.executemany(
+        f"INSERT INTO shape_skip_events ({cols}) VALUES ({placeholders})",
+        rows,
+    )
 
 
 def _now_iso() -> str:
@@ -1522,6 +1612,249 @@ def iter_shape_verdict_events(
             yield json.loads(raw)
         except json.JSONDecodeError:
             continue
+
+
+# Shape-skip prior-status values (issue #1453 AC1: "last unblocked-or-still-blocked
+# status"). ``NO_PRIOR_BLOCK`` — this is the issue's first block on this code.
+# ``UNBLOCKED`` — the issue cleared the gate (a RUNNABLE shape verdict) since the
+# previous block, then tripped this code again. ``STILL_BLOCKED`` — the issue has
+# been continuously blocked since its previous block with no intervening pass.
+SKIP_STATUS_NO_PRIOR = "no_prior_block"
+SKIP_STATUS_UNBLOCKED = "unblocked"
+SKIP_STATUS_STILL_BLOCKED = "still_blocked"
+
+
+def _skip_prior_block_history(
+    conn: sqlite3.Connection, issue_id: str, reason_code: str
+) -> tuple[int, str | None, str | None]:
+    """Return ``(count, first_blocked_at, last_blocked_at)`` for prior blocks.
+
+    Counts only ``severity='blocking'`` rows for this ``(issue_id, reason_code)``
+    pair — advisories are not blocks and must not inflate the stuck-issue count.
+    Used at write time to embed the prior skip history directly into a new
+    record (issue #1453 AC1) so each record is self-describing without a
+    follow-up query.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*), MIN(emitted_at), MAX(emitted_at) FROM shape_skip_events "
+        "WHERE issue_id = ? AND reason_code = ? AND severity = 'blocking'",
+        (issue_id, reason_code),
+    ).fetchone()
+    if row is None:
+        return 0, None, None
+    count = int(row[0] or 0)
+    return count, row[1], row[2]
+
+
+def _skip_last_status(
+    conn: sqlite3.Connection,
+    issue_id: str,
+    prior_count: int,
+    last_blocked_at: str | None,
+    current_emitted_at: str,
+) -> str:
+    """Return the issue's last unblocked-or-still-blocked status for this skip code.
+
+    ``NO_PRIOR_BLOCK`` when this is the first block. Otherwise the issue is
+    ``UNBLOCKED`` when *any* ``RUNNABLE`` shape-verdict event was emitted in the
+    open interval ``(last_blocked_at, current_emitted_at)`` — the gate cleared it
+    between the previous block and this one, and it has now tripped again (the
+    #1135/#1405 pass-then-reblock shape); else ``STILL_BLOCKED`` (continuously
+    blocked since the previous block).
+
+    Checking for *any* runnable in the window — not the latest verdict — is what
+    makes the clear-and-reblock case correct: at sprint runtime the current
+    non-runnable verdict is emitted before this skip record, and a later
+    non-runnable verdict must not mask an earlier runnable one. Bounding the
+    upper end at ``current_emitted_at`` excludes the current block's own verdict
+    from the window. A RUNNABLE verdict clears every code, so it is a sound
+    per-code unblock signal.
+    """
+    if prior_count <= 0:
+        return SKIP_STATUS_NO_PRIOR
+    row = conn.execute(
+        "SELECT 1 FROM shape_verdict_events "
+        "WHERE issue_id = ? AND emitted_at > ? AND emitted_at < ? "
+        "AND LOWER(verdict) = 'runnable' LIMIT 1",
+        (issue_id, last_blocked_at or "", current_emitted_at),
+    ).fetchone()
+    if row is not None:
+        return SKIP_STATUS_UNBLOCKED
+    return SKIP_STATUS_STILL_BLOCKED
+
+
+def record_shape_skip_event(project_root: Path, event: dict) -> int:
+    """Insert a per-skip classification row into the audit substrate.
+
+    Each event captures one ``(issue, reason_code)`` skip at sprint entry with
+    its category / four-question axis / severity plus the issue's prior skip
+    history on the same code (issue #1453 AC1). The prior-history fields
+    (``prior_block_count``, ``first_blocked_at``, ``last_blocked_at``) are
+    computed here from existing rows and embedded so the record is
+    self-describing. Returns the inserted row's ``event_id``. Raises
+    :class:`SubstrateError` on missing required keys so callers can decide
+    whether to swallow (the sprint gate treats this as observability, not
+    gating).
+    """
+    required = {"issue_id", "reason_code"}
+    missing = required - set(event)
+    if missing:
+        raise SubstrateError(f"shape skip event missing required keys: {sorted(missing)}")
+    issue_id = str(event["issue_id"])
+    reason_code = str(event["reason_code"])
+    emitted_at = event.get("emitted_at") or _now_iso()
+    conn = create_or_open(project_root)
+    try:
+        prior_count, first_blocked, last_blocked = _skip_prior_block_history(
+            conn, issue_id, reason_code
+        )
+        last_status = _skip_last_status(conn, issue_id, prior_count, last_blocked, emitted_at)
+        # Fold the computed history back into the persisted raw_json so the
+        # canonical record and the indexed columns agree.
+        enriched = dict(event)
+        enriched["prior_block_count"] = prior_count
+        enriched["first_blocked_at"] = first_blocked
+        enriched["last_blocked_at"] = last_blocked
+        enriched["last_status"] = last_status
+        enriched["emitted_at"] = emitted_at
+        raw_json = _canonical_json(enriched)
+        cur = conn.execute(
+            "INSERT INTO shape_skip_events "
+            "(issue_id, reason_code, source, severity, category, four_question_axis, "
+            "run_id, sprint_id, sprint_name, milestone, prior_block_count, "
+            "first_blocked_at, last_blocked_at, last_status, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                issue_id,
+                reason_code,
+                event.get("source"),
+                event.get("severity"),
+                event.get("category"),
+                event.get("four_question_axis"),
+                event.get("run_id"),
+                event.get("sprint_id"),
+                event.get("sprint_name"),
+                event.get("milestone"),
+                prior_count,
+                first_blocked,
+                last_blocked,
+                last_status,
+                emitted_at,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def iter_shape_skip_events(
+    conn: sqlite3.Connection,
+    *,
+    issue_id: str | None = None,
+    reason_code: str | None = None,
+    category: str | None = None,
+    run_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> Iterable[dict]:
+    """Yield shape-skip event dicts (parsed from raw_json), oldest first.
+
+    Serves the AC6 query surface: filter by ``reason_code`` and an
+    ``[since, until]`` ``emitted_at`` window to answer "all sprints in date
+    range D where skip code C fired" in one call. ``since``/``until`` are
+    inclusive ISO-8601 strings compared lexically (the emitted_at format is
+    zero-padded UTC, so lexical order equals chronological order).
+    """
+    clauses: list[str] = []
+    params: list = []
+    if issue_id is not None:
+        clauses.append("issue_id = ?")
+        params.append(issue_id)
+    if reason_code is not None:
+        clauses.append("reason_code = ?")
+        params.append(reason_code)
+    if category is not None:
+        clauses.append("category = ?")
+        params.append(category)
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    if since is not None:
+        clauses.append("emitted_at >= ?")
+        params.append(since)
+    if until is not None:
+        clauses.append("emitted_at <= ?")
+        params.append(until)
+    sql = "SELECT raw_json FROM shape_skip_events"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, tuple(params)):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def repeated_shape_skip_blocks(
+    conn: sqlite3.Connection,
+    *,
+    threshold: int,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    """Return ``(issue_id, reason_code)`` pairs blocked ``>= threshold`` times.
+
+    This is the stuck-issue detector (issue #1453 AC3): a pattern that surfaced
+    #1135 and #1405 only via manual log-walking becomes a single grouped query.
+    Only ``severity='blocking'`` rows count toward the threshold. Each result
+    carries the block count, first/last block timestamps, and the distinct run
+    ids that hit the block. Ordered by descending block count.
+    """
+    clauses = ["severity = 'blocking'"]
+    params: list = []
+    if since is not None:
+        clauses.append("emitted_at >= ?")
+        params.append(since)
+    if until is not None:
+        clauses.append("emitted_at <= ?")
+        params.append(until)
+    where = " WHERE " + " AND ".join(clauses)
+    sql = (
+        "SELECT issue_id, reason_code, COUNT(*) AS n, "
+        "MIN(emitted_at) AS first_seen, MAX(emitted_at) AS last_seen "
+        "FROM shape_skip_events" + where + " "
+        "GROUP BY issue_id, reason_code HAVING n >= ? "
+        "ORDER BY n DESC, issue_id ASC, reason_code ASC"
+    )
+    out: list[dict] = []
+    for row in conn.execute(sql, tuple(params) + (int(threshold),)):
+        issue_id = row[0] if not isinstance(row, sqlite3.Row) else row["issue_id"]
+        reason_code = row[1] if not isinstance(row, sqlite3.Row) else row["reason_code"]
+        n = row[2] if not isinstance(row, sqlite3.Row) else row["n"]
+        first_seen = row[3] if not isinstance(row, sqlite3.Row) else row["first_seen"]
+        last_seen = row[4] if not isinstance(row, sqlite3.Row) else row["last_seen"]
+        run_rows = conn.execute(
+            "SELECT DISTINCT run_id FROM shape_skip_events "
+            "WHERE issue_id = ? AND reason_code = ? AND severity = 'blocking' "
+            "AND run_id IS NOT NULL ORDER BY run_id",
+            (issue_id, reason_code),
+        ).fetchall()
+        run_ids = [r[0] if not isinstance(r, sqlite3.Row) else r["run_id"] for r in run_rows]
+        out.append(
+            {
+                "issue_id": issue_id,
+                "reason_code": reason_code,
+                "block_count": int(n),
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "run_ids": run_ids,
+            }
+        )
+    return out
 
 
 def seed_records(project_root: Path, records: Iterable[dict]) -> None:

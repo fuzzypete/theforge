@@ -287,7 +287,7 @@ def build_sprint_rca(summary_path: Path, *, generated_at: str | None = None) -> 
             story, summary_path, sprint_log_dir, logs_root, run_id
         )
 
-    return {
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "ruleset_version": RULESET_VERSION,
         "sprint_run_id": run_id,
@@ -295,6 +295,17 @@ def build_sprint_rca(summary_path: Path, *, generated_at: str | None = None) -> 
         "generator": "mechanical",
         "stories": story_entries,
     }
+
+    # Attach the shape-gate skip classification context (issue #1453) so an
+    # operator reading the RCA sees whether the sprint was affected by gate
+    # friction and how often. Sourced from the summary the writer already
+    # persisted, so the RCA stays a pure function over on-disk artifacts and the
+    # ``--check`` reproducibility guard still holds.
+    skip_block = summary.get("shape_gate_skips")
+    if isinstance(skip_block, dict) and skip_block:
+        payload["shape_gate_skips"] = skip_block
+
+    return payload
 
 
 def write_sprint_rca(
