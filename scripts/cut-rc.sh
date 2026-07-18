@@ -55,6 +55,10 @@ if [[ "${CUT_RC_SELF_COPY:-}" != "1" ]]; then
     chmod +x "$_self_copy"
     export CUT_RC_SELF_COPY=1
     export CUT_RC_SELF_COPY_PATH="$_self_copy"
+    # Capture the real scripts/ dir before re-exec so sibling scripts (e.g.
+    # apply-branch-protection.sh) can still be found once BASH_SOURCE points
+    # at the temp copy instead of the repo checkout.
+    export CUT_RC_ORIGINAL_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     exec bash "$_self_copy" "$@"
 fi
 if [[ -n "${CUT_RC_SELF_COPY_PATH:-}" ]]; then
@@ -236,11 +240,14 @@ fi
 # MERGE_FAILED and the operator click-merges by hand. The helper applies a
 # minimal protection ruleset; it is idempotent and safe to re-run on --resume.
 echo "==> Configuring branch protection on $RELEASE_BRANCH..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use the original checkout's scripts/ dir, not the self-isolated temp copy's
+# (BASH_SOURCE[0] here resolves to the temp dir, which never receives sibling
+# scripts like apply-branch-protection.sh).
+SCRIPT_DIR="${CUT_RC_ORIGINAL_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PROTECT_ARGS=()
 [[ "$DRY_RUN" == true ]] && PROTECT_ARGS+=("--dry-run")
 PROTECT_ARGS+=("fuzzypete/theforge" "$RELEASE_BRANCH")
-"$SCRIPT_DIR/apply-branch-protection.sh" "${PROTECT_ARGS[@]}" || true
+"$SCRIPT_DIR/apply-branch-protection.sh" "${PROTECT_ARGS[@]}"
 
 # --- 9. Install the RC into an ISOLATED venv and verify against THAT venv's binary ---
 #
