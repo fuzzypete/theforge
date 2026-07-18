@@ -92,7 +92,7 @@ def run_gate_full(
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
-    ok, output, exit_code, _timed_out = _cu._run_shell_detailed(
+    ok, output, exit_code, timed_out = _cu._run_shell_detailed(
         gate_cmd,
         workspace_path,
         timeout=gate_timeout,
@@ -107,7 +107,7 @@ def run_gate_full(
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]
 
-    if output.startswith("TIMEOUT"):
+    if timed_out or output.startswith("TIMEOUT"):
         return (
             None,
             f"Gate timed out after {gate_timeout}s",

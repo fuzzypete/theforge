@@ -229,7 +229,9 @@ def _gate_side_effect(
 
     Fidelity mode (``exit_code`` given, and/or ``timed_out=True``): gate calls
     return the *specified* observed values so exit-code/timeout suites assert
-    what the subprocess reported, not a derived ``0 if ok else 1``.
+    what the subprocess reported, not a derived ``0 if ok else 1``. The returned
+    success flag stays consistent with those observed values (success only when
+    ``exit_code == 0`` and not ``timed_out``), matching production semantics.
     """
     if isinstance(decisions, str):
         decisions_list = [decisions] * 20
@@ -250,7 +252,15 @@ def _gate_side_effect(
             else:
                 gate_out = output if output is not None else "FAIL: tests failed"
             code = exit_code if exit_code is not None else (0 if ok else 1)
-            return (ok, gate_out, code, timed_out)
+            # The success flag mirrors what ``_run_shell_detailed`` returns in
+            # production: True only when the process exited 0 and did not time
+            # out. Fidelity tests that pass an explicit ``exit_code``/``timed_out``
+            # therefore get a success flag consistent with those observed values
+            # rather than one derived solely from the PASS/FAIL decision — a
+            # decision="PASS" with exit_code=137 or timed_out=True is reported as
+            # a failure, exactly as the real gate would report it.
+            observed_ok = code == 0 and not timed_out
+            return (observed_ok, gate_out, code, timed_out)
         if "git status --porcelain" in cmd:
             return (True, "", 0, False)  # clean worktree
         stale_resp = _handle_stale_check_cmd(cmd)

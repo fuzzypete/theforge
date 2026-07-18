@@ -15,6 +15,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _write_handoff,
+    mock_gate,
 )
 
 from theforge.coordinator.gate import run_gate_full
@@ -87,6 +88,56 @@ class TestGateDecision:
         assert decision == "FAIL"
         assert error is None
         assert exit_code == 1
+
+    def test_gate_timed_out_without_banner_is_timeout(self, tmp_path: Path):
+        """Observed timed_out=True → timeout error, even with ordinary output.
+
+        Regression (#1737): the gate must classify a timeout from the observed
+        ``timed_out`` field returned by ``_run_shell_detailed``, not by sniffing
+        the output for a ``TIMEOUT`` prefix. A process killed on timeout can be
+        reaped with a signal exit code (e.g. 137) and partial ordinary output
+        that never carries the banner; trusting the output prefix alone would
+        report PASS/FAIL with exit 137 instead of a timeout.
+        """
+        config = _make_config(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _write_handoff(workspace)
+
+        with patch("theforge.coordinator.gate._cu._run_shell_detailed") as mock_shell:
+            # timed_out=True with ordinary (non-"TIMEOUT") output and a signal
+            # exit code — the exact shape the old output-prefix check missed.
+            mock_shell.return_value = (False, "collecting ... tests/test_slow.py", 137, True)
+            with patch("theforge.coordinator.gate._cu._log"):
+                decision, error, _tail, _cmd, exit_code = run_gate_full(config, workspace)
+
+        assert decision is None
+        assert error is not None
+        assert "timed out" in error
+        assert exit_code == 137
+
+    def test_gate_timed_out_via_sanctioned_seam(self, tmp_path: Path):
+        """The sanctioned fidelity seam's ``timed_out=True`` is reported as a timeout.
+
+        Exercises the same regression (#1737) through the one sanctioned seam:
+        ``mock_gate`` fidelity mode with ``decision="PASS"`` but an observed
+        ``timed_out=True``/``exit_code=137`` must surface as a timeout error, not
+        a PASS. This also pins the seam's success flag to the observed values
+        (success only when exit 0 and not timed out).
+        """
+        config = _make_config(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _write_handoff(workspace)
+
+        with mock_gate(workspace, "PASS", exit_code=137, timed_out=True):
+            with patch("theforge.coordinator.gate._cu._log"):
+                decision, error, _tail, _cmd, exit_code = run_gate_full(config, workspace)
+
+        assert decision is None
+        assert error is not None
+        assert "timed out" in error
+        assert exit_code == 137
 
 
 # ── validate_phase.py integration tests ───────────────────────────────────────
