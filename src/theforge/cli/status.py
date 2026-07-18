@@ -435,10 +435,16 @@ def cmd_status(args: object) -> int:
     watch_interval: int | None = getattr(args, "watch", None)
     no_color: bool = getattr(args, "no_color", False)
     operator_actions: bool = getattr(args, "operator_actions", False)
+    ready: bool = getattr(args, "ready", False)
+    milestone: str | None = getattr(args, "milestone", None)
 
     # ── --operator-actions: readiness queue for operator-owned issues ─────
     if operator_actions:
         return _show_operator_action_queue(project_root)
+
+    # ── --ready: sprint-eligible issues carrying the `ready` label ────────
+    if ready:
+        return _show_ready_queue(project_root, milestone)
 
     if watch_interval is not None and watch_interval <= 0:
         print(
@@ -524,6 +530,15 @@ def _show_operator_action_queue(project_root: Path) -> int:
 
     entries = build_operator_action_queue(project_root)
     print(format_operator_action_queue(entries))
+    return 0
+
+
+def _show_ready_queue(project_root: Path, milestone: str | None) -> int:
+    """Print the ready-labeled, sprint-eligible issue set (milestone-optional)."""
+    from theforge.ready_queue import build_ready_queue, format_ready_queue
+
+    entries = build_ready_queue(project_root, milestone=milestone)
+    print(format_ready_queue(entries, milestone=milestone))
     return 0
 
 
@@ -986,6 +1001,23 @@ def register_parsers(subparsers: object) -> None:
             "List open operator-action issues with a ready/blocked readiness "
             "indicator derived from their depends_on dependency state."
         ),
+    )
+    status_parser.add_argument(
+        "--ready",
+        dest="ready",
+        action="store_true",
+        default=False,
+        help=(
+            "List open issues carrying the `ready` label — the set eligible for "
+            "the next sprint. Combine with --milestone to scope to one milestone."
+        ),
+    )
+    status_parser.add_argument(
+        "--milestone",
+        dest="milestone",
+        default=None,
+        metavar="NAME",
+        help="Scope --ready to open issues in the named GitHub milestone.",
     )
 
     # forge logs

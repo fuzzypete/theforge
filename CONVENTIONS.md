@@ -121,6 +121,21 @@ context, but they should not appear in actionable candidate lists.
 
 Source: `feedback_no_closed_issues.md`
 
+### Mid-sprint new bugs are groomed-and-readied for the next sprint, not injected into the running sprint
+
+When a running sprint surfaces a new bug or work item, capture it and bring it to
+a runnable state through the normal intake steps
+(`capture → shape → diagnose → groom`), then apply the `ready` label so ordinary
+sprint selection picks it up in the *next* sprint. Do not modify the running
+sprint's selected work.
+
+There is no `forge queue` command — the `ready` label is the queue-for-next-sprint
+convention, and it carries no ordering or priority semantics. Use
+`forge status --ready [--milestone …]` to see the eligible set. Live injection of
+new work into an in-flight sprint is deliberately out of scope; it belongs to the
+v0.12+ autonomy roadmap. See ADR-0001 and `docs/guides/authoring.md`
+(Mid-sprint workflow).
+
 ## Planning, Review, And Documentation Discipline
 
 ### Capture converged decisions in repo-visible artifacts
