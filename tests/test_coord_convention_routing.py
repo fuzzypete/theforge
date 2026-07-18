@@ -39,7 +39,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_convention_violation_after_passing_gate_creates_synthetic_blocking_review(
         self,
         mock_shell,
@@ -109,7 +109,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_convention_block_escalates_when_review_cycles_exhausted(
         self,
         mock_shell,
@@ -158,7 +158,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_convention_violation_still_escalates_when_dev_budget_exhausted(
         self,
         mock_shell,

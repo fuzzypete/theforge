@@ -125,7 +125,7 @@ class TestResolutionCommentaryBridge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_resolution_commentary_does_not_revive_prior_finding_across_cycles(
         self,
         mock_shell,
@@ -177,7 +177,7 @@ class TestResolutionCommentaryBridge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_unresolved_wording_still_tracks_prior_finding_across_cycles(
         self,
         mock_shell,

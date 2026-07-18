@@ -159,7 +159,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_net_new_p1_with_matches_spec_false_blocks(
         self,
         mock_shell,
@@ -195,7 +195,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_ac_blocking_audit_records_disposition(
         self,
         mock_shell,
@@ -238,7 +238,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_net_new_p1_with_matches_spec_true_blocks_by_default(
         self,
         mock_shell,
@@ -285,7 +285,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_net_new_p1_with_matches_spec_true_does_not_block_when_bypass_enabled(
         self,
         mock_shell,
@@ -325,7 +325,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_ac_blocking_finding_transitions_to_fixed(
         self,
         mock_shell,
@@ -393,7 +393,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_approve_with_matches_spec_false_and_no_p1_does_not_reach_done(
         self,
         mock_shell,
@@ -439,7 +439,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_matches_spec_false_blocks_even_via_zero_findings_early_termination(
         self,
         mock_shell,

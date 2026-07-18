@@ -9,6 +9,7 @@ from unittest.mock import patch
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    _as_detailed,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -110,7 +111,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_pass(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         """Exit code 0 → PASS in exit-code mode."""
         config = _make_exit_code_config(tmp_path)
@@ -118,7 +119,7 @@ class TestExitCodeGateMode:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_exit_code()
+        mock_shell.side_effect = _as_detailed(_shell_exit_code())
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -133,7 +134,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_fail_then_pass(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -143,7 +144,7 @@ class TestExitCodeGateMode:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_exit_code(pass_on_call=2)
+        mock_shell.side_effect = _as_detailed(_shell_exit_code(pass_on_call=2))
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -159,7 +160,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_exhaustion(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -169,7 +170,7 @@ class TestExitCodeGateMode:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_exit_code(pass_on_call=999)
+        mock_shell.side_effect = _as_detailed(_shell_exit_code(pass_on_call=999))
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
 
@@ -181,7 +182,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_infrastructure_failure_escalates_immediately(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -198,7 +199,7 @@ class TestExitCodeGateMode:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
 
@@ -211,7 +212,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_worktree_blocked_in_exit_code_mode(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -228,7 +229,7 @@ class TestExitCodeGateMode:
                 return (True, " M src/theforge/coordinator.py\n M tests/test_something.py")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
 
@@ -240,7 +241,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_dirty_worktree_detected(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -260,7 +261,7 @@ class TestExitCodeGateMode:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
 
@@ -272,7 +273,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_gate_timeout_is_error(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -292,7 +293,7 @@ class TestExitCodeGateMode:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
 
@@ -307,7 +308,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_infrastructure_error_is_error(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -327,7 +328,7 @@ class TestExitCodeGateMode:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
 
@@ -341,7 +342,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_exit_code_test_failure_is_fail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -352,7 +353,7 @@ class TestExitCodeGateMode:
         workspace.mkdir()
 
         # First gate call fails with normal test output; second passes
-        mock_shell.side_effect = _shell_exit_code(pass_on_call=2)
+        mock_shell.side_effect = _as_detailed(_shell_exit_code(pass_on_call=2))
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -375,7 +376,7 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_test_target_substituted(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -405,7 +406,7 @@ class TestTestTargetSubstitution:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -423,7 +424,7 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_test_target_defaults_to_project_root(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -446,7 +447,7 @@ class TestTestTargetSubstitution:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -462,7 +463,7 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_test_target_non_python_gate_command(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -503,7 +504,7 @@ class TestTestTargetSubstitution:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -529,7 +530,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_override_none_skips_validation(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -553,7 +554,7 @@ class TestGateOverride:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
@@ -572,7 +573,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_override_custom_command(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -595,7 +596,7 @@ class TestGateOverride:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
@@ -618,7 +619,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_override_custom_command_fail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -639,7 +640,7 @@ class TestGateOverride:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented."),
@@ -659,7 +660,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_override_absent_uses_global(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -723,7 +724,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_override_none_case_insensitive(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -747,7 +748,7 @@ class TestGateOverride:
                     return stale_resp
                 return (True, "OK")
 
-            mock_shell.side_effect = shell_side_effect
+            mock_shell.side_effect = _as_detailed(shell_side_effect)
             mock_preflight.return_value = _PREFLIGHT_RESULT
             mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
             mock_pool.return_value = [

@@ -52,7 +52,7 @@ class TestCoordinatorReviewRequestChanges:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_review_then_approve(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -92,7 +92,7 @@ class TestCoordinatorSchemaErrorOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_approve_with_schema_errors_triggers_retry(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -135,7 +135,7 @@ class TestCoordinatorSchemaErrorOnRequestChanges:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_malformed_request_changes_triggers_retry(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -189,7 +189,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_pool_of_2_approve(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         """Pool of 2 reviews → merge → APPROVE."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -218,7 +218,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_pool_of_2_request_changes(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -250,7 +250,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_pool_of_1_skips_synthesis(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -294,7 +294,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_transient_reviewer_crash_retries_and_meets_quorum(
         self,
         mock_shell,
@@ -360,7 +360,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_mixed_success_failure_degrades_to_single_no_synthesis(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -394,7 +394,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_all_reviewers_fail_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -422,7 +422,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_per_profile_budget_excludes_reviewer(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -471,7 +471,7 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_parse_error_does_not_increment_cycle(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -502,7 +502,7 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_parse_error_then_request_changes(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -557,7 +557,7 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_all_parse_retries_exhausted(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -595,7 +595,7 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_parse_retry_count_in_audit(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -627,7 +627,7 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_operator_log_classifies_rejection_stage(
         self,
         mock_shell,
@@ -688,7 +688,7 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_schema_error_also_retried(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -727,7 +727,7 @@ class TestReviewPoolResilience:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_per_reviewer_retry_only_affects_failing_reviewer(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -767,7 +767,7 @@ class TestReviewPoolResilience:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_max_review_parse_retries_zero_disables_retry(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -806,7 +806,7 @@ class TestReviewPoolResilience:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_empty_merge_falls_back_to_best_individual(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -846,7 +846,7 @@ class TestReviewPoolResilience:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_all_reviewers_unparseable_escalates_as_infrastructure(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -890,7 +890,7 @@ class TestReviewPoolResilience:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_best_individual_p1_over_approve(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -954,7 +954,7 @@ class TestCriteriaEnumerableEscapeValveSeam:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_escape_valve_approve_passes_without_retry(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):
@@ -986,7 +986,7 @@ class TestCriteriaEnumerableEscapeValveSeam:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_retry_prompt_anchors_prior_content(
         self, mock_shell, mock_engine_agent, mock_preflight, mock_pool, mock_review_agent, tmp_path
     ):

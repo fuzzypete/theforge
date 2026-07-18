@@ -59,7 +59,7 @@ class TestPerRunLogCapture:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_per_run_log_created(self, mock_shell, mock_agent, mock_preflight, tmp_path):
         """Per-run log file is created at the expected path."""
         import sys
@@ -94,7 +94,7 @@ class TestPerRunLogCapture:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_per_run_log_absent_when_logging_disabled(
         self, mock_shell, mock_agent, mock_preflight, tmp_path
     ):
@@ -135,7 +135,7 @@ class TestPerRunLogCapture:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_review_creates_per_run_log(
         self, mock_shell, mock_agent, mock_preflight, tmp_path
     ):
@@ -255,7 +255,7 @@ class TestProjectLocalLogDir:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_story_log_dir_created(self, mock_shell, mock_agent, mock_preflight, tmp_path):
         """Per-story log directory created under <project_root>/.forge/logs/<slug>/."""
         config = self._make_config(tmp_path)
@@ -280,7 +280,7 @@ class TestProjectLocalLogDir:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_preflight_raw_log_written(self, mock_shell, mock_agent, mock_preflight, tmp_path):
         """preflight-raw.log written to story log dir with raw agent output."""
         config = self._make_config(tmp_path)
@@ -306,7 +306,7 @@ class TestProjectLocalLogDir:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_preflight_yaml_written(self, mock_shell, mock_agent, mock_preflight, tmp_path):
         """preflight.yaml written to story log dir after PREFLIGHT phase."""
         config = self._make_config(tmp_path)
@@ -334,7 +334,7 @@ class TestProjectLocalLogDir:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_review_cycle_artifacts_written(
         self, mock_shell, mock_agent, mock_preflight, tmp_path
     ):
@@ -794,7 +794,8 @@ def test_preflight_yaml_includes_branch_merged(tmp_path):
         patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
         patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
         patch(
-            "theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace, "PASS")
+            "theforge.coordinator.util._run_shell_detailed",
+            side_effect=_shell_with_gate(workspace, "PASS"),
         ),
     ):
         _run_preflight_phase(

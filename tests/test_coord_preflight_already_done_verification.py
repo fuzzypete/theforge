@@ -208,7 +208,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_all_acs_evidenced_already_done_honored(
         self,
@@ -258,7 +258,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_partial_evidence_downgraded_to_proceed(
         self,
         mock_shell,
@@ -297,7 +297,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_no_criteria_checked_downgraded_to_proceed(
         self,
         mock_shell,
@@ -333,7 +333,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_unsatisfied_ac_downgraded_to_proceed(
         self,
         mock_shell,
@@ -368,7 +368,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_criteria_checked_preserved_in_artifact(
         self,
@@ -413,7 +413,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_missing_runtime_path_downgraded_to_proceed(
         self,
         mock_shell,
@@ -449,7 +449,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_thin_evidence_downgraded_to_proceed(
         self,
         mock_shell,
@@ -485,7 +485,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_empty_evidence_downgraded_to_proceed(
         self,
         mock_shell,
@@ -521,7 +521,7 @@ class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_null_runtime_path_downgraded_to_proceed(
         self,
         mock_shell,

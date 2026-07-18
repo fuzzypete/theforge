@@ -14,7 +14,7 @@ class TestStopPhasePlan:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     @patch("theforge.story_validator.validate_story")
     def test_until_plan_stops_before_dev(
         self,
@@ -56,7 +56,7 @@ class TestStopPhasePlan:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     @patch("theforge.story_validator.validate_story")
     def test_until_plan_review_stops_before_dev(
         self,

@@ -57,7 +57,7 @@ def test_failed_preflight_evidence_reaches_plan_prompt(tmp_path):
         return _make_agent_result(success=True, output="Implemented.")
 
     with (
-        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch("theforge.coordinator.util._run_shell_detailed") as mock_shell,
         patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
         patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
         patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
@@ -133,7 +133,7 @@ def test_malformed_preflight_evidence_reaches_plan_prompt(tmp_path):
         return _make_agent_result(success=True, output="Implemented.")
 
     with (
-        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch("theforge.coordinator.util._run_shell_detailed") as mock_shell,
         patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
         patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
         patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
@@ -195,7 +195,7 @@ criteria_checked:
         return _make_agent_result(success=True, output="Implemented.")
 
     with (
-        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch("theforge.coordinator.util._run_shell_detailed") as mock_shell,
         patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
         patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
         patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,

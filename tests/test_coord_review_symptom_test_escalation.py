@@ -110,7 +110,7 @@ class TestSymptomTestEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_missing_symptom_test_p2_escalates_to_blocking_p1(
         self,
         mock_shell,
@@ -164,7 +164,7 @@ class TestSymptomTestEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_escalation_recorded_in_audit_substrate(
         self,
         mock_shell,
@@ -212,7 +212,7 @@ class TestSymptomTestEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_generic_coverage_p2_not_escalated_on_bug(
         self,
         mock_shell,
@@ -252,7 +252,7 @@ class TestSymptomTestEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_missing_symptom_test_not_escalated_on_non_bug(
         self,
         mock_shell,

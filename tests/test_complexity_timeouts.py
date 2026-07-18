@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from coord_test_helpers import _as_detailed
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -295,7 +296,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_uses_large_timeout_for_large_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -311,7 +312,7 @@ class TestDevPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         from coord_test_helpers import _write_handoff
 
         def _side_effect(cmd, cwd, **kwargs):
@@ -322,7 +323,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
 
         def _side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -332,7 +333,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
 
         def _side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -342,7 +343,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
 
         def _side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -352,7 +353,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
 
         def _side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -362,7 +363,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
 
         def _side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -372,7 +373,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
 
         def _side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -382,7 +383,7 @@ class TestDevPhaseTimeout:
                 return (True, "OK")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
 
-        mock_shell.side_effect = _side_effect
+        mock_shell.side_effect = _as_detailed(_side_effect)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
@@ -402,7 +403,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_uses_medium_timeout_for_medium_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -418,7 +419,7 @@ class TestDevPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
@@ -438,7 +439,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_derives_large_timeout_when_no_override(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -448,7 +449,7 @@ class TestDevPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
@@ -470,7 +471,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_logs_complexity_suffix_when_override_equals_base(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path, capsys
     ):
@@ -487,7 +488,7 @@ class TestDevPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
@@ -512,7 +513,7 @@ class TestScorePropagationSeam:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_same_band_scores_propagate_to_different_plan_and_dev_timeouts(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -541,7 +542,7 @@ class TestScorePropagationSeam:
                 story_path=task.story_path,
                 slug=workspace.name,
             )
-            mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+            mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
             mock_plan_agent.side_effect = mock_agent
             mock_agent.reset_mock()
             mock_plan_agent.reset_mock()
@@ -580,7 +581,7 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_plan_uses_large_timeout_for_large_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -597,7 +598,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
@@ -619,7 +620,7 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_plan_derives_large_timeout_when_no_override(
         self,
         mock_shell,
@@ -637,7 +638,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
@@ -664,7 +665,7 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_plan_logs_complexity_suffix_when_override_equals_base(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path, capsys
     ):
@@ -682,7 +683,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _as_detailed(_shell_with_gate(workspace, "PASS"))
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05

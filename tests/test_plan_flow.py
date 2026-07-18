@@ -17,7 +17,7 @@ from theforge.coordinator.state import Phase
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 @patch("theforge.story_validator.validate_story")
 def test_stale_plan_files_removed_before_plan_agent(
     mock_validate_story,
@@ -67,7 +67,7 @@ def test_stale_plan_files_removed_before_plan_agent(
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 @patch("theforge.story_validator.validate_story")
 def test_no_stale_files_is_fine(
     mock_validate_story,

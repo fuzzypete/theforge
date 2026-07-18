@@ -210,7 +210,7 @@ class TestPreflightFlowReadsStructuredType:
             ),
             patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
             patch(
-                "theforge.coordinator.util._run_shell",
+                "theforge.coordinator.util._run_shell_detailed",
                 side_effect=_shell_with_gate(workspace, "PASS"),
             ),
         ):

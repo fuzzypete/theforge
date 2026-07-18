@@ -45,7 +45,7 @@ def _prep(mock_validate_story, mock_shell, mock_preflight, tmp_path):
 @patch("theforge.coordinator.plan_flow.time.sleep", lambda *_a, **_k: None)
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 @patch("theforge.story_validator.validate_story")
 def test_plan_draft_retries_transient_connection_closed(
     mock_validate_story, mock_shell, mock_preflight, mock_plan_agent, tmp_path
@@ -72,7 +72,7 @@ def test_plan_draft_retries_transient_connection_closed(
 @patch("theforge.coordinator.plan_flow.time.sleep", lambda *_a, **_k: None)
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 @patch("theforge.story_validator.validate_story")
 def test_plan_draft_escalates_after_retries_exhausted(
     mock_validate_story, mock_shell, mock_preflight, mock_plan_agent, tmp_path
@@ -100,7 +100,7 @@ def test_plan_draft_escalates_after_retries_exhausted(
 @patch("theforge.coordinator.plan_flow.time.sleep", lambda *_a, **_k: None)
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 @patch("theforge.story_validator.validate_story")
 def test_plan_draft_genuine_failure_does_not_retry(
     mock_validate_story, mock_shell, mock_preflight, mock_plan_agent, tmp_path

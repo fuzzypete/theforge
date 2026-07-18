@@ -10,6 +10,7 @@ from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
+    _as_detailed,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -58,7 +59,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_iteration_1_uses_dev_prompt(
         self,
         mock_shell,
@@ -94,7 +95,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_iteration_2_with_review_findings_uses_fix_prompt(
         self,
         mock_shell,
@@ -142,7 +143,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_failure_retry_uses_dev_prompt_not_fix_prompt(
         self,
         mock_shell,
@@ -186,7 +187,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_fix_prompt_receives_review_findings(
         self,
         mock_shell,
@@ -233,7 +234,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_failure_after_review_uses_dev_prompt(
         self,
         mock_shell,
@@ -287,7 +288,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_review_first_dev_uses_dev_prompt(
         self,
         mock_shell,
@@ -339,7 +340,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_extend_on_approve_with_no_findings_uses_dev_prompt(
         self,
         mock_shell,
@@ -402,7 +403,7 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_extend_after_request_changes_uses_fix_prompt(
         self,
         mock_shell,
@@ -839,7 +840,7 @@ class TestCoordinatorGateFailRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_fail_then_pass(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -865,7 +866,7 @@ class TestCoordinatorGateFailRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_failure_log_contains_tail_not_head(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_dev_prompt, tmp_path
     ):
@@ -895,7 +896,7 @@ class TestCoordinatorGateFailRetry:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
         mock_pool.return_value = [
@@ -919,7 +920,7 @@ class TestCoordinatorGateFailRetry:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_failure_includes_output_tail_in_dev_feedback(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_dev_prompt, tmp_path
     ):
@@ -949,7 +950,7 @@ class TestCoordinatorGateFailRetry:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
         mock_pool.return_value = [

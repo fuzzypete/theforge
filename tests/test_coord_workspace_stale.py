@@ -13,6 +13,7 @@ from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     PREFLIGHT_PROCEED,
+    _as_detailed,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -65,7 +66,7 @@ class TestStaleWorktree:
 
     # -- _is_stale_worktree unit tests --
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_zero_commits_ahead(self, mock_shell, tmp_path):
         """Branch has 0 commits ahead of base -> stale."""
         workspace = tmp_path / "my-spec"
@@ -79,13 +80,13 @@ class TestStaleWorktree:
                 return (True, "")  # empty -> 0 commits ahead
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is True
         assert "0 commits ahead" in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_old_commit_not_stale(self, mock_shell, tmp_path):
         """Branch has commits ahead even if old -> NOT stale (age alone is no reason to delete)."""
         workspace = tmp_path / "my-spec"
@@ -99,13 +100,13 @@ class TestStaleWorktree:
                 return (True, "abc123 some commit")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
         assert "1 commit ahead" in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_fresh_worktree_reused(self, mock_shell, tmp_path):
         """Branch has commits ahead -> not stale (safe to reuse, age is irrelevant)."""
         workspace = tmp_path / "my-spec"
@@ -119,14 +120,14 @@ class TestStaleWorktree:
                 return (True, "abc123 commit one\ndef456 commit two\nghi789 commit three")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
         assert "3 commits ahead" in info
         assert "stale" not in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_worktree_days_zero_always_removes(self, mock_shell, tmp_path):
         """stale_worktree_days=0 -> always stale for clean, non-escalated worktrees."""
         workspace = tmp_path / "my-spec"
@@ -140,13 +141,13 @@ class TestStaleWorktree:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is True
         assert "stale_worktree_days=0" in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_escalated_worktree_not_stale(self, mock_shell, tmp_path):
         """Escalated worktrees are preserved even with 0 commits ahead."""
         workspace = tmp_path / "my-spec"
@@ -155,7 +156,7 @@ class TestStaleWorktree:
         marker.write_text("", encoding="utf-8")
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
 
-        mock_shell.return_value = (True, "feat/my-spec")
+        mock_shell.return_value = (True, "feat/my-spec", 0, False)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
@@ -164,7 +165,7 @@ class TestStaleWorktree:
         assert not any("git status --porcelain" in c for c in calls)
         assert not any("git log" in c for c in calls)
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_worktree_not_stale(self, mock_shell, tmp_path):
         """Dirty worktrees are preserved even with 0 commits ahead."""
         workspace = tmp_path / "my-spec"
@@ -178,13 +179,13 @@ class TestStaleWorktree:
                 return (True, " M src/app.py")
             raise AssertionError(f"unexpected command: {cmd}")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
         assert "uncommitted changes present" in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_git_status_failure_not_stale(self, mock_shell, tmp_path):
         """git status failure -> not stale (cannot determine state, do not delete)."""
         workspace = tmp_path / "my-spec"
@@ -198,14 +199,14 @@ class TestStaleWorktree:
                 return (False, "fatal: not a git repository")
             raise AssertionError(f"unexpected command: {cmd}")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
         assert "Cannot determine worktree status" in info
         assert "git status failed" in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_worktree_days_zero_preserves_escalated_worktree(self, mock_shell, tmp_path):
         """Escalated worktrees are preserved even when stale_worktree_days=0."""
         workspace = tmp_path / "my-spec"
@@ -214,25 +215,25 @@ class TestStaleWorktree:
         marker.write_text("", encoding="utf-8")
         config = _make_stale_config(tmp_path, stale_worktree_days=0)
 
-        mock_shell.return_value = (True, "feat/my-spec")
+        mock_shell.return_value = (True, "feat/my-spec", 0, False)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
         assert "escalate marker present" in info
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_branch_not_found(self, mock_shell, tmp_path):
         """Worktree dir exists but branch is gone (corrupted state) -> stale."""
         workspace = tmp_path / "my-spec"
         workspace.mkdir()
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
 
-        mock_shell.return_value = (False, "fatal: not a git repository")
+        mock_shell.return_value = (False, "fatal: not a git repository", 1, False)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is True
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_git_log_failure_not_stale(self, mock_shell, tmp_path):
         """git log failure -> not stale (cannot determine state, do not delete)."""
         workspace = tmp_path / "my-spec"
@@ -246,7 +247,7 @@ class TestStaleWorktree:
                 return (False, "fatal: ambiguous argument 'main'")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is False
@@ -255,10 +256,10 @@ class TestStaleWorktree:
 
     # -- _remove_worktree unit tests --
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_remove_worktree_logs_warning(self, mock_shell, tmp_path, capsys):
         """Warning is logged before removal."""
-        mock_shell.return_value = (True, "")
+        mock_shell.return_value = (True, "", 0, False)
 
         _remove_worktree(tmp_path / "my-spec", "feat/my-spec", tmp_path)
 
@@ -266,10 +267,10 @@ class TestStaleWorktree:
         assert "stale worktree detected" in captured.err
         assert "feat/my-spec" in captured.err
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_remove_failure_does_not_raise(self, mock_shell, tmp_path, capsys):
         """git worktree remove failure is logged but does not raise."""
-        mock_shell.return_value = (False, "error: not a git worktree")
+        mock_shell.return_value = (False, "error: not a git worktree", 1, False)
 
         # Must not raise
         _remove_worktree(tmp_path / "my-spec", "feat/my-spec", tmp_path)
@@ -277,7 +278,7 @@ class TestStaleWorktree:
         captured = capsys.readouterr()
         assert "Warning" in captured.err
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_remove_worktree_deletes_leftover_forge_shell(self, mock_shell, tmp_path):
         """Successful removal deletes a leftover worktree shell with only Forge metadata."""
         workspace = tmp_path / "my-spec"
@@ -291,7 +292,7 @@ class TestStaleWorktree:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         _remove_worktree(workspace, "feat/my-spec", tmp_path)
 
@@ -299,7 +300,7 @@ class TestStaleWorktree:
 
     # -- Integration: _create_workspace stale detection --
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_no_existing_worktree(self, mock_shell, tmp_path):
         """Path doesn't exist -> no staleness check, normal workspace creation."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -317,7 +318,7 @@ class TestStaleWorktree:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         from theforge.coordinator.workspace import _create_workspace
 
@@ -330,7 +331,7 @@ class TestStaleWorktree:
             cmd_arg = call[0][0]
             assert "--oneline" not in cmd_arg
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_worktree_removed_on_create(self, mock_shell, tmp_path):
         """Stale worktree (0 commits ahead) is removed and workspace recreated."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -357,7 +358,7 @@ class TestStaleWorktree:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         from theforge.coordinator.workspace import _create_workspace
 
@@ -370,7 +371,7 @@ class TestStaleWorktree:
         calls = [c[0][0] for c in mock_shell.call_args_list]
         assert any("worktree remove" in c for c in calls)
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_fresh_worktree_not_removed(self, mock_shell, tmp_path):
         """Fresh worktree (recent commits ahead) is reused without removal."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -395,7 +396,7 @@ class TestStaleWorktree:
                 return (True, str(recent_ts))
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         from theforge.coordinator.workspace import _create_workspace
 
@@ -409,7 +410,7 @@ class TestStaleWorktree:
         assert not any("worktree remove" in c for c in calls)
         assert not any("branch -D" in c for c in calls)
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_escalated_worktree_reused_on_create(self, mock_shell, tmp_path):
         """Existing escalated worktree is reused instead of being swept as stale."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -419,7 +420,7 @@ class TestStaleWorktree:
         marker.parent.mkdir(parents=True)
         marker.write_text("", encoding="utf-8")
 
-        mock_shell.return_value = (True, "feat/test-task")
+        mock_shell.return_value = (True, "feat/test-task", 0, False)
 
         path, branch, err = _create_workspace(config, task)
 
@@ -431,7 +432,7 @@ class TestStaleWorktree:
         assert not any("git status --porcelain" in c for c in calls)
         assert not any("git log" in c for c in calls)
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_worktree_reused_on_create(self, mock_shell, tmp_path):
         """Existing dirty worktree is reused instead of being swept as stale."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -450,7 +451,7 @@ class TestStaleWorktree:
                 return (True, "")
             raise AssertionError(f"unexpected command: {cmd}")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         path, branch, err = _create_workspace(config, task)
 
@@ -544,7 +545,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.workspace.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_conflict_resolution_succeeds(
         self, mock_shell, mock_agent, mock_preflight, mock_ws_agent, mock_pool, tmp_path
     ):
@@ -554,8 +555,8 @@ class TestConflictResolution:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = self._shell_with_conflict(
-            workspace, conflicted_files=["src/foo.py"], gate_pass=True
+        mock_shell.side_effect = _as_detailed(
+            self._shell_with_conflict(workspace, conflicted_files=["src/foo.py"], gate_pass=True)
         )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [
@@ -580,7 +581,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.workspace.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_conflict_resolution_gate_fails(
         self, mock_shell, mock_agent, mock_preflight, mock_ws_agent, mock_pool, tmp_path
     ):
@@ -626,7 +627,7 @@ class TestConflictResolution:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         # coord_workspace.run_agent is called for conflict resolution
@@ -646,7 +647,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_conflict_too_many_files_skipped(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -658,7 +659,9 @@ class TestConflictResolution:
 
         # 6 conflicted files -- over the limit of 5
         many_files = [f"src/file{i}.py" for i in range(6)]
-        mock_shell.side_effect = self._shell_with_conflict(workspace, conflicted_files=many_files)
+        mock_shell.side_effect = _as_detailed(
+            self._shell_with_conflict(workspace, conflicted_files=many_files)
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
@@ -677,7 +680,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_no_conflict_no_resolution(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -709,7 +712,7 @@ class TestConflictResolution:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _make_agent_result(output=PREFLIGHT_PROCEED)
         mock_agent.return_value = _make_agent_result(output="Implemented.")  # dev
         mock_pool.return_value = [
@@ -728,7 +731,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.workspace.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_conflict_resolution_timeout(
         self, mock_shell, mock_agent, mock_preflight, mock_ws_agent, mock_pool, tmp_path
     ):
@@ -738,8 +741,8 @@ class TestConflictResolution:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = self._shell_with_conflict(
-            workspace, conflicted_files=["src/foo.py"]
+        mock_shell.side_effect = _as_detailed(
+            self._shell_with_conflict(workspace, conflicted_files=["src/foo.py"])
         )
         # dev, then conflict resolution agent (fails with timeout); preflight mocked separately
         mock_preflight.return_value = _PREFLIGHT_RESULT
@@ -770,7 +773,7 @@ class TestWorkspaceBranchCollision:
     def _porcelain_for(self, wt_path: Path, branch: str) -> str:
         return f"worktree {wt_path}\nHEAD abc123\nbranch refs/heads/{branch}\n\n"
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_existing_worktree_directory_reused(self, mock_shell, tmp_path, capsys):
         """create_command fails, worktree is registered and directory exists -> reuse."""
         config = _make_config(tmp_path)
@@ -791,7 +794,7 @@ class TestWorkspaceBranchCollision:
                 return (True, self._porcelain_for(registered_wt, branch))
             return (True, "")
 
-        mock_shell.side_effect = side_effect
+        mock_shell.side_effect = _as_detailed(side_effect)
 
         path, returned_branch, err = _create_workspace(config, task)
 
@@ -802,7 +805,7 @@ class TestWorkspaceBranchCollision:
         assert "↻ WORKSPACE" in captured.err
         assert "reusing existing worktree (registered)" in captured.err
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_missing_directory_pruned_and_recreated(self, mock_shell, tmp_path, capsys):
         """create_command fails, worktree registered but dir missing -> prune then recreate."""
         config = _make_config(tmp_path)
@@ -831,7 +834,7 @@ class TestWorkspaceBranchCollision:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = side_effect
+        mock_shell.side_effect = _as_detailed(side_effect)
 
         path, returned_branch, err = _create_workspace(config, task)
 
@@ -842,7 +845,7 @@ class TestWorkspaceBranchCollision:
         assert "⚠ WORKSPACE" in captured.err
         assert "pruning" in captured.err
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_branch_with_commits_reattached(self, mock_shell, tmp_path, capsys):
         """create_command fails, no worktree registered, branch has commits -> reattach."""
         config = _make_config(tmp_path)
@@ -864,7 +867,7 @@ class TestWorkspaceBranchCollision:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = side_effect
+        mock_shell.side_effect = _as_detailed(side_effect)
 
         path, returned_branch, err = _create_workspace(config, task)
 
@@ -875,7 +878,7 @@ class TestWorkspaceBranchCollision:
         assert "↻ WORKSPACE" in captured.err
         assert "reattaching worktree" in captured.err
 
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_branch_deleted_and_recreated(self, mock_shell, tmp_path, capsys):
         """create_command fails, no worktree registered, 0 commits ahead -> delete + recreate."""
         config = _make_config(tmp_path)
@@ -901,7 +904,7 @@ class TestWorkspaceBranchCollision:
                 return (True, "")
             return (True, "")
 
-        mock_shell.side_effect = side_effect
+        mock_shell.side_effect = _as_detailed(side_effect)
 
         path, returned_branch, err = _create_workspace(config, task)
 

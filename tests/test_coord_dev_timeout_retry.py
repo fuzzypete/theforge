@@ -320,7 +320,7 @@ def _make_seam_config(tmp_path: Path) -> ForgeConfig:
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 def test_timeout_retry_reenters_dev_through_engine_loop(
     mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ) -> None:

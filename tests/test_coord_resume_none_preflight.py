@@ -52,7 +52,7 @@ class TestResumeNonePreflightFields:
     """Ensure _run_resume_coordinator does not crash on None preflight fields."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_review_none_preflight_likely_files(
         self, mock_shell, mock_pool, tmp_path: Path
     ) -> None:
@@ -79,7 +79,7 @@ class TestResumeNonePreflightFields:
         assert result is not None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_review_none_preflight_warnings(
         self, mock_shell, mock_pool, tmp_path: Path
     ) -> None:
@@ -105,7 +105,7 @@ class TestResumeNonePreflightFields:
         assert result is not None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_review_both_none(self, mock_shell, mock_pool, tmp_path: Path) -> None:
         """run_from_review with both preflight fields None must not crash."""
         spec = tmp_path / "spec.md"
@@ -130,7 +130,7 @@ class TestResumeNonePreflightFields:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_dev_none_preflight_likely_files(
         self, mock_shell, mock_dev, mock_pool, tmp_path: Path
     ) -> None:
@@ -162,7 +162,7 @@ class TestResumeNonePreflightFields:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_from_dev_both_none(self, mock_shell, mock_dev, mock_pool, tmp_path: Path) -> None:
         """run_from_dev with both preflight fields None must not crash."""
         spec = tmp_path / "spec.md"
@@ -189,7 +189,7 @@ class TestResumeNonePreflightFields:
         assert result is not None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_resume_state_preflight_likely_files_preserved_as_none(
         self, mock_shell, mock_pool, tmp_path: Path
     ) -> None:
@@ -221,7 +221,7 @@ class TestRunTaskNonePreflightFields:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_task_none_preflight_warnings(
         self, mock_shell, mock_dev, mock_pool, tmp_path: Path
     ) -> None:
@@ -252,7 +252,7 @@ class TestRunTaskNonePreflightFields:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_run_task_both_none(self, mock_shell, mock_dev, mock_pool, tmp_path: Path) -> None:
         """run_task with both preflight fields None must not crash."""
         spec = tmp_path / "spec.md"

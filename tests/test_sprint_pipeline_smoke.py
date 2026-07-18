@@ -15,6 +15,7 @@ from unittest.mock import patch
 import yaml
 from coord_test_helpers import (
     APPROVE_REVIEW,
+    _as_detailed,
     _make_agent_result,
     _write_handoff,
 )
@@ -232,7 +233,10 @@ def test_make_gate_covers_mocked_sprint_pipeline_smoke_run(tmp_path: Path) -> No
         patch("theforge.sprint.runner._run_baseline_gate", return_value={"passed": True}),
         patch("theforge.sprint.runner.resolve_satisfied_dependencies", return_value=set()),
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
-        patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+        patch(
+            "theforge.coordinator.util._run_shell_detailed",
+            side_effect=_as_detailed(shell_side_effect),
+        ),
         patch("theforge.coordinator.preflight_flow.run_agent", side_effect=fake_preflight),
         patch("theforge.coordinator.plan_flow.run_agent", side_effect=fake_plan),
         patch("theforge.coordinator.dev_phase.run_agent", side_effect=fake_dev),

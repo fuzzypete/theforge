@@ -21,6 +21,7 @@ from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
+    _as_detailed,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -88,7 +89,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_estimate_exceeded_no_commits_first_call(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -98,7 +99,7 @@ class TestCoordinatorBudgetEnforcement:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
 
         # Agent costs $0.50, budget is $0.40 → immediate escalation
         expensive_result = AgentResult(
@@ -128,7 +129,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_estimate_exceeded_no_commits_on_retry(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -164,7 +165,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_review_budget_all_exceeded(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -211,7 +212,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=True)
     def test_dev_budget_exceeded_but_commits_present_proceeds(
         self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
@@ -248,7 +249,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=False)
     def test_dev_estimate_exceeded_no_commits_escalates_unproductive(
         self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
@@ -259,7 +260,7 @@ class TestCoordinatorBudgetEnforcement:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
 
         expensive_result = AgentResult(
             success=True,
@@ -291,7 +292,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_notes_passed_to_review_prompt(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -326,7 +327,7 @@ class TestCoordinatorDevNotes:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(
             success=True, output="Implemented.", dev_handoff=dev_handoff_dict
@@ -356,7 +357,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_review_prompt_includes_verified_git_metadata(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -387,7 +388,7 @@ class TestCoordinatorDevNotes:
                 return (True, "commit def5678\n...diff two...")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
 
@@ -414,7 +415,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_review_prompt_warns_on_handoff_commit_mismatch(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -463,7 +464,7 @@ class TestCoordinatorDevNotes:
                 return (True, "commit abc1234\n...diff...")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
 
@@ -499,7 +500,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_review_to_dev_handoff_used_on_request_changes(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

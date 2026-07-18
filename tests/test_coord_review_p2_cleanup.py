@@ -297,7 +297,7 @@ class TestP2CleanupLoop:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_approve_with_p2s_triggers_cleanup_pass(
         self, mock_shell, mock_dev, mock_pool, tmp_path
     ):
@@ -339,7 +339,7 @@ class TestP2CleanupLoop:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_cleanup_disabled_short_circuits_to_done(
         self, mock_shell, mock_dev, mock_pool, tmp_path
     ):
@@ -373,7 +373,7 @@ class TestP2CleanupLoop:
     @patch("theforge.coordinator.review_phase._human_review")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_interactive_mode_runs_cleanup_before_hitl(
         self, mock_shell, mock_dev, mock_pool, mock_human_review, tmp_path
     ):
@@ -417,7 +417,7 @@ class TestP2CleanupLoop:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_cleanup_budget_exhaustion_exits_done_not_escalate(
         self, mock_shell, mock_dev, mock_pool, tmp_path
     ):

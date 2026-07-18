@@ -78,7 +78,7 @@ def _make_seam_config(tmp_path: Path) -> ForgeConfig:
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 def test_timeout_escalation_seam(mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path):
     """Full DEV→VALIDATE→DEV seam: timeout on first dev, escalated model on second dev.
 
@@ -152,7 +152,7 @@ def test_timeout_escalation_seam(mock_shell, mock_dev, mock_preflight, mock_pool
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch("theforge.coordinator.util._run_shell_detailed")
 @patch("theforge.coordinator.engine._check_behind_origin")
 def test_resume_path_reads_sprint_flag(
     mock_origin, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path

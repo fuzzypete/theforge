@@ -334,7 +334,7 @@ class TestMechanicalSkipsPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_mechanical_skips_plan_review(
         self,
         mock_shell,
@@ -389,7 +389,7 @@ class TestRefactorAdvisoryPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_refactor_advisory_does_not_reject(
         self,
         mock_shell,
@@ -445,7 +445,7 @@ class TestRefactorAdvisoryPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_refactor_regen_loop_not_entered(
         self,
         mock_shell,
@@ -499,7 +499,7 @@ class TestFeatureBugFullPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_feature_reviewer_reject_triggers_regen(
         self,
         mock_shell,
@@ -569,7 +569,7 @@ class TestWorkTypeStoredOnState:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_work_type_stored_on_state(
         self,
         mock_shell,
@@ -614,7 +614,7 @@ class TestWorkTypeStoredOnState:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_preflight_failure_defaults_to_feature(
         self,
         mock_shell,
@@ -690,7 +690,7 @@ class TestRefactorHumanPlanReviewAdvisory:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_refactor_human_review_runs_advisory(
         self,
         mock_shell,
@@ -740,7 +740,7 @@ class TestRefactorHumanPlanReviewAdvisory:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_refactor_human_review_rejection_not_blocking(
         self,
         mock_shell,
@@ -792,7 +792,7 @@ class TestRefactorHumanPlanReviewAdvisory:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_refactor_human_explicit_abandon_is_terminal(
         self,
         mock_shell,
@@ -1070,7 +1070,7 @@ class TestPreflightPromptContractChange:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_contract_change_in_preflight_artifact(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):

@@ -95,7 +95,7 @@ class TestTimeoutEscalationAvailable:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_timeout_escalates_model_and_continues(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):
@@ -138,7 +138,7 @@ class TestTimeoutEscalationAvailable:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_timeout_escalation_audit_in_state(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):
@@ -181,7 +181,7 @@ class TestTimeoutNoLargerModel:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_timeout_no_escalation_when_at_top(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):
@@ -221,7 +221,7 @@ class TestTimeoutNoReEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_second_timeout_does_not_re_escalate(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):
@@ -270,7 +270,7 @@ class TestTimeoutEscalationSprintSticky:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_second_story_in_sprint_does_not_escalate(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):
@@ -343,7 +343,7 @@ class TestTimeoutEscalationParallelClaim:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_loser_of_claim_race_does_not_escalate(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):

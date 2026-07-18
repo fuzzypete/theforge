@@ -14,6 +14,7 @@ from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
+    _as_detailed,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -125,7 +126,7 @@ class TestCoordinatorStaleHandoff:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_stale_handoff_not_reused(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -149,7 +150,7 @@ class TestCoordinatorStaleHandoff:
                 return (False, "FAIL: 1 test failed")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -174,7 +175,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_worktree_auto_commits_no_retry(
         self, mock_shell, mock_deindex, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -196,7 +197,7 @@ class TestCoordinatorDirtyWorktree:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -224,7 +225,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_worktree_deindexes_before_status_and_after_git_add(
         self, mock_shell, mock_deindex, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -246,7 +247,7 @@ class TestCoordinatorDirtyWorktree:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -266,7 +267,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_worktree_auto_commits_even_at_max_iterations(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -299,7 +300,7 @@ class TestCoordinatorDirtyWorktree:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -321,7 +322,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_handoff_file_not_flagged_as_dirty(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -339,7 +340,7 @@ class TestCoordinatorDirtyWorktree:
                 return (True, "?? handoff.yaml")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -355,7 +356,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_handoff_dirty_worktree_unchanged(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -376,7 +377,7 @@ class TestCoordinatorDirtyWorktree:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -392,7 +393,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dirty_files_auto_committed(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -420,7 +421,7 @@ class TestCoordinatorDirtyWorktree:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -444,7 +445,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_untracked_file_auto_committed(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -472,7 +473,7 @@ class TestCoordinatorDirtyWorktree:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -496,7 +497,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_retry_no_changes_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -513,7 +514,7 @@ class TestDevZeroChangeGuard:
                 return (True, "")  # no dirty files
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         # Preflight → dev (iter 1) → review REQUEST_CHANGES → dev (iter 2, no changes) → escalate
         dev_result = _make_agent_result(success=True, output="Done.")
@@ -582,7 +583,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_dev_retry_with_dirty_files_proceeds(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -601,7 +602,7 @@ class TestDevZeroChangeGuard:
                 return (True, "")
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         dev_result = _make_agent_result(success=True, output="Done.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
@@ -654,7 +655,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_retry_no_changes_does_not_escalate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -681,7 +682,7 @@ class TestDevZeroChangeGuard:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
@@ -728,7 +729,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_post_review_gate_retry_no_changes_does_not_escalate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -760,7 +761,7 @@ class TestDevZeroChangeGuard:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
 
         dev_result = _make_agent_result(success=True, output="Done.")
         review_rc = _make_agent_result(

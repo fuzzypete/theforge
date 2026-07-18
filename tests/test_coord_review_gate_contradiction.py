@@ -246,7 +246,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_test_failure_p1_does_not_block_on_gate_pass(
         self,
         mock_shell,
@@ -283,7 +283,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_build_error_p1_does_not_block_on_gate_pass(
         self,
         mock_shell,
@@ -316,7 +316,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_lint_fail_p1_does_not_block_on_gate_pass(
         self,
         mock_shell,
@@ -349,7 +349,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_gate_contradicted_audit_trail(
         self,
         mock_shell,
@@ -396,7 +396,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_subjective_p1_not_downgraded_on_gate_pass(
         self,
         mock_shell,
@@ -431,7 +431,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_no_downgrade_when_gate_decision_absent(
         self,
         mock_shell,
@@ -483,7 +483,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_inadequate_acceptance_p1_blocks_despite_gate_pass_and_keyword(
         self,
         mock_shell,
@@ -525,7 +525,7 @@ class TestGateContradiction:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.util._run_shell_detailed")
     def test_inadequate_acceptance_keyword_not_downgraded_even_when_ac_true(
         self,
         mock_shell,
