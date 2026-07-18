@@ -520,3 +520,121 @@ def test_resume_rebase_succeeds_when_base_forge_yaml_diverged(tmp_path):
     assert "forge.yaml" not in committed
     # The branch's forge.yaml is the rebased base content, not operator config.
     assert _git(workspace, "show", "HEAD:forge.yaml") == updated_forge
+
+
+def test_resume_rebase_preserves_merge_based_conflict_resolution(tmp_path):
+    """Seam regression for issue #1794 (defect #2): a story branch brought current
+    by an operator's ``git merge main`` (with the conflict resolved in a merge
+    commit) must survive resume without ESCALATE.
+
+    A linear ``git rebase origin/main`` here would replay the branch's original
+    pre-merge commit and drop the merge commit, discarding the resolution and
+    re-firing the exact conflict the operator already settled. Because the merged
+    branch already contains origin/main as an ancestor, _rebase_onto_main must
+    short-circuit — skip the replay entirely, preserve the resolved content, and
+    return success.
+    """
+    from theforge.coordinator.run_setup import _rebase_onto_main
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _init_repo(origin)
+
+    # Baseline on origin/main: a story file both sides will edit conflictingly.
+    (origin / "forge.yaml").write_text("project: mainline\n", encoding="utf-8")
+    (origin / "story.py").write_text("value = 0\n", encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "baseline")
+
+    workspace = tmp_path / "workspace"
+    _git(tmp_path, "clone", "-q", str(origin), str(workspace))
+    _git(workspace, "config", "user.email", "test@example.com")
+    _git(workspace, "config", "user.name", "Test")
+    _git(workspace, "checkout", "-q", "-b", "forge/test-task")
+
+    # Story work edits story.py in a way that conflicts with the coming base edit.
+    (workspace / "story.py").write_text("value = 1  # story\n", encoding="utf-8")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "wip story")
+
+    # The base branch then edits the same line, conflicting with the story.
+    (origin / "story.py").write_text("value = 2  # main\n", encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "edit story.py on main")
+
+    # Operator brings the branch current with a merge-based conflict resolution.
+    _git(workspace, "fetch", "-q", "origin", "main")
+    merge = subprocess.run(
+        ["git", "merge", "origin/main"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+    )
+    assert merge.returncode != 0, "expected a merge conflict to resolve"
+    resolved = "value = 3  # resolved: story + main\n"
+    (workspace / "story.py").write_text(resolved, encoding="utf-8")
+    _git(workspace, "add", "story.py")
+    _git(workspace, "commit", "-q", "--no-edit")
+
+    # The resumed pre-dev rebase must recognize the branch already contains base
+    # and short-circuit rather than replay the pre-merge commit.
+    rebase_ok, rebase_err = _rebase_onto_main(str(workspace), "main", None)
+    assert rebase_ok, rebase_err
+
+    # The operator's merge resolution is preserved verbatim — no conflict markers,
+    # no re-fired conflict, no reversion to either original side.
+    working = (workspace / "story.py").read_text(encoding="utf-8")
+    assert working == resolved
+    assert "<<<<<<<" not in working
+    assert _git(workspace, "show", "HEAD:story.py") == resolved
+
+    # No rebase is left in progress (a re-fired conflict would leave one).
+    assert not (workspace / ".git" / "rebase-merge").exists()
+    assert not (workspace / ".git" / "rebase-apply").exists()
+
+
+def test_resume_rebase_still_rebases_branch_behind_base(tmp_path):
+    """Companion to the short-circuit: a branch that does NOT yet contain base
+    must still be rebased forward, so the ancestor check doesn't disable the
+    normal integration path.
+    """
+    from theforge.coordinator.run_setup import _rebase_onto_main
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _init_repo(origin)
+
+    (origin / "base.py").write_text("base = 0\n", encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "baseline")
+
+    workspace = tmp_path / "workspace"
+    _git(tmp_path, "clone", "-q", str(origin), str(workspace))
+    _git(workspace, "config", "user.email", "test@example.com")
+    _git(workspace, "config", "user.name", "Test")
+    _git(workspace, "checkout", "-q", "-b", "forge/test-task")
+
+    # Story work on a distinct file (no conflict with the base edit).
+    (workspace / "story.py").write_text("story = 1\n", encoding="utf-8")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "wip story")
+
+    # The base branch advances on an unrelated file; branch does NOT contain it.
+    (origin / "base.py").write_text("base = 1\n", encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "advance main")
+
+    rebase_ok, rebase_err = _rebase_onto_main(str(workspace), "main", None)
+    assert rebase_ok, rebase_err
+
+    # The rebase actually integrated the base advance and kept the story commit.
+    assert (workspace / "base.py").read_text(encoding="utf-8") == "base = 1\n"
+    assert (workspace / "story.py").read_text(encoding="utf-8") == "story = 1\n"
+    _git(workspace, "fetch", "-q", "origin", "main")
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+    )
+    assert ancestor.returncode == 0, "base must be an ancestor after the rebase"

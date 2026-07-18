@@ -180,6 +180,10 @@ class TestRebaseOntoMainFetchLock:
 
         fetch_ok = SimpleNamespace(returncode=0, stderr="", stdout="")
         rebase_ok = SimpleNamespace(returncode=0, stderr="", stdout="")
+        # merge-base --is-ancestor returns 1 (not an ancestor) so the branch is
+        # NOT already-integrated and the rebase short-circuit (issue #1794) is
+        # skipped — this test exercises the fetch-then-rebase path.
+        not_ancestor = SimpleNamespace(returncode=1, stderr="", stdout="")
 
         call_log = []
 
@@ -187,6 +191,8 @@ class TestRebaseOntoMainFetchLock:
             call_log.append(cmd[1])  # capture git subcommand
             if cmd[1] == "fetch":
                 return fetch_ok
+            if cmd[1] == "merge-base":
+                return not_ancestor
             return rebase_ok
 
         with patch("theforge.coordinator.run_setup.subprocess.run", side_effect=fake_run):

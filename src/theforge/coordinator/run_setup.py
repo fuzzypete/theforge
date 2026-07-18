@@ -382,6 +382,25 @@ def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[boo
             err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
             return False, err
 
+        # If HEAD already contains origin/base_branch, the branch is fully
+        # integrated — this is exactly the state after an operator brought a
+        # stale branch current with `git merge main` and resolved conflicts in
+        # a merge commit (also any already-up-to-date branch). A linear rebase
+        # here would replay the branch's original pre-merge commits and drop the
+        # merge commit, discarding the resolution and re-firing the settled
+        # conflict (issue #1794). Skip the rebase; the finally-block still
+        # reattaches the skip-worktree'd forge.yaml. Only rc==0 means "already an
+        # ancestor" — any other code (git returns 1 for not-ancestor) falls
+        # through to the rebase so we fail toward attempting it, not skipping it.
+        ancestor_proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", f"origin/{base_branch}", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=worktree_path,
+        )
+        if ancestor_proc.returncode == 0:
+            return True, ""
+
         rebase_proc = subprocess.run(
             ["git", "rebase", f"origin/{base_branch}"],
             capture_output=True,
