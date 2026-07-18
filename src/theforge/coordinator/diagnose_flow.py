@@ -366,7 +366,7 @@ def _gh_fetch_issue(number: int, project_root: Path) -> dict:
             "view",
             str(number),
             "--json",
-            "number,title,body,state",
+            "number,title,body,state,labels",
         ],
         capture_output=True,
         text=True,
@@ -754,6 +754,33 @@ def run_diagnose_flow(
 
     state.issue_title = str(issue.get("title", ""))
     state.issue_body = str(issue.get("body", ""))
+
+    # Operator-action issues describe a human deliverable, not a dev-runnable
+    # defect. Diagnosis is a dev-cycle preparatory flow, so running it against an
+    # operator-action issue is structurally meaningless and would land a
+    # misleading "fix-ready" artifact. Refuse before spending any budget, naming
+    # the issue number and the reason so the operator can distinguish this from a
+    # shape-gate refusal without reading documentation.
+    # Imported lazily: sprint.__init__ pulls in the runner → coordinator.engine
+    # chain, so a module-level import risks a circular import during flow load.
+    from theforge.sprint.shape_gate import OPERATOR_ACTION_LABEL
+
+    label_names = {
+        str(lbl.get("name", "")).strip().lower()
+        for lbl in (issue.get("labels") or [])
+        if isinstance(lbl, dict)
+    }
+    if OPERATOR_ACTION_LABEL.lower() in label_names:
+        state.error = (
+            f"Refusing to diagnose: issue #{issue_number} is labeled "
+            f"'{OPERATOR_ACTION_LABEL}'. Operator-action issues describe human "
+            "deliverables; they are not candidates for forge diagnose. Close "
+            "manually when the action is done."
+        )
+        state.transition(DiagnosePhase.FAILED, _now_iso())
+        write_diagnose_audit(state, project_root)
+        return DiagnoseResult(success=False, state=state, message=state.error)
+
     # Capture baseline SHA at the moment the diagnosis is anchored. Done
     # post-FETCH so a fetch failure doesn't burn a baseline timestamp; done
     # pre-INVESTIGATE so the agent runs against (and the staleness check
