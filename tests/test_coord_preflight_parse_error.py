@@ -17,6 +17,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.engine import run_task
@@ -111,7 +112,7 @@ class TestPreflightParseErrorIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_yaml_parse_failure_falls_back_to_proceed(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -143,7 +144,7 @@ class TestPreflightParseErrorIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_non_dict_output_falls_back_to_proceed(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -182,7 +183,7 @@ class TestPreflightParseErrorIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_unknown_verdict_falls_back_to_proceed(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -237,7 +238,7 @@ class TestPreflightParseErrorRetry:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_parse_error_retried_same_profile_recovers_metadata(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -282,7 +283,7 @@ class TestPreflightParseErrorRetry:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_parse_error_retry_exhausted_marks_degraded(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -321,7 +322,7 @@ class TestPreflightParseErrorRetry:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_parse_error_retry_precedes_fallback_profile(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):

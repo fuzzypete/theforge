@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from coord_test_helpers import patch_gate_shell
+
 from tests.coord_test_helpers import (
     APPROVE_REVIEW,
     PREFLIGHT_PROCEED_MEDIUM,
@@ -89,7 +91,7 @@ def test_review_pool_uses_plan_file_list_for_context(mock_pool, _mock_log, tmp_p
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_run_task_invokes_context_assembler_for_all_phases(
     mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
 ):
@@ -185,7 +187,7 @@ def test_run_task_invokes_context_assembler_for_all_phases(
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_prose_prefixed_plan_reaches_dev_file_count_and_scaling_log(
     mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
 ):

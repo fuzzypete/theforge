@@ -2,10 +2,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from coord_test_helpers import patch_gate_shell
 
 from tests.coord_test_helpers import (
     APPROVE_REVIEW,
     PREFLIGHT_PROCEED,
+    _as_detailed,
     _make_agent_result,
     _make_config,
     _make_task,
@@ -52,13 +54,13 @@ def _shell_pass(workspace: Path, gate_decisions: list[str] | None = None):
             return (True, "1234567890")
         return (True, "OK")
 
-    return side_effect
+    return _as_detailed(side_effect)
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_max_iterations_without_submit_is_distinct_outcome(
     mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ):
@@ -86,7 +88,7 @@ def test_max_iterations_without_submit_is_distinct_outcome(
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_audit_records_distinct_code_for_max_iterations_without_submit(
     mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ):
@@ -113,7 +115,7 @@ def test_audit_records_distinct_code_for_max_iterations_without_submit(
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_followup_after_max_iterations_no_submit_does_not_retry_unchanged_conditions(
     mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ):

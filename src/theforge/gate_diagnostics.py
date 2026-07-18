@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import Mock
 
 from theforge.config import ForgeConfig
 from theforge.coordinator import util as _cu
@@ -100,20 +99,12 @@ def run_gate_diagnostic_pass(
     _cu._log(f"  Running gate diagnostic pass after timeout: {diagnostic_cmd}")
 
     env = build_workspace_env(workspace_path, extra={"PYTHONFAULTHANDLER": "1"})
-    run_shell = _cu._run_shell_detailed
-    if isinstance(run_shell, Mock):
-        _ok, output, exit_code, timed_out = run_shell(
-            diagnostic_cmd,
-            workspace_path,
-            timeout=budget,
-        )
-    else:
-        _ok, output, exit_code, timed_out = run_shell(
-            diagnostic_cmd,
-            workspace_path,
-            timeout=budget,
-            env=env,
-        )
+    _ok, output, exit_code, timed_out = _cu._run_shell_detailed(
+        diagnostic_cmd,
+        workspace_path,
+        timeout=budget,
+        env=env,
+    )
 
     if timed_out:
         _cu._log(f"  Gate diagnostic pass hit its {budget}s budget before finishing")

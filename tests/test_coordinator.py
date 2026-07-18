@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from coord_test_helpers import (
+    _as_detailed,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -207,7 +209,7 @@ class TestCoordinatorHybridRunner:
 
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_mixed_pool_happy_path(
         self, mock_shell, mock_agent, mock_preflight, tmp_path, api_profile, cli_profile
     ):
@@ -247,7 +249,7 @@ class TestCoordinatorHybridRunner:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_mode_aware_prompt_builder(
         self,
         mock_shell,
@@ -281,7 +283,7 @@ class TestCoordinatorHybridRunner:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_cost_summation_with_none(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -322,7 +324,7 @@ class TestCoordinatorHappyPath:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_single_pass(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -352,7 +354,7 @@ class TestCoordinatorEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_gate_exhaustion(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -375,7 +377,7 @@ class TestCoordinatorEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_review_exhaustion(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -402,7 +404,7 @@ class TestCoordinatorCostTracking:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_total_cost_includes_review(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -511,7 +513,7 @@ class TestProgressShowsPhaseTransitions:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_phase_transitions_always_shown(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path, capsys
     ):
@@ -551,7 +553,7 @@ class TestSprintSpecHeaderPrinted:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_spec_header_emitted(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path, capsys
     ):
@@ -655,7 +657,7 @@ class TestUntilPhaseStop:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_until_preflight_stops_after_preflight(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -680,7 +682,7 @@ class TestUntilPhaseStop:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_until_validate_stops_after_validate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -706,7 +708,7 @@ class TestUntilPhaseStop:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_until_review_stops_after_first_review(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -735,7 +737,7 @@ class TestUntilPhaseStop:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_until_dev_stops_before_review(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -763,7 +765,7 @@ class TestFromPhaseSkip:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_from_dev_skips_preflight_and_plan(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -782,7 +784,7 @@ class TestFromPhaseSkip:
                 return (True, "forge/test-task")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         # Only dev agent and review pool should be called
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
@@ -801,7 +803,7 @@ class TestFromPhaseSkip:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_from_dev_until_validate_combined(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -819,7 +821,7 @@ class TestFromPhaseSkip:
                 return (True, "forge/test-task")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
 
         result = run_task(config, task, start_phase=Phase.DEV, stop_phase=Phase.VALIDATE)
@@ -832,7 +834,7 @@ class TestFromPhaseSkip:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_from_review_skips_dev_on_first_iter(
         self, mock_shell, mock_dev_agent, mock_pool, tmp_path
     ):
@@ -850,7 +852,7 @@ class TestFromPhaseSkip:
                 return (True, "forge/test-task")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -872,7 +874,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_startup_failure_escalates(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -891,7 +893,7 @@ class TestStartupFailureEscalation:
                 return (True, "forge/test-task")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         mock_dev_agent.return_value = AgentResult(
             success=False,
             output="command not found: claude",
@@ -914,7 +916,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_runner_argument_crash_escalates_with_runner_reason(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -940,7 +942,7 @@ class TestStartupFailureEscalation:
                 return (True, "?? scratch.py")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         mock_dev_agent.return_value = AgentResult(
             success=False,
             output=(
@@ -990,7 +992,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_runner_crash_signatures_escalate_with_specific_failure_codes(
         self,
         mock_shell,
@@ -1025,7 +1027,7 @@ class TestStartupFailureEscalation:
                 return (True, "")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         mock_dev_agent.return_value = AgentResult(
             success=False,
             output=output,
@@ -1048,7 +1050,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_runner_crash_emits_single_failure_phase_end(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -1074,7 +1076,7 @@ class TestStartupFailureEscalation:
                 return (True, "")
             return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
 
-        mock_shell.side_effect = shell_side
+        mock_shell.side_effect = _as_detailed(shell_side)
         mock_dev_agent.return_value = AgentResult(
             success=False,
             output="error: unexpected argument '-C' found\n",
@@ -1113,7 +1115,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_iteration_telemetry_records_agent_exit_code_on_normal_pass(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -1149,7 +1151,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_transient_transport_failure_retries_and_succeeds(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, _mock_sleep, tmp_path
     ):
@@ -1208,7 +1210,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_cli_quota_fallback_records_iteration_metadata_and_clears_session(
         self,
         mock_shell,
@@ -1269,7 +1271,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_transient_transport_failure_exhausts_retries_then_escalates(
         self,
         mock_shell,
@@ -1329,7 +1331,7 @@ class TestStartupFailureEscalation:
     @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_non_transient_failure_does_not_retry(
         self,
         mock_shell,

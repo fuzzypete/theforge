@@ -14,6 +14,7 @@ from coord_test_helpers import (
     _make_agent_result,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -126,7 +127,7 @@ def test_plan_phase_cleans_stale_plan_files_before_new_attempt(tmp_path):
         patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
         patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
         patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
-        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch_gate_shell() as mock_shell,
     ):
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_preflight.return_value = _make_agent_result(
@@ -153,7 +154,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_approve(
         self,
         mock_shell,
@@ -201,7 +202,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_edit_approve(
         self,
         mock_shell,
@@ -258,7 +259,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_regenerate(
         self,
         mock_shell,
@@ -308,7 +309,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_abandon(
         self,
         mock_shell,
@@ -347,7 +348,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_regen_twice_abandons(
         self,
         mock_shell,
@@ -395,7 +396,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_skipped_on_injection(
         self,
         mock_shell,
@@ -437,7 +438,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_skipped_when_disabled(
         self,
         mock_shell,
@@ -499,7 +500,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_terminal_used_without_interactive_flag(
         self,
         mock_shell,
@@ -542,7 +543,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_remote_ntfy_approve(
         self,
         mock_shell,
@@ -586,7 +587,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_remote_ntfy_abandon(
         self,
         mock_shell,
@@ -625,7 +626,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_advisory_without_ntfy_uses_terminal(
         self,
         mock_shell,
@@ -667,7 +668,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_abandon_phase_not_escalate(
         self,
         mock_shell,
@@ -704,7 +705,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_review_reread_error(
         self,
         mock_shell,
@@ -747,7 +748,7 @@ class TestPlanReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_regen_tracks_both_costs(
         self,
         mock_shell,

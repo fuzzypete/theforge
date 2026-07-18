@@ -11,6 +11,7 @@ from coord_test_helpers import (
     _make_plan_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.engine import run_task
@@ -163,7 +164,7 @@ class TestPlanSkipWhenImplementationReady:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_skipped_when_implementation_ready(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -201,7 +202,7 @@ class TestPlanSkipWhenImplementationReady:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_runs_when_needs_planning(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -251,7 +252,7 @@ class TestSufficiencyInPreflightArtifact:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_sufficiency_in_preflight_artifact(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -298,7 +299,7 @@ class TestPreflightFailureSetsNeedsPlanning:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_failure_sets_needs_planning(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -404,7 +405,7 @@ class TestContractChangeOverridesState:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_contract_change_impl_ready_overridden_to_needs_planning(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -454,7 +455,7 @@ class TestContractChangeOverridesState:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_no_contract_change_impl_ready_not_overridden(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -490,7 +491,7 @@ class TestContractChangeOverridesState:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_contract_change_needs_planning_already_unchanged(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -622,7 +623,7 @@ class TestBoundedBugPlanSkip:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_bounded_bug_overrides_to_implementation_ready(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -659,7 +660,7 @@ class TestBoundedBugPlanSkip:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_feature_small_not_overridden(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -694,7 +695,7 @@ class TestBoundedBugPlanSkip:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_medium_bug_not_overridden(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -737,7 +738,7 @@ class TestBoundedBugPlanSkip:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_contract_change_bug_keeps_planning(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):

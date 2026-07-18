@@ -20,6 +20,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 import theforge.coordinator.dev_phase as dev_phase_mod
@@ -68,7 +69,7 @@ class TestNoSiblingEscalation:
     """_run_dev_phase must NOT escalate when a sibling worktree has new writes."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.log_agent_result")
     @patch("theforge.coordinator.dev_phase.run_agent")
@@ -103,7 +104,7 @@ class TestNoSiblingEscalation:
         assert result.state.phase != Phase.ESCALATE, f"Unexpected ESCALATE: {result.message}"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.log_agent_result")
     @patch("theforge.coordinator.dev_phase.run_agent")

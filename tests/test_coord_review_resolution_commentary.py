@@ -17,6 +17,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import FindingClassifierConfig
@@ -125,7 +126,7 @@ class TestResolutionCommentaryBridge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_resolution_commentary_does_not_revive_prior_finding_across_cycles(
         self,
         mock_shell,
@@ -177,7 +178,7 @@ class TestResolutionCommentaryBridge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_unresolved_wording_still_tracks_prior_finding_across_cycles(
         self,
         mock_shell,

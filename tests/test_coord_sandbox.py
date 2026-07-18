@@ -13,6 +13,7 @@ from coord_test_helpers import (
     _make_task,
     _shell_with_gate,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import ModelProfile
@@ -76,7 +77,7 @@ class TestStateAndAuditSandboxed:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_sandboxed_false_recorded_in_state_and_audit(
         self,
         mock_shell,
@@ -114,7 +115,7 @@ class TestStateAndAuditSandboxed:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_sandboxed_true_recorded_in_state_and_audit(
         self,
         mock_shell,

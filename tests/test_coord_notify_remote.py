@@ -21,6 +21,7 @@ from coord_test_helpers import (
     _make_pool_result,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -378,7 +379,9 @@ class TestNtfyTerminalNotifications:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -435,7 +438,9 @@ ac_verification:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([long_approve], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -468,7 +473,9 @@ ac_verification:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([REQUEST_CHANGES_REVIEW], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
             # max_review_cycles=2 in _make_ntfy_config; run until exhausted (no interactive)
@@ -537,7 +544,9 @@ test_coverage:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([long_p1_review], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -556,9 +565,8 @@ test_coverage:
         task = _make_task(tmp_path)
 
         with (
-            patch(
-                "theforge.coordinator.util._run_shell",
-                return_value=(False, "git error"),
+            patch_gate_shell(
+                return_value=(False, "git error", 1, False),
             ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
@@ -591,7 +599,9 @@ test_coverage:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -616,7 +626,9 @@ test_coverage:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=False)
@@ -641,7 +653,9 @@ test_coverage:
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch(
                 "theforge.coordinator.ntfy_client._ntfy_publish",
                 side_effect=OSError("network unreachable"),
@@ -668,7 +682,9 @@ test_coverage:
                 "theforge.coordinator.preflight_flow.run_agent",
                 return_value=preflight_already_done,
             ),
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
             patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True),
         ):

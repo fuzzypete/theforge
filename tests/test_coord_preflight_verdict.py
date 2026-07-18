@@ -17,6 +17,7 @@ from coord_test_helpers import (
     _make_pool_result,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -43,7 +44,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_already_done_uses_clean_baseline_not_resumed_worktree(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -82,7 +83,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_preflight_already_done_allows_clean_baseline_match(
         self,
@@ -108,7 +109,7 @@ class TestCoordinatorPreflight:
             captured["exists"] = working_dir.exists()
             return _make_agent_result(success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08)
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
         mock_preflight.side_effect = preflight_side_effect
 
         result = run_task(config, task)
@@ -124,7 +125,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_proceed_continues_to_dev(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -153,7 +154,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_preflight_already_done_skips_dev(
         self,
@@ -171,7 +172,7 @@ class TestCoordinatorPreflight:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08, profile_name="review"
         )
@@ -191,7 +192,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_blocked_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -201,7 +202,7 @@ class TestCoordinatorPreflight:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_BLOCKED, cost_usd=0.08, profile_name="review"
         )
@@ -220,7 +221,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_agent_failure_falls_back_to_degraded_proceed(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -257,7 +258,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_unparseable_falls_back_to_proceed(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -292,7 +293,7 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_unknown_verdict_falls_back_to_proceed(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -341,7 +342,7 @@ likely_files:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_concurrency_multiphase_story_upgrades_medium_preflight_to_large_for_routing(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -405,7 +406,7 @@ criteria_checked:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_bug_story_with_lifecycle_vocabulary_not_upgraded_to_large(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -479,7 +480,7 @@ criteria_checked:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_cost_in_audit(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -489,7 +490,7 @@ criteria_checked:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08, profile_name="review"
         )
@@ -506,7 +507,7 @@ criteria_checked:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_preflight_file_path_warning_proceeds(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -542,7 +543,7 @@ criteria_checked:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     @patch("theforge.coordinator.engine._fire_post_run_hook")
     def test_post_run_hook_fires_on_already_done(
@@ -562,7 +563,7 @@ criteria_checked:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08, profile_name="review"
         )
@@ -578,7 +579,7 @@ criteria_checked:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.engine._fire_post_run_hook")
     def test_post_run_hook_fires_on_blocked(
         self,
@@ -596,7 +597,7 @@ criteria_checked:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.return_value = (True, "OK", 0, False)
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_BLOCKED, cost_usd=0.08, profile_name="review"
         )
@@ -887,7 +888,9 @@ criteria_checked: []
 
         pool_names = [p.name for p in config.review_pool]
         with (
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch(
                 "theforge.coordinator.preflight_flow.run_agent", side_effect=fake_preflight_agent
             ),
@@ -922,7 +925,9 @@ criteria_checked: []
         }
 
         with (
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
         ):
@@ -964,7 +969,9 @@ criteria_checked: []
             return _make_pool_result([APPROVE_REVIEW], [profiles[0].name])
 
         with (
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch(
                 "theforge.coordinator.preflight_flow.run_agent", side_effect=fake_preflight_agent
             ),
@@ -1037,7 +1044,9 @@ criteria_checked: []
 """
 
         with (
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch(
                 "theforge.coordinator.preflight_flow.run_agent",
                 return_value=_make_agent_result(output=preflight_medium),
@@ -1075,7 +1084,9 @@ criteria_checked: []
             return _make_pool_result([APPROVE_REVIEW], [profiles[0].name])
 
         with (
-            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch_gate_shell(
+                side_effect=_shell_with_gate(workspace),
+            ),
             patch(
                 "theforge.coordinator.preflight_flow.run_agent",
                 return_value=_make_agent_result(output=preflight_large),
@@ -1102,7 +1113,7 @@ def test_preflight_missing_likely_files_preserved_as_unknown(tmp_path):
     workspace.mkdir()
 
     with (
-        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch_gate_shell() as mock_shell,
         patch("theforge.coordinator.dev_phase.run_agent") as mock_agent,
         patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
         patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,

@@ -21,6 +21,7 @@ from coord_test_helpers import (
     _make_plan_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.engine import run_task
@@ -85,7 +86,7 @@ def _make_task_with_ac(tmp_path: Path) -> object:
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 @patch("theforge.story_validator.validate_story")
 def test_plan_validation_runs_for_structured_plan(
     mock_validate_story,
@@ -124,7 +125,7 @@ def test_plan_validation_runs_for_structured_plan(
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 @patch("theforge.story_validator.validate_story")
 def test_plan_validation_skipped_for_freeform_plan(
     mock_validate_story,
@@ -164,7 +165,7 @@ def test_plan_validation_skipped_for_freeform_plan(
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 @patch("theforge.story_validator.validate_story")
 def test_plan_validation_findings_stored_on_state(
     mock_validate_story,
@@ -205,7 +206,7 @@ def test_plan_validation_findings_stored_on_state(
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 @patch("theforge.story_validator.validate_story")
 def test_plan_validation_never_blocks_dev(
     mock_validate_story,
@@ -255,7 +256,7 @@ def test_plan_validation_never_blocks_dev(
 
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 @patch("theforge.story_validator.validate_story")
 def test_plan_validation_ac_coverage_finding_for_unmapped_criteria(
     mock_validate_story,

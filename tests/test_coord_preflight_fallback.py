@@ -13,6 +13,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config.types import ModelProfile
@@ -88,7 +89,7 @@ class TestPreflightFallbackRetry:
         workspace.mkdir()
 
         with (
-            patch("theforge.coordinator.util._run_shell") as mock_shell,
+            patch_gate_shell() as mock_shell,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
@@ -137,7 +138,7 @@ class TestPreflightFallbackRetry:
         workspace.mkdir()
 
         with (
-            patch("theforge.coordinator.util._run_shell") as mock_shell,
+            patch_gate_shell() as mock_shell,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
@@ -182,7 +183,7 @@ class TestPreflightFallbackRetry:
         workspace.mkdir()
 
         with (
-            patch("theforge.coordinator.util._run_shell") as mock_shell,
+            patch_gate_shell() as mock_shell,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
@@ -214,7 +215,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_timeout_fallback_proceeds_with_degraded_status(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -247,7 +248,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=True)
     def test_ambiguous_blocked_with_prior_commits_is_downgraded(
         self,
@@ -290,7 +291,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=True)
     def test_sigkill_with_prior_commits_escalates(
         self,
@@ -330,7 +331,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=False)
     def test_sigkill_with_reopen_context_escalates(
         self,
@@ -388,7 +389,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=False)
     def test_sigkill_without_risk_signals_still_proceeds(
         self,
@@ -436,7 +437,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=False)
     def test_genuine_blocked_without_prior_commits_not_downgraded(
         self,
@@ -470,7 +471,7 @@ class TestPreflightConservativeFallback:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._has_prior_execution_evidence", return_value=True)
     def test_genuine_blocked_concrete_reason_not_downgraded(
         self,

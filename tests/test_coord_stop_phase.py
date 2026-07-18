@@ -2,7 +2,12 @@
 
 from unittest.mock import patch
 
-from coord_test_helpers import PREFLIGHT_PROCEED_MEDIUM, _make_plan_config, _shell_with_gate
+from coord_test_helpers import (
+    PREFLIGHT_PROCEED_MEDIUM,
+    _make_plan_config,
+    _shell_with_gate,
+    patch_gate_shell,
+)
 
 from tests.test_coordinator import _make_agent_result, _make_task
 from theforge.coordinator.engine import run_task
@@ -14,7 +19,7 @@ class TestStopPhasePlan:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.story_validator.validate_story")
     def test_until_plan_stops_before_dev(
         self,
@@ -56,7 +61,7 @@ class TestStopPhasePlan:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     @patch("theforge.story_validator.validate_story")
     def test_until_plan_review_stops_before_dev(
         self,

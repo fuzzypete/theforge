@@ -17,6 +17,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.engine import run_task
@@ -41,7 +42,7 @@ class TestUnprovenCompletionGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_completion_without_gate_evidence_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -74,7 +75,7 @@ class TestUnprovenCompletionGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_completion_with_gate_blocked_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -105,7 +106,7 @@ class TestUnprovenCompletionGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_well_formed_completion_is_not_escalated(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

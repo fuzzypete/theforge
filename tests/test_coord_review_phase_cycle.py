@@ -15,6 +15,7 @@ from coord_test_helpers import (
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
     SYNTHESIS_PROFILE,
+    _as_detailed,
     _make_agent_result,
     _make_config,
     _make_pool_config,
@@ -22,6 +23,7 @@ from coord_test_helpers import (
     _make_task,
     _preflight_then,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -37,7 +39,7 @@ class TestReviewOnly:
     """Tests for run_review_only — skips WORKSPACE/PREFLIGHT/DEV/VALIDATE."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_review_only_approve(self, mock_shell, mock_pool, tmp_path):
         """APPROVE → success, phase=DONE, dev_iteration=0."""
         config = _make_config(tmp_path)
@@ -45,7 +47,7 @@ class TestReviewOnly:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "")  # git diff returns empty
+        mock_shell.return_value = (True, "", 0, False)  # git diff returns empty
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -62,7 +64,7 @@ class TestReviewOnly:
         assert len(result.state.dev_results) == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_review_only_request_changes(self, mock_shell, mock_pool, tmp_path):
         """REQUEST_CHANGES → failure, phase=ESCALATE, findings in result."""
         config = _make_config(tmp_path)
@@ -70,7 +72,7 @@ class TestReviewOnly:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "")
+        mock_shell.return_value = (True, "", 0, False)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
         ]
@@ -101,7 +103,7 @@ class TestReviewOnly:
 
     @patch("theforge.coordinator.review_phase._get_handoff_commit_warning")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_review_only_emits_git_context_and_continues_on_handoff_mismatch(
         self, mock_shell, mock_pool, mock_handoff_warning, tmp_path
     ):
@@ -118,7 +120,7 @@ class TestReviewOnly:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "")
+        mock_shell.return_value = (True, "", 0, False)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -139,7 +141,7 @@ class TestReviewOnly:
         assert git_events[0]["handoff_commit_warning"] == "handoff commit mismatch"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_review_only_no_dev_cycles(self, mock_shell, mock_pool, tmp_path):
         """dev_iteration == 0 in all cases (APPROVE and REQUEST_CHANGES)."""
         config = _make_config(tmp_path)
@@ -147,7 +149,7 @@ class TestReviewOnly:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "")
+        mock_shell.return_value = (True, "", 0, False)
 
         for review_output in [APPROVE_REVIEW, REQUEST_CHANGES_REVIEW]:
             mock_pool.return_value = [
@@ -162,7 +164,7 @@ class TestRunFromReview:
     """Tests for the run_from_review() full iteration loop entry point."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_run_from_review_approve_merges(self, mock_shell, mock_pool, tmp_path):
         """APPROVE on first review → DONE; auto_merge triggers merge attempt."""
         config = _make_config(tmp_path)
@@ -182,7 +184,7 @@ class TestRunFromReview:
                 return (True, "OK")
             return (True, "")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -202,7 +204,7 @@ class TestRunFromReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_run_from_review_request_changes_iterates(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -244,7 +246,7 @@ class TestRunFromReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_run_from_review_exhausts_cycles(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -268,7 +270,7 @@ class TestRunFromReview:
         assert result.state.review_cycle == config.retry.max_review_cycles
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_run_from_review_skips_preflight(self, mock_shell, mock_pool, tmp_path):
         """preflight_verdict is 'SKIPPED' and no preflight agent is ever invoked."""
         config = _make_config(tmp_path)
@@ -276,7 +278,7 @@ class TestRunFromReview:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "")
+        mock_shell.return_value = (True, "", 0, False)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -299,7 +301,7 @@ class TestRunFromReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_run_from_review_restores_dev_session_id(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -351,7 +353,7 @@ class TestRunFromReview:
         assert captured_dev_session_ids == ["prior-dev-sess"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_run_from_review_restores_reviewer_session_ids(self, mock_shell, mock_pool, tmp_path):
         """Pre-existing sessions.json causes reviewer session IDs to be passed to first pool."""
         import json
@@ -369,7 +371,7 @@ class TestRunFromReview:
             encoding="utf-8",
         )
 
-        mock_shell.return_value = (True, "")
+        mock_shell.return_value = (True, "", 0, False)
 
         captured_session_ids: list[list[str | None]] = []
 
@@ -476,7 +478,7 @@ class TestEscalateGate:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalate_gate_reject_policy_exits_as_escalate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -505,7 +507,7 @@ class TestEscalateGate:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalate_gate_auto_approve_majority_pass(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -614,7 +616,7 @@ class TestEscalateGate:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalate_gate_approve_path(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -658,7 +660,7 @@ class TestEscalateGate:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalate_gate_reject_path(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -701,7 +703,7 @@ class TestEscalateGate:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalate_gate_continue_path(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -763,7 +765,7 @@ class TestCoordinatorReviewCycleMetadata:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_metadata_present_on_approve(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -796,7 +798,7 @@ class TestCoordinatorReviewCycleMetadata:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_metadata_present_on_all_reviewers_fail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -828,7 +830,7 @@ class TestCoordinatorReviewCycleMetadata:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_audit_log_contains_pool_metadata(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

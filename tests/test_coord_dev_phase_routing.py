@@ -13,12 +13,14 @@ from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
+    _as_detailed,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
     _make_task,
     _shell_with_gate,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -49,7 +51,7 @@ class TestCoordinatorPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_review_changes_routes_to_fix_prompt(
         self,
         mock_shell,
@@ -142,7 +144,7 @@ class TestCoordinatorPromptRouting:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_prompt_injection_audit_tracks_fix_prompt_finding_ids(
         self,
         mock_shell,
@@ -218,7 +220,7 @@ test_coverage:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_gate_fail_routes_to_dev_prompt(
         self,
         mock_shell,
@@ -257,7 +259,7 @@ test_coverage:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_convention_violation_retry_injects_actionable_findings_into_dev_prompt(
         self,
         mock_shell,
@@ -321,7 +323,7 @@ test_coverage:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_convention_violation_retry_does_not_duplicate_or_leak_stale_findings(
         self,
         mock_shell,
@@ -393,7 +395,7 @@ test_coverage:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_prompt_injection_audit_tracks_carry_forward_and_current_cycle_findings(
         self,
         mock_shell,
@@ -511,7 +513,7 @@ test_coverage:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_extend_routes_to_fix_prompt(
         self,
         mock_shell,
@@ -596,7 +598,7 @@ ac_verification:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_exhausted_cycles_extend_zero_findings_uses_fix_prompt(
         self,
         mock_shell,
@@ -698,7 +700,7 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_session_carried_on_timeout(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -743,7 +745,7 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_dev_session_carried_across_review_cycles(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -804,7 +806,7 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_timeout_resume_uses_short_prompt(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_dev_prompt, tmp_path
     ):
@@ -850,7 +852,7 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_timeout_resume_dirty_worktree_auto_committed(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_dev_prompt, tmp_path
     ):
@@ -896,7 +898,7 @@ class TestCoordinatorSessionResume:
                 return stale_resp
             return (True, "OK")
 
-        mock_shell.side_effect = shell_side_effect
+        mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = fake_run_agent
         mock_pool.return_value = [
@@ -913,7 +915,7 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_reviewer_sessions_accumulate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -961,7 +963,7 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_reviewer_sessions_passed_to_pool(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

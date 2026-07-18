@@ -10,6 +10,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.engine import run_task
@@ -61,7 +62,7 @@ def test_write_trace_empty_content(tmp_path):
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_dev_traces_written_for_iteration_2(
     mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
 ):
@@ -111,7 +112,7 @@ def test_dev_traces_written_for_iteration_2(
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_dev_traces_written_for_iteration_3(
     mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
 ):

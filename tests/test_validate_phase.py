@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from coord_test_helpers import _make_agent_result, _make_config, _make_task
+from coord_test_helpers import _make_agent_result, _make_config, _make_task, patch_gate_shell
 
 from theforge.coordinator.gate import format_gate_failure_summary
 from theforge.coordinator.state import CoordinatorState, DevIterationTelemetry
@@ -227,7 +227,7 @@ def test_run_validate_phase_runs_gate_debug_command_on_timeout(tmp_path: Path) -
                 None,
             ),
         ),
-        patch("theforge.coordinator.util._run_shell_detailed", side_effect=shell_side_effect),
+        patch_gate_shell(side_effect=shell_side_effect),
     ):
         outcome, result = _run_validate_phase(
             state,
@@ -317,8 +317,7 @@ def test_run_validate_phase_timeout_with_commits_routes_to_dev_retry(tmp_path: P
         ),
         patch("theforge.coordinator.validate_phase.subprocess.run") as subproc,
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
-        patch(
-            "theforge.coordinator.util._run_shell_detailed",
+        patch_gate_shell(
             return_value=(
                 False,
                 "tests/test_hang.py::test_deadlock\n"
@@ -405,8 +404,7 @@ def test_run_validate_phase_timeout_rca_packet_falls_back_to_stderr(
         ),
         patch("theforge.coordinator.validate_phase.subprocess.run") as subproc,
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
-        patch(
-            "theforge.coordinator.util._run_shell_detailed",
+        patch_gate_shell(
             return_value=(True, "42 passed in 3.1s", 0, False),
         ),
     ):

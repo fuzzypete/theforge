@@ -1,6 +1,7 @@
 """Shared test fixtures and helpers for coordinator test modules."""
 
 import time as _time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch  # noqa: F401 — re-exported for convenience
 
@@ -174,8 +175,89 @@ def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
     return None
 
 
-def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
-    """Create a _run_shell side_effect that simulates gate execution via exit code."""
+# ── Sanctioned gate/shell test seam ──────────────────────────────────────────
+#
+# Production gate execution has a single path: gate.py and gate_diagnostics.py
+# call ``theforge.coordinator.util._run_shell_detailed`` directly (see #1737).
+# There is no ``isinstance(_, Mock)`` branch in production that varies behavior
+# under test. Tests that need to simulate gate/shell behavior do so through this
+# one shared seam, which patches that single primitive. Because ``_run_shell``
+# delegates to ``_run_shell_detailed``, patching the detailed primitive also
+# covers git-op callers (git add/commit/status) via delegation — this seam is the
+# one place that owns the command dispatch and the 2-tuple→4-tuple adaptation.
+
+# The single production primitive every gate/shell test double patches. Kept as a
+# named constant here so the target string exists in exactly one module — the
+# ownership guard (test_gate_seam_ownership_guard.py) rejects the literal anywhere
+# else, forcing every gate-touching test to enter the seam via ``mock_gate`` or
+# ``patch_gate_shell`` rather than reaching for the primitive on its own.
+_GATE_SHELL_PRIMITIVE = "theforge.coordinator.util._run_shell_detailed"
+
+
+def patch_gate_shell(**kwargs):
+    """Sanctioned ``patch`` of the single gate/shell primitive.
+
+    Use this (as a decorator ``@patch_gate_shell()`` or context manager
+    ``with patch_gate_shell() as mock_shell:``) instead of writing
+    ``patch("theforge.coordinator.util._run_shell_detailed")`` inline, so the
+    patch target lives in exactly one place (see #1737). ``**kwargs`` pass through
+    to :func:`unittest.mock.patch` (e.g. ``side_effect=``), so existing decorator
+    call sites migrate to it verbatim while still routing through the seam.
+
+    Prefer :func:`mock_gate` when you only need PASS/FAIL/exit/timeout behavior;
+    reach for ``patch_gate_shell`` when a test wires its own sanctioned side_effect
+    (``_shell_with_gate`` / ``_gate_side_effect`` / ``_as_detailed``) or asserts on
+    the raw mock.
+    """
+    return patch(_GATE_SHELL_PRIMITIVE, **kwargs)
+
+
+def _as_detailed(side_effect):
+    """Adapt a 2-tuple ``_run_shell`` side_effect/callable to the 4-tuple
+    ``_run_shell_detailed`` contract this seam patches.
+
+    Exit code and timeout are *derived* here — ``0`` on success / ``1`` on
+    failure, ``timed_out`` when the output carries the ``TIMEOUT`` banner — the
+    same derivation the old production Mock-branch performed, but now living in
+    test support instead of shipped code. This is the *convenience* adapter for
+    flow tests that only care about PASS/FAIL. Gate-focused tests that must
+    assert *observed* exit codes / timeout state use :func:`mock_gate` with
+    explicit ``exit_code=``/``timed_out=`` instead of this derivation.
+
+    A callable that already returns a 4-tuple is passed through unchanged, so
+    fidelity side_effects can be adapted harmlessly.
+    """
+
+    def detailed(cmd, cwd, **kwargs):
+        result = side_effect(cmd, cwd, **kwargs)
+        if len(result) == 4:
+            return result
+        ok, output = result
+        return ok, output, (0 if ok else 1), output.startswith("TIMEOUT")
+
+    return detailed
+
+
+def _gate_side_effect(
+    workspace: Path,
+    decisions: list[str] | str = "PASS",
+    *,
+    exit_code: int | None = None,
+    timed_out: bool = False,
+    output: str | None = None,
+):
+    """Build a 4-tuple ``_run_shell_detailed`` side_effect that simulates gate
+    execution, git-status (clean worktree), and stale-worktree checks by command.
+
+    Convenience mode (``exit_code=None``): the gate 4-tuple is derived from the
+    PASS/FAIL decision (``0``/``1``, never timed out).
+
+    Fidelity mode (``exit_code`` given, and/or ``timed_out=True``): gate calls
+    return the *specified* observed values so exit-code/timeout suites assert
+    what the subprocess reported, not a derived ``0 if ok else 1``. The returned
+    success flag stays consistent with those observed values (success only when
+    ``exit_code == 0`` and not ``timed_out``), matching production semantics.
+    """
     if isinstance(decisions, str):
         decisions_list = [decisions] * 20
     else:
@@ -186,21 +268,83 @@ def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
         if "gate" in cmd:
             d = decisions_list[min(gate_idx["n"], len(decisions_list) - 1)]
             gate_idx["n"] += 1
-            # Gate pass/fail is determined by exit code; write dev_notes on PASS so
-            # handoff validation succeeds.
-            if d == "PASS":
+            ok = d == "PASS"
+            # Gate pass/fail is determined by exit code; write dev_notes on PASS
+            # so handoff validation succeeds.
+            if ok:
                 _write_handoff(Path(cwd), d)
-                return (True, "OK")
+                gate_out = output if output is not None else "OK"
             else:
-                return (False, "FAIL: tests failed")
+                gate_out = output if output is not None else "FAIL: tests failed"
+            code = exit_code if exit_code is not None else (0 if ok else 1)
+            # The success flag mirrors what ``_run_shell_detailed`` returns in
+            # production: True only when the process exited 0 and did not time
+            # out. Fidelity tests that pass an explicit ``exit_code``/``timed_out``
+            # therefore get a success flag consistent with those observed values
+            # rather than one derived solely from the PASS/FAIL decision — a
+            # decision="PASS" with exit_code=137 or timed_out=True is reported as
+            # a failure, exactly as the real gate would report it.
+            observed_ok = code == 0 and not timed_out
+            return (observed_ok, gate_out, code, timed_out)
         if "git status --porcelain" in cmd:
-            return (True, "")  # clean worktree
+            return (True, "", 0, False)  # clean worktree
         stale_resp = _handle_stale_check_cmd(cmd)
         if stale_resp is not None:
-            return stale_resp
-        return (True, "OK")
+            ok, out = stale_resp
+            return (ok, out, 0 if ok else 1, False)
+        return (True, "OK", 0, False)
 
     return side_effect
+
+
+def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
+    """Legacy convenience seam: a gate/shell side_effect for ``_run_shell_detailed``.
+
+    Re-expressed atop :func:`_gate_side_effect` so the dispatch and exit-code
+    derivation live in one place. Apply it to
+    ``theforge.coordinator.util._run_shell_detailed`` (the single primitive the
+    production gate path calls); git-op callers reach it via ``_run_shell``
+    delegation. Kept for flow tests whose behavior must be unchanged.
+    """
+    return _gate_side_effect(workspace, decisions)
+
+
+@contextmanager
+def mock_gate(
+    workspace: Path,
+    decisions: list[str] | str = "PASS",
+    *,
+    exit_code: int | None = None,
+    timed_out: bool = False,
+    output: str | None = None,
+):
+    """The single sanctioned seam for simulating gate/shell execution in tests.
+
+    Patches ``theforge.coordinator.util._run_shell_detailed`` — the one primitive
+    the cleaned production gate path calls — dispatching by command (gate command,
+    git status, stale-worktree checks, other git ops). git-op callers that use
+    ``_run_shell`` reach the same patch through delegation.
+
+    Two modes:
+
+    * **Convenience** — pass a ``PASS``/``FAIL`` decision (or a list of decisions);
+      a default ``exit_code`` (``0``/``1``) and ``timed_out=False`` are derived,
+      for flow tests that only care about the decision.
+    * **Fidelity** — pass explicit ``exit_code=``/``timed_out=`` so gate-focused
+      tests specify and assert the *observed* 4-tuple values rather than a
+      derived ``0 if ok else 1``.
+
+    Yields the underlying ``Mock`` so tests can assert on the primitive's calls.
+    """
+    side_effect = _gate_side_effect(
+        workspace,
+        decisions,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        output=output,
+    )
+    with patch_gate_shell(side_effect=side_effect) as mock_shell:
+        yield mock_shell
 
 
 APPROVE_REVIEW = """\

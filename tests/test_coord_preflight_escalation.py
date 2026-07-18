@@ -13,6 +13,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -357,7 +358,7 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_done_path_records_escalation_via_substrate_without_import_error(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -438,7 +439,7 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalation_swaps_dev_model(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -498,7 +499,7 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalation_not_triggered_for_distinct_same_file_p1(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -548,7 +549,7 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalation_max_once(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -592,7 +593,7 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalation_only_with_smart_config(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -642,7 +643,7 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalation_skipped_when_dev_attempt_unproductive(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -692,7 +693,7 @@ class TestAutoModelEscalationFlag:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_escalation_disabled_by_default(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -793,8 +794,8 @@ def test_dev_startup_failure_message_mentions_launcher(tmp_path: Path) -> None:
     )
 
     with (
-        patch(
-            "theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace, "PASS")
+        patch_gate_shell(
+            side_effect=_shell_with_gate(workspace, "PASS"),
         ),
         patch("theforge.coordinator.dev_phase.run_agent", return_value=startup_failure),
         patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),

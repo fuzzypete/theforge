@@ -19,13 +19,14 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from coord_test_helpers import (  # noqa: E402
+from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     _make_agent_result,
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,  # noqa: E402
 )
 
 from theforge.config import (  # noqa: E402
@@ -56,7 +57,7 @@ def _cached_proceed_state_with_complexity(complexity: str = "medium") -> Coordin
 @patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell")
+@patch_gate_shell()
 def test_model_profiles_written_even_when_escalation_memory_disabled(
     mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
 ):

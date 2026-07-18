@@ -15,6 +15,7 @@ from coord_test_helpers import (
     _make_plan_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -128,7 +129,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_runs_for_medium_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -179,7 +180,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_skipped_for_small_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -222,7 +223,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_skipped_when_disabled(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -278,7 +279,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_failure_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -330,7 +331,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_cost_included_in_total_cost(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -380,7 +381,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_not_rerun_on_dev_retry(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -431,7 +432,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_injection_copies_file_and_skips_agent(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -479,7 +480,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_injection_missing_file_aborts_before_workspace(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -500,7 +501,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_injection_unreadable_file_aborts_before_workspace(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -529,7 +530,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
+    @patch_gate_shell()
     def test_plan_injection_non_utf8_file_aborts_before_workspace(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):

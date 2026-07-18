@@ -6,7 +6,7 @@ import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
-from coord_test_helpers import _make_config, _make_task
+from coord_test_helpers import _make_config, _make_task, patch_gate_shell
 
 from theforge.coordinator.state import CoordinatorState
 from theforge.coordinator.validate_phase import _build_timeout_rca_packet
@@ -76,8 +76,7 @@ def test_diagnostic_pass_hang_reproduces_single_threaded(tmp_path: Path) -> None
         "    lock.acquire()\n"
         "FAILED tests/test_hang.py::test_deadlock - Failed: Timeout >10.0s"
     )
-    with patch(
-        "theforge.coordinator.util._run_shell_detailed",
+    with patch_gate_shell(
         return_value=(False, diag_output, 1, False),
     ) as shell:
         telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=2)
@@ -102,8 +101,7 @@ def test_diagnostic_pass_hang_does_not_reproduce_single_threaded(tmp_path: Path)
     """Clean serialized run → no hanging test; packet flags a concurrency-specific bug."""
     config = _diag_config(tmp_path)
     task = _make_task(tmp_path)
-    with patch(
-        "theforge.coordinator.util._run_shell_detailed",
+    with patch_gate_shell(
         return_value=(True, "128 passed in 12.3s", 0, False),
     ):
         telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=1)
@@ -135,8 +133,7 @@ def test_diagnostic_pass_itself_times_out(tmp_path: Path) -> None:
     """Diagnostic pass exhausts its own budget → recorded as timed_out, packet says so."""
     config = _diag_config(tmp_path)
     task = _make_task(tmp_path)
-    with patch(
-        "theforge.coordinator.util._run_shell_detailed",
+    with patch_gate_shell(
         return_value=(False, "TIMEOUT after 60s: diagnostic command", None, True),
     ):
         telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=3)
@@ -175,8 +172,7 @@ def test_diagnostic_pass_honors_operator_command_override(tmp_path: Path) -> Non
         ),
     )
     task = _make_task(tmp_path)
-    with patch(
-        "theforge.coordinator.util._run_shell_detailed",
+    with patch_gate_shell(
         return_value=(True, "ok", 0, False),
     ) as shell:
         telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=1)
@@ -193,7 +189,7 @@ def test_diagnostic_pass_disabled_returns_none(tmp_path: Path) -> None:
         validation=dataclasses.replace(config.validation, gate_diagnostic_enabled=False),
     )
     task = _make_task(tmp_path)
-    with patch("theforge.coordinator.util._run_shell_detailed") as shell:
+    with patch_gate_shell() as shell:
         telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=1)
     assert telemetry is None
     shell.assert_not_called()
