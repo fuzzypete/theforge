@@ -280,11 +280,19 @@ def _format_complexity_aware_section(
     budget_usd: float,
     overrides: dict | None,
     registry: dict | None = None,
+    *,
+    dev_routing_active: bool = True,
 ) -> list[str]:
     """Build the DERIVED ROLES section for v0.8 simple-mode configs.
 
     Calls derive_roles() at each complexity level and renders the tier×complexity
     routing table so the operator can verify complexity-aware routing at a glance.
+
+    ``dev_routing_active`` reflects the effective runtime state
+    (``ForgeConfig.dev_profile_is_default``): when an ``overrides.dev`` block pins
+    the model, complexity-aware dev routing is disabled and the same model runs at
+    every complexity. Surfacing this here makes the coupling visible at
+    config-check time rather than only through changed runtime behavior. See #1764.
     """
     _ov = overrides or {}
     ra_low = derive_roles(models, _ov, budget_usd=budget_usd, complexity="LOW", registry=registry)
@@ -330,6 +338,17 @@ def _format_complexity_aware_section(
     dl, dm, dh = _dev_label(ra_low), _dev_label(ra_mid), _dev_label(ra_high)
     dev_parts = _collapse_complexity_labels({"LOW": dl, "MEDIUM": dm, "HIGH": dh})
     lines.append(f"  {'dev:':<14}{dev_parts}")
+    # Surface routing state whenever an overrides.dev block exists so the operator
+    # can see whether their override left complexity-aware routing active (a
+    # resource-only override such as a timeout) or pinned it (a model override).
+    # Emitted on its own line so it stays visible even when dev_parts wraps across
+    # complexity levels. See #1764.
+    if (_ov or {}).get("dev"):
+        if dev_routing_active:
+            dev_note = "complexity-aware routing active — overrides.dev tunes limits only"
+        else:
+            dev_note = "routing disabled — pinned by overrides.dev"
+        lines.append(f"  {'':<14}({dev_note})")
 
     # Review pool: show pool size + synthesis info per complexity
     def _review_label(ra) -> str:  # type: ignore[no-untyped-def]
@@ -452,6 +471,7 @@ def _format_config(
             config.models_budget_usd,
             overrides=config.models_overrides,
             registry=config.model_registry,
+            dev_routing_active=config.dev_profile_is_default,
         )
         lines.extend(derived_lines)
         lines.append("")

@@ -986,6 +986,55 @@ class TestComplexityAwareDisplay:
         assert "plan:" in out
         assert "code_review:" in out
 
+    def test_timeout_only_dev_override_shows_routing_active(self, tmp_path: Path, capsys) -> None:
+        """#1764: a resource-only overrides.dev is surfaced as routing-active."""
+        config = self._make_v08_forge_config(tmp_path)
+        config = replace(
+            config,
+            models_overrides={"dev": {"timeout_large_seconds": 3600}},
+            dev_profile_is_default=True,
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "complexity-aware routing active" in out
+        assert "routing disabled" not in out
+
+    def test_model_dev_override_shows_routing_disabled(self, tmp_path: Path, capsys) -> None:
+        """#1764: a model-pinning overrides.dev is surfaced as routing-disabled."""
+        config = self._make_v08_forge_config(tmp_path)
+        config = replace(
+            config,
+            models_overrides={"dev": {"model": "opus"}},
+            dev_profile_is_default=False,
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "routing disabled" in out
+        assert "pinned by overrides.dev" in out
+
+    def test_no_dev_override_shows_no_routing_note(self, tmp_path: Path, capsys) -> None:
+        """Without an overrides.dev block, no routing annotation is added."""
+        config = self._make_v08_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "routing disabled" not in out
+        assert "routing active" not in out
+
     def test_mode_simple_shown_in_header(self, tmp_path: Path, capsys) -> None:
         config = self._make_v08_forge_config(tmp_path)
         with (
