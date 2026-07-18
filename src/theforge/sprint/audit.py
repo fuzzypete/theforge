@@ -608,6 +608,19 @@ def _write_sprint_audit(
         "iteration_usage_distribution": usage_distribution,
     }
 
+    # Shape-gate skip classification (issue #1453): project this run's skip
+    # events into a category-grouped block with stuck-issue flags so operators
+    # read gate friction from audit output rather than reconstructing it from
+    # log files. Best-effort — omitted when this run recorded no skip events.
+    from ..shape_check.skip_taxonomy import DEFAULT_STUCK_ISSUE_THRESHOLD
+    from .skip_report import build_shape_gate_skip_block
+
+    skip_block = build_shape_gate_skip_block(
+        project_root, run_id, threshold=DEFAULT_STUCK_ISSUE_THRESHOLD
+    )
+    if skip_block is not None:
+        audit["shape_gate_skips"] = skip_block
+
     audits_dir = project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
     audit_path = audits_dir / "sprint-audit.yaml"
@@ -1006,6 +1019,23 @@ def _write_sprint_summary(
         "skipped": [s.as_dict() if hasattr(s, "as_dict") else dict(s) for s in skipped_issues],
         "iteration_usage_distribution": usage_distribution,
     }
+
+    # Shape-gate skip classification (issue #1453). The postmortem digest and
+    # sprint RCA read this block from the summary, so the stuck-issue threshold
+    # honours the operator's ``shape_check.stuck_issue_threshold`` config here
+    # (the audit-YAML copy uses the default). Best-effort — omitted when this
+    # run recorded no skip events.
+    from ..shape_check.skip_taxonomy import DEFAULT_STUCK_ISSUE_THRESHOLD
+    from .skip_report import build_shape_gate_skip_block
+
+    _threshold = DEFAULT_STUCK_ISSUE_THRESHOLD
+    _shape_cfg = getattr(config, "shape_check", None)
+    if _shape_cfg is not None:
+        _threshold = getattr(_shape_cfg, "stuck_issue_threshold", DEFAULT_STUCK_ISSUE_THRESHOLD)
+    if project_root is not None:
+        skip_block = build_shape_gate_skip_block(project_root, run_id, threshold=_threshold)
+        if skip_block is not None:
+            summary["shape_gate_skips"] = skip_block
 
     try:
         sprint_log_dir.mkdir(parents=True, exist_ok=True)

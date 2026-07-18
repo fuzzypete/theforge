@@ -502,6 +502,52 @@ def _remediate_shape_gate_skips(
     return new_runnable, new_skipped
 
 
+def _emit_shape_skip_events(
+    *,
+    config: object,
+    run_id: str | None,
+    sprint_name: str | None,
+    milestone: str | None,
+    original_skips: list,
+    original_advisories: list,
+    intake_outcomes: "dict | None" = None,
+) -> None:
+    """Record shape-gate skip classification events into the audit substrate.
+
+    Derives the per-issue remediation outcome from ``intake_outcomes`` (an issue
+    the entry-intake gate REMEDIATED vs. one it declined) and hands the gate's
+    original skip/advisory partition to :func:`emit_shape_skip_events`.
+    Best-effort — the helper swallows substrate failures internally.
+    """
+    from theforge.intake import IntakeOutcomeKind
+    from theforge.sprint.skip_report import emit_shape_skip_events
+
+    intake_outcomes = intake_outcomes or {}
+    remediated: set[int] = set()
+    declined: set[int] = set()
+    for num, outcome in intake_outcomes.items():
+        kind = getattr(outcome, "kind", None)
+        if kind is IntakeOutcomeKind.REMEDIATED:
+            remediated.add(int(num))
+        elif kind is IntakeOutcomeKind.DROPPED_SHAPE:
+            audit = getattr(outcome, "audit", None) or {}
+            if isinstance(audit, dict) and audit.get("remediation_source") == "declined":
+                declined.add(int(num))
+    try:
+        emit_shape_skip_events(
+            config.project_root,
+            run_id=run_id,
+            sprint_name=sprint_name,
+            milestone=milestone,
+            skipped=original_skips,
+            advisories=original_advisories,
+            remediated_numbers=remediated,
+            declined_numbers=declined,
+        )
+    except Exception as exc:  # noqa: BLE001 — observability, never gating
+        print(f"[forge] Warning: shape-skip emission failed: {exc}", file=sys.stderr)
+
+
 def _emit_all_skipped_audit(
     *,
     config: object,
@@ -509,6 +555,7 @@ def _emit_all_skipped_audit(
     budget_usd: float,
     skipped_issues: list,
     intake_outcomes: "dict | None" = None,
+    run_id: str | None = None,
 ) -> None:
     """Write sprint-audit.yaml and sprint-summary.yaml when every issue was
     gated out. Without this, an all-skipped sprint leaves no machine-readable
@@ -613,6 +660,7 @@ def _emit_all_skipped_audit(
             duration=0.0,
             project_root=config.project_root,
             skipped_issues=skipped_issues,
+            run_id=run_id,
         )
         log_dir = config.project_root / ".forge" / "logs" / sprint_name
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -626,6 +674,8 @@ def _emit_all_skipped_audit(
             sprint_log_dir=log_dir,
             skipped_issues=skipped_issues,
             story_state=story_state,
+            run_id=run_id,
+            project_root=config.project_root,
         )
     except Exception as exc:
         print(
@@ -768,6 +818,12 @@ def _run_query_mode(
             emit_verdict=_emit_shape_verdict,
             intake_remediated_numbers=carried_remediated_numbers or None,
         )
+        # Capture the gate's original skip/advisory partition before the
+        # remediation passes below mutate ``skipped_issues`` — the shape-skip
+        # substrate emission (issue #1453) classifies every gate skip, including
+        # the ones remediation later moves back to runnable.
+        original_gate_skips = list(gate_result.skipped)
+        original_gate_advisories = list(gate_result.advisories)
         if gate_result.skipped:
             warning = format_skipped_warning(gate_result.skipped)
             if force:
@@ -841,6 +897,23 @@ def _run_query_mode(
                 config=config,
             )
 
+        # Shape-gate skip observability (issue #1453): record every gate skip
+        # (and advisory) with its taxonomy category into the audit substrate,
+        # tagging remediation outcomes so the postmortem can separate
+        # remediated-and-proceeded from declined-by-remediation from
+        # still-blocked. Runs after remediation settles; correlates by
+        # gate_run_id with the sprint's downstream rows. Observability only —
+        # failures are swallowed inside the helper.
+        _emit_shape_skip_events(
+            config=config,
+            run_id=gate_run_id,
+            sprint_name=gate_sprint_name,
+            milestone=milestone,
+            original_skips=original_gate_skips,
+            original_advisories=original_gate_advisories,
+            intake_outcomes=entry_intake_outcomes,
+        )
+
         if not issues:
             print(
                 f"[forge] All {len(skipped_issues)} issue(s) skipped by shape gate "
@@ -856,6 +929,7 @@ def _run_query_mode(
                 budget_usd=budget_usd,
                 skipped_issues=skipped_issues,
                 intake_outcomes=entry_intake_outcomes,
+                run_id=gate_run_id,
             )
             return 0
 

@@ -14,6 +14,16 @@ from theforge.shape_check.check import (
     SEED_VOCABULARY,
     check,
 )
+from theforge.shape_check.skip_taxonomy import (
+    DEFAULT_STUCK_ISSUE_THRESHOLD,
+    FourQuestionAxis,
+    RemediationOutcome,
+    SkipCategory,
+    SkipClassification,
+    SkipSeverity,
+    classify_skip,
+    group_by_category,
+)
 from theforge.shape_check.types import (
     VERDICT_DESCRIPTIONS,
     Reason,
@@ -27,13 +37,21 @@ from theforge.shape_check.types import (
 __all__ = [
     "DEFAULT_CLASSIFIER",
     "DEFAULT_CLUSTER_THRESHOLD",
+    "DEFAULT_STUCK_ISSUE_THRESHOLD",
+    "FourQuestionAxis",
     "Reason",
+    "RemediationOutcome",
     "SEED_VOCABULARY",
     "Severity",
     "Shape",
     "ShapeResult",
     "ShapeVerdict",
+    "SkipCategory",
+    "SkipClassification",
+    "SkipSeverity",
     "SuggestedAction",
     "VERDICT_DESCRIPTIONS",
     "check",
+    "classify_skip",
+    "group_by_category",
 ]

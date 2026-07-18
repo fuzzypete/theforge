@@ -18,8 +18,113 @@ def cmd_audits(args: object) -> int:
         return _cmd_audits_export_assignment_history(args)
     if sub == "show":
         return _cmd_audits_show(args)
+    if sub == "skips":
+        return _cmd_audits_skips(args)
     print(f"forge audits: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
+
+
+def _cmd_audits_skips(args: object) -> int:
+    """Query shape-gate skip events from the audit substrate (issue #1453).
+
+    Answers "show me all sprints in date range D where skip code C fired" — the
+    question that took manual log-walking this week — as a one-line query. With
+    ``--stuck`` it instead lists repeated-block patterns: issues blocked by the
+    same code ``>= threshold`` times across runs.
+    """
+    config_path = _find_config(Path(args.config).resolve() if args.config else None)
+    if config_path is None:
+        print(
+            "[forge] forge.yaml not found. Run from a forge project root.",
+            file=sys.stderr,
+        )
+        return 1
+    project_root = config_path.parent
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists():
+        print(
+            f"[forge] audit substrate not found at {sub_path}. "
+            f"Run `forge audits rebuild` to create it.",
+            file=sys.stderr,
+        )
+        return 1
+
+    conn = audit_substrate.create_or_open(project_root)
+    try:
+        if getattr(args, "stuck", False):
+            threshold = int(getattr(args, "threshold", None) or 3)
+            rows = audit_substrate.repeated_shape_skip_blocks(
+                conn,
+                threshold=threshold,
+                since=getattr(args, "since", None),
+                until=getattr(args, "until", None),
+            )
+            if not rows:
+                print(f"[forge] no issues blocked >= {threshold} time(s) by the same skip code.")
+                return 0
+            header = ("issue", "code", "blocks", "first_seen", "last_seen", "runs")
+            fmt_rows: list[tuple[str, ...]] = [header]
+            for r in rows:
+                fmt_rows.append(
+                    (
+                        f"#{r['issue_id']}",
+                        _fmt(r["reason_code"]),
+                        str(r["block_count"]),
+                        _fmt((r.get("first_seen") or "")[:19]),
+                        _fmt((r.get("last_seen") or "")[:19]),
+                        str(len(r.get("run_ids") or [])),
+                    )
+                )
+            _print_table(fmt_rows)
+            print(f"\n{len(rows)} stuck pattern(s) (threshold={threshold})")
+            return 0
+
+        events = list(
+            audit_substrate.iter_shape_skip_events(
+                conn,
+                issue_id=getattr(args, "issue", None),
+                reason_code=getattr(args, "code", None),
+                category=getattr(args, "category", None),
+                since=getattr(args, "since", None),
+                until=getattr(args, "until", None),
+            )
+        )
+    finally:
+        conn.close()
+
+    if not events:
+        print("[forge] no shape-gate skip events matched.")
+        return 0
+
+    header = ("issue", "code", "category", "severity", "source", "prior", "emitted_at")
+    fmt_rows = [header]
+    for e in events:
+        fmt_rows.append(
+            (
+                f"#{e.get('issue_id')}",
+                _fmt(e.get("reason_code")),
+                _fmt(e.get("category")),
+                _fmt(e.get("severity")),
+                _fmt(e.get("source")),
+                str(e.get("prior_block_count", 0)),
+                _fmt(str(e.get("emitted_at") or "")[:19]),
+            )
+        )
+    _print_table(fmt_rows)
+    print(f"\n{len(events)} skip event(s) shown")
+    return 0
+
+
+def _print_table(fmt_rows: list[tuple[str, ...]]) -> None:
+    """Render header + separator + rows as an aligned text table."""
+    if not fmt_rows:
+        return
+    ncols = len(fmt_rows[0])
+    widths = [max(len(r[i]) for r in fmt_rows) for i in range(ncols)]
+    for i, row in enumerate(fmt_rows):
+        print("  ".join(cell.ljust(widths[c]) for c, cell in enumerate(row)))
+        if i == 0:
+            print("  ".join("-" * w for w in widths))
 
 
 def _cmd_audits_show(args: object) -> int:
@@ -367,6 +472,35 @@ def register_parser(subparsers: object) -> None:
         help="Maximum rows to render (default: 20)",
     )
     show_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+
+    skips_parser = audits_sub.add_parser(
+        "skips",
+        help="Query shape-gate skip events (by code, issue, date range) or stuck patterns",
+    )
+    skips_parser.add_argument("--code", help="Filter to a single skip reason code")
+    skips_parser.add_argument("--issue", help="Filter to a single issue id (e.g. 1135)")
+    skips_parser.add_argument("--category", help="Filter to a taxonomy category")
+    skips_parser.add_argument(
+        "--since", help="Only events with emitted_at >= this ISO-8601 timestamp"
+    )
+    skips_parser.add_argument(
+        "--until", help="Only events with emitted_at <= this ISO-8601 timestamp"
+    )
+    skips_parser.add_argument(
+        "--stuck",
+        action="store_true",
+        help="List repeated-block patterns (issues blocked by the same code >= threshold times)",
+    )
+    skips_parser.add_argument(
+        "--threshold",
+        type=int,
+        default=3,
+        help="Stuck-pattern threshold when --stuck is set (default: 3)",
+    )
+    skips_parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
     )

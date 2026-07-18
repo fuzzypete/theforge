@@ -102,6 +102,12 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     _print_header(sprint_block, run_id)
     _print_landed(landed, len(stories))
 
+    # Shape-gate skip categories (issue #1453) are independent of story
+    # outcomes: a sprint can land every runnable story yet still have skipped a
+    # batch of issues at the gate. Render before the all-DONE early return so
+    # those skips (and any stuck-issue patterns) are never hidden.
+    _print_shape_gate_skips(summary)
+
     # All-DONE sprint: tighter LANDED-only digest, no recovery sections.
     if not non_done:
         return 0
@@ -150,6 +156,63 @@ def _print_landed(landed: list[dict], total: int) -> None:
         return
     for story in landed:
         print(f"  ✓ {_story_row(story)}")
+
+
+def _print_shape_gate_skips(summary: dict) -> None:
+    """Render the shape-gate skip categories + stuck-issue patterns.
+
+    Reads the ``shape_gate_skips`` block the sprint summary writer persisted
+    (sourced from the audit substrate). Groups skipped issues by taxonomy
+    category — cheapest-to-recover first — so an operator distinguishes a
+    stale-label block they fix in seconds from a semantic gate that needs a
+    producer from a genuine structural failure. Repeated-block ("stuck") issues
+    are flagged prominently: the pattern that surfaced #1135 and #1405 only via
+    manual log-walking.
+    """
+    block = summary.get("shape_gate_skips")
+    if not isinstance(block, dict):
+        return
+    categories = block.get("categories")
+    if not isinstance(categories, dict) or not categories:
+        return
+
+    total = block.get("total")
+    total_str = f" ({total})" if isinstance(total, int) else ""
+    print()
+    print(f"SHAPE-GATE SKIPS{total_str}")
+    for category, rows in categories.items():
+        if not isinstance(rows, list) or not rows:
+            continue
+        label = str(category).replace("_", "-")
+        print(f"  {label} ({len(rows)})")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            issue = row.get("issue_id")
+            code = row.get("reason_code") or "<no code>"
+            axis = row.get("four_question_axis")
+            axis_str = f"  [{axis}]" if axis else ""
+            print(f"    ⊘ #{issue}  {code}{axis_str}")
+
+    stuck = block.get("stuck_issues")
+    if isinstance(stuck, list) and stuck:
+        threshold = block.get("threshold")
+        window = ""
+        for item in stuck:
+            if not isinstance(item, dict):
+                continue
+            first = item.get("first_seen")
+            last = item.get("last_seen")
+            if first and last:
+                window = f" ({str(first)[:10]} → {str(last)[:10]})"
+            count = item.get("block_count")
+            times = f"{count}×" if isinstance(count, int) else "repeatedly"
+            print(
+                f"  ⚠ STUCK: #{item.get('issue_id')} blocked by "
+                f"{item.get('reason_code')} {times} across runs{window}"
+            )
+        if isinstance(threshold, int):
+            print(f"       (stuck threshold: {threshold})")
 
 
 def _print_failed_by_class(non_done: list[dict], rca_stories: dict) -> None:

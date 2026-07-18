@@ -497,9 +497,15 @@ class ShapeCheckConfig:
     when an LLM-assisted classifier should be used. Sprint entry falls back
     to ``heuristic`` when the configured provider is unavailable at sprint
     time (e.g. no credentials, no SDK installed, no network).
+
+    ``stuck_issue_threshold`` is the number of times an issue may be blocked by
+    the same shape-gate skip code across runs before the sprint postmortem flags
+    it as a stuck-issue pattern (issue #1453). Default 3 would have surfaced
+    #1135 and #1405 weeks before manual log-walking did.
     """
 
     classifier: str = "heuristic"
+    stuck_issue_threshold: int = 3
 
 
 @dataclass(frozen=True)
