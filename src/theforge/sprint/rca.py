@@ -28,6 +28,7 @@ set. Grep it to see everything the mechanical classifier knows.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,38 @@ _EXCERPT_MAX_LEN = 240
 # Cap per-file text reads so a runaway log cannot blow up classification.
 _MAX_FILE_BYTES = 512 * 1024
 
+# YAML/JSON keys whose values are numeric telemetry (cost, duration, token
+# counts) — never provider or error prose. Lines assigning these keys are
+# stripped from wholesale-scanned files before pattern matching so a coincidental
+# digit run inside a float (e.g. ``cost_usd: 0.6659942999999999`` which contains
+# the substring ``429``) can never fire a provider/HTTP rule. Matching is on the
+# field *name*, so a real error message that merely mentions cost is untouched.
+_TELEMETRY_KEYS: tuple[str, ...] = (
+    "cost",
+    "cost_usd",
+    "total_cost",
+    "total_cost_usd",
+    "duration",
+    "duration_s",
+    "duration_ms",
+    "elapsed",
+    "elapsed_s",
+    "latency",
+    "latency_ms",
+    "tokens",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "price",
+    "price_usd",
+)
+_TELEMETRY_LINE_RE = re.compile(
+    r"^\s*[\"']?(?:" + "|".join(re.escape(k) for k in _TELEMETRY_KEYS) + r")[\"']?\s*[:=]",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class RcaRule:
@@ -69,9 +102,14 @@ class RcaRule:
     failure_class: str
     role: str
     description: str
-    # Case-insensitive substrings scanned against text sources; any hit fires
-    # the rule. Empty for "signal" rules whose detection is field-derived
-    # (implemented in ``_signal_rule_hits``) rather than pattern-based.
+    # Case-insensitive patterns scanned against text sources; any hit fires the
+    # rule. Alphabetic patterns match as plain substrings. Purely-numeric
+    # patterns (HTTP status codes such as ``429``) match only as a standalone
+    # token — anchored with digit boundaries so they can never fire inside a
+    # longer number such as the fractional digits of a cost/duration float (see
+    # ``_pattern_matches``). Empty for "signal" rules whose detection is
+    # field-derived (implemented in ``_signal_rule_hits``) rather than
+    # pattern-based.
     patterns: tuple[str, ...] = ()
 
 
@@ -420,10 +458,16 @@ def _classify_story(
         story, slug, audit, summary_path, sprint_log_dir, logs_root, run_id
     )
 
-    # (rule_id, source, excerpt) triples in deterministic order.
-    hits: list[tuple[str, str, str]] = []
+    # (rule_id, source, excerpt, matched_pattern) tuples in deterministic order.
+    hits: list[tuple[str, str, str, str | None]] = []
     hits.extend(_text_rule_hits(text_sources))
     hits.extend(_signal_rule_hits(story, audit, summary_path, sprint_log_dir, logs_root))
+
+    # The story's explicitly-captured terminal error (summary + audit). A concrete
+    # captured cause takes precedence over an *ambiguous* pattern hit (e.g. a bare
+    # "429"): the incidental match is still recorded as evidence but must not drive
+    # primary classification or operator remediation when it is uncorroborated.
+    captured_error_text = _captured_error_text(story, audit)
 
     # Baseline evidence so an entry is never evidence-empty (AC: unknown stories
     # surface at least the captured outcome). Cite the *resolved* summary file
@@ -439,7 +483,7 @@ def _classify_story(
     evidence: list[dict] = []
     primary_classes: list[str] = []
     contributing_classes: list[str] = []
-    for rule_id, source, excerpt in hits:
+    for rule_id, source, excerpt, matched_pattern in hits:
         if rule_id in seen_rules:
             continue
         rule = RULES_BY_ID.get(rule_id)
@@ -448,6 +492,10 @@ def _classify_story(
         seen_rules.add(rule_id)
         evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
         if rule.role == "primary":
+            if _is_ambiguous_primary(rule, matched_pattern, captured_error_text):
+                # Uncorroborated ambiguous hit: keep the evidence for the trace but
+                # do not let it classify — the captured non-provider outcome wins.
+                continue
             primary_classes.append(rule.failure_class)
         elif rule.role == "contributing":
             contributing_classes.append(rule.failure_class)
@@ -535,7 +583,11 @@ def _collect_text_sources(
                 continue
             if path.suffix.lower() not in {".log", ".txt", ".yaml", ".yml", ".md", ".json"}:
                 continue
-            text = _read_text(path)
+            # Strip numeric telemetry lines (cost/duration/token values) so a
+            # coincidental digit run inside a float cannot feed context-free
+            # pattern matching — e.g. `cost_usd: 0.6659942999999999` containing
+            # the substring `429`. Error/message prose is untouched.
+            text = _strip_telemetry(_read_text(path))
             if text:
                 sources.append(_TextSource(_rel(path, logs_root), text))
 
@@ -545,7 +597,9 @@ def _collect_text_sources(
     if run_log is not None:
         refs = _story_references(slug)
         matched_lines = [
-            line for line in _read_text(run_log).splitlines() if any(ref in line for ref in refs)
+            line
+            for line in _strip_telemetry(_read_text(run_log)).splitlines()
+            if any(ref in line for ref in refs)
         ]
         if matched_lines:
             sources.append(_TextSource(_rel(run_log, logs_root), "\n".join(matched_lines)))
@@ -553,19 +607,42 @@ def _collect_text_sources(
     return sources
 
 
-def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str]]:
-    """Fire every text rule whose pattern appears in any source."""
-    hits: list[tuple[str, str, str]] = []
+def _pattern_matches(pattern: str, lowered: str) -> bool:
+    """Return True when *pattern* is present in already-lowercased *lowered*.
+
+    Purely-numeric patterns (HTTP status codes such as ``429``) are matched with
+    digit boundaries so they fire only as a standalone token — never inside a
+    longer number such as the fractional digits of a cost/duration float. All
+    other (alphabetic) patterns keep plain substring semantics.
+    """
+    if pattern.isdigit():
+        return re.search(rf"(?<!\d){re.escape(pattern)}(?!\d)", lowered) is not None
+    return pattern in lowered
+
+
+def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str | None]]:
+    """Fire every text rule whose pattern appears in any source.
+
+    Each hit carries the concrete pattern that matched so classification can tell
+    an unambiguous provider phrase (``usage limit``) apart from an ambiguous bare
+    status code (``429``) when deciding precedence.
+    """
+    hits: list[tuple[str, str, str, str | None]] = []
     for rule in RULES:
         if not rule.patterns:
             continue
         for src in sources:
             lowered = src.text.lower()
-            matched_pattern = next((p for p in rule.patterns if p in lowered), None)
-            if matched_pattern is None:
+            matched = [p for p in rule.patterns if _pattern_matches(p, lowered)]
+            if not matched:
                 continue
+            # Prefer an unambiguous (non-numeric) pattern so a source that also
+            # contains a strong provider phrase (e.g. "HTTP 429 overloaded") is
+            # not reduced to its bare status code — otherwise the ambiguity guard
+            # would wrongly demote a genuinely-corroborated provider-limit hit.
+            matched_pattern = next((p for p in matched if not p.isdigit()), matched[0])
             excerpt = _first_matching_line(src.text, rule.patterns)
-            hits.append((rule.rule_id, src.source, excerpt))
+            hits.append((rule.rule_id, src.source, excerpt, matched_pattern))
             break  # one evidence per rule is enough
     return hits
 
@@ -576,8 +653,12 @@ def _signal_rule_hits(
     summary_path: Path,
     sprint_log_dir: Path,
     logs_root: Path,
-) -> list[tuple[str, str, str]]:
-    """Fire field-derived (signal) rules from summary/audit structured fields."""
+) -> list[tuple[str, str, str, str | None]]:
+    """Fire field-derived (signal) rules from summary/audit structured fields.
+
+    Signal hits carry ``None`` as the matched pattern — they are field-derived,
+    not pattern-derived, so the ambiguity-precedence check never applies to them.
+    """
     hits: list[tuple[str, str, str]] = []
     summary_source = _rel(summary_path, logs_root)
     audit_source = _rel(sprint_log_dir / str(story.get("slug") or "") / "audit.yaml", logs_root)
@@ -651,7 +732,7 @@ def _signal_rule_hits(
             )
         )
 
-    return hits
+    return [(rule_id, source, excerpt, None) for rule_id, source, excerpt in hits]
 
 
 def _select_primary(primary_classes: list[str]) -> str | None:
@@ -832,9 +913,57 @@ def _story_ref(story: dict) -> str:
 def _first_matching_line(text: str, patterns: tuple[str, ...]) -> str:
     for line in text.splitlines():
         lowered = line.lower()
-        if any(p in lowered for p in patterns):
+        if any(_pattern_matches(p, lowered) for p in patterns):
             return _truncate(line.strip())
     return _truncate(text.strip())
+
+
+def _strip_telemetry(text: str) -> str:
+    """Drop numeric-telemetry key/value lines (cost/duration/token counts) from
+    scannable text so their digit runs never feed context-free pattern matching.
+
+    Matching is on the field *name* at line start, so prose that merely mentions
+    cost (e.g. an error message) is preserved.
+    """
+    if not text:
+        return text
+    return "\n".join(line for line in text.splitlines() if not _TELEMETRY_LINE_RE.match(line))
+
+
+def _captured_error_text(story: dict, audit: dict) -> str:
+    """Lowercased concatenation of the story's explicitly-captured terminal error.
+
+    Sourced from the summary ``error`` and the per-story audit ``error`` /
+    ``outcome.message`` — the fields that carry the runner's real terminal-failure
+    detail. Used to let a concrete captured cause outrank an ambiguous pattern hit.
+    """
+    parts = [_nonempty(story.get("error")), _nonempty(audit.get("error"))]
+    outcome_block = audit.get("outcome") if isinstance(audit.get("outcome"), dict) else {}
+    parts.append(_nonempty(outcome_block.get("message")))
+    return "\n".join(p for p in parts if p).lower()
+
+
+def _is_ambiguous_primary(
+    rule: RcaRule, matched_pattern: str | None, captured_error_text: str
+) -> bool:
+    """Return True when a primary text-rule fired only on an ambiguous token.
+
+    An ambiguous match is a bare numeric status code (e.g. ``429``). Such a hit
+    must not drive primary classification when the story already carries a
+    concrete captured terminal error that does *not* itself corroborate the rule
+    with an unambiguous phrase — the captured non-provider outcome takes
+    precedence. A genuine unambiguous phrase (``usage limit``) is never demoted,
+    and when there is no captured error to contradict it a standalone status code
+    still classifies.
+    """
+    if matched_pattern is None or not matched_pattern.isdigit():
+        return False
+    if not captured_error_text:
+        return False
+    strong_patterns = [p for p in rule.patterns if not p.isdigit()]
+    if any(_pattern_matches(p, captured_error_text) for p in strong_patterns):
+        return False
+    return True
 
 
 def _truncate(text: str) -> str:
