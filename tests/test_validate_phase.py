@@ -948,6 +948,123 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
     assert "These are existing tests your changes broke" in state.human_feedback
 
 
+def test_format_failed_test_feedback_unrecognized_format_notes_degradation(
+    tmp_path: Path,
+) -> None:
+    from theforge.coordinator.validate_phase import _format_failed_test_feedback
+
+    xcode_output = (
+        "Testing failed:\n"
+        "  testBuildWindowPlanKeepsDisplayedCountBoundedByActualWindows()\n"
+        "** TEST FAILED **\n"
+        "make[2]: *** [test-ios] Error 65\n"
+    )
+    feedback, existing = _format_failed_test_feedback(xcode_output, tmp_path)
+
+    assert existing is False
+    assert "format is not recognized" in feedback
+    assert "failed_test_pattern" in feedback
+
+
+def test_format_failed_test_feedback_custom_pattern_extracts_from_non_pytest(
+    tmp_path: Path,
+) -> None:
+    from theforge.coordinator.validate_phase import _format_failed_test_feedback
+
+    xcode_output = (
+        "Test Case '-[ForgeTests testWindowPlanBounded]' failed (0.003 seconds).\n"
+        "** TEST FAILED **\n"
+    )
+    feedback, existing = _format_failed_test_feedback(
+        xcode_output,
+        tmp_path,
+        failed_test_pattern=r"Test Case .*\s(?P<test>\w+)\]' failed",
+    )
+
+    assert existing is False  # no source file on disk for the extracted name
+    assert "Extracted failing tests (best effort):" in feedback
+    assert "- testWindowPlanBounded" in feedback
+    assert "format is not recognized" not in feedback
+
+
+def test_run_validate_phase_unrecognized_gate_format_surfaces_degradation(
+    tmp_path: Path,
+) -> None:
+    """Seam test: a non-pytest gate failure records visibly that extraction did not apply."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+    state.last_dev_start_commit = "HEAD"
+
+    xcode_output = (
+        "Testing failed:\n"
+        "  testBuildWindowPlanKeepsDisplayedCountBoundedByActualWindows()\n"
+        "** TEST FAILED **\n"
+        "make[2]: *** [test-ios] Error 65\n"
+    )
+    with (
+        patch(
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("FAIL", None, xcode_output, "make forge-gate", 65),
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state, config, task, tmp_path, notify=False, logger=None
+        )
+
+    assert outcome is _ValidateOutcome.RETRY_DEV
+    assert result is None
+    assert "format is not recognized" in state.human_feedback
+    # The telemetry distinguishes this silent-absence from a genuine no-test-failure.
+    assert state.dev_iteration_telemetry[-1].failed_tests == []
+    assert state.dev_iteration_telemetry[-1].gate_output_format_recognized is False
+
+
+def test_run_validate_phase_custom_pattern_extracts_failing_test(tmp_path: Path) -> None:
+    """Seam test: a configured failed_test_pattern points the retry at the named test."""
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(
+            config.validation,
+            failed_test_pattern=r"^\s*(?P<test>\w+)\(\)$",
+        ),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.0)
+    state.last_dev_start_commit = "HEAD"
+
+    xcode_output = (
+        "Testing failed:\n"
+        "  testBuildWindowPlanKeepsDisplayedCountBoundedByActualWindows()\n"
+        "** TEST FAILED **\n"
+    )
+    with (
+        patch(
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("FAIL", None, xcode_output, "make forge-gate", 65),
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state, config, task, tmp_path, notify=False, logger=None
+        )
+
+    assert outcome is _ValidateOutcome.RETRY_DEV
+    assert result is None
+    extracted = "testBuildWindowPlanKeepsDisplayedCountBoundedByActualWindows"
+    assert extracted in state.human_feedback
+    assert state.dev_iteration_telemetry[-1].failed_tests == [extracted]
+    assert state.dev_iteration_telemetry[-1].gate_output_format_recognized is True
+
+
 def test_format_failed_test_feedback_contract_change_uses_contract_message(
     tmp_path: Path,
 ) -> None:

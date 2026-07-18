@@ -19,7 +19,7 @@ from theforge.task import TaskStory
 
 from . import util as _cu
 from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
-from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
+from .dev_phase import extract_failed_tests, record_dev_iteration_telemetry
 from .gate import (
     _is_gate_skip,
     _parse_dirty_files,
@@ -173,12 +173,35 @@ def _test_file_exists_in_head(workspace_path: Path, test_file: str) -> bool:
     return workspace_path.joinpath(test_file).is_file()
 
 
+_UNRECOGNIZED_GATE_FORMAT_NOTE = (
+    "\n\nNo failing-test identifiers could be extracted from this gate's output:"
+    " its format is not recognized by core's built-in test-runner extractor and no"
+    " `validation.failed_test_pattern` is configured in forge.yaml. This retry is"
+    " proceeding without a focused failing-test list — read the full gate output"
+    " above to find the failures yourself, and consider configuring"
+    " `failed_test_pattern` so future retries are pointed at the exact tests your"
+    " gate names."
+)
+
+
 def _format_failed_test_feedback(
-    gate_output_tail: str, workspace_path: Path, contract_change: bool = False
+    gate_output_tail: str,
+    workspace_path: Path,
+    contract_change: bool = False,
+    failed_test_pattern: str | None = None,
 ) -> tuple[str, bool]:
-    """Return retry-feedback text for extracted failing tests and whether they are existing."""
-    failed_tests = _extract_failed_tests(gate_output_tail)
+    """Return retry-feedback text for extracted failing tests and whether they are existing.
+
+    When extraction does not apply (the gate output is in a format core does not
+    recognize and no ``failed_test_pattern`` is configured), the returned text
+    carries an explicit note so the degradation is visible to the dev retry
+    rather than reading identically to a genuine no-test-failure gate error.
+    """
+    extraction = extract_failed_tests(gate_output_tail, failed_test_pattern)
+    failed_tests = extraction.tests
     if not failed_tests:
+        if not extraction.format_recognized:
+            return _UNRECOGNIZED_GATE_FORMAT_NOTE, False
         return "", False
 
     existing_failures = [
@@ -480,6 +503,7 @@ def _run_validate_phase(
             gate_result=gate_result_for_telemetry,
             gate_output_tail=gate_output_tail or gate_err,
             is_timeout=is_timeout,
+            failed_test_pattern=config.validation.failed_test_pattern,
         )
         # Timeout with dev commits is a retryable validation failure: hand back
         # to dev with a timeout-RCA evidence packet rather than escalating
@@ -706,6 +730,7 @@ def _run_validate_phase(
                 max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
                 gate_result=gate_decision,
                 gate_output_tail=gate_output_tail,
+                failed_test_pattern=config.validation.failed_test_pattern,
             )
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
@@ -717,9 +742,34 @@ def _run_validate_phase(
         handoff_text = _get_handoff_content(forge_handoff_path=_latest_forge_handoff_path(state))
         gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
+        failed_test_pattern = config.validation.failed_test_pattern
+        extraction = extract_failed_tests(gate_output_tail, failed_test_pattern)
         failed_test_feedback, existing_test_failures = _format_failed_test_feedback(
-            gate_output_tail, workspace_path, contract_change=state.preflight_contract_change
+            gate_output_tail,
+            workspace_path,
+            contract_change=state.preflight_contract_change,
+            failed_test_pattern=failed_test_pattern,
         )
+        # Surface a silently-inapplicable extraction to the operator and audit
+        # trail. An unrecognized gate format yields no failing-test list, which
+        # is indistinguishable from a genuine lint/format-only failure unless we
+        # say so explicitly here.
+        if not extraction.tests and not extraction.format_recognized:
+            _log(
+                "  ⚠ VALIDATE   gate output format not recognized — no failing"
+                " tests extracted; retry runs without a focused test list"
+                " (set validation.failed_test_pattern to enable extraction)"
+            )
+            if logger:
+                logger._safe_emit(
+                    "failed_test_extraction_skipped",
+                    iteration=state.dev_iteration,
+                    gate_output_format="unrecognized",
+                    reason=(
+                        "gate output does not match core's built-in test-runner"
+                        " grammar and no validation.failed_test_pattern is configured"
+                    ),
+                )
         state.human_feedback = (
             f"The full test suite (`{gate_cmd}`) failed."
             " Your changes broke something — not just your new tests,"
@@ -738,6 +788,7 @@ def _run_validate_phase(
             max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
             gate_result=gate_decision,
             gate_output_tail=gate_output_tail,
+            failed_test_pattern=config.validation.failed_test_pattern,
         )
         if state.dev_iteration_telemetry:
             state.dev_iteration_telemetry[-1] = dataclasses.replace(
@@ -797,6 +848,7 @@ def _run_validate_phase(
         max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
         gate_result=gate_decision,
         gate_output_tail=gate_output_tail,
+        failed_test_pattern=config.validation.failed_test_pattern,
     )
 
     # Convention check ran in parallel with gate; use pre-fetched result.

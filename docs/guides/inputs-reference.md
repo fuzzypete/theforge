@@ -269,6 +269,11 @@ validation:
   test_command: ~                      # optional command agents may run during dev
   pre_validate_command: ~              # optional: run before dirty check
   default_test_target: "."             # {test_target} substitution when no story test_target applies (e.g. baseline gate)
+  failed_test_pattern: ~               # optional regex to extract failing-test names from non-pytest gate output;
+                                       # takes named group "test", else group 1, else the whole match. When unset,
+                                       # core uses its built-in pytest grammar and, if the output isn't pytest-shaped,
+                                       # records visibly (log + audit) that extraction did not apply.
+                                       # Example: 'Test Case .* (?P<test>\w+)\(\) failed'
 
 # ── Retry policy ───────────────────────────────────────────
 retry:

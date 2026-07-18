@@ -249,6 +249,17 @@ class ValidationConfig:
     # when a task has no test_target of its own.
     default_test_target: str = "."
     pre_validate_command: str | None = None  # optional command run before dirty check
+    # ── Failing-test extraction seam (issue #1738) ────────────────────────────
+    # Core's built-in extractor of failing-test identifiers from gate output
+    # only understands pytest's summary grammar. A project whose gate speaks a
+    # different toolchain (xcodebuild, go test, cargo, …) can declare a regex
+    # here so gate-failure retries are pointed at the exact failing tests its
+    # gate names. The identifier is taken from a named group ``test`` if present,
+    # else capture group 1, else the whole match. When unset, core falls back to
+    # its pytest grammar and, if that does not match, records visibly (log +
+    # audit telemetry) that extraction did not apply rather than returning a
+    # silent empty list. Example: r"^\s*Test Case .* (?P<test>\w+)\(\) failed".
+    failed_test_pattern: str | None = None
     # Adaptive gate-timeout scaling under sprint --parallel N. The baseline
     # gate_timeout above is the alone-time budget. When mode == "adaptive"
     # (default), sprint start scales the effective gate_timeout by host CPU
