@@ -666,6 +666,36 @@ def _run_claude(
             env=env,
             start_new_session=True,
         )
+    except FileNotFoundError:
+        return AgentResult(
+            success=False,
+            output="ERROR: 'claude' CLI not found. Is it installed?",
+            session_id=None,
+            cost_usd=None,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+            startup_failure=True,
+        )
+
+    def _kill_group() -> None:
+        # Kill the whole process group so node/tool grandchildren die too — a
+        # bare proc.kill() reaches only the direct child. Fall back to the
+        # direct child if the pgid is unknown or already gone.
+        if pgid is not None:
+            process_group.kill_agent_group(pgid)
+        else:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    # Any exception raised after spawn — the SystemExit that detach.py's SIGTERM
+    # handler raises while this thread is blocked reading stdout, a
+    # KeyboardInterrupt, or any error — must kill the whole group before the
+    # finally drops the sidecar; otherwise the agent tree reparents to init still
+    # holding its workspace-write sandbox, with no record left for the reaper.
+    try:
         try:
             pgid = os.getpgid(proc.pid)
         except (OSError, TypeError):
@@ -682,18 +712,6 @@ def _run_claude(
 
         lines: list[str] = []
         assert proc.stdout is not None
-
-        def _kill_group() -> None:
-            # Kill the whole process group so node/tool grandchildren die too — a
-            # bare proc.kill() reaches only the direct child. Fall back to the
-            # direct child if the pgid is unknown or already gone.
-            if pgid is not None:
-                process_group.kill_agent_group(pgid)
-            else:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
 
         # Enforce wall-clock timeout on the streaming loop via a watchdog thread.
         # proc.wait(timeout=...) only fires after stdout is drained, which never
@@ -761,20 +779,14 @@ def _run_claude(
         except (BrokenPipeError, ValueError, OSError):
             pass
         proc.wait()
-    except FileNotFoundError:
-        return AgentResult(
-            success=False,
-            output="ERROR: 'claude' CLI not found. Is it installed?",
-            session_id=None,
-            cost_usd=None,
-            exit_code=-1,
-            raw={},
-            profile_name=profile.name,
-            startup_failure=True,
-        )
+    except BaseException:
+        # SIGTERM→SystemExit, KeyboardInterrupt, or any post-spawn error: kill the
+        # whole group so it cannot outlive this process, then re-raise.
+        _kill_group()
+        raise
     finally:
-        # The group is gone by now (normal exit or _kill_group); drop its sidecar
-        # so the reaper doesn't chase a dead pgid on the next forge invocation.
+        # The group is dead by now (normal exit, an in-loop _kill_group, or the
+        # except above); drop its sidecar so the reaper doesn't chase a dead pgid.
         if pgid is not None:
             process_group.unregister_agent_group(pgid)
 

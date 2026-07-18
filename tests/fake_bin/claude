@@ -18,6 +18,10 @@ Controlled via FAKE_CLAUDE_MODE environment variable:
                 its PID to $FAKE_GRANDCHILD_PID_FILE, then emit nothing and
                 hang so the runner's timeout/stop path fires. Proves the group
                 kill reaches grandchildren, not just the direct child.
+  grandchild_stream
+              — like grandchild_hang but emit one non-result line first so the
+                runner's stream loop runs at least once; lets a test raise an
+                exception mid-stream to exercise the except-BaseException kill.
 """
 from __future__ import annotations
 
@@ -77,12 +81,16 @@ def _emit_tool_iteration() -> None:
     _emit({"type": "user", "message": {"role": "user", "content": [_TOOL_RESULT_ITEM]}})
 
 
-def _spawn_grandchild_and_hang() -> None:
+def _spawn_grandchild_and_hang(*, stream_first: bool = False) -> None:
     """Spawn a sleeping grandchild in this process group, record its PID, hang.
 
     The grandchild inherits this process's group (no start_new_session), so a
     group kill must reach it. A bare kill of the direct child (this fake CLI)
     would leave the grandchild alive — exactly the leak the fix closes.
+
+    When ``stream_first`` is set, emit one non-result assistant line before
+    hanging so the runner's stream loop body runs at least once (lets a test
+    inject an exception mid-stream to exercise the except-BaseException path).
     """
     _read_user_msg()
     grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
@@ -90,7 +98,10 @@ def _spawn_grandchild_and_hang() -> None:
     if pidfile:
         with open(pidfile, "w") as fh:
             fh.write(str(grandchild.pid))
-    # Emit nothing and hang so the runner's watchdog/stop path fires.
+    if stream_first:
+        _emit({"type": "assistant", "message": {"role": "assistant", "content": []}})
+        sys.stdout.flush()
+    # Emit nothing further and hang so the runner's teardown path fires.
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         time.sleep(0.1)
@@ -100,6 +111,9 @@ def _spawn_grandchild_and_hang() -> None:
 def main() -> None:
     if MODE == "grandchild_hang":
         _spawn_grandchild_and_hang()
+
+    if MODE == "grandchild_stream":
+        _spawn_grandchild_and_hang(stream_first=True)
 
     if MODE == "hang":
         # Consume initial prompt but never produce output; sleep until killed.

@@ -257,6 +257,51 @@ class TestClaudeGroupKill(_RunnerGroupKillBase):
             "grandchild survived the runner's group kill — bare proc.kill() regression"
         )
 
+    def test_exception_after_spawn_kills_group(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A SystemExit unwinding mid-stream must kill the group, not just drop the sidecar.
+
+        Simulates detach.py's SIGTERM handler raising SystemExit while _run_claude
+        is blocked reading the agent's stdout (forge stop's graceful path). Before
+        the fix, the sole ``except FileNotFoundError`` let SystemExit fall straight
+        into the ``finally`` that unregistered the sidecar without ever killing the
+        group — the exact leak this bug was filed to close.
+        """
+        self._ensure_exec("claude")
+        pidfile = tmp_path / "gc.pid"
+        self._patch_env(
+            monkeypatch, "runner_claude", "FAKE_CLAUDE_MODE", "grandchild_stream", pidfile
+        )
+
+        # Raise SystemExit the first time the runner processes a stream line —
+        # i.e. while it is inside the stdout loop with the agent tree alive.
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise SystemExit(0)
+
+        monkeypatch.setattr("theforge.runners.runner_claude._process_stream_event", _boom)
+
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="claude-sonnet-4-5",
+            budget_usd=2.0,
+            timeout_seconds=30,
+            allowed_tools=("Bash",),
+        )
+        with pytest.raises(SystemExit):
+            _run_claude(
+                prompt="do the thing",
+                profile=profile,
+                working_dir=tmp_path,
+                fallback_to_file=False,
+            )
+        assert _wait_until(pidfile.exists, timeout=3.0), "fake claude never spawned the grandchild"
+        gc_pid = int(pidfile.read_text().strip())
+        assert _wait_until(lambda: not _pid_alive(gc_pid)), (
+            "grandchild survived a SystemExit unwind — the except-BaseException kill regressed"
+        )
+
 
 class TestCodexGroupKill(_RunnerGroupKillBase):
     def test_timeout_kills_grandchild(
