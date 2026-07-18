@@ -263,12 +263,68 @@ def delete_merge_state(workspace_path: Path) -> None:
         _logger.warning("merge_state.yaml: failed to delete (%s) — ignoring", exc)
 
 
+def _detach_skip_worktree_forge_yaml(worktree_path: Path) -> str | None:
+    """Temporarily detach a skip-worktree'd forge.yaml so a rebase can update it.
+
+    _setup_resume_entry syncs the operator's live forge.yaml into the worktree and
+    marks it skip-worktree (issue #1627) so its content never lands in a story
+    commit. skip-worktree hides the working-tree modification from status/diff, but
+    it does NOT protect the path from an incoming rebase/checkout: if the base
+    branch changed forge.yaml, git tries to update the path, detects the divergent
+    working-tree content, and aborts the whole rebase ("local changes ... would be
+    overwritten by checkout") — a conflict forge manufactured against a file the
+    operator never edited in that worktree (issue #1772).
+
+    Preserve the synced content, clear the skip-worktree bit, and reset the working
+    copy to the tracked version so the tree is clean and the rebase can replay
+    freely. Returns the preserved content for _reattach_skip_worktree_forge_yaml,
+    or None when forge.yaml is not skip-worktree here (e.g. the reused-worktree
+    path in workspace.py that never syncs operator config).
+    """
+    ls_ok, ls_out = _cu._run_shell("git ls-files -v forge.yaml", worktree_path)
+    if not ls_ok or not ls_out.strip().startswith("S "):
+        return None
+    forge_yaml = worktree_path / "forge.yaml"
+    try:
+        content = forge_yaml.read_text()
+    except OSError:
+        # Nothing to preserve/restore; leave the bit as-is rather than risk
+        # re-syncing empty content over operator config.
+        return None
+    _cu._run_shell("git update-index --no-skip-worktree forge.yaml", worktree_path)
+    _cu._run_shell("git checkout -- forge.yaml", worktree_path)
+    return content
+
+
+def _reattach_skip_worktree_forge_yaml(worktree_path: Path, content: str | None) -> None:
+    """Re-apply operator forge.yaml content and re-set skip-worktree after rebase.
+
+    Restores the steady state established by _setup_resume_entry (issue #1627): the
+    run executes with operator config in the working tree, but the file stays
+    hidden from status/diff/staging so it never lands in a story commit. Called
+    unconditionally after the rebase (success or failure) to undo the detach.
+    """
+    if content is None:
+        return
+    forge_yaml = worktree_path / "forge.yaml"
+    try:
+        forge_yaml.write_text(content)
+    except OSError:
+        pass
+    _cu._run_shell("git update-index --skip-worktree forge.yaml", worktree_path)
+
+
 def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[bool, str]:
     """Fetch and rebase the resumed worktree onto origin/base_branch."""
     git_dir = Path(worktree_path) / ".git"
     if not git_dir.exists():
         return True, ""
 
+    wt = Path(worktree_path)
+    # A synced, skip-worktree'd forge.yaml would abort the rebase if the base
+    # branch diverged on that file; detach it around the rebase and restore it
+    # afterward (issue #1772).
+    _synced_forge_yaml = _detach_skip_worktree_forge_yaml(wt)
     try:
         with FETCH_LOCK:
             fetch_proc = subprocess.run(
@@ -300,6 +356,8 @@ def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[boo
         if logger is not None:
             logger.warning("resume rebase step failed: %s", exc)
         return False, str(exc)
+    finally:
+        _reattach_skip_worktree_forge_yaml(wt, _synced_forge_yaml)
 
     return True, ""
 
