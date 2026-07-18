@@ -94,7 +94,7 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
     rows = _profile_rows(data, model=args.model, role=args.role)
 
     if not rows:
-        print("canonical_id              role       complexity  runs  successes  rate")
+        print("canonical_id              role       complexity  runs  successes  rate  terminated")
         return 0
 
     widths = {
@@ -104,6 +104,7 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
         "runs": max(len("runs"), *(len(str(row["runs"])) for row in rows)),
         "successes": max(len("successes"), *(len(str(row["successes"])) for row in rows)),
         "rate": max(len("rate"), *(len(str(row["rate"])) for row in rows)),
+        "terminated": max(len("terminated"), *(len(str(row["terminated"])) for row in rows)),
     }
     print(
         f"{'canonical_id':<{widths['canonical_id']}}  "
@@ -111,7 +112,8 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
         f"{'complexity':<{widths['complexity']}}  "
         f"{'runs':>{widths['runs']}}  "
         f"{'successes':>{widths['successes']}}  "
-        f"{'rate':>{widths['rate']}}"
+        f"{'rate':>{widths['rate']}}  "
+        f"{'terminated':>{widths['terminated']}}"
     )
     for row in rows:
         print(
@@ -120,7 +122,8 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
             f"{row['complexity']:<{widths['complexity']}}  "
             f"{row['runs']:>{widths['runs']}}  "
             f"{row['successes']:>{widths['successes']}}  "
-            f"{row['rate']:>{widths['rate']}}"
+            f"{row['rate']:>{widths['rate']}}  "
+            f"{row['terminated']:>{widths['terminated']}}"
         )
     return 0
 
@@ -225,6 +228,10 @@ def _entry_rows(
                             bucket.get("runs", 0),
                             bucket.get("success_rate", 0.0),
                         ),
+                        # Harness-imposed terminations (deadline kill / stuck-
+                        # pattern terminate) are recorded but excluded from runs/
+                        # rate (#1763), so surface the tally separately here.
+                        "terminated": int((bucket.get("harness_terminated") or {}).get("runs", 0)),
                     }
                 )
             continue
@@ -239,6 +246,7 @@ def _entry_rows(
                 "runs": runs,
                 "successes": "—",
                 "rate": "—",
+                "terminated": "—",
             }
         )
     return rows

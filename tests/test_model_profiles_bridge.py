@@ -259,3 +259,38 @@ def test_build_run_outcome_no_kill_flag_is_not_killed_despite_stale_timeout_tail
     state.dev_iteration_telemetry = [_dev_telemetry(is_timeout=True)]
     outcome = build_run_outcome(_Cfg(), state, success=True)
     assert outcome.dev_timeout_killed is False
+
+
+def test_build_run_outcome_termination_cause_timeout():
+    """A timeout kill sets dev_termination_cause='timeout' so the aggregator can
+    segregate the run out of capability stats (#1763)."""
+    state = _state_with_dev_costs([0.30])
+    state.adaptive_dev_timeout_seconds = 1350
+    state.dev_process_timeout_killed = True
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_termination_cause == "timeout"
+
+
+def test_build_run_outcome_termination_cause_stuck():
+    """A stuck-pattern terminate sets dev_termination_cause='stuck_pattern'."""
+    state = _state_with_dev_costs([0.30])
+    state.dev_process_stuck_terminated = True
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_termination_cause == "stuck_pattern"
+    assert outcome.dev_timeout_killed is False
+
+
+def test_build_run_outcome_termination_cause_timeout_precedence():
+    """When both flags are set, timeout takes precedence over stuck."""
+    state = _state_with_dev_costs([0.30])
+    state.dev_process_timeout_killed = True
+    state.dev_process_stuck_terminated = True
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_termination_cause == "timeout"
+
+
+def test_build_run_outcome_no_termination_cause_on_clean_run():
+    """A run the model finished (no harness kill) carries no termination cause."""
+    state = _state_with_dev_costs([0.30])
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    assert outcome.dev_termination_cause is None

@@ -63,6 +63,16 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     dev_timeout_limit_s = (
         int(state.adaptive_dev_timeout_seconds) if state.adaptive_dev_timeout_seconds else None
     )
+    # Termination-cause taxonomy: why the harness ended the dev process, if it
+    # did. A harness-imposed ending (a deadline kill or a stuck-pattern terminate)
+    # is evidence about the budget or the harness, not about the model, so the
+    # aggregator segregates these runs out of the capability statistics. Timeout
+    # takes precedence when both flags happen to be set.
+    dev_termination_cause = (
+        "timeout"
+        if state.dev_process_timeout_killed
+        else ("stuck_pattern" if state.dev_process_stuck_terminated else None)
+    )
     return RunOutcome(
         complexity=complexity,
         complexity_score=state.preflight_complexity_score,
@@ -75,6 +85,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         dev_duration_s=dev_duration_s,
         dev_timeout_killed=dev_timeout_killed,
         dev_timeout_limit_s=dev_timeout_limit_s,
+        dev_termination_cause=dev_termination_cause,
         # Pass the cost-unknown signal through (None) instead of coercing to
         # $0.00, so unmeasured CLI-transport runs are recorded as unmeasured.
         dev_cost_usd=state.total_dev_cost_measured,

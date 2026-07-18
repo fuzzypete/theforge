@@ -792,3 +792,266 @@ def test_merge_tolerates_legacy_entry_without_duration_keys():
     _merge_dev(target, legacy_src)
     assert target["max_duration_s"] == 350.0  # target's learned value preserved
     assert target["_duration_runs"] == 1  # legacy src contributes 0 duration runs
+
+
+# ── Harness-terminated segregation (#1763) ────────────────────────────────
+
+
+def _baseline_medium_run(data: dict, *, success: bool = True) -> None:
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=success,
+            dev_iterations=3,
+            dev_cost_usd=1.0,
+            dev_duration_s=120.0,
+        ),
+    )
+
+
+def test_harness_timeout_kill_does_not_touch_capability_stats():
+    """A deadline kill must not fold into success_rate/avg_iterations/_successes:
+    those must equal a baseline with no killed run at all (#1763)."""
+    baseline: dict = {"models": {}}
+    _baseline_medium_run(baseline)
+
+    contaminated: dict = {"models": {}}
+    _baseline_medium_run(contaminated)
+    # Interleave a harness-killed run — it must be segregated, not counted.
+    apply_run(
+        contaminated,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_duration_s=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+            dev_termination_cause="timeout",
+        ),
+    )
+
+    for scope in ("dev",):
+        b = baseline["models"]["sonnet"][scope]
+        c = contaminated["models"]["sonnet"][scope]
+        assert c["runs"] == b["runs"]
+        assert c["_successes"] == b["_successes"]
+        assert c["_iterations_sum"] == b["_iterations_sum"]
+        assert c["success_rate"] == b["success_rate"]
+        assert c["avg_iterations"] == b["avg_iterations"]
+
+    bc_b = baseline["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    bc_c = contaminated["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    assert bc_c["runs"] == bc_b["runs"]
+    assert bc_c["success_rate"] == bc_b["success_rate"]
+    assert bc_c["avg_iterations"] == bc_b["avg_iterations"]
+
+    # ...but the kill IS visibly recorded and the timeout floor still moves.
+    ht = bc_c["harness_terminated"]
+    assert ht["runs"] == 1
+    assert ht["by_cause"] == {"timeout": 1}
+    assert bc_c["max_killed_timeout_s"] == 900.0
+    # Completed-run duration stats are untouched by the kill.
+    assert bc_c["_duration_runs"] == bc_b["_duration_runs"] == 1
+    assert bc_c["avg_duration_s"] == 120.0
+    # Top-level dev section aggregates the tally too.
+    assert contaminated["models"]["sonnet"]["dev"]["harness_terminated"]["runs"] == 1
+
+
+def test_harness_stuck_terminate_segregated_and_no_kill_floor():
+    """A stuck-pattern terminate is segregated like a timeout, but — not being a
+    deadline kill — it must NOT raise max_killed_timeout_s."""
+    data: dict = {"models": {}}
+    _baseline_medium_run(data)
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_duration_s=None,
+            dev_timeout_killed=False,
+            dev_timeout_limit_s=None,
+            dev_termination_cause="stuck_pattern",
+        ),
+    )
+    bc = data["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    assert bc["runs"] == 1  # only the completed baseline run
+    assert bc["success_rate"] == 1.0
+    ht = bc["harness_terminated"]
+    assert ht["runs"] == 1
+    assert ht["by_cause"] == {"stuck_pattern": 1}
+    assert bc.get("max_killed_timeout_s", 0.0) == 0.0  # stuck is not a kill floor
+
+
+def test_harness_terminated_cost_segregated_from_capability_avg_cost():
+    """Killed-run spend stays visible under harness_terminated without diluting
+    the capability avg_cost_usd."""
+    data: dict = {"models": {}}
+    _baseline_medium_run(data)  # cost 1.0
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=0.50,  # killed run still spent money
+            dev_duration_s=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+            dev_termination_cause="timeout",
+        ),
+    )
+    bc = data["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    assert bc["avg_cost_usd"] == 1.0  # only the completed run's cost
+    assert bc["harness_terminated"]["_cost_sum"] == 0.5
+    assert bc["harness_terminated"]["avg_cost_usd"] == 0.5
+
+
+def test_get_dev_success_rate_unchanged_by_interleaved_kill():
+    """Regression: get_dev_success_rate returns the same value with and without an
+    interleaved harness-killed run."""
+    clean: dict = {"models": {}}
+    dirty: dict = {"models": {}}
+    for _ in range(3):
+        _baseline_medium_run(clean, success=True)
+        _baseline_medium_run(dirty, success=True)
+    apply_run(
+        dirty,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+            dev_termination_cause="timeout",
+        ),
+    )
+    rate_clean = get_dev_success_rate(clean, "sonnet", "medium", min_runs=1)
+    rate_dirty = get_dev_success_rate(dirty, "sonnet", "medium", min_runs=1)
+    assert rate_clean == rate_dirty == 1.0
+
+
+def test_zero_dev_bucket_resets_harness_terminated():
+    from theforge.model_profiles import reset_profile_data
+
+    data: dict = {"models": {}}
+    _baseline_medium_run(data)
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+            dev_termination_cause="timeout",
+        ),
+    )
+    updated, _ = reset_profile_data(data, "sonnet", role="dev", complexity="medium")
+    bc = updated["models"]["sonnet"]["dev"]["by_complexity"]["medium"]
+    assert bc["harness_terminated"]["runs"] == 0
+    assert bc["harness_terminated"]["by_cause"] == {}
+
+
+def test_recompute_dev_section_aggregates_harness_terminated():
+    from theforge.model_profiles import _recompute_dev_section
+
+    section = {
+        "by_complexity": {
+            "small": {"runs": 1, "harness_terminated": {"runs": 1, "by_cause": {"timeout": 1}}},
+            "medium": {
+                "runs": 2,
+                "harness_terminated": {"runs": 2, "by_cause": {"timeout": 1, "stuck_pattern": 1}},
+            },
+            "large": {"runs": 0},
+        }
+    }
+    _recompute_dev_section(section)
+    ht = section["harness_terminated"]
+    assert ht["runs"] == 3
+    assert ht["by_cause"] == {"timeout": 2, "stuck_pattern": 1}
+
+
+def test_merge_dev_sums_harness_terminated():
+    from theforge.model_profiles import _merge_dev
+
+    src_a: dict = {"models": {}}
+    _baseline_medium_run(src_a)
+    apply_run(
+        src_a,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+            dev_termination_cause="timeout",
+        ),
+    )
+    src_b: dict = {"models": {}}
+    _baseline_medium_run(src_b)
+    apply_run(
+        src_b,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_termination_cause="stuck_pattern",
+        ),
+    )
+    target = src_a["models"]["sonnet"]["dev"]
+    _merge_dev(target, src_b["models"]["sonnet"]["dev"])
+    assert target["harness_terminated"]["runs"] == 2
+    assert target["harness_terminated"]["by_cause"] == {"timeout": 1, "stuck_pattern": 1}
+    bc = target["by_complexity"]["medium"]
+    assert bc["harness_terminated"]["runs"] == 2
+
+
+def test_merge_dev_tolerates_legacy_src_without_harness_terminated():
+    from theforge.model_profiles import _merge_dev
+
+    holder: dict = {"models": {}}
+    _baseline_medium_run(holder)
+    apply_run(
+        holder,
+        RunOutcome(
+            complexity="medium",
+            complexity_score=5,
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=None,
+            dev_timeout_killed=True,
+            dev_timeout_limit_s=900,
+            dev_termination_cause="timeout",
+        ),
+    )
+    target = holder["models"]["sonnet"]["dev"]
+    legacy_src = {"runs": 2, "success_rate": 1.0, "avg_iterations": 3.0, "avg_cost_usd": 1.0}
+    _merge_dev(target, legacy_src)
+    # Target's own tally survives a legacy merge (no harness_terminated on src).
+    assert target["harness_terminated"]["runs"] == 1

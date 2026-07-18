@@ -805,3 +805,89 @@ def test_apply_preflight_skips_warning_when_cap_unset(tmp_path, monkeypatch):
     assert state._adaptive_decision.dev.model == "opus"
     assert state._adaptive_decision.budget_audit["target_usd"] is None
     assert state._adaptive_decision.budget_audit["downgraded"] is False
+
+
+def _dev_state_medium() -> CoordinatorState:
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+    state.dev_trace_count = 3
+    state.dev_durations = [40.0, 40.0, 40.0]
+    return state
+
+
+def _apply(config, state, success):
+    """Seam: bridge.build_run_outcome → model_profiles.apply_run."""
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import apply_run
+
+    data: dict = {"models": {}}
+    outcome = build_run_outcome(config, state, success=success)
+    return apply_run(data, outcome), outcome
+
+
+def test_seam_harness_kill_does_not_contaminate_capability_stats(tmp_path):
+    """Seam (dev_phase flag → bridge → aggregator): a harness-imposed kill set on
+    CoordinatorState must not move the dev bucket's success_rate/avg_iterations/
+    _successes/runs versus a baseline with no kill — it is recorded separately in
+    harness_terminated instead (#1763)."""
+    from dataclasses import replace as _replace
+
+    config = _replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="claude-sonnet",
+                provider=None,
+                model="sonnet",
+                budget_usd=10.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            )
+        ],
+    )
+
+    def _dev_section(data):
+        entry = next(m for m in data["models"].values() if "dev" in m)
+        return entry["dev"]
+
+    # Baseline: a single clean completed run.
+    baseline_state = _dev_state_medium()
+    baseline_data, _ = _apply(config, baseline_state, success=True)
+    base_dev = _dev_section(baseline_data)
+
+    # Timeout kill: dev_phase set the sticky flag before falling through.
+    killed_state = _dev_state_medium()
+    killed_state.adaptive_dev_timeout_seconds = 900
+    killed_state.dev_process_timeout_killed = True
+    killed_data, killed_outcome = _apply(config, killed_state, success=False)
+    killed_dev = _dev_section(killed_data)
+
+    # The bridge carried the taxonomy across the seam.
+    assert killed_outcome.dev_termination_cause == "timeout"
+
+    # Capability stats: the kill starts from an empty profile, so a contaminated
+    # fold would show runs=1/success_rate=0.0. Segregation keeps them at zero.
+    assert killed_dev.get("runs", 0) == 0
+    assert killed_dev.get("_successes", 0) == 0
+    assert killed_dev.get("success_rate", 0.0) == 0.0
+    assert killed_dev.get("avg_iterations", 0.0) == 0.0
+    # ...while the clean baseline recorded a real success.
+    assert base_dev["runs"] == 1 and base_dev["success_rate"] == 1.0
+
+    # The kill is recorded, and the timeout floor still moves.
+    bc = killed_dev["by_complexity"]["medium"]
+    assert bc["harness_terminated"]["runs"] == 1
+    assert bc["harness_terminated"]["by_cause"] == {"timeout": 1}
+    assert bc["max_killed_timeout_s"] == 900.0
+
+    # Stuck-terminate flows through the same seam under its own cause, with no floor.
+    stuck_state = _dev_state_medium()
+    stuck_state.dev_process_stuck_terminated = True
+    stuck_data, stuck_outcome = _apply(config, stuck_state, success=False)
+    assert stuck_outcome.dev_termination_cause == "stuck_pattern"
+    stuck_bc = _dev_section(stuck_data)["by_complexity"]["medium"]
+    assert stuck_bc["harness_terminated"]["by_cause"] == {"stuck_pattern": 1}
+    assert stuck_bc.get("runs", 0) == 0
+    assert stuck_bc.get("max_killed_timeout_s", 0.0) == 0.0

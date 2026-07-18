@@ -320,6 +320,14 @@ class CoordinatorState:
     # is distinct from a VALIDATE gate/test-command timeout (a different failure
     # class carried on DevIterationTelemetry.is_timeout).
     dev_process_timeout_killed: bool = False
+    # Sticky "the dev process was terminated by stuck-pattern detection at least
+    # once" flag. Set once at kill time in dev_phase (never cleared), mirroring
+    # dev_process_timeout_killed: the terminated iteration's telemetry can be
+    # overwritten by a later VALIDATE-phase write once checkpoint-committed work
+    # (#1754) lets execution fall through, so the last telemetry entry is not a
+    # reliable signal. This is the reliable signal that the dev process was ended
+    # by stuck-pattern detection (runner failure_code == 'stuck_pattern').
+    dev_process_stuck_terminated: bool = False
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
         default_factory=list
