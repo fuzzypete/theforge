@@ -90,10 +90,12 @@ class TestCheckBugMissingDiagnosis:
         partial = "## Diagnosis\n- Observed symptom: x.\n"
         reason = check_bug_missing_diagnosis("T", partial, ["bug"])
         assert reason is not None
-        # Missing component names should appear in the operator-facing detail
-        assert "missing required component" in reason.detail
-        for tok in ("ruled out", "confirmed cause", "affected code path"):
-            assert tok in reason.detail
+        # The detail now names the exact literal labels a producer must hit,
+        # each with its example, and links the full shape reference (#1629 AC3).
+        assert "**Ruled out:**" in reason.detail
+        assert "**Confirmed cause:**" in reason.detail
+        assert "**Affected code path:**" in reason.detail
+        assert "docs/reference/bug-shape.md" in reason.detail
 
     def test_check_pipeline_blocks_undiagnosed_bug(self) -> None:
         result = check("Bug: foo", "## What\nprose only", ["bug"])
