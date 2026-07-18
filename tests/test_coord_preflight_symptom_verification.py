@@ -24,6 +24,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.engine import run_task
@@ -272,7 +273,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_verified_resolved_keeps_already_done(
         self,
@@ -307,7 +308,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_missing_symptom_verification_downgrades_to_proceed(
         self,
         mock_shell,
@@ -344,7 +345,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_not_attempted_status_downgrades_to_proceed(
         self,
         mock_shell,
@@ -378,7 +379,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_not_feasible_status_downgrades_to_proceed(
         self,
         mock_shell,
@@ -412,7 +413,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_reproduces_now_true_downgrades_to_proceed(
         self,
         mock_shell,
@@ -446,7 +447,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_thin_symptom_evidence_downgrades_to_proceed(
         self,
         mock_shell,
@@ -480,7 +481,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_feature_already_done_unaffected_by_gate(
         self,
@@ -513,7 +514,7 @@ class TestBugAlreadyDoneSymptomGate:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_symptom_verification_persists_in_artifact(
         self,

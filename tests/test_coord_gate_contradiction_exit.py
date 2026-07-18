@@ -16,6 +16,7 @@ from coord_test_helpers import (
     _make_task,
     _write_handoff,
     mock_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator.gate import run_gate_full
@@ -37,7 +38,7 @@ class TestGateDecision:
 
         # Fidelity mode: the gate observes the real 4-tuple (exit_code, timed_out)
         # from the shell primitive rather than a derived 0-if-ok-else-1.
-        with patch("theforge.coordinator.gate._cu._run_shell_detailed") as mock_shell:
+        with patch_gate_shell() as mock_shell:
             mock_shell.return_value = (False, "2 failed, 1 passed\nERROR: test_foo", 1, False)
             with patch("theforge.coordinator.gate._cu._log"):
                 decision, error, _tail, _cmd, exit_code = run_gate_full(config, workspace)
@@ -53,7 +54,7 @@ class TestGateDecision:
         workspace.mkdir()
         _write_handoff(workspace)
 
-        with patch("theforge.coordinator.gate._cu._run_shell_detailed") as mock_shell:
+        with patch_gate_shell() as mock_shell:
             mock_shell.return_value = (True, "All checks passed!", 0, False)
             with patch("theforge.coordinator.gate._cu._log"):
                 decision, error, _tail, _cmd, exit_code = run_gate_full(config, workspace)
@@ -75,7 +76,7 @@ class TestGateDecision:
         workspace.mkdir()
         _write_handoff(workspace)
 
-        with patch("theforge.coordinator.gate._cu._run_shell_detailed") as mock_shell:
+        with patch_gate_shell() as mock_shell:
             mock_shell.return_value = (
                 False,
                 "All checks passed!\n2 failed, 3 passed\nFAILED tests/test_foo.py::test_bar",
@@ -104,7 +105,7 @@ class TestGateDecision:
         workspace.mkdir()
         _write_handoff(workspace)
 
-        with patch("theforge.coordinator.gate._cu._run_shell_detailed") as mock_shell:
+        with patch_gate_shell() as mock_shell:
             # timed_out=True with ordinary (non-"TIMEOUT") output and a signal
             # exit code — the exact shape the old output-prefix check missed.
             mock_shell.return_value = (False, "collecting ... tests/test_slow.py", 137, True)

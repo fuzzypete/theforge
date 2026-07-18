@@ -186,6 +186,31 @@ def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
 # covers git-op callers (git add/commit/status) via delegation — this seam is the
 # one place that owns the command dispatch and the 2-tuple→4-tuple adaptation.
 
+# The single production primitive every gate/shell test double patches. Kept as a
+# named constant here so the target string exists in exactly one module — the
+# ownership guard (test_gate_seam_ownership_guard.py) rejects the literal anywhere
+# else, forcing every gate-touching test to enter the seam via ``mock_gate`` or
+# ``patch_gate_shell`` rather than reaching for the primitive on its own.
+_GATE_SHELL_PRIMITIVE = "theforge.coordinator.util._run_shell_detailed"
+
+
+def patch_gate_shell(**kwargs):
+    """Sanctioned ``patch`` of the single gate/shell primitive.
+
+    Use this (as a decorator ``@patch_gate_shell()`` or context manager
+    ``with patch_gate_shell() as mock_shell:``) instead of writing
+    ``patch("theforge.coordinator.util._run_shell_detailed")`` inline, so the
+    patch target lives in exactly one place (see #1737). ``**kwargs`` pass through
+    to :func:`unittest.mock.patch` (e.g. ``side_effect=``), so existing decorator
+    call sites migrate to it verbatim while still routing through the seam.
+
+    Prefer :func:`mock_gate` when you only need PASS/FAIL/exit/timeout behavior;
+    reach for ``patch_gate_shell`` when a test wires its own sanctioned side_effect
+    (``_shell_with_gate`` / ``_gate_side_effect`` / ``_as_detailed``) or asserts on
+    the raw mock.
+    """
+    return patch(_GATE_SHELL_PRIMITIVE, **kwargs)
+
 
 def _as_detailed(side_effect):
     """Adapt a 2-tuple ``_run_shell`` side_effect/callable to the 4-tuple
@@ -318,9 +343,7 @@ def mock_gate(
         timed_out=timed_out,
         output=output,
     )
-    with patch(
-        "theforge.coordinator.util._run_shell_detailed", side_effect=side_effect
-    ) as mock_shell:
+    with patch_gate_shell(side_effect=side_effect) as mock_shell:
         yield mock_shell
 
 

@@ -14,6 +14,7 @@ from coord_test_helpers import (
     _make_agent_result,
     _make_config,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -111,7 +112,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_pass(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         """Exit code 0 → PASS in exit-code mode."""
         config = _make_exit_code_config(tmp_path)
@@ -134,7 +135,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_fail_then_pass(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -160,7 +161,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_exhaustion(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -182,7 +183,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_infrastructure_failure_escalates_immediately(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -212,7 +213,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dirty_worktree_blocked_in_exit_code_mode(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -241,7 +242,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_dirty_worktree_detected(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -273,7 +274,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_gate_timeout_is_error(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -308,7 +309,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_infrastructure_error_is_error(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -342,7 +343,7 @@ class TestExitCodeGateMode:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_exit_code_test_failure_is_fail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -376,7 +377,7 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_test_target_substituted(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -424,7 +425,7 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_test_target_defaults_to_project_root(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -463,7 +464,7 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_test_target_non_python_gate_command(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -530,7 +531,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_override_none_skips_validation(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -573,7 +574,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_override_custom_command(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -619,7 +620,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_override_custom_command_fail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -660,7 +661,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_override_absent_uses_global(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -724,7 +725,7 @@ class TestGateOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_override_none_case_insensitive(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

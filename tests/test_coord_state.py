@@ -21,6 +21,7 @@ from coord_test_helpers import (
     _make_task,
     _shell_with_gate,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -236,7 +237,7 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_run_task_emits_lifecycle_events(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -298,7 +299,7 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_preflight_phase_end_includes_complexity_routing_fields(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_has_auth, tmp_path
     ):
@@ -393,7 +394,7 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_result_includes_output_tail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -440,7 +441,7 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_result_event_fields(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -477,7 +478,7 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_git_context_event_fields(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -516,7 +517,7 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_escalate_event_emitted_on_gate_failure(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -565,7 +566,7 @@ class TestStructuredLoggingIntegration:
             patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_agent,
-            patch("theforge.coordinator.util._run_shell_detailed") as mock_shell,
+            patch_gate_shell() as mock_shell,
             patch(
                 "theforge.coordinator.engine.StructuredLogger.emit",
                 side_effect=OSError("disk full"),
@@ -668,7 +669,7 @@ class TestAuditReviewPoolFields:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_audit_review_pool_fields_populated(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -758,7 +759,7 @@ class TestAuditReviewPoolFields:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_audit_transient_retry_and_quorum_fields_emitted(
         self,
         mock_shell,
@@ -861,7 +862,7 @@ class TestAuditReviewPoolFields:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_audit_failed_reviewer_detail(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -939,7 +940,7 @@ class TestAuditReviewPoolFields:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_audit_synthesized_flag_false_degraded(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

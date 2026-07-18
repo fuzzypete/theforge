@@ -15,6 +15,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,
 )
 
 from theforge.coordinator import audit_substrate
@@ -549,7 +550,7 @@ class TestCoordinatorAuditTiming:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_started_at_set_in_state(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -577,7 +578,7 @@ class TestCoordinatorAuditTiming:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_audit_log_timing_fields(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -617,7 +618,7 @@ class TestCoordinatorAuditAgentBreakdown:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_cost_agents_list(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         """cost.agents contains one entry per dev and review invocation."""
 
@@ -679,7 +680,7 @@ class TestCoordinatorAuditFindings:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_findings_in_audit(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -733,7 +734,7 @@ class TestCoordinatorAuditFindings:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_approve_review_has_empty_findings(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

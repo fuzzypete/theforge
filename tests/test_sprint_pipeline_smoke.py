@@ -18,6 +18,7 @@ from coord_test_helpers import (
     _as_detailed,
     _make_agent_result,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from tests.test_coord_plan_flow_agent import PLAN_AGENT_APPROVE
@@ -233,8 +234,7 @@ def test_make_gate_covers_mocked_sprint_pipeline_smoke_run(tmp_path: Path) -> No
         patch("theforge.sprint.runner._run_baseline_gate", return_value={"passed": True}),
         patch("theforge.sprint.runner.resolve_satisfied_dependencies", return_value=set()),
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
-        patch(
-            "theforge.coordinator.util._run_shell_detailed",
+        patch_gate_shell(
             side_effect=_as_detailed(shell_side_effect),
         ),
         patch("theforge.coordinator.preflight_flow.run_agent", side_effect=fake_preflight),

@@ -22,12 +22,13 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from coord_test_helpers import (  # noqa: E402
+from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     _make_agent_result,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,  # noqa: E402
 )
 
 from theforge.config import (  # noqa: E402
@@ -320,7 +321,7 @@ def _make_seam_config(tmp_path: Path) -> ForgeConfig:
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell_detailed")
+@patch_gate_shell()
 def test_timeout_retry_reenters_dev_through_engine_loop(
     mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ) -> None:

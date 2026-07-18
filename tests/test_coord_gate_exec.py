@@ -19,6 +19,7 @@ from coord_test_helpers import (
     _make_agent_result,
     _make_config,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -126,7 +127,7 @@ class TestCoordinatorStaleHandoff:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_stale_handoff_not_reused(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -175,7 +176,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dirty_worktree_auto_commits_no_retry(
         self, mock_shell, mock_deindex, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -225,7 +226,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dirty_worktree_deindexes_before_status_and_after_git_add(
         self, mock_shell, mock_deindex, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -267,7 +268,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dirty_worktree_auto_commits_even_at_max_iterations(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -322,7 +323,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_handoff_file_not_flagged_as_dirty(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -356,7 +357,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_handoff_dirty_worktree_unchanged(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -393,7 +394,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dirty_files_auto_committed(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -445,7 +446,7 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_untracked_file_auto_committed(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -497,7 +498,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dev_retry_no_changes_escalates(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -583,7 +584,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dev_retry_with_dirty_files_proceeds(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -655,7 +656,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_gate_retry_no_changes_does_not_escalate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -729,7 +730,7 @@ class TestDevZeroChangeGuard:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_post_review_gate_retry_no_changes_does_not_escalate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

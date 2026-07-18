@@ -19,6 +19,7 @@ from coord_test_helpers import (
     _make_task,
     _shell_with_gate,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -41,7 +42,7 @@ from theforge.review import ReviewResult
 class TestCoordinatorWorkspaceFailure:
     """Test that workspace creation failure escalates immediately."""
 
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_workspace_creation_fails(self, mock_shell, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -58,7 +59,7 @@ class TestCoordinatorWorkspaceFailure:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_recoverable_pull_failure_proceeds_past_workspace(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
     ):
@@ -150,7 +151,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_success_on_approve(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -181,7 +182,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_false_no_merge(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -208,7 +209,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_no_merge_on_escalate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -237,7 +238,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_ff_fails_falls_back(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -263,7 +264,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_safety_no_base_branch(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -301,7 +302,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_safety_dirty_project_root(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -346,7 +347,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_safety_no_commits_ahead(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -388,7 +389,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_merge_info_in_audit(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -420,7 +421,7 @@ class TestCoordinatorAutoMerge:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_merge_false_no_merge_key_in_audit(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -498,7 +499,7 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_push_after_merge(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):
@@ -534,7 +535,7 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_push_disabled_by_default(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):
@@ -568,7 +569,7 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_auto_push_failure_non_fatal(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):

@@ -13,12 +13,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from coord_test_helpers import (  # noqa: E402
+from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     _make_agent_result,
     _make_task,
     _shell_with_gate,
+    patch_gate_shell,  # noqa: E402
 )
 
 from theforge.config import (  # noqa: E402
@@ -78,7 +79,7 @@ def _make_seam_config(tmp_path: Path) -> ForgeConfig:
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell_detailed")
+@patch_gate_shell()
 def test_timeout_escalation_seam(mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path):
     """Full DEV→VALIDATE→DEV seam: timeout on first dev, escalated model on second dev.
 
@@ -152,7 +153,7 @@ def test_timeout_escalation_seam(mock_shell, mock_dev, mock_preflight, mock_pool
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
-@patch("theforge.coordinator.util._run_shell_detailed")
+@patch_gate_shell()
 @patch("theforge.coordinator.engine._check_behind_origin")
 def test_resume_path_reads_sprint_flag(
     mock_origin, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path

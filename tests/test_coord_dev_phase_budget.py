@@ -28,6 +28,7 @@ from coord_test_helpers import (
     _make_task,
     _shell_with_gate,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -89,7 +90,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dev_estimate_exceeded_no_commits_first_call(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -129,7 +130,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dev_estimate_exceeded_no_commits_on_retry(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -165,7 +166,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_budget_all_exceeded(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -212,7 +213,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=True)
     def test_dev_budget_exceeded_but_commits_present_proceeds(
         self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
@@ -249,7 +250,7 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.dev_phase._commits_exist_strict", return_value=False)
     def test_dev_estimate_exceeded_no_commits_escalates_unproductive(
         self, mock_commits, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
@@ -292,7 +293,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_dev_notes_passed_to_review_prompt(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -357,7 +358,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_prompt_includes_verified_git_metadata(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -415,7 +416,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_prompt_warns_on_handoff_commit_mismatch(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
@@ -500,7 +501,7 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_review_to_dev_handoff_used_on_request_changes(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

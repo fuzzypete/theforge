@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from coord_test_helpers import patch_gate_shell
 
 from theforge.shape_check import Shape, check
 from theforge.shape_check.heuristics import check_missing_type
@@ -209,8 +210,7 @@ class TestPreflightFlowReadsStructuredType:
                 return_value=preflight_result,
             ),
             patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
-            patch(
-                "theforge.coordinator.util._run_shell_detailed",
+            patch_gate_shell(
                 side_effect=_shell_with_gate(workspace, "PASS"),
             ),
         ):

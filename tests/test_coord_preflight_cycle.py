@@ -16,6 +16,7 @@ from coord_test_helpers import (
     _make_task,
     _shell_with_gate,
     _write_handoff,
+    patch_gate_shell,
 )
 
 from theforge.config import (
@@ -107,7 +108,7 @@ class TestApprovePathCycleHistory:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_approve_records_cycle_in_history(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -141,7 +142,7 @@ class TestEscalationNoteOnRejectPath:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     def test_escalation_note_in_prompt_after_reject(
         self,
         mock_shell,
@@ -228,7 +229,7 @@ class TestAlreadyDoneOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=False)
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=False)
     def test_already_done_with_commits_no_approve_resumes_review(
@@ -276,7 +277,7 @@ class TestAlreadyDoneOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
     def test_already_done_with_prior_approve_honours_already_done(
         self, mock_approve, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
@@ -303,7 +304,7 @@ class TestAlreadyDoneOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True)
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=False)
     def test_already_done_with_commits_on_merged_branch_honours_already_done(
@@ -351,7 +352,7 @@ class TestAlreadyDoneOverride:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell_detailed")
+    @patch_gate_shell()
     @patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=False)
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=False)
     def test_already_done_with_no_commits_ahead_honours_already_done(
