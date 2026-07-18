@@ -31,6 +31,7 @@ from theforge.cli import (
 )
 from theforge.cli import hooks as hooks_module
 from theforge.cli.hooks import created_labels, static_issue_labels
+from theforge.cli.init_commands import _extract_forge_block
 from theforge.config import (
     DEFAULT_VALIDATION,
     ForgeConfig,
@@ -452,6 +453,41 @@ class TestCanonicalGitignoreTemplate:
         assert rc == 1
         assert (tmp_path / ".gitattributes").exists()
         assert (tmp_path / ".gitignore").exists()
+
+
+class TestDogfoodGitPolicyInSync:
+    """Dogfood: this repo's own git policy stays byte-identical to the canonical template.
+
+    TheForge's `.gitignore`/`.gitattributes` are the reference implementation
+    downstream projects look at, so the TheForge marker block in each must match
+    exactly what `forge init --shared-memory` emits. If the canonical template
+    builders change, these tests fail until the repo's own files are re-synced.
+    """
+
+    def _repo_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def test_repo_gitignore_block_matches_shared_memory_canonical(self):
+        content = (self._repo_root() / ".gitignore").read_text(encoding="utf-8")
+        block = _extract_forge_block(content)
+        assert block is not None, "repo .gitignore is missing the TheForge marker block"
+        assert block == _gitignore_block(shared_memory=True)
+
+    def test_repo_gitattributes_block_matches_canonical(self):
+        content = (self._repo_root() / ".gitattributes").read_text(encoding="utf-8")
+        block = _extract_forge_block(content)
+        assert block is not None, "repo .gitattributes is missing the TheForge marker block"
+        assert block == _gitattributes_block()
+
+    def test_repo_gitignore_recognized_as_current_no_drift(self):
+        """The committed block is detected as canonical (drift-check passes)."""
+        content = (self._repo_root() / ".gitignore").read_text(encoding="utf-8")
+        block = _extract_forge_block(content)
+        known_good = {
+            _gitignore_block(shared_memory=True),
+            _gitignore_block(shared_memory=False),
+        }
+        assert block in known_good
 
 
 # ── TestCanonicalGitattributes ────────────────────────────────────────
