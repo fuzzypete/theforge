@@ -429,6 +429,12 @@ def cmd_status(args: object) -> int:
     config = load_config(config_path)
     project_root = config.project_root
 
+    # Reap agent process groups orphaned by an abruptly-killed sprint. Natural
+    # adjacency to list_active_runs, which already prunes stale PID files.
+    from theforge import process_group as _process_group
+
+    _process_group.reap_orphan_agents(project_root)
+
     recent = getattr(args, "recent", False)
     last = getattr(args, "last", False)
     explicit_run_id: str | None = getattr(args, "run_id", None)
@@ -754,12 +760,16 @@ def _cleanup_stopped_run(
     pid: int | None = None,
 ) -> None:
     from theforge import detach as _detach
+    from theforge import process_group as _process_group
     from theforge.sprint.lock import cleanup_story_locks
 
     lock_slugs = _stopped_run_lock_slugs(run_id, project_root, slug)
     _detach.remove_pid(run_id, project_root)
     _detach.write_run_ended(run_id, project_root, "stopped", force=True)
     cleanup_story_locks(lock_slugs, project_root, pid=pid)
+    # The stopped sprint's own teardown may not have reached its agent groups
+    # (SIGKILL path); reap any now-orphaned groups.
+    _process_group.reap_orphan_agents(project_root)
 
 
 def cmd_stop(args: object) -> int:

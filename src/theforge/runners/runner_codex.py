@@ -9,13 +9,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from theforge import process_group
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
@@ -312,7 +312,10 @@ def _run_codex(
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
     _codex_env = build_workspace_env(working_dir, extra=secrets)
     outcome, elapsed = _run_with_heartbeat(
-        run_fn=lambda: subprocess.run(
+        # Group-isolated spawn: subprocess.run's own timeout kill reaches only
+        # `npm exec`, leaving node + the codex leaf alive. run_in_process_group
+        # killpg-s the whole npm→node→codex tree on timeout/teardown.
+        run_fn=lambda: process_group.run_in_process_group(
             cmd,
             input=stdin_prompt,
             capture_output=True,
