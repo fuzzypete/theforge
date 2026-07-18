@@ -79,6 +79,16 @@ _AMBIGUITY_TOKENS = (
     "measurable",
 )
 
+# Number of same-profile re-requests to attempt when preflight exits cleanly
+# but emits output the parser cannot read (parse_error). A clean exit with
+# unparseable output means preflight did not actually run — the model narrated
+# (e.g. a hand-off to a non-existent "investigation agent", issue #1773)
+# instead of producing the structured dict. A transient narration is cheap to
+# re-request against the same output contract and expensive to proceed past, so
+# retry the same profile before consulting any fallback profile or falling
+# through to a degraded PROCEED.
+_PREFLIGHT_PARSE_RETRY_ATTEMPTS = 1
+
 
 def _evidence_is_too_thin(evidence: str) -> bool:
     """Return True when evidence is too short to justify ALREADY_DONE."""
@@ -288,24 +298,60 @@ def _run_preflight_phase(
         log_agent_result(result, f"PREFLIGHT[{label}]")
         return result, elapsed
 
-    def _attempt_failed(result: object) -> bool:
+    def _is_parse_degraded(result: object) -> bool:
+        """True when the agent exited cleanly but emitted unparseable output.
+
+        Distinct from a crashed run (``success=False``): this is the
+        parse_error case where preflight narrated instead of producing the
+        structured dict, and re-requesting the same output contract is worth a
+        cheap retry.
+        """
         if not result.success:
-            return True
+            return False
         _verdict, _reason, parse_degraded = _parse_preflight_verdict(result.output)
         return parse_degraded
 
+    def _attempt_failed(result: object) -> bool:
+        if not result.success:
+            return True
+        return _is_parse_degraded(result)
+
     attempts: list[dict[str, object]] = []
+
+    def _record_attempt(profile: ModelProfile, result: object, elapsed: float) -> None:
+        attempts.append(
+            {
+                "profile_name": profile.name,
+                "model": profile.model,
+                "cost_usd": result.cost_usd,
+                "duration_s": round(elapsed, 2),
+                "success": result.success,
+                "exit_code": result.exit_code,
+            }
+        )
+
     preflight_result, _preflight_elapsed = _invoke_preflight(preflight_profile, "primary")
-    attempts.append(
-        {
-            "profile_name": preflight_profile.name,
-            "model": preflight_profile.model,
-            "cost_usd": preflight_result.cost_usd,
-            "duration_s": round(_preflight_elapsed, 2),
-            "success": preflight_result.success,
-            "exit_code": preflight_result.exit_code,
-        }
-    )
+    _record_attempt(preflight_profile, preflight_result, _preflight_elapsed)
+
+    # ── Same-profile parse-error retry ──────────────────────────────────
+    # A clean exit with unparseable output has not produced a preflight result;
+    # re-issue the identical output contract to the same profile before any
+    # fallback so a one-off narration does not silently discard all agent-derived
+    # metadata (issue #1773). Only fires on parse_error (success=True but
+    # malformed) — a crashed agent is handled by the risk-signal path below.
+    parse_retry = 0
+    while parse_retry < _PREFLIGHT_PARSE_RETRY_ATTEMPTS and _is_parse_degraded(preflight_result):
+        parse_retry += 1
+        _log(
+            "  ⚠ PREFLIGHT output malformed (parse_error) — retrying same profile "
+            f"{preflight_profile.model} (attempt {parse_retry}/{_PREFLIGHT_PARSE_RETRY_ATTEMPTS})"
+        )
+        retry_result, retry_elapsed = _invoke_preflight(
+            preflight_profile, f"parse-retry-{parse_retry}"
+        )
+        _record_attempt(preflight_profile, retry_result, retry_elapsed)
+        preflight_result = retry_result
+        _preflight_elapsed += retry_elapsed
 
     fallback_profile = config.preflight_fallback_profile
     if fallback_profile is not None and _attempt_failed(preflight_result):
@@ -313,16 +359,7 @@ def _run_preflight_phase(
             f"  ⚠ PREFLIGHT primary failed — retrying with fallback model {fallback_profile.model}"
         )
         fallback_result, fallback_elapsed = _invoke_preflight(fallback_profile, "fallback")
-        attempts.append(
-            {
-                "profile_name": fallback_profile.name,
-                "model": fallback_profile.model,
-                "cost_usd": fallback_result.cost_usd,
-                "duration_s": round(fallback_elapsed, 2),
-                "success": fallback_result.success,
-                "exit_code": fallback_result.exit_code,
-            }
-        )
+        _record_attempt(fallback_profile, fallback_result, fallback_elapsed)
         preflight_result = fallback_result
         _preflight_elapsed += fallback_elapsed
 

@@ -170,6 +170,13 @@ class TestPreflightParseErrorIntegration:
         assert result.state.preflight_degraded_reason == "parse_error"
         assert result.phase == Phase.DONE
         assert result.success is True
+        # #1773: an unparseable first output is re-requested against the same
+        # profile before falling through to degraded PROCEED.
+        assert mock_preflight.call_count == 2
+        assert [c.kwargs["profile"].name for c in mock_preflight.call_args_list] == [
+            config.preflight_profile.name,
+            config.preflight_profile.name,
+        ]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -200,5 +207,167 @@ class TestPreflightParseErrorIntegration:
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_degraded is True
         assert result.state.preflight_degraded_reason == "parse_error"
+        assert result.phase == Phase.DONE
+        assert result.success is True
+
+
+# ── Same-profile parse-error retry (#1773) ─────────────────────────────────────
+
+# The conversational narration observed in #1453 / #1735: sonnet narrated a
+# hand-off to a non-existent "investigation agent" in place of the structured
+# dict. yaml.safe_load parses this scalar prose to a string, so the parser
+# reports parse_error.
+PREFLIGHT_NARRATION = "I'll pause here until the investigation agent's findings come back."
+
+PREFLIGHT_PROCEED_WITH_FILES = """\
+```yaml
+verdict: PROCEED
+reason: "Needs implementation."
+complexity: medium
+sufficiency: needs_planning
+work_type: feature
+likely_files:
+  - "src/theforge/coordinator/preflight_flow.py"
+```
+"""
+
+
+class TestPreflightParseErrorRetry:
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_parse_error_retried_same_profile_recovers_metadata(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """First output is narration (parse_error); same-profile retry recovers a
+        structured result, so the run is NOT degraded and agent-derived metadata
+        (likely_files) is preserved."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_NARRATION, cost_usd=0.05),
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_WITH_FILES, cost_usd=0.05),
+        ]
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert mock_preflight.call_count == 2
+        # Both attempts used the SAME (primary) profile — no fallback involved.
+        assert [c.kwargs["profile"].name for c in mock_preflight.call_args_list] == [
+            config.preflight_profile.name,
+            config.preflight_profile.name,
+        ]
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_degraded is False
+        assert result.state.preflight_degraded_reason is None
+        # Recovered structured metadata — not the silent-None of a discarded run.
+        assert result.state.preflight_likely_files == [
+            "src/theforge/coordinator/preflight_flow.py"
+        ]
+        assert result.phase == Phase.DONE
+        assert result.success is True
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_parse_error_retry_exhausted_marks_degraded(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """When the same-profile retry is also unparseable, the run is marked
+        degraded (parse_error) with None likely_files so collision serialization
+        treats the footprint as unknown-and-risky, not known-empty."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_NARRATION, cost_usd=0.05),
+            _make_agent_result(success=True, output=PREFLIGHT_NARRATION, cost_usd=0.05),
+        ]
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert mock_preflight.call_count == 2
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "parse_error"
+        assert result.state.preflight_likely_files is None
+        # Both attempts recorded in the audit trail for traceability.
+        assert len(result.state.preflight_result.raw["attempts"]) == 2
+        assert result.phase == Phase.DONE
+        assert result.success is True
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_parse_error_retry_precedes_fallback_profile(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """With a fallback profile configured, the same-profile retry fires FIRST;
+        only when it is still unparseable does the fallback profile run."""
+        from theforge.config.types import ModelProfile
+
+        config = _make_config(tmp_path)
+        fallback = ModelProfile(
+            name="preflight_fallback",
+            cli="gemini",
+            model="gemini-2.5-pro",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read", "Bash", "Glob", "Grep"),
+            phase="preflight",
+        )
+        config = config.__class__(**{**config.__dict__, "preflight_fallback_profile": fallback})
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_NARRATION, cost_usd=0.05),
+            _make_agent_result(success=True, output=PREFLIGHT_NARRATION, cost_usd=0.05),
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_WITH_FILES, cost_usd=0.05),
+        ]
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert mock_preflight.call_count == 3
+        assert [c.kwargs["profile"].name for c in mock_preflight.call_args_list] == [
+            config.preflight_profile.name,
+            config.preflight_profile.name,
+            "preflight_fallback",
+        ]
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_degraded is False
+        assert result.state.preflight_likely_files == [
+            "src/theforge/coordinator/preflight_flow.py"
+        ]
         assert result.phase == Phase.DONE
         assert result.success is True
