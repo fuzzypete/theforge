@@ -230,8 +230,19 @@ def compute_synthetic_edges(
     deps: dict[str, set[str]] = {task.slug: set(task.depends_on) for task in tasks}
     synthetic: dict[str, set[str]] = {}
 
+    # A story whose preflight_likely_files is None (preflight failed/excluded) or
+    # empty ([]) has an *unknown* footprint. Absence of evidence is not evidence
+    # of no collision: such a story could touch any file, so it must serialize
+    # conservatively against every other story rather than silently race them to
+    # a merge-time conflict. Stories with a known, non-empty footprint continue
+    # to serialize only on an actual file intersection, so genuinely disjoint
+    # work still runs in parallel.
+    unknown_slugs: list[str] = []
     for slug, state in preflight_states.items():
-        if state.preflight_likely_files is None:
+        if slug not in task_by_slug:
+            continue
+        if not state.preflight_likely_files:
+            unknown_slugs.append(slug)
             continue
         for path in state.preflight_likely_files:
             file_to_slugs.setdefault(path, []).append(slug)
@@ -253,6 +264,17 @@ def compute_synthetic_edges(
             stack.extend(deps.get(slug, set()) - seen)
         return False
 
+    def _serialize(prev: str, curr: str) -> str | None:
+        """Inject a serialize edge (curr depends_on prev). Returns a skip reason
+        if the edge already exists or would cycle, else None (edge injected)."""
+        if _has_dependency_path(curr, prev):
+            return f"{curr} already depends_on {prev}"
+        if _has_dependency_path(prev, curr):
+            return f"{curr} depends_on {prev} would cycle"
+        synthetic.setdefault(curr, set()).add(prev)
+        deps.setdefault(curr, set()).add(prev)
+        return None
+
     for path, slugs in sorted(file_to_slugs.items()):
         unique_slugs = sorted(set(slugs), key=_sort_key)
         if len(unique_slugs) <= 1:
@@ -260,16 +282,57 @@ def compute_synthetic_edges(
         injected: list[str] = []
         skipped: list[str] = []
         for prev, curr in zip(unique_slugs, unique_slugs[1:], strict=False):
-            if _has_dependency_path(curr, prev):
-                skipped.append(f"{curr} already depends_on {prev}")
-                continue
-            if _has_dependency_path(prev, curr):
-                skipped.append(f"{curr} depends_on {prev} would cycle")
-                continue
-            synthetic.setdefault(curr, set()).add(prev)
-            deps.setdefault(curr, set()).add(prev)
-            injected.append(f"{curr} depends_on {prev}")
+            reason = _serialize(prev, curr)
+            if reason is None:
+                injected.append(f"{curr} depends_on {prev}")
+            else:
+                skipped.append(reason)
         detail = f"Collision detected for {path}: stories={unique_slugs}; injected={injected}"
+        if skipped:
+            detail += f"; skipped={skipped}"
+        _log(detail)
+
+    # Conservative fallback for unknown footprints. A story with a known,
+    # non-empty likely_files set makes a concrete claim about which files it
+    # touches; an unknown-footprint sibling cannot be proven disjoint from that
+    # claim, so it is serialized against it rather than left to race to a
+    # merge-time conflict. Edges are pairwise (not a chain), so known, disjoint
+    # siblings are not serialized against each other as a side effect — only the
+    # unknown story is pinned relative to each concrete claim.
+    #
+    # Two prediction-less stories are deliberately NOT serialized against each
+    # other: there is no concrete file claim on either side and no evidence of
+    # overlap, so chaining every prediction-less story would collapse all
+    # parallelism on zero signal (e.g. a fully offline sprint where preflight
+    # could not run at all). That residual overlap is left to the integration
+    # step to detect and recover.
+    known_slugs = sorted(
+        (
+            slug
+            for slug, state in preflight_states.items()
+            if state.preflight_likely_files and slug in task_by_slug
+        ),
+        key=_sort_key,
+    )
+    for unknown in sorted(set(unknown_slugs), key=_sort_key):
+        injected = []
+        skipped = []
+        for known in known_slugs:
+            if known == unknown:
+                continue
+            prev, curr = sorted((unknown, known), key=_sort_key)
+            reason = _serialize(prev, curr)
+            if reason is None:
+                injected.append(f"{curr} depends_on {prev}")
+            else:
+                skipped.append(reason)
+        if not injected and not skipped:
+            continue
+        detail = (
+            f"Unknown footprint for {unknown} (empty/None likely_files): "
+            f"serializing conservatively against known-footprint siblings; "
+            f"injected={injected}"
+        )
         if skipped:
             detail += f"; skipped={skipped}"
         _log(detail)

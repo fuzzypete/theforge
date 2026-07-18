@@ -56,11 +56,67 @@ def test_inject_synthetic_deps_writes_to_collision_deps() -> None:
     assert augmented[1].collision_deps == ["extra", "story-12"]
 
 
-def test_compute_synthetic_edges_ignores_missing_likely_files() -> None:
+def test_compute_synthetic_edges_serializes_empty_likely_files_conservatively() -> None:
+    """An empty likely_files ([]) is an *unknown* footprint, not proof of no
+    collision. The regression from #1771: story-12 emitted [] while story-15
+    correctly predicted a shared file; the empty side contributed nothing to the
+    intersection so no edge formed and both raced to a merge conflict. Now the
+    unknown-footprint story is serialized conservatively against its siblings."""
     tasks = [_task("story-12", 12), _task("story-15", 15)]
     states = {
         "story-12": CoordinatorState(preflight_likely_files=[]),
         "story-15": CoordinatorState(preflight_likely_files=["a.py"]),
+    }
+
+    assert compute_synthetic_edges(states, tasks) == {"story-15": ["story-12"]}
+
+
+def test_compute_synthetic_edges_serializes_none_likely_files_conservatively() -> None:
+    """A None footprint (preflight failed/excluded) is also unknown and must be
+    serialized conservatively rather than silently granted zero protection."""
+    tasks = [_task("story-12", 12), _task("story-15", 15)]
+    states = {
+        "story-12": CoordinatorState(preflight_likely_files=None),
+        "story-15": CoordinatorState(preflight_likely_files=["a.py"]),
+    }
+
+    assert compute_synthetic_edges(states, tasks) == {"story-15": ["story-12"]}
+
+
+def test_compute_synthetic_edges_unknown_footprint_does_not_serialize_disjoint_siblings() -> None:
+    """The unknown story pins itself against every sibling, but known, disjoint
+    siblings must still run in parallel relative to each other (no blanket
+    over-serialization)."""
+    tasks = [_task("story-12", 12), _task("story-15", 15), _task("story-25", 25)]
+    states = {
+        # Unknown footprint — must serialize against both others.
+        "story-12": CoordinatorState(preflight_likely_files=[]),
+        # Known and disjoint — parallel to each other, after story-12.
+        "story-15": CoordinatorState(preflight_likely_files=["a.py"]),
+        "story-25": CoordinatorState(preflight_likely_files=["b.py"]),
+    }
+
+    synthetic = compute_synthetic_edges(states, tasks)
+
+    assert synthetic == {
+        "story-15": ["story-12"],
+        "story-25": ["story-12"],
+    }
+    # story-15 and story-25 do not depend on each other — disjoint work stays parallel.
+    build_dag(inject_synthetic_deps(tasks, synthetic))
+
+
+def test_compute_synthetic_edges_two_unknown_footprints_not_serialized() -> None:
+    """Two prediction-less stories are NOT serialized against each other: there
+    is no concrete file claim on either side and no evidence of overlap, so
+    chaining every prediction-less story would collapse all parallelism on zero
+    signal (e.g. a fully offline sprint where preflight could not run). That
+    residual overlap is left to the integration step. Conservative serialization
+    only fires against a sibling that made a concrete, non-empty file claim."""
+    tasks = [_task("story-12", 12), _task("story-15", 15)]
+    states = {
+        "story-12": CoordinatorState(preflight_likely_files=[]),
+        "story-15": CoordinatorState(preflight_likely_files=None),
     }
 
     assert compute_synthetic_edges(states, tasks) == {}
