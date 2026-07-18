@@ -602,6 +602,8 @@ class TestCreatePR:
         state = CoordinatorState()
 
         mock_run.side_effect = [
+            # operator-action label lookup: no operator-action label → auto-close stands
+            type("Proc", (), {"returncode": 0, "stdout": '{"labels": []}', "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
@@ -614,7 +616,7 @@ class TestCreatePR:
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
-        pr_call = mock_run.call_args_list[3]
+        pr_call = mock_run.call_args_list[4]
         body_idx = pr_call[0][0].index("--body") + 1
         body = pr_call[0][0][body_idx]
         assert "Closes #99" in body

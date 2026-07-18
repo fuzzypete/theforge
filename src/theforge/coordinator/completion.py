@@ -255,6 +255,61 @@ def _build_exception_context(
     return context
 
 
+def _issue_is_operator_action(issue_number: int, project_root: Path) -> bool:
+    """Return True when GitHub issue #N carries the ``operator-action`` label.
+
+    Operator-action issues describe a human deliverable; the operator closes
+    them manually once the action is done. A PR that ships adjacent dev work
+    must therefore reference such an issue without a ``Closes #N`` directive,
+    which would fire GitHub's auto-close on merge and lose the tracked work item
+    before the operator performs the action.
+
+    Best-effort: on any gh lookup failure this returns False (fail-open) so
+    ordinary dev issues keep their auto-close behavior; the miss is logged so
+    the decision remains auditable.
+    """
+    # Imported lazily: sprint.__init__ pulls in the runner → coordinator.engine
+    # chain, and a module-level import here would close a circular import loop
+    # during engine load.
+    from theforge.sprint.shape_gate import OPERATOR_ACTION_LABEL
+
+    try:
+        proc = subprocess.run(
+            ["gh", "issue", "view", str(issue_number), "--json", "labels"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("operator-action label lookup failed for #%s: %s", issue_number, exc)
+        return False
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip()
+        _pr_log.warning(
+            "operator-action label lookup failed for #%s (gh exited %d): %s",
+            issue_number,
+            proc.returncode,
+            err,
+        )
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        _pr_log.warning(
+            "operator-action label lookup returned invalid JSON for #%s: %s",
+            issue_number,
+            exc,
+        )
+        return False
+    names = {
+        str(lbl.get("name", "")).strip().lower()
+        for lbl in (data.get("labels") or [])
+        if isinstance(lbl, dict)
+    }
+    return OPERATOR_ACTION_LABEL.lower() in names
+
+
 def _create_pr(
     config: ForgeConfig,
     task: TaskStory,
@@ -280,7 +335,20 @@ def _create_pr(
     else:
         findings_md = "_No findings._"
 
-    closes_line = f"\n\nCloses #{task.github_issue}" if task.github_issue else ""
+    if task.github_issue and _issue_is_operator_action(task.github_issue, config.project_root):
+        # Operator-action issues close manually when the operator performs the
+        # deliverable — never via a PR's auto-close directive. Emit a plain
+        # reference (``Refs``) so the PR still appears in the issue timeline
+        # without firing GitHub's ``Closes``-keyword auto-close on merge.
+        closes_line = f"\n\nRefs #{task.github_issue}"
+        _log(
+            f"  Issue #{task.github_issue} is operator-action; PR references it "
+            f"(Refs) instead of auto-closing (Closes)"
+        )
+    elif task.github_issue:
+        closes_line = f"\n\nCloses #{task.github_issue}"
+    else:
+        closes_line = ""
     if task.story_path is None and task.github_issue:
         story_line = f"{task.name} (GitHub Issue #{task.github_issue})"
     else:
