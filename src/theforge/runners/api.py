@@ -191,6 +191,7 @@ class AgentLoopManager:
         provider_adapter: ProviderAdapter,
         finalizer: Finalizer | None = None,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+        progress_cb: "Callable[[dict], None] | None" = None,
     ) -> None:
         self._profile = profile
         self._provider = provider
@@ -198,6 +199,8 @@ class AgentLoopManager:
         self._tools = {t.name: t for t in tools}
         self._adapter = provider_adapter
         self._finalizer = finalizer
+        # Passive per-iteration progress observer (no control-flow influence).
+        self._progress_cb = progress_cb
         # Per-profile max_iterations takes precedence over the constructor default
         self._max_iterations = profile.max_iterations or max_iterations
         self._usage = _UsageAccumulator()
@@ -354,6 +357,18 @@ class AgentLoopManager:
                 )
                 for name in turn_call_names:
                     _tool_call_counts[name] = _tool_call_counts.get(name, 0) + 1
+                # Passive progress emit — best-effort, never influences the loop.
+                if self._progress_cb is not None:
+                    try:
+                        self._progress_cb(
+                            {
+                                "label": label,
+                                "iter": iterations,
+                                "tool_calls": len(turn_call_names),
+                            }
+                        )
+                    except Exception:
+                        pass
 
             # Log text reasoning snippet at verbose level
             if turn.text_output and turn.text_output.strip():
@@ -694,6 +709,8 @@ def _run_loop_openai(
     profile: "ModelProfile",
     working_dir: Path,
     secrets: dict[str, str] | None = None,
+    *,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run OpenAI provider in agent loop mode."""
     import openai
@@ -724,6 +741,7 @@ def _run_loop_openai(
         tools=tools,
         provider_adapter=adapter,
         finalizer=finalizer,
+        progress_cb=progress_cb,
     )
     try:
         result = manager.run(
@@ -758,6 +776,8 @@ def _run_loop_anthropic(
     profile: "ModelProfile",
     working_dir: Path,
     secrets: dict[str, str] | None = None,
+    *,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run Anthropic provider in agent loop mode."""
     tools = _build_registry_tools(profile)
@@ -775,6 +795,7 @@ def _run_loop_anthropic(
         tools=tools,
         provider_adapter=adapter,
         finalizer=finalizer,
+        progress_cb=progress_cb,
     )
     return manager.run(
         initial_messages=[{"role": "user", "content": prompt}],
@@ -787,6 +808,8 @@ def _run_loop_google(
     profile: "ModelProfile",
     working_dir: Path,
     secrets: dict[str, str] | None = None,
+    *,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run Google provider in agent loop mode."""
     tools = _build_registry_tools(profile)
@@ -804,6 +827,7 @@ def _run_loop_google(
         tools=tools,
         provider_adapter=adapter,
         finalizer=finalizer,
+        progress_cb=progress_cb,
     )
     return manager.run(
         initial_messages=[{"role": "user", "content": prompt}],
@@ -816,6 +840,8 @@ def _run_loop_deepseek(
     profile: "ModelProfile",
     working_dir: Path,
     secrets: dict[str, str] | None = None,
+    *,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run DeepSeek provider in agent loop mode (OpenAI Chat Completions)."""
     client = _deepseek_client(profile, secrets)
@@ -836,6 +862,7 @@ def _run_loop_deepseek(
         tools=tools,
         provider_adapter=adapter,
         finalizer=finalizer,
+        progress_cb=progress_cb,
     )
     return manager.run(
         initial_messages=[{"role": "user", "content": prompt}],
@@ -861,6 +888,7 @@ def _run_single_api_model(
     working_dir: Path,
     secrets: dict[str, str] | None,
     plain_text: bool,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Invoke one model (profile.model) via the provider's runner.
 
@@ -891,7 +919,7 @@ def _run_single_api_model(
                 raw={},
                 profile_name=profile.name,
             )
-        return loop_runner(prompt, profile, working_dir, secrets)
+        return loop_runner(prompt, profile, working_dir, secrets, progress_cb=progress_cb)
     else:
         runner_fn = PROVIDER_RUNNERS.get(profile.provider)
         if not runner_fn:
@@ -915,6 +943,7 @@ def run_api_agent(
     quiet: bool = False,
     secrets: dict[str, str] | None = None,
     plain_text: bool = False,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run a text-judgment agent via API, trying models in preference-list order.
 
@@ -964,6 +993,7 @@ def run_api_agent(
             working_dir=working_dir,
             secrets=secrets,
             plain_text=plain_text,
+            progress_cb=progress_cb,
         )
 
         if result.success:

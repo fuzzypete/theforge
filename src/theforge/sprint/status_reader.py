@@ -28,6 +28,7 @@ class StoryStatusEntry:
     complexity: str | None = None
     complexity_score: int | None = None
     model: str | None = None
+    last_event_ts: float | None = None
 
 
 def _follow_redirect_chain(run_id: str, project_root: Path, max_hops: int = 20) -> str:
@@ -285,6 +286,37 @@ def _format_terminal_stage(iteration_usage: dict | None) -> str:
     return " / ".join(parts)
 
 
+def _reviewer_progress_stage(progress: dict, pool_size: object) -> tuple[str, str]:
+    """Render live per-reviewer progress into (stage, pool_detail).
+
+    stage joins per-reviewer entries as ``name=done`` / ``name=iterN`` with
+    ``↻rN/M`` appended when a retry is active, e.g.
+    ``deepseek=done, gemini=iter3 ↻r1/2``.  pool_detail is ``pool D/S done``
+    where D counts done reviewers and S is the pool size.
+    """
+    parts: list[str] = []
+    done_count = 0
+    for name, info in progress.items():
+        if not isinstance(info, dict):
+            continue
+        if info.get("done"):
+            seg = f"{name}=done"
+            done_count += 1
+        else:
+            iteration = info.get("iter")
+            if isinstance(iteration, int) and iteration > 0:
+                seg = f"{name}=iter{iteration}"
+            else:
+                seg = f"{name}=…"
+        retry = info.get("retry")
+        if isinstance(retry, (list, tuple)) and len(retry) == 2:
+            seg += f" ↻r{retry[0]}/{retry[1]}"
+        parts.append(seg)
+    total = pool_size if isinstance(pool_size, int) and pool_size > 0 else len(progress)
+    pool_detail = f"pool {done_count}/{total} done"
+    return ", ".join(parts), pool_detail
+
+
 def _review_detail(verdict: object, p1: object, p2: object) -> str:
     verdict_text = _nonempty_str(verdict)
     if isinstance(p1, int) and isinstance(p2, int):
@@ -493,6 +525,12 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
         return stage, " | ".join(detail_parts) or "running", complexity
 
     if phase_val == "REVIEW":
+        reviewer_progress = detail_data.get("reviewer_progress")
+        if isinstance(reviewer_progress, dict) and reviewer_progress:
+            stage, pool_detail = _reviewer_progress_stage(
+                reviewer_progress, detail_data.get("reviewer_pool_size")
+            )
+            return stage, pool_detail, complexity
         cycle = detail_data.get("review_cycle")
         stage = _format_usage_stage(cycle, detail_data.get("review_max_cycles"), "cycle")
         if not stage and isinstance(cycle, int):
@@ -509,6 +547,12 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
         return "", "running", complexity
 
     if phase_val == "PLAN_REVIEW":
+        reviewer_progress = detail_data.get("reviewer_progress")
+        if isinstance(reviewer_progress, dict) and reviewer_progress:
+            stage, pool_detail = _reviewer_progress_stage(
+                reviewer_progress, detail_data.get("reviewer_pool_size")
+            )
+            return stage, pool_detail, complexity
         current = detail_data.get("plan_attempt")
         maximum = detail_data.get("plan_max_attempts")
         stage = _format_usage_stage(current, maximum, "cycle")
@@ -806,6 +850,13 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             model_raw = story.get("current_model")
             model_val = model_raw if isinstance(model_raw, str) and model_raw else None
 
+        _detail_dict = story.get("detail")
+        _last_event_ts: float | None = None
+        if isinstance(_detail_dict, dict):
+            _ts = _detail_dict.get("last_reviewer_event_ts")
+            if isinstance(_ts, (int, float)):
+                _last_event_ts = float(_ts)
+
         entries.append(
             StoryStatusEntry(
                 slug=slug,
@@ -821,6 +872,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 complexity=complexity,
                 complexity_score=complexity_score,
                 model=model_val,
+                last_event_ts=_last_event_ts,
             )
         )
         if slug:

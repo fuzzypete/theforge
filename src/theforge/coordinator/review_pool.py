@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +46,7 @@ from .review_context import (
     _parse_dev_handoff,
     hard_convention_review_kwargs,
 )
+from .reviewer_progress import ReviewerProgressChannel
 from .state import CoordinatorState, Phase, ReviewCycleMetadata
 
 if TYPE_CHECKING:
@@ -189,6 +191,7 @@ def _retry_transient_review_failures(
     pool_attempt: int,
     meta: ReviewCycleMetadata,
     stop_event: "threading.Event | None" = None,
+    progress_channel: "ReviewerProgressChannel | None" = None,
 ) -> list:
     """Retry per-reviewer transient transport failures with exponential backoff.
 
@@ -223,6 +226,9 @@ def _retry_transient_review_failures(
                 f"  ↻ {profile.name} transient transport failure "
                 f"(retry {retry_count}/{max_retries}) in {backoff:.0f}s"
             )
+            # Surface the retry live so the watch view shows ↻ rN/M immediately.
+            if progress_channel is not None:
+                progress_channel.set_retry(profile.name, retry_count, max_retries)
             if backoff > 0:
                 time.sleep(backoff)
             retried = run_agent(
@@ -233,6 +239,7 @@ def _retry_transient_review_failures(
                 secrets=config.secrets,
                 session_id=current.session_id if profile.mode == "cli" else None,
                 stop_event=stop_event,
+                progress_cb=progress_channel.cb if progress_channel is not None else None,
             )
             if retried.session_id:
                 state.reviewer_session_ids[profile.name] = retried.session_id
@@ -374,6 +381,7 @@ def _run_review_pool(
     max_review_parse_retries: int = 0,
     logger: Any | None = None,
     stop_event: "threading.Event | None" = None,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 
@@ -537,6 +545,16 @@ def _run_review_pool(
     for _p, _sid in zip(pool, pool_session_ids):
         _tag = f"resuming {_sid[:8]}" if _sid else "new session"
         _log_verbose(f"  reviewer {_p.name}: {_tag}")
+    # Passive per-reviewer progress channel: aggregates iter/done/retry events
+    # into live .state so the watch view can render per-reviewer progress.
+    progress_channel = ReviewerProgressChannel(
+        reviewer_names=[p.name for p in pool],
+        phase="REVIEW",
+        iteration=state.review_cycle + 1,
+        cost_usd=state.total_cost,
+        complexity=state.preflight_complexity,
+        state_update_fn=state_update_fn,
+    )
     pool_results = run_agent_pool(
         prompt=review_prompts,
         profiles=pool,
@@ -544,6 +562,7 @@ def _run_review_pool(
         session_ids=pool_session_ids,
         secrets=config.secrets,
         stop_event=stop_event,
+        progress_cb=progress_channel.cb,
     )
     _pool_elapsed = time.monotonic() - _pool_start
     for profile, result in zip(pool, pool_results):
@@ -591,6 +610,7 @@ def _run_review_pool(
         pool_attempt=pool_attempt,
         meta=meta,
         stop_event=stop_event,
+        progress_channel=progress_channel,
     )
 
     # Per-profile budget enforcement BEFORE synthesis — exclude over-budget

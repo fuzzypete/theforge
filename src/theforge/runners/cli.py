@@ -438,6 +438,7 @@ def run_agent(
     secrets: dict[str, str] | None = None,
     plain_text: bool = False,
     stop_event: "threading.Event | None" = None,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run an agent using the transport specified in its profile.
 
@@ -461,6 +462,7 @@ def run_agent(
             quiet=quiet,
             secrets=secrets or {},
             plain_text=plain_text,
+            progress_cb=progress_cb,
         )
         return replace(api_result, transport_used=api_result.transport_used or "api")
 
@@ -589,6 +591,7 @@ def run_agent_pool(
     secrets: dict[str, str] | None = None,
     plain_text: bool = False,
     stop_event: "threading.Event | None" = None,
+    progress_cb: "Callable[[dict], None] | None" = None,
 ) -> list[AgentResult]:
     """Run multiple agents concurrently, each with its own prompt or a shared prompt.
 
@@ -604,20 +607,32 @@ def run_agent_pool(
     if session_ids is not None:
         assert len(session_ids) == len(profiles), "session_ids must match profiles length"
 
+    def _emit_progress(event: dict) -> None:
+        """Fire the passive progress callback; a raising cb never breaks the pool."""
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(event)
+        except Exception:
+            pass
+
     if len(profiles) == 1:
         sid = session_ids[0] if session_ids else None
-        return [
-            run_agent(
-                prompt=prompts[0],
-                profile=profiles[0],
-                working_dir=working_dir,
-                session_id=sid,
-                fallback_to_file=False,
-                secrets=secrets,
-                plain_text=plain_text,
-                stop_event=stop_event,
-            )
-        ]
+        only = profiles[0]
+        result = run_agent(
+            prompt=prompts[0],
+            profile=only,
+            working_dir=working_dir,
+            session_id=sid,
+            fallback_to_file=False,
+            secrets=secrets,
+            plain_text=plain_text,
+            stop_event=stop_event,
+            progress_cb=progress_cb,
+        )
+        only_label = only.name or f"{only.cli or only.provider}/{only.model}"
+        _emit_progress({"label": only_label, "done": True})
+        return [result]
 
     names = ", ".join(p.name or f"{p.cli or p.provider}/{p.model}" for p in profiles)
     _log(f"  Starting review pool: {names} (parallel)")
@@ -641,6 +656,7 @@ def run_agent_pool(
                 secrets=secrets,
                 plain_text=plain_text,
                 stop_event=stop_event,
+                progress_cb=progress_cb,
             )
         finally:
             agent_durations[idx] = time.monotonic() - t0
@@ -655,6 +671,7 @@ def run_agent_pool(
             try:
                 results[idx] = future.result()
                 _log(f"  ... {label} done ({duration:.0f}s)")
+                _emit_progress({"label": label, "done": True})
             except Exception as exc:
                 _log(f"  ... {label} failed ({duration:.0f}s): {exc}")
                 results[idx] = AgentResult(
