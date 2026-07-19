@@ -143,9 +143,21 @@ run make gate
 echo "==> Deriving CHANGELOG section for v$VERSION from milestone + tag range..."
 TODAY=$(date +%Y-%m-%d)
 
-PREV_TAG=$(git describe --tags --abbrev=0 --exclude '*rc*' --match 'v[0-9]*.[0-9]*.[0-9]*')
+# Previous release tag = the highest final (non-rc) tag strictly below v$VERSION.
+# NOT `git describe`: release tags are cut on isolated release/vX.Y branches and
+# never merged back to main, so they are not in HEAD's ancestry and describe
+# would miss them. `git tag --list` enumerates all refs regardless of ancestry,
+# so we sort the final tags together with the target and take the one that lands
+# immediately before it.
+PREV_TAG=$(
+    {
+        git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -viE 'rc[0-9]*$' || true
+        echo "v$VERSION"
+    } | sort -V -u | awk -v cur="v$VERSION" '$0 == cur { print prev; exit } { prev = $0 }'
+)
 if [[ -z "$PREV_TAG" ]]; then
     echo "Error: could not determine previous release tag for the derivation range." >&2
+    echo "       No final vX.Y.Z tag below v$VERSION exists (first release?)." >&2
     exit 1
 fi
 echo "    Previous release tag: $PREV_TAG"

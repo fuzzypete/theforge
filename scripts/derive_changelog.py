@@ -35,9 +35,24 @@ import re
 import subprocess
 import sys
 
-# Trailing "(#1234)" on a squash-merge commit subject — this repo's forge
-# convention (e.g. "...surface reviewer time-nudge warnings (#1804)").
+# Trailing "(#1234)" on a squash-merge commit subject — the PR number GitHub
+# appends on squash merge (e.g. "...surface reviewer time-nudge warnings (#1804)").
+# This is the PR number, NOT the issue number; the milestone tracks ISSUES.
 _PR_NUM_RE = re.compile(r"\(#(\d+)\)\s*$")
+
+# GitHub closing keywords in a commit body link the merge to the milestone
+# issue(s) it resolves — forge emits "Closes #1087". The issue number here is
+# what must cross-reference against the milestone; it routinely differs from the
+# trailing PR number (issue #1087 closed by PR #1804).
+_CLOSES_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b",
+    re.IGNORECASE,
+)
+
+# git log record format: subject <US> body <RS>. The RS delimits commits so a
+# multi-line body (which carries the Closes trailers) stays attached to its
+# subject.
+_LOG_FORMAT = "%s%x1f%b%x1e"
 
 # Label -> Keep-a-Changelog section. First matching label (in this order) wins.
 _LABEL_SECTIONS = (
@@ -94,38 +109,59 @@ def fetch_milestone_issues(repo: str, version: str) -> list[dict]:
     return issues
 
 
-def fetch_merged_pr_numbers(prev_tag: str) -> set[int]:
-    """Return the set of PR numbers merged in prev_tag..HEAD.
+def fetch_merges(prev_tag: str) -> list[dict]:
+    """Return the PR merges in prev_tag..HEAD as [{pr, issues}].
 
-    Subjects without a trailing `(#N)` (version-bump chores, raw
-    `Merge pull request ...` subjects) are ignored so they don't trip the
-    reverse cross-reference.
+    Each entry carries the trailing `(#PR)` number (for reverse-check messaging)
+    and the set of milestone issue numbers the commit closes (its `Closes #N`
+    trailers). Commits with neither a trailing `(#N)` nor any closing trailer
+    (version-bump chores, raw `Merge pull request ...` subjects) are dropped so
+    they don't trip the reverse cross-reference.
     """
-    out = _run(["git", "log", "--pretty=%s", f"{prev_tag}..HEAD"])
-    numbers: set[int] = set()
-    for line in out.splitlines():
-        match = _PR_NUM_RE.search(line.strip())
-        if match:
-            numbers.add(int(match.group(1)))
-    return numbers
+    out = _run(["git", "log", f"--pretty=format:{_LOG_FORMAT}", f"{prev_tag}..HEAD"])
+    merges: list[dict] = []
+    for record in out.split("\x1e"):
+        if not record.strip():
+            continue
+        subject, _, body = record.partition("\x1f")
+        pr_match = _PR_NUM_RE.search(subject.strip())
+        pr_num = int(pr_match.group(1)) if pr_match else None
+        closed = {int(n) for n in _CLOSES_RE.findall(body)}
+        if pr_num is None and not closed:
+            continue
+        merges.append({"pr": pr_num, "issues": closed})
+    return merges
 
 
 def cross_reference(
-    issues: list[dict], merged: set[int], version: str, prev_tag: str
+    issues: list[dict], merges: list[dict], version: str, prev_tag: str
 ) -> list[str]:
-    """Return a list of discrepancy lines; empty means milestone ⇔ merges match."""
-    milestone_numbers = {issue["number"] for issue in issues}
-    discrepancies: list[str] = []
+    """Return a list of discrepancy lines; empty means milestone ⇔ merges match.
 
-    for number in sorted(milestone_numbers - merged):
+    Cross-references milestone ISSUE numbers against the issues each merge
+    *closes* (not the trailing PR number, which differs). Forward: every
+    milestone issue must be closed by some merge in the range. Reverse: every
+    merge in the range must close at least one milestone issue.
+    """
+    milestone_numbers = {issue["number"] for issue in issues}
+    closed_by_merges: set[int] = set()
+    for merge in merges:
+        closed_by_merges |= merge["issues"]
+
+    discrepancies: list[str] = []
+    for number in sorted(milestone_numbers - closed_by_merges):
         discrepancies.append(
             f"milestone v{version} has issue #{number} (closed) "
             f"with no PR merge in {prev_tag}..HEAD"
         )
-    for number in sorted(merged - milestone_numbers):
-        discrepancies.append(
-            f"PR #{number} merged in tag range with no v{version} milestone issue"
-        )
+    for merge in merges:
+        if merge["issues"] & milestone_numbers:
+            continue
+        if merge["pr"] is not None:
+            label = f"PR #{merge['pr']}"
+        else:
+            label = f"issue #{min(merge['issues'])}"
+        discrepancies.append(f"{label} merged in tag range with no v{version} milestone issue")
     return discrepancies
 
 
@@ -169,18 +205,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     issues = fetch_milestone_issues(args.repo, args.version)
-    merged = fetch_merged_pr_numbers(args.prev_tag)
+    merges = fetch_merges(args.prev_tag)
 
     print(
         f"[forge]   {len(issues)} closed issues in milestone v{args.version}",
         file=sys.stderr,
     )
     print(
-        f"[forge]   {len(merged)} PR merges in {args.prev_tag}..HEAD",
+        f"[forge]   {len(merges)} PR merges in {args.prev_tag}..HEAD",
         file=sys.stderr,
     )
 
-    discrepancies = cross_reference(issues, merged, args.version, args.prev_tag)
+    discrepancies = cross_reference(issues, merges, args.version, args.prev_tag)
     if discrepancies:
         for line in discrepancies:
             print(f"[forge] ERROR: {line}", file=sys.stderr)
