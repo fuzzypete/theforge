@@ -85,14 +85,20 @@ def _is_out_of_scope_config(path: str) -> bool:
     return any(fnmatch.fnmatch(path, glob) for glob in _ENV_CONFIG_ROOT_GLOBS)
 
 
-def committed_diff_paths(workspace_path: Path, base_branch: str) -> list[str]:
+def committed_diff_paths(workspace_path: Path, base_branch: str) -> list[str] | None:
     """Return the paths changed by HEAD relative to ``base_branch``.
 
     Runs ``git diff {base}...HEAD --name-only`` (three-dot: changes on HEAD since
     the merge-base, i.e. the dev iteration's own committed work). Tries
-    ``origin/{base}`` first, then the local ref. Fails open to ``[]`` on git
-    error — a transient git failure must not manufacture a spurious escalation
-    (mirrors commit_guard._has_commits_ahead_of_base).
+    ``origin/{base}`` first, then the local ref.
+
+    Returns the changed-path list on the first ref that diffs cleanly — an empty
+    list means the diff was computed and is genuinely empty. Returns ``None``
+    when *neither* ref can be diffed (both git invocations error), so the caller
+    can distinguish an inspection failure from a real empty diff and fail closed
+    rather than waving the branch through unchecked (see #1615 review). This is a
+    deliberate departure from commit_guard's fail-open posture: a scope guard
+    that cannot see the diff must not certify it clean.
     """
     for ref in (f"origin/{base_branch}", base_branch):
         try:
@@ -109,7 +115,7 @@ def committed_diff_paths(workspace_path: Path, base_branch: str) -> list[str]:
         if proc.returncode != 0:
             continue
         return [line for line in proc.stdout.splitlines() if line.strip()]
-    return []
+    return None
 
 
 def find_out_of_scope_config(paths: list[str]) -> list[str]:
@@ -131,8 +137,22 @@ def check_committed_scope(
     flagged subset) for the trail.
     """
     diff_paths = committed_diff_paths(workspace_path, base_branch)
+    if diff_paths is None:
+        # Neither the remote nor local base ref could be diffed. The guard
+        # cannot see the committed diff, so it must not certify it clean —
+        # fail closed with an operator-visible diagnostic (invariant: prefer
+        # failing closed over silently continuing with an unverifiable tree).
+        audit = {"diff_paths": [], "offending": [], "diff_error": True}
+        diagnostic = (
+            f"Diff-scope guard could not compute the committed diff against "
+            f"base branch '{base_branch}' (neither origin/{base_branch} nor "
+            f"{base_branch} could be diffed). Refusing to certify the branch "
+            "clean of out-of-scope environment config when the diff is "
+            "unverifiable. Ensure the base branch is fetched/reachable and retry."
+        )
+        return False, diagnostic, audit
     offending = find_out_of_scope_config(diff_paths)
-    audit: dict = {"diff_paths": sorted(diff_paths), "offending": offending}
+    audit: dict = {"diff_paths": sorted(diff_paths), "offending": offending, "diff_error": False}
     if not offending:
         return True, None, audit
     rendered = ", ".join(offending)

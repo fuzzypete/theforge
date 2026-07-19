@@ -114,10 +114,51 @@ def test_check_committed_scope_passes_in_scope_only(tmp_path: Path) -> None:
     assert set(audit["diff_paths"]) == {"src/app/x.py", "tests/test_x.py"}
 
 
-def test_committed_diff_paths_fails_open_on_bad_ref(tmp_path: Path) -> None:
+def test_committed_diff_paths_returns_none_when_diff_unavailable(tmp_path: Path) -> None:
     _init_repo(tmp_path)
-    # Non-existent base ref → both origin/ and local lookups fail → [].
-    assert committed_diff_paths(tmp_path, "does-not-exist") == []
+    # Non-existent base ref → neither origin/ nor local ref can be diffed →
+    # None (inspection failure), NOT [] (genuinely empty diff).
+    assert committed_diff_paths(tmp_path, "does-not-exist") is None
+
+
+def test_check_committed_scope_fails_closed_when_diff_unavailable(tmp_path: Path) -> None:
+    """When neither base ref can be diffed the guard must fail closed — it
+    cannot certify the branch clean of out-of-scope config (#1615 review P1)."""
+    _init_repo(tmp_path)
+    _commit_on_feature(
+        tmp_path,
+        {"poetry.toml": "[virtualenvs]\nin-project = true\n"},
+        "feat: sneaks in poetry.toml",
+    )
+
+    ok, diagnostic, audit = check_committed_scope(tmp_path, "does-not-exist")
+
+    assert ok is False
+    assert diagnostic is not None
+    assert "does-not-exist" in diagnostic
+    assert audit["diff_error"] is True
+
+
+def test_check_committed_scope_flags_committed_forge_artifact(tmp_path: Path) -> None:
+    """Force-committing a forge runtime artifact (the way the original
+    handoff.yaml leak actually happened despite .gitignore) is flagged
+    end-to-end through a real committed-diff seam (#1615 review P2)."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / "src.py").write_text("ok\n", encoding="utf-8")
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir(exist_ok=True)
+    (forge_dir / "handoff.yaml").write_text("gate_decision: PASS\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src.py"], cwd=tmp_path, check=True)
+    # -f because .forge/ is gitignored — exactly how the artifact leaked in the field.
+    subprocess.run(["git", "add", "-f", ".forge/handoff.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: leak handoff"], cwd=tmp_path, check=True)
+
+    ok, diagnostic, audit = check_committed_scope(tmp_path, "main")
+
+    assert ok is False
+    assert ".forge/handoff.yaml" in diagnostic
+    assert audit["offending"] == [".forge/handoff.yaml"]
 
 
 # ── seam: DEV → REVIEW boundary escalates on out-of-scope committed file ──
