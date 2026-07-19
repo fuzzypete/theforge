@@ -248,6 +248,10 @@ that work is not ready to implement and refuses to proceed with a legible reason
 That means refusing symptom bugs without diagnosis, stories without observable
 acceptance criteria, ambiguous scope, and work with unresolved dependencies.
 
+The full doctrine — failure mode, evaluation test, and worked examples — lives in
+[`docs/vision/refusal-capability.md`](docs/vision/refusal-capability.md), the
+sibling of the compound-engineering doctrine.
+
 Source: `project_north_star.md`
 
 ### Use released TheForge to build unreleased TheForge
