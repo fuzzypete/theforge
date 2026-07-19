@@ -831,6 +831,64 @@ class TestTimeNudge:
         # All nudge messages should be identical (sent once, seen in subsequent turns)
         assert len(set(time_nudges)) == 1
 
+    def test_time_nudge_emits_progress_event(self, tmp_path):
+        """issue #1087: the time-nudge is surfaced to the progress callback so the
+        watch view can flag the reviewer's imminent timeout."""
+        call_count = [0]
+        current_time = [1000.0]
+        events: list[dict] = []
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            current_time[0] += 12.0
+            if call_count[0] <= 8:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id=f"c{call_count[0]}", name="glob", arguments={"pattern": "*.py"}
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="submit1",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        with patch("theforge.runners.api.time") as mock_time:
+            mock_time.monotonic = lambda: current_time[0]
+            profile = _make_profile(timeout_seconds=100)
+            manager = AgentLoopManager(
+                profile=profile,
+                provider="openai",
+                working_dir=tmp_path,
+                tools=list(TOOL_REGISTRY.values()),
+                provider_adapter=adapter,
+                max_iterations=50,
+                progress_cb=events.append,
+            )
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+
+        assert result.success
+        nudge_events = [e for e in events if "nudge" in e]
+        assert len(nudge_events) == 1
+        assert nudge_events[0]["label"] == profile.name
+        assert isinstance(nudge_events[0]["nudge"], int)
+        assert nudge_events[0]["nudge"] > 0
+
 
 class TestRedactToolCallArguments:
     """Unit tests for _redact_tool_call_arguments and _SENSITIVE_ARG_NAMES."""

@@ -65,6 +65,37 @@ class TestReviewerProgressStage:
         assert stage == "a=done, b=done"
         assert pool_detail == "pool 2/2 done"
 
+    def test_nudge_chip_appended(self) -> None:
+        # issue #1087: an active reviewer that received a time-nudge shows a
+        # ⚠Ns imminent-timeout chip, distinct from iter/retry progress.
+        progress = {
+            "gemini": {"iter": 3, "tool_calls": 1, "retry": None, "done": False, "nudge": 116},
+        }
+        stage, _pool = _reviewer_progress_stage(progress, 1)
+        assert stage == "gemini=iter3 ⚠116s"
+
+    def test_nudge_chip_coexists_with_retry(self) -> None:
+        progress = {
+            "gemini": {"iter": 3, "tool_calls": 1, "retry": [1, 2], "done": False, "nudge": 90},
+        }
+        stage, _pool = _reviewer_progress_stage(progress, 1)
+        assert stage == "gemini=iter3 ↻r1/2 ⚠90s"
+
+    def test_nudge_chip_suppressed_when_done(self) -> None:
+        # A finalized reviewer never shows the imminent-timeout chip even if a
+        # stale nudge value lingers.
+        progress = {
+            "gemini": {"iter": 5, "tool_calls": 2, "retry": None, "done": True, "nudge": 116},
+        }
+        stage, _pool = _reviewer_progress_stage(progress, 1)
+        assert stage == "gemini=done"
+
+    def test_missing_nudge_field_is_tolerated(self) -> None:
+        # Legacy entries (pre-#1087) have no nudge key — must not raise.
+        progress = {"gpt": {"iter": 2, "tool_calls": 0, "retry": None, "done": False}}
+        stage, _pool = _reviewer_progress_stage(progress, 1)
+        assert stage == "gpt=iter2"
+
 
 # ── Seam: channel → live .state → read_live_status ────────────────────────────
 
@@ -247,6 +278,44 @@ class TestReviewerProgressSeam:
         assert "gemini=done" in entry.stage
         assert "↻" not in entry.stage
         assert entry.detail == "pool 1/1 done"
+
+    def test_time_nudge_flag_persists_until_finalize(self, tmp_path: Path) -> None:
+        # issue #1087: when the runner emits a time-nudge for an active reviewer,
+        # the row must flag imminent timeout (⚠Ns) and keep flagging it across
+        # subsequent iter events, then clear once the reviewer finalizes.
+        story: dict = {"slug": "s", "path": "s", "status": "running"}
+        channel = ReviewerProgressChannel(
+            reviewer_names=["gemini"],
+            phase="REVIEW",
+            iteration=1,
+            cost_usd=0.0,
+            complexity="medium",
+            state_update_fn=_worker_style_state_update(story),
+        )
+
+        # The runner surfaces the nudge (as run_agent's progress_cb would).
+        channel.cb({"label": "gemini", "iter": 3, "tool_calls": 4})
+        channel.cb({"label": "gemini", "nudge": 116})
+        assert story["detail"]["reviewer_progress"]["gemini"]["nudge"] == 116
+        _write_state(tmp_path, "run-x", story)
+        stage_nudged = read_live_status("run-x", tmp_path)[0].stage
+        assert "gemini=iter3 ⚠116s" in stage_nudged
+
+        # A later iter event must NOT clear the imminent-timeout flag — the
+        # reviewer is still within seconds of its deadline (unlike ↻ retry).
+        channel.cb({"label": "gemini", "iter": 4, "tool_calls": 2})
+        assert story["detail"]["reviewer_progress"]["gemini"]["nudge"] == 116
+        _write_state(tmp_path, "run-x", story)
+        stage_still = read_live_status("run-x", tmp_path)[0].stage
+        assert "gemini=iter4 ⚠116s" in stage_still
+
+        # Finalizing clears the flag.
+        channel.cb({"label": "gemini", "done": True})
+        assert story["detail"]["reviewer_progress"]["gemini"]["nudge"] is None
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert "gemini=done" in entry.stage
+        assert "⚠" not in entry.stage
 
     def test_raising_state_update_fn_never_breaks_channel(self, tmp_path: Path) -> None:
         def _boom(_updates: dict) -> None:
