@@ -15,7 +15,8 @@ Detail contract written into the story ``detail`` dict (replaced wholesale on
 each emit, since ``SprintStoryState`` transitions overwrite ``detail``):
 
     reviewer_progress: {name: {"iter": int, "tool_calls": int,
-                               "retry": [n, m] | None, "done": bool}}
+                               "retry": [n, m] | None, "done": bool,
+                               "nudge": int | None}}
     reviewer_pool_size: int
     last_reviewer_event_ts: float   # epoch seconds of the freshest event
 """
@@ -52,7 +53,13 @@ class ReviewerProgressChannel:
         self._state_update_fn = state_update_fn
         self._lock = threading.Lock()
         self._progress: dict[str, dict] = {
-            name: {"iter": 0, "tool_calls": 0, "retry": None, "done": False}
+            name: {
+                "iter": 0,
+                "tool_calls": 0,
+                "retry": None,
+                "done": False,
+                "nudge": None,
+            }
             for name in reviewer_names
         }
         # Emit the seeded pool state immediately so the watch view renders
@@ -79,11 +86,21 @@ class ReviewerProgressChannel:
                 if event.get("done"):
                     entry["done"] = True
                     entry["retry"] = None
+                    # The reviewer finalized: the imminent-timeout warning is no
+                    # longer relevant, so clear the nudge marker (AC: persists
+                    # until the reviewer finalizes or times out).
+                    entry["nudge"] = None
                 if "iter" in event:
                     entry["iter"] = event["iter"]
                     entry["retry"] = None
                 if "tool_calls" in event:
                     entry["tool_calls"] = event["tool_calls"]
+                if "nudge" in event:
+                    # A time-nudge was sent: the reviewer is within seconds of its
+                    # wall-clock deadline. Unlike ``retry``, this marker is NOT
+                    # cleared by subsequent iter events — the reviewer stays near
+                    # its deadline — it only clears on finalize (done above).
+                    entry["nudge"] = event["nudge"]
                 self._emit_locked()
         except Exception:
             pass

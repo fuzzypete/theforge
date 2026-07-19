@@ -291,7 +291,9 @@ def _reviewer_progress_stage(progress: dict, pool_size: object) -> tuple[str, st
 
     stage joins per-reviewer entries as ``name=done`` / ``name=iterN`` with
     ``↻rN/M`` appended when a retry is active, e.g.
-    ``deepseek=done, gemini=iter3 ↻r1/2``.  pool_detail is ``pool D/S done``
+    ``deepseek=done, gemini=iter3 ↻r1/2``.  A ``⚠Ns`` chip is appended for a
+    reviewer that has received a time-nudge (imminent-timeout warning) and not
+    yet finalized, e.g. ``gemini=iter3 ⚠116s``.  pool_detail is ``pool D/S done``
     where D counts done reviewers and S is the pool size.
     """
     parts: list[str] = []
@@ -311,6 +313,12 @@ def _reviewer_progress_stage(progress: dict, pool_size: object) -> tuple[str, st
         retry = info.get("retry")
         if isinstance(retry, (list, tuple)) and len(retry) == 2:
             seg += f" ↻r{retry[0]}/{retry[1]}"
+        # Imminent-timeout signal (distinct from retry/iter progress): a
+        # time-nudge was sent and the reviewer has not finalized. Persist until
+        # it finalizes (nudge cleared) or times out (row replaced by phase move).
+        nudge = info.get("nudge")
+        if not info.get("done") and isinstance(nudge, int) and nudge > 0:
+            seg += f" ⚠{nudge}s"
         parts.append(seg)
     total = pool_size if isinstance(pool_size, int) and pool_size > 0 else len(progress)
     pool_detail = f"pool {done_count}/{total} done"

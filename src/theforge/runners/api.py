@@ -513,6 +513,14 @@ class AgentLoopManager:
                         messages = list(messages)
                         messages.append({"role": "user", "content": nudge_msg})
                         _log_verbose(f"  ⚠ {label} time nudge sent ({remaining_secs}s remaining)")
+                        # Passive progress emit — surface the imminent-timeout
+                        # signal in the live watch view. Best-effort; never
+                        # influences the loop.
+                        if self._progress_cb is not None:
+                            try:
+                                self._progress_cb({"label": label, "nudge": remaining_secs})
+                            except Exception:
+                                pass
 
         # Log iteration summary
         submit_names = _SUBMIT_TOOL_NAMES
