@@ -1329,15 +1329,21 @@ def _run_dev_phase(
     # to DEV — before advancing (#1365). Only runs on the successful-dev
     # fall-through; the timeout/max-iterations retry returns above re-enter DEV.
     #
-    # No expected_branch_name is passed: coordinator worktrees legitimately run
-    # on a detached HEAD (reused worktrees are checked out and rebased onto
-    # origin/{base_branch}), so a "must be on branch X" assertion would fire on
-    # every healthy run. The residue / base-ancestry / merge-commit checks are
-    # what catch the corrupted state this boundary exists to refuse.
+    # expected_branch_name=branch_name enforces the spec's "refs matching what
+    # the coordinator expects" clause: a coordinator worktree is created on the
+    # story branch (`git worktree add <path> <branch>`) and every rebase keeps
+    # HEAD on it, so a dev iteration that ends detached — or checked out onto a
+    # different ref — has mutated branch state that integration would silently
+    # skip (it force-pushes the *named* branch, not the detached commit). A
+    # detached HEAD is treated as corrupt here exactly as workspace.py already
+    # treats it during worktree reuse. The branch check fails open on a git
+    # error (e.g. a non-repo scratch dir), so only a genuine wrong-ref state
+    # escalates.
     _wt_state = check_worktree_git_consistency(
         workspace_path,
         expected_base_sha=state.last_dev_start_commit,
         base_branch=config.workspace.base_branch,
+        expected_branch_name=branch_name,
     )
     if not _wt_state.consistent:
         state.phase = Phase.ESCALATE

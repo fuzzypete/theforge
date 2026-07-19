@@ -309,6 +309,86 @@ def test_dev_phase_escalates_when_successful_result_left_residue(tmp_path: Path)
     assert "DEV phase" in (state.error or "")
 
 
+def test_dev_phase_escalates_when_dev_left_head_detached(tmp_path: Path) -> None:
+    """A dev result that ends with a detached HEAD (committed off the story
+    branch) must escalate with a DEV-attributed error, not advance — integration
+    force-pushes the named branch, so the detached commit would be silently lost."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/t"], cwd=tmp_path, check=True)
+    config = _make_config(tmp_path)
+    task = TaskStory(name="t", slug="t", story_path="specs/t.md")
+    state = CoordinatorState()
+    state.adaptive_dev_max = 3
+    state.budget.max_iterations = 3
+    state.budget.consume(review_cycle=0)
+
+    # Dev commits on the branch, then detaches HEAD and commits there — the
+    # branch ref no longer points at HEAD.
+    def agent_side_effect(**_kwargs):
+        _commit(tmp_path, "onbranch.py")
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=tmp_path, check=True)
+        _commit(tmp_path, "detached.py")
+        return _make_agent_result(success=True, output="Done.")
+
+    from theforge.coordinator.dev_phase import _run_dev_phase
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=agent_side_effect)
+        )
+        stack.enter_context(
+            patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock())
+        )
+        result = _run_dev_phase(
+            state, config, task, "# t\n", tmp_path, "feat/t", notify=False, logger=None
+        )
+
+    assert isinstance(result, CoordinatorResult)
+    assert result.success is False
+    assert state.phase == Phase.ESCALATE
+    assert "inconsistent git state" in (state.error or "")
+    assert "detached" in (state.error or "")
+    assert "DEV phase" in (state.error or "")
+
+
+def test_dev_phase_escalates_when_dev_left_wrong_branch(tmp_path: Path) -> None:
+    """A dev result that ends checked out on a different branch than the
+    coordinator's story branch must escalate rather than advance."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/t"], cwd=tmp_path, check=True)
+    config = _make_config(tmp_path)
+    task = TaskStory(name="t", slug="t", story_path="specs/t.md")
+    state = CoordinatorState()
+    state.adaptive_dev_max = 3
+    state.budget.max_iterations = 3
+    state.budget.consume(review_cycle=0)
+
+    def agent_side_effect(**_kwargs):
+        _commit(tmp_path, "work.py")
+        # Dev switches the worktree onto a different branch.
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/other"], cwd=tmp_path, check=True)
+        return _make_agent_result(success=True, output="Done.")
+
+    from theforge.coordinator.dev_phase import _run_dev_phase
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=agent_side_effect)
+        )
+        stack.enter_context(
+            patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock())
+        )
+        result = _run_dev_phase(
+            state, config, task, "# t\n", tmp_path, "feat/t", notify=False, logger=None
+        )
+
+    assert isinstance(result, CoordinatorResult)
+    assert result.success is False
+    assert state.phase == Phase.ESCALATE
+    assert "unexpected branch" in (state.error or "")
+    assert "DEV phase" in (state.error or "")
+
+
 def test_dev_phase_advances_when_worktree_clean(tmp_path: Path) -> None:
     """A successful dev result with a clean worktree returns None to advance."""
     _init_repo(tmp_path)
