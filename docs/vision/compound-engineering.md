@@ -46,7 +46,7 @@ Worked examples of the test in use:
 
 ## Compound engineering and refusal-capability are siblings
 
-Two axes, neither subsumes the other. From the `project_north_star.md` memory entry (durable artifact pending — see "Companion doctrine" at the end of this document):
+Two axes, neither subsumes the other. From the sibling doctrine [`refusal-capability.md`](refusal-capability.md):
 
 > A sophisticated SDLC orchestrator is not one that guesses faster — it's one that knows when a thing is not ready to be implemented and refuses to proceed.
 
@@ -117,4 +117,4 @@ These are signals the system should make legible over time. Not all are implemen
 
 ## Companion doctrine
 
-Refusal-capability has its own doctrine surface and deserves its own document (`docs/vision/refusal-capability.md` is open future work, promoting `project_north_star.md` from memory). Until that lands, treat the two as a pair: compound engineering and refusal-capability cite each other across every ADR.
+Refusal-capability has its own doctrine surface in [`refusal-capability.md`](refusal-capability.md). Treat the two as a pair: compound engineering and refusal-capability cite each other across every ADR. Compound engineering preserves *what is learned*; refusal-capability preserves *what gets built*. Neither is sufficient alone.
