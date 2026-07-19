@@ -180,6 +180,44 @@ class TestReviewerProgressSeam:
         assert entry.detail == "running"
         assert entry.last_event_ts is None
 
+    def test_retry_glyph_clears_on_next_progress_event(self, tmp_path: Path) -> None:
+        # AC #3: the ↻rN/M marker must show "while it is retrying", not stick for
+        # the rest of the review. A fresh iter/done event for the reviewer clears
+        # the retry marker; the pool-done count then reflects the resolution.
+        story: dict = {"slug": "s", "path": "s", "status": "running"}
+        channel = ReviewerProgressChannel(
+            reviewer_names=["gemini"],
+            phase="REVIEW",
+            iteration=1,
+            cost_usd=0.0,
+            complexity="medium",
+            state_update_fn=_worker_style_state_update(story),
+        )
+
+        # A transient retry is recorded → glyph is outstanding.
+        channel.set_retry("gemini", 1, 2)
+        _write_state(tmp_path, "run-x", story)
+        stage_mid = read_live_status("run-x", tmp_path)[0].stage
+        assert "↻r1/2" in stage_mid
+
+        # The retried attempt starts producing events → marker clears.
+        channel.cb({"label": "gemini", "iter": 4, "tool_calls": 2})
+        assert story["detail"]["reviewer_progress"]["gemini"]["retry"] is None
+        _write_state(tmp_path, "run-x", story)
+        stage_after = read_live_status("run-x", tmp_path)[0].stage
+        assert "↻" not in stage_after
+        assert "gemini=iter4" in stage_after
+
+        # A subsequent successful-retry done event clears it too and counts done.
+        channel.set_retry("gemini", 2, 2)
+        channel.cb({"label": "gemini", "done": True})
+        assert story["detail"]["reviewer_progress"]["gemini"]["retry"] is None
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert "gemini=done" in entry.stage
+        assert "↻" not in entry.stage
+        assert entry.detail == "pool 1/1 done"
+
     def test_raising_state_update_fn_never_breaks_channel(self, tmp_path: Path) -> None:
         def _boom(_updates: dict) -> None:
             raise RuntimeError("state write failed")

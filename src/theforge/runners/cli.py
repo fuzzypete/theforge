@@ -631,7 +631,12 @@ def run_agent_pool(
             progress_cb=progress_cb,
         )
         only_label = only.name or f"{only.cli or only.provider}/{only.model}"
-        _emit_progress({"label": only_label, "done": True})
+        # Only a successful result means the reviewer is done. An unsuccessful
+        # (e.g. transient transport) result is a finished attempt the coordinator
+        # may still retry — marking it done would count/label it wrongly while
+        # the retry loop is running.
+        if getattr(result, "success", False):
+            _emit_progress({"label": only_label, "done": True})
         return [result]
 
     names = ", ".join(p.name or f"{p.cli or p.provider}/{p.model}" for p in profiles)
@@ -671,7 +676,13 @@ def run_agent_pool(
             try:
                 results[idx] = future.result()
                 _log(f"  ... {label} done ({duration:.0f}s)")
-                _emit_progress({"label": label, "done": True})
+                # Only mark the reviewer done when the attempt actually
+                # succeeded. A returned-but-unsuccessful result (transient
+                # transport failure) is a finished attempt the coordinator may
+                # still retry; counting it as done would falsely report it in the
+                # pool-done progress while the retry loop is still running.
+                if getattr(results[idx], "success", False):
+                    _emit_progress({"label": label, "done": True})
             except Exception as exc:
                 _log(f"  ... {label} failed ({duration:.0f}s): {exc}")
                 results[idx] = AgentResult(

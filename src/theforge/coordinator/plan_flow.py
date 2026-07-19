@@ -311,6 +311,10 @@ def _retry_transient_plan_review_failures(
             )
             current = retried
 
+        # A resolved retry marks the reviewer done (also clears the ↻rN/M glyph)
+        # so the pool-done count stays accurate.
+        if retry_count > 0 and current.success and progress_channel is not None:
+            progress_channel.cb({"label": profile.name, "done": True})
         retried_results[index] = current
 
     return retried_results, retry_events

@@ -294,6 +294,95 @@ class TestRunAgentPool:
         assert results[0].profile_name == "r1"
         assert results[1].profile_name == "r2"
 
+    def test_pool_emits_done_only_for_successful_results(self, tmp_path: Path) -> None:
+        """A returned-but-unsuccessful (transient) result must not fire a done event.
+
+        The coordinator's transient-retry loop may still re-run that reviewer, so
+        counting/labelling it done in the live watch view while the retry is
+        pending is wrong (issue #1086, review cycle 1 P1).
+        """
+        profiles = [
+            ModelProfile(
+                name="ok-reviewer",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="transient-reviewer",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+
+        def mock_run_agent(**kwargs):
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=profile.name == "ok-reviewer",
+                output="done" if profile.name == "ok-reviewer" else "503 service unavailable",
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0 if profile.name == "ok-reviewer" else 1,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        done_labels: list[str] = []
+
+        def progress_cb(event: dict) -> None:
+            if event.get("done"):
+                done_labels.append(event["label"])
+
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
+            run_agent_pool(
+                prompt="review this",
+                profiles=profiles,
+                working_dir=tmp_path,
+                progress_cb=progress_cb,
+            )
+
+        assert done_labels == ["ok-reviewer"]
+        assert "transient-reviewer" not in done_labels
+
+    def test_pool_of_one_suppresses_done_on_unsuccessful_result(self, tmp_path: Path) -> None:
+        """The single-profile fast path also gates the done event on success."""
+        profile = ModelProfile(
+            name="solo",
+            cli="claude",
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+
+        def mock_run_agent(**kwargs):
+            return AgentResult(
+                success=False,
+                output="connection reset",
+                session_id=None,
+                cost_usd=None,
+                exit_code=1,
+                raw={},
+                profile_name="solo",
+            )
+
+        done_labels: list[str] = []
+
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
+            run_agent_pool(
+                prompt="review this",
+                profiles=[profile],
+                working_dir=tmp_path,
+                progress_cb=lambda e: done_labels.append(e["label"]) if e.get("done") else None,
+            )
+
+        assert done_labels == []
+
     def test_pool_runs_parallel(self, tmp_path: Path) -> None:
         """Agents are observed running concurrently (overlapping in-flight count > 1),
         proving parallelism directly instead of via a load-sensitive wall-clock budget."""

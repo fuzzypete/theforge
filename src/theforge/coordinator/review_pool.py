@@ -264,6 +264,10 @@ def _retry_transient_review_failures(
         if current.success:
             meta.transient_outcomes[profile.name] = "transient_retried_then_succeeded"
             _log(f"  ✓ {profile.name} transient retry {retry_count} succeeded")
+            # The retry resolved the transient failure — mark the reviewer done
+            # (also clears the ↻rN/M glyph) so the pool-done count is accurate.
+            if progress_channel is not None:
+                progress_channel.cb({"label": profile.name, "done": True})
         else:
             meta.transient_outcomes[profile.name] = "transient_retried_then_failed"
             _log(f"  ✗ {profile.name} transient retries exhausted")

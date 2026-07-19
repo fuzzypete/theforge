@@ -65,10 +65,17 @@ class ReviewerProgressChannel:
                 entry = self._progress.get(label)
                 if entry is None:
                     return
+                # A fresh iteration/completion event means the reviewer is
+                # making progress again, so an outstanding transient-retry
+                # marker is stale — clear it. set_retry() re-arms it if the
+                # next attempt also fails, so ↻rN/M only shows while a retry
+                # is actually outstanding (AC #3: "while it is retrying").
                 if event.get("done"):
                     entry["done"] = True
+                    entry["retry"] = None
                 if "iter" in event:
                     entry["iter"] = event["iter"]
+                    entry["retry"] = None
                 if "tool_calls" in event:
                     entry["tool_calls"] = event["tool_calls"]
                 self._emit_locked()
