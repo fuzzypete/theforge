@@ -133,19 +133,64 @@ fi
 echo "==> Running gate..."
 run make gate
 
-# --- 8. Update CHANGELOG ---
-echo "==> Updating CHANGELOG..."
+# --- 8. Derive and write the CHANGELOG section ---
+# The release section is DERIVED from milestone vX.Y.Z + the PR merges in
+# PREV_TAG..HEAD, not from the hand-curated [Unreleased] scratchpad. The helper
+# cross-references the two and exits non-zero on any mismatch (a milestone issue
+# with no merge, or a merged PR with no milestone issue), so incomplete release
+# notes abort the promote instead of shipping silently. [Unreleased] is left
+# untouched — operators may keep working notes there, but it is not consulted.
+echo "==> Deriving CHANGELOG section for v$VERSION from milestone + tag range..."
 TODAY=$(date +%Y-%m-%d)
-if [[ "$DRY_RUN" == false ]]; then
-    sed -i '' \
-        "s/^## \[Unreleased\]/## [$VERSION] — $TODAY/" \
-        CHANGELOG.md
-    sed -i '' \
-        "/^## \[$VERSION\]/i\\
-## [Unreleased]\\
-\\
-" \
-        CHANGELOG.md
+
+PREV_TAG=$(git describe --tags --abbrev=0 --exclude '*rc*' --match 'v[0-9]*.[0-9]*.[0-9]*')
+if [[ -z "$PREV_TAG" ]]; then
+    echo "Error: could not determine previous release tag for the derivation range." >&2
+    exit 1
+fi
+echo "    Previous release tag: $PREV_TAG"
+
+if ! RENDERED=$(python3 scripts/derive_changelog.py \
+        --version "$VERSION" \
+        --prev-tag "$PREV_TAG" \
+        --repo fuzzypete/theforge \
+        --date "$TODAY"); then
+    echo "[forge] aborting promote — fix milestone/PR linkage and retry" >&2
+    exit 1
+fi
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo "==> [dry-run] derived CHANGELOG section for v$VERSION:"
+    echo "$RENDERED"
+else
+    echo "==> Writing CHANGELOG.md [$VERSION] section..."
+    # Splice the derived section in immediately above the first existing
+    # '## [' section that is NOT [Unreleased]. [Unreleased] and any notes under
+    # it are preserved verbatim as a non-consulted scratchpad. The rendered
+    # section is passed via FORGE_RENDERED so the heredoc stays free for the
+    # inline Python script.
+    FORGE_RENDERED="$RENDERED" python3 - <<'PYEOF'
+import os
+
+rendered = os.environ["FORGE_RENDERED"]
+
+with open("CHANGELOG.md", encoding="utf-8") as fh:
+    lines = fh.readlines()
+
+insert_at = len(lines)
+for i, line in enumerate(lines):
+    if line.startswith("## ["):
+        if line.startswith("## [Unreleased]"):
+            continue
+        insert_at = i
+        break
+
+block = rendered.rstrip("\n") + "\n\n"
+lines[insert_at:insert_at] = [block]
+
+with open("CHANGELOG.md", "w", encoding="utf-8") as fh:
+    fh.writelines(lines)
+PYEOF
 fi
 
 # --- 9. Bump pyproject from RC to final ---
@@ -169,7 +214,9 @@ if [[ "$DRY_RUN" == false ]]; then
         exit 1
     fi
 else
-    RELEASE_NOTES="(dry-run: would be extracted from CHANGELOG.md after bump)"
+    # Dry-run never wrote CHANGELOG.md, so reflect the derived section body
+    # (everything under the heading) rather than a static placeholder.
+    RELEASE_NOTES=$(printf '%s\n' "$RENDERED" | awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}")
 fi
 
 # --- 11. Commit, tag, push release branch ---
