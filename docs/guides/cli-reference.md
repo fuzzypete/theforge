@@ -431,7 +431,7 @@ file, or a freshly-filed issue) and need to know what kind of work object it
 should become before grooming or diagnosing it.
 
 **The command never auto-invokes a producer.** `--next` prints a hint
-(`forge diagnose 123`, `forge groom 123`, etc.); it does not run it.
+(`forge diagnose --issue 123`, `forge groom 123`, etc.); it does not run it.
 `--next` output is human-readable in v0.11; no stable machine-readable
 contract is promised yet.
 
@@ -456,8 +456,8 @@ investigation-ready to implementation-ready. Bugs without a confirmed cause
 cannot be labeled `ready` (see `forge groom` below).
 
 ```bash
-forge diagnose <issue>          # investigate one issue
-forge diagnose <issue> --interactive
+forge diagnose --issue <issue>          # investigate one issue
+forge diagnose --issue <issue> --interactive
 ```
 
 `forge diagnose` is the third step of the mid-sprint capture flow — see
@@ -526,6 +526,95 @@ tag distance.
 
 ```bash
 forge version
+```
+
+---
+
+## `forge index`
+
+Generate `.forge/index/modules.yaml`, the module map preflight and collision
+detection read to reason about the repository.
+
+```bash
+forge index
+```
+
+---
+
+## `forge check-story-config`
+
+Reject story-branch `forge.yaml` edits that fall outside the mutable allowlist.
+Runs as part of `make gate`; exit non-zero if a disallowed edit is present.
+
+```bash
+forge check-story-config
+```
+
+---
+
+## `forge todo`
+
+Capture and triage draft (`todo:draft`) GitHub todo issues. With no action it
+lists open drafts; pass title text to create one, or a subcommand to triage.
+
+```bash
+forge todo                       # list open todo:draft issues
+forge todo "tighten gate scrub"  # create a draft todo
+```
+
+Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
+
+---
+
+## `forge rca`
+
+Regenerate a sprint's root-cause-analysis artifact (`sprint-rca.yaml`) for a
+completed run.
+
+```bash
+forge rca <run-id>               # write/refresh the artifact
+forge rca <run-id> --check       # reproducibility check; exit 2 if it drifted
+```
+
+`--refresh` overwrites an existing artifact; `--check` compares the stored
+artifact against a fresh generation without writing.
+
+---
+
+## `forge audits`
+
+Manage the SQLite audit substrate (distinct from `forge audit`, which renders a
+single audit file).
+
+```bash
+forge audits rebuild                      # rebuild the substrate from per-run JSON
+forge audits show                         # render rows from the substrate
+forge audits skips                        # query shape-gate skip / stuck events
+forge audits export-assignment-history    # write a human-readable snapshot
+```
+
+---
+
+## `forge profiles`
+
+Inspect and maintain model capability profiles (the cumulative per-model
+counters adaptive routing reads).
+
+```bash
+forge profiles list                          # show current profile counters
+forge profiles reset --model <model-id>      # reset counters for one canonical model ID
+```
+
+---
+
+## `forge migrate-profiles`
+
+Canonicalize legacy `model_profiles.yaml` and `assignment_history.yaml` keys to
+current canonical model IDs.
+
+```bash
+forge migrate-profiles           # migrate in place
+forge migrate-profiles --dry-run # print the migration report without writing
 ```
 
 ---

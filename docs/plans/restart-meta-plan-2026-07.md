@@ -1,7 +1,10 @@
 # TheForge Restart Meta-Plan — July 2026
 
 **Date:** 2026-07-07
-**Status:** Adopted as working plan (not yet executed)
+**Status:** Adopted and substantially executed. The wedge work has since shipped
+(refusal doctrine #1532, `forge shape` #1541, `forge groom` #1554; repo is at
+v0.12.0rc2). Retained as the record of the restart's framing; individual
+"parking lot" entries below may have moved since (see notes).
 **Provenance:** Drafted after an ~8-week pause (last commit 2026-05-12, `1b56c65`, v0.10.0rc17 + 10 unreleased commits). Based on (a) a full repo/milestone audit and (b) an adversarially-verified research sweep of the Feb–Jul 2026 agentic-SDLC landscape (Claude session), convergent with an independent Codex analysis of the same question.
 
 ---
@@ -86,7 +89,8 @@ At pause time, v0.11 had 99 open issues, ~70 of them `forge-finding` P2 `needs-g
 - Brief-to-sprint orchestration (vision.md document-in classification)
 - Daemon polish and detached-run ops beyond what Phase 0 requires
 - New provider adapters
-- `forge shape` (#367) and `forge groom` (#1034) epics
+- ~~`forge shape` (#367) and `forge groom` (#1034) epics~~ — **shipped** (MVPs
+  landed as #1541 and #1554); no longer parked.
 
 These wait for the wedge. The worst continuation path is resuming every thread as if no time passed.
 

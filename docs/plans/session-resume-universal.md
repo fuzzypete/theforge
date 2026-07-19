@@ -1,5 +1,10 @@
 # Plan: Universal Session Resume Across Forge Agents
 
+**Status: Shipped.** Session resume is live (`run_agent_pool(session_ids=…)` in
+`runners/cli.py`, session persistence in `coordinator/state.py`); the "What's
+broken" list below describes the pre-fix state and is retained for historical
+context.
+
 Generated 2026-03-16. Reviewed by Gemini (technical audit) and Codex (contract
 audit). Updated with findings from both reviews.
 

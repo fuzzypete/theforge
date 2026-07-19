@@ -520,8 +520,10 @@ work is heavy. It must:
 A wrong ALREADY_DONE wastes a correct implementation. A wrong PROCEED on finished
 work burns $20+ on dev+review for nothing. A wrong complexity classification puts
 the wrong model on the job. **Do not suggest replacing preflight with a cheap/fast
-model.** The current DeepSeek-reasoner config is intentional — $0.30 for a careful
-classification that controls $20-50 of downstream spend is correct.
+model.** Spending ~$0.30 on a careful classification that controls $20-50 of
+downstream spend is correct. (TheForge now derives the preflight model
+adaptively from the `models:` list rather than pinning a single model — the
+principle stands regardless of which model wins the cheap-bucket tie-break.)
 
 ## Conventions
 
