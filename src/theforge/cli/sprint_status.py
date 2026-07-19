@@ -23,13 +23,21 @@ def _issue_number_from_slug(text: str) -> int | None:
 
 
 def _ensure_titles(entries: list, project_root: Path, cache: dict) -> None:
-    """Populate ``cache`` (issue number -> title) for any entries not yet cached.
+    """Populate ``cache`` (issue number -> title | None) for uncached entries.
 
     Best-effort: collects issue numbers from each entry's path/slug and its
-    ``blocked_by`` items, fetches only the numbers absent from ``cache`` via the
-    sprint query primitive, and swallows failures so display degrades to bare
-    paths rather than erroring.
+    ``blocked_by`` items and resolves the ones absent from ``cache`` via the
+    sprint query primitive.
+
+    Fetches are done one number at a time so a single unresolvable issue cannot
+    discard the titles that did resolve — ``fetch_issues_by_numbers`` raises for
+    the whole batch when any requested number is missing. A number confirmed
+    absent from the repository is cached as ``None`` (a negative sentinel) so it
+    is not re-fetched on subsequent ``--watch`` frames; a transient ``gh``
+    failure is left uncached so a later frame can retry.
     """
+    from theforge.sprint.query import fetch_issues_by_numbers
+
     numbers: set[int] = set()
     for entry in entries:
         path = getattr(entry, "path", getattr(entry, "slug", "")) or ""
@@ -42,28 +50,29 @@ def _ensure_titles(entries: list, project_root: Path, cache: dict) -> None:
                 numbers.add(dep)
 
     missing = sorted(n for n in numbers if n not in cache)
-    if not missing:
-        return
-
-    try:
-        from theforge.sprint.query import fetch_issues_by_numbers
-
-        issues = fetch_issues_by_numbers(missing, project_root)
-    except Exception:
-        return
-
-    for issue in issues:
-        number = issue.get("number")
-        title = issue.get("title")
-        if isinstance(number, int) and isinstance(title, str):
-            cache[number] = title
+    for number in missing:
+        try:
+            issues = fetch_issues_by_numbers([number], project_root)
+        except RuntimeError as exc:
+            # Genuinely-absent numbers get a negative sentinel so they are not
+            # retried every frame; transient gh failures stay uncached to retry.
+            if "not found in this repository" in str(exc):
+                cache[number] = None
+            continue
+        except Exception:
+            continue
+        for issue in issues:
+            if issue.get("number") == number and isinstance(issue.get("title"), str):
+                cache[number] = issue["title"]
 
 
 def _format_story_cell(path: str, cache: dict) -> str:
     """Return ``#N <title>`` when the slug resolves to a cached title, else path."""
     num = _issue_number_from_slug(path)
-    if num is not None and num in cache:
-        return f"#{num} {cache[num]}"
+    if num is not None:
+        title = cache.get(num)
+        if title:
+            return f"#{num} {title}"
     return path
 
 

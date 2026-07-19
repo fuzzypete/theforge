@@ -1284,14 +1284,64 @@ def test_ensure_titles_fetches_only_missing_numbers(monkeypatch, tmp_path: Path)
     _ensure_titles(entries, tmp_path, cache)
 
     assert cache == {10: "Title 10", 20: "Title 20"}
-    assert calls == [[10, 20]]
+    # Fetched one number at a time so a batch failure can't discard partials.
+    assert calls == [[10], [20]]
 
     # Second call with everything cached does not fetch again.
     _ensure_titles(entries, tmp_path, cache)
-    assert calls == [[10, 20]]
+    assert calls == [[10], [20]]
 
 
-def test_ensure_titles_degrades_on_fetch_failure(monkeypatch, tmp_path: Path) -> None:
+def test_ensure_titles_caches_partials_when_one_number_unresolvable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A single not-found number must not discard the titles that did resolve,
+    and the not-found number must not be re-fetched on the next frame."""
+    from dataclasses import dataclass, field
+
+    import theforge.sprint.query as query
+    from theforge.cli.sprint_status import _ensure_titles
+
+    @dataclass
+    class _Entry:
+        path: str
+        blocked_by: list = field(default_factory=list)
+
+    calls: list[list[int]] = []
+
+    def _fake_fetch(numbers, project_root=None):
+        calls.append(list(numbers))
+        # Number 20 does not exist in the repo — mirror the real primitive,
+        # which raises for the whole batch when a requested number is missing.
+        if 20 in numbers:
+            raise RuntimeError("Issue number(s) not found in this repository: 20")
+        return [{"number": n, "title": f"Title {n}"} for n in numbers]
+
+    monkeypatch.setattr(query, "fetch_issues_by_numbers", _fake_fetch)
+
+    entries = [_Entry("Issue #10", ["issue-20"])]
+    cache: dict = {}
+    _ensure_titles(entries, tmp_path, cache)
+
+    # 10 resolved and cached; 20 recorded as a negative sentinel.
+    assert cache == {10: "Title 10", 20: None}
+    assert calls == [[10], [20]]
+
+    # Next frame: nothing re-fetched — both numbers are already in the cache.
+    _ensure_titles(entries, tmp_path, cache)
+    assert calls == [[10], [20]]
+
+
+def test_format_story_cell_ignores_negative_sentinel() -> None:
+    from theforge.cli.sprint_status import _format_story_cell
+
+    # None sentinel (issue confirmed absent) must not render "#N None".
+    assert _format_story_cell("Issue #20", {20: None}) == "Issue #20"
+
+
+def test_ensure_titles_leaves_transient_failure_uncached(
+    monkeypatch, tmp_path: Path
+) -> None:
     from dataclasses import dataclass, field
 
     import theforge.sprint.query as query
@@ -1303,10 +1353,11 @@ def test_ensure_titles_degrades_on_fetch_failure(monkeypatch, tmp_path: Path) ->
         blocked_by: list = field(default_factory=list)
 
     def _boom(numbers, project_root=None):
-        raise RuntimeError("gh unavailable")
+        raise RuntimeError("gh issue view 10 failed: network down")
 
     monkeypatch.setattr(query, "fetch_issues_by_numbers", _boom)
 
     cache: dict = {}
     _ensure_titles([_Entry("Issue #10")], tmp_path, cache)
+    # Transient failure leaves the number uncached so a later frame can retry.
     assert cache == {}
