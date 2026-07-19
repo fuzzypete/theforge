@@ -1339,9 +1339,7 @@ def test_format_story_cell_ignores_negative_sentinel() -> None:
     assert _format_story_cell("Issue #20", {20: None}) == "Issue #20"
 
 
-def test_ensure_titles_leaves_transient_failure_uncached(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_ensure_titles_leaves_transient_failure_uncached(monkeypatch, tmp_path: Path) -> None:
     from dataclasses import dataclass, field
 
     import theforge.sprint.query as query
