@@ -146,14 +146,23 @@ TODAY=$(date +%Y-%m-%d)
 # Previous release tag = the highest final (non-rc) tag strictly below v$VERSION.
 # NOT `git describe`: release tags are cut on isolated release/vX.Y branches and
 # never merged back to main, so they are not in HEAD's ancestry and describe
-# would miss them. `git tag --list` enumerates all refs regardless of ancestry,
-# so we sort the final tags together with the target and take the one that lands
-# immediately before it.
+# would miss them. `git tag --list` enumerates all refs regardless of ancestry.
+# The version comparison is done in POSIX awk (component-wise numeric compare) —
+# NOT `sort -V`, which is a GNU extension the default macOS BSD `sort` rejects.
 PREV_TAG=$(
-    {
-        git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -viE 'rc[0-9]*$' || true
-        echo "v$VERSION"
-    } | sort -V -u | awk -v cur="v$VERSION" '$0 == cur { print prev; exit } { prev = $0 }'
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -vi 'rc' | awk -v tgt="$VERSION" '
+        BEGIN { split(tgt, t, "."); t1 = t[1] + 0; t2 = t[2] + 0; t3 = t[3] + 0 }
+        {
+            v = $0; sub(/^v/, "", v); split(v, a, ".")
+            maj = a[1] + 0; min = a[2] + 0; pat = a[3] + 0
+            if (maj < t1 || (maj == t1 && (min < t2 || (min == t2 && pat < t3)))) {
+                if (!have || maj > bmaj || (maj == bmaj && (min > bmin || (min == bmin && pat > bpat)))) {
+                    have = 1; bmaj = maj; bmin = min; bpat = pat; best = $0
+                }
+            }
+        }
+        END { if (have) print best }
+    '
 )
 if [[ -z "$PREV_TAG" ]]; then
     echo "Error: could not determine previous release tag for the derivation range." >&2

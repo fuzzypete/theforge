@@ -241,6 +241,11 @@ def _seam_env(dry_run: bool) -> dict:
     too; `command sed` reaches the real binary for non-in-place uses.
     """
     env = os.environ.copy()
+    # `tag --list` returns an unsorted, mixed list: prior finals, an rc for the
+    # version being promoted, and a *higher* final. The script must select
+    # v0.10.0 (the highest final strictly below v0.11.0) using its POSIX-awk
+    # comparison — no `sort -V` — so this also guards the macOS/BSD-sort
+    # regression from cycle 2.
     env["BASH_FUNC_git%%"] = """() {
   case "$1 $2" in
     "rev-parse --abbrev-ref") echo "release/v0.11" ;;
@@ -248,7 +253,7 @@ def _seam_env(dry_run: bool) -> dict:
     "show-ref --verify") return 1 ;;
     "rev-parse --verify") return 1 ;;
     "ls-remote --tags") return 0 ;;
-    "tag --list") echo "v0.10.0" ;;
+    "tag --list") printf 'v0.11.0rc1\\nv0.9.0\\nv0.12.0\\nv0.10.0\\nv0.9.0-rc.1\\n' ;;
     *) echo "+ git $*" ;;
   esac
 }"""
@@ -314,6 +319,8 @@ def test_promote_dry_run_prints_derived_section_without_writing(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "- Derived thing (#123)" in result.stdout
     assert "[dry-run] derived CHANGELOG section for v0.11.0" in result.stdout
+    # Portable version selection picked the highest final tag below v0.11.0.
+    assert "Previous release tag: v0.10.0" in result.stdout
     # CHANGELOG.md must be untouched in dry-run.
     assert changelog.read_text(encoding="utf-8") == original
 
@@ -334,6 +341,8 @@ def test_promote_writes_derived_section_preserving_unreleased(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
+    # Portable version selection resolved PREV_TAG without GNU `sort -V`.
+    assert "Previous release tag: v0.10.0" in result.stdout
     written = changelog.read_text(encoding="utf-8")
     # [Unreleased] and its scratch note are preserved verbatim.
     assert "## [Unreleased]\n\n- operator scratch note" in written
