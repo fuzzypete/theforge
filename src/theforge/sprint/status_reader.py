@@ -533,16 +533,24 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
         return stage, " | ".join(detail_parts) or "running", complexity
 
     if phase_val == "REVIEW":
+        cycle = detail_data.get("review_cycle")
+        cycle_stage = _format_usage_stage(cycle, detail_data.get("review_max_cycles"), "cycle")
+        if not cycle_stage and isinstance(cycle, int):
+            cycle_stage = f"cycle={cycle}"
         reviewer_progress = detail_data.get("reviewer_progress")
         if isinstance(reviewer_progress, dict) and reviewer_progress:
             stage, pool_detail = _reviewer_progress_stage(
                 reviewer_progress, detail_data.get("reviewer_pool_size")
             )
+            # Keep the cycle number visible during the in-flight window rather
+            # than showing only per-reviewer progress (issue #1488) — the
+            # reviewer_progress payload carries review_cycle for exactly this.
+            if cycle_stage and stage:
+                stage = f"{cycle_stage} {stage}"
+            elif cycle_stage:
+                stage = cycle_stage
             return stage, pool_detail, complexity
-        cycle = detail_data.get("review_cycle")
-        stage = _format_usage_stage(cycle, detail_data.get("review_max_cycles"), "cycle")
-        if not stage and isinstance(cycle, int):
-            stage = f"cycle={cycle}"
+        stage = cycle_stage
         p1 = detail_data.get("review_p1")
         p2 = detail_data.get("review_p2")
         detail = _review_detail(detail_data.get("review_verdict"), p1, p2)

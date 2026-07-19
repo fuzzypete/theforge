@@ -370,8 +370,9 @@ class TestReviewDetailContract:
         assert entry.detail == "running"
 
     def test_in_flight_reviewer_progress_renders_pool_stage(self, tmp_path: Path) -> None:
-        # While reviewers emit events the reviewer_progress dict drives STAGE; the
-        # cycle number is carried alongside for continuity.
+        # While reviewers emit events the reviewer_progress dict drives STAGE, but
+        # the cycle number must remain visible (issue #1488) — the operator saw
+        # only per-reviewer progress for the whole 14m in-flight window.
         story: dict = {"slug": "issue-1488", "path": "Issue #1488", "status": "running"}
         channel = ReviewerProgressChannel(
             reviewer_names=["deepseek", "gemini"],
@@ -387,7 +388,32 @@ class TestReviewDetailContract:
         assert story["detail"]["review_cycle"] == 2
         _write_state(tmp_path, "run-x", story)
         entry = read_live_status("run-x", tmp_path)[0]
+        # STAGE prefixes the cycle onto the per-reviewer progress.
+        assert entry.stage.startswith("cycle=2 ")
         assert "deepseek=iter1" in entry.stage
+        assert entry.detail == "pool 1/2 done"
+
+    def test_in_flight_stage_includes_cycle_with_max_when_present(self, tmp_path: Path) -> None:
+        # When both review_cycle and review_max_cycles are present alongside
+        # reviewer_progress, STAGE renders cycle=N/M then the per-reviewer stage.
+        story = {
+            "slug": "issue-1488",
+            "path": "Issue #1488",
+            "status": "running",
+            "phase": "REVIEW",
+            "detail": {
+                "review_cycle": 2,
+                "review_max_cycles": 3,
+                "reviewer_progress": {
+                    "deepseek": {"iter": 4, "tool_calls": 2, "retry": None, "done": False},
+                    "gemini": {"iter": 5, "tool_calls": 3, "retry": None, "done": True},
+                },
+                "reviewer_pool_size": 2,
+            },
+        }
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert entry.stage == "cycle=2/3 deepseek=iter4, gemini=done"
         assert entry.detail == "pool 1/2 done"
 
     def test_completion_detail_keeps_cycle_alongside_counts(self, tmp_path: Path) -> None:
