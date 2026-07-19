@@ -9,8 +9,13 @@ This document defines how TheForge releases are cut, maintained, and hotfixed.
   `gh issue list --milestone v0.4.0 --state closed`.
 - **Package version = shipped artifact.** `pyproject.toml` holds the last released
   version (or `X.Y.Z.dev0` between releases). It is never bumped ahead of the tag.
-- **`[Unreleased]` accumulates.** CHANGELOG has an `[Unreleased]` section that grows
-  as work lands on `main`. At release time it is renamed to the version + date.
+- **The release CHANGELOG section is derived, not hand-curated.** At promote time
+  `promote-rc.sh` derives the `[X.Y.Z]` section from the milestone's closed issues
+  cross-referenced against the PR merges in the previous-tag..HEAD range, and
+  aborts the promote if the two disagree. The `[Unreleased]` section is now an
+  optional working-notes scratchpad — operators may scribble context there during
+  development, but its contents are not consulted for release notes and it is left
+  untouched at promote time.
 - **Sprints run against the right base branch.** `forge.yaml` (or an override config)
   sets `workspace.base_branch`. For main-line development this is `main`; for
   release-branch work it is `release/vX.Y`.
@@ -117,8 +122,11 @@ scripts/promote-rc.sh --dry-run X.Y.Z
 - requires milestone `vX.Y.Z` has zero open issues (this is where the milestone
   block lives, not in `cut-rc.sh`)
 - runs `make gate`
-- updates `CHANGELOG.md` (`[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, new
-  `[Unreleased]` inserted)
+- derives the `[X.Y.Z] — YYYY-MM-DD` CHANGELOG section from milestone `vX.Y.Z` +
+  the PR merges in `<previous-tag>..HEAD`, aborting on any milestone/merge
+  mismatch, and splices it above the existing sections (leaving `[Unreleased]`
+  and its notes untouched). `promote-rc.sh --dry-run X.Y.Z` previews the derived
+  section without writing.
 - bumps `pyproject.toml` from `X.Y.ZrcN` to `X.Y.Z`
 - commits, tags `vX.Y.Z`, pushes
 - bumps `main` to the next `.dev0` version
@@ -160,22 +168,29 @@ git checkout main && git pull --ff-only
 make gate   # must pass
 ```
 
-### 3. Update CHANGELOG
+### 3. CHANGELOG (derived automatically)
 
-Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`.
+You do **not** hand-write the release section. `promote-rc.sh` derives the
+`## [X.Y.Z] — YYYY-MM-DD` section by calling `scripts/derive_changelog.py`,
+which lists the milestone's closed issues, cross-references them against the PR
+merges in `<previous-tag>..HEAD`, and:
 
-Add a new `## [Unreleased]` section at the top for future work.
+- aborts the promote if a milestone issue has no corresponding merge, or a merged
+  PR (`(#N)` in its squash subject) has no milestone issue — surfacing the exact
+  discrepancy so you can fix milestone/PR linkage and retry;
+- otherwise groups entries by issue label (`bug`→Fixed, `enhancement`→Added,
+  `documentation`→Documentation, everything else→Changed) as `- Title (#N)`.
 
-Before continuing, verify the release section against both the milestone and the
-tag range:
+Preview the derived section without writing anything:
 
 ```bash
-gh issue list --milestone vX.Y.Z --state closed --limit 200
-git log --oneline <previous-release-tag>..HEAD
+scripts/promote-rc.sh --dry-run X.Y.Z
 ```
 
-The GitHub release body is generated from this CHANGELOG section, so missing
-items here become missing release notes.
+The GitHub release body is generated from this derived section, so the milestone
+and the tag range are the source of truth — a missing item is a milestone/PR
+linkage gap, not a CHANGELOG-editing miss. `[Unreleased]` is left untouched as an
+optional scratchpad and is not consulted.
 
 ### 4. Bump version
 

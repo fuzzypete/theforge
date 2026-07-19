@@ -133,19 +133,85 @@ fi
 echo "==> Running gate..."
 run make gate
 
-# --- 8. Update CHANGELOG ---
-echo "==> Updating CHANGELOG..."
+# --- 8. Derive and write the CHANGELOG section ---
+# The release section is DERIVED from milestone vX.Y.Z + the PR merges in
+# PREV_TAG..HEAD, not from the hand-curated [Unreleased] scratchpad. The helper
+# cross-references the two and exits non-zero on any mismatch (a milestone issue
+# with no merge, or a merged PR with no milestone issue), so incomplete release
+# notes abort the promote instead of shipping silently. [Unreleased] is left
+# untouched — operators may keep working notes there, but it is not consulted.
+echo "==> Deriving CHANGELOG section for v$VERSION from milestone + tag range..."
 TODAY=$(date +%Y-%m-%d)
-if [[ "$DRY_RUN" == false ]]; then
-    sed -i '' \
-        "s/^## \[Unreleased\]/## [$VERSION] — $TODAY/" \
-        CHANGELOG.md
-    sed -i '' \
-        "/^## \[$VERSION\]/i\\
-## [Unreleased]\\
-\\
-" \
-        CHANGELOG.md
+
+# Previous release tag = the highest final (non-rc) tag strictly below v$VERSION.
+# NOT `git describe`: release tags are cut on isolated release/vX.Y branches and
+# never merged back to main, so they are not in HEAD's ancestry and describe
+# would miss them. `git tag --list` enumerates all refs regardless of ancestry.
+# The version comparison is done in POSIX awk (component-wise numeric compare) —
+# NOT `sort -V`, which is a GNU extension the default macOS BSD `sort` rejects.
+PREV_TAG=$(
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -vi 'rc' | awk -v tgt="$VERSION" '
+        BEGIN { split(tgt, t, "."); t1 = t[1] + 0; t2 = t[2] + 0; t3 = t[3] + 0 }
+        {
+            v = $0; sub(/^v/, "", v); split(v, a, ".")
+            maj = a[1] + 0; min = a[2] + 0; pat = a[3] + 0
+            if (maj < t1 || (maj == t1 && (min < t2 || (min == t2 && pat < t3)))) {
+                if (!have || maj > bmaj || (maj == bmaj && (min > bmin || (min == bmin && pat > bpat)))) {
+                    have = 1; bmaj = maj; bmin = min; bpat = pat; best = $0
+                }
+            }
+        }
+        END { if (have) print best }
+    '
+)
+if [[ -z "$PREV_TAG" ]]; then
+    echo "Error: could not determine previous release tag for the derivation range." >&2
+    echo "       No final vX.Y.Z tag below v$VERSION exists (first release?)." >&2
+    exit 1
+fi
+echo "    Previous release tag: $PREV_TAG"
+
+if ! RENDERED=$(python3 scripts/derive_changelog.py \
+        --version "$VERSION" \
+        --prev-tag "$PREV_TAG" \
+        --repo fuzzypete/theforge \
+        --date "$TODAY"); then
+    echo "[forge] aborting promote — fix milestone/PR linkage and retry" >&2
+    exit 1
+fi
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo "==> [dry-run] derived CHANGELOG section for v$VERSION:"
+    echo "$RENDERED"
+else
+    echo "==> Writing CHANGELOG.md [$VERSION] section..."
+    # Splice the derived section in immediately above the first existing
+    # '## [' section that is NOT [Unreleased]. [Unreleased] and any notes under
+    # it are preserved verbatim as a non-consulted scratchpad. The rendered
+    # section is passed via FORGE_RENDERED so the heredoc stays free for the
+    # inline Python script.
+    FORGE_RENDERED="$RENDERED" python3 - <<'PYEOF'
+import os
+
+rendered = os.environ["FORGE_RENDERED"]
+
+with open("CHANGELOG.md", encoding="utf-8") as fh:
+    lines = fh.readlines()
+
+insert_at = len(lines)
+for i, line in enumerate(lines):
+    if line.startswith("## ["):
+        if line.startswith("## [Unreleased]"):
+            continue
+        insert_at = i
+        break
+
+block = rendered.rstrip("\n") + "\n\n"
+lines[insert_at:insert_at] = [block]
+
+with open("CHANGELOG.md", "w", encoding="utf-8") as fh:
+    fh.writelines(lines)
+PYEOF
 fi
 
 # --- 9. Bump pyproject from RC to final ---
@@ -169,7 +235,9 @@ if [[ "$DRY_RUN" == false ]]; then
         exit 1
     fi
 else
-    RELEASE_NOTES="(dry-run: would be extracted from CHANGELOG.md after bump)"
+    # Dry-run never wrote CHANGELOG.md, so reflect the derived section body
+    # (everything under the heading) rather than a static placeholder.
+    RELEASE_NOTES=$(printf '%s\n' "$RENDERED" | awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}")
 fi
 
 # --- 11. Commit, tag, push release branch ---
