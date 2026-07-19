@@ -2,20 +2,109 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import textwrap
 from pathlib import Path
 
+_ISSUE_REF_RE = re.compile(r"(?:issue-|#)(\d+)")
+_DETAIL_REF_RE = re.compile(r"#(\d+)")
 
-def display_sprint_status(run_id: str, project_root: Path) -> int:
+
+def _issue_number_from_slug(text: str) -> int | None:
+    """Extract N from an ``issue-N`` or ``#N`` token; None if it doesn't match."""
+    if not text:
+        return None
+    match = _ISSUE_REF_RE.search(text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _ensure_titles(entries: list, project_root: Path, cache: dict) -> None:
+    """Populate ``cache`` (issue number -> title | None) for uncached entries.
+
+    Best-effort: collects issue numbers from each entry's path/slug and its
+    ``blocked_by`` items and resolves the ones absent from ``cache`` via the
+    sprint query primitive.
+
+    Fetches are done one number at a time so a single unresolvable issue cannot
+    discard the titles that did resolve — ``fetch_issues_by_numbers`` raises for
+    the whole batch when any requested number is missing. A number confirmed
+    absent from the repository is cached as ``None`` (a negative sentinel) so it
+    is not re-fetched on subsequent ``--watch`` frames; a transient ``gh``
+    failure is left uncached so a later frame can retry.
+    """
+    from theforge.sprint.query import fetch_issues_by_numbers
+
+    numbers: set[int] = set()
+    for entry in entries:
+        path = getattr(entry, "path", getattr(entry, "slug", "")) or ""
+        num = _issue_number_from_slug(path)
+        if num is not None:
+            numbers.add(num)
+        for item in getattr(entry, "blocked_by", None) or []:
+            dep = _issue_number_from_slug(str(item))
+            if dep is not None:
+                numbers.add(dep)
+
+    missing = sorted(n for n in numbers if n not in cache)
+    for number in missing:
+        try:
+            issues = fetch_issues_by_numbers([number], project_root)
+        except RuntimeError as exc:
+            # Genuinely-absent numbers get a negative sentinel so they are not
+            # retried every frame; transient gh failures stay uncached to retry.
+            if "not found in this repository" in str(exc):
+                cache[number] = None
+            continue
+        except Exception:
+            continue
+        for issue in issues:
+            if issue.get("number") == number and isinstance(issue.get("title"), str):
+                cache[number] = issue["title"]
+
+
+def _format_story_cell(path: str, cache: dict) -> str:
+    """Return ``#N <title>`` when the slug resolves to a cached title, else path."""
+    num = _issue_number_from_slug(path)
+    if num is not None:
+        title = cache.get(num)
+        if title:
+            return f"#{num} {title}"
+    return path
+
+
+def _enrich_detail(detail: str, cache: dict) -> str:
+    """Append cached titles after each ``#N`` token in a detail string."""
+    if not detail:
+        return detail
+
+    def _repl(match: "re.Match") -> str:
+        token = match.group(0)
+        number = int(match.group(1))
+        title = cache.get(number)
+        return f"{token} {title}" if title else token
+
+    return _DETAIL_REF_RE.sub(_repl, detail)
+
+
+def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | None = None) -> int:
     """Display per-story status for a sprint run.
 
     Handles live (PID file present), completed (sprint-summary.yaml), and
     crashed (PID gone, .state still present) sprints.
     Returns 0 on success, 1 if no sprint data is found.
+
+    ``title_cache`` maps issue number -> GitHub title; when None a fresh local
+    dict is used (single-shot invocation). Watch mode passes a persistent dict
+    so titles fetched on frame 1 are reused on every subsequent frame.
     """
     import yaml
+
+    if title_cache is None:
+        title_cache = {}
 
     from theforge.sprint.status_reader import (
         find_live_state_path,
@@ -143,6 +232,9 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
         print("  No stories found.")
         return 0
 
+    # Best-effort GitHub title fetch (cached for --watch sessions).
+    _ensure_titles(entries, project_root, title_cache)
+
     # ── Story rows ───────────────────────────────────────────────────────
     status_icons = {
         "done": "✓",
@@ -170,11 +262,11 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
         bundle_slugs = "  ".join(e.slug for e in bundle_entries)
         print(f"[bundle: {bundle_slugs}]")
         for entry in bundle_entries:
-            _print_story_line(entry, status_icons, indent=2)
+            _print_story_line(entry, status_icons, indent=2, title_cache=title_cache)
         print()
 
     for entry in regular_entries:
-        _print_story_line(entry, status_icons, indent=0)
+        _print_story_line(entry, status_icons, indent=0, title_cache=title_cache)
 
     return 0
 
@@ -253,8 +345,14 @@ def _read_sprint_name_from_summary(summary_path: object) -> str:
         return ""
 
 
-def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
+def _print_story_line(
+    entry: object,
+    status_icons: dict,
+    indent: int,
+    title_cache: dict | None = None,
+) -> None:
     """Print a single story line for forge sprint-status."""
+    cache = title_cache if title_cache is not None else {}
     icon = status_icons.get(getattr(entry, "status", "waiting"), "?")
     path = getattr(entry, "path", getattr(entry, "slug", ""))
     status = getattr(entry, "status", "waiting")
@@ -283,7 +381,9 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
 
     prefix = " " * indent
     detail_width = _detail_column_width(indent)
-    path_lines = _wrap_cell(path, 28)
+    story_cell = _format_story_cell(path, cache)
+    detail = _enrich_detail(detail, cache)
+    path_lines = _wrap_cell(story_cell, 28)
     phase_lines = _wrap_cell(phase_str, 12)
     model_lines = _wrap_cell(model_str, 24)
     stage_lines = _wrap_cell(stage_str, 16)

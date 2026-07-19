@@ -960,7 +960,7 @@ class TestRenderFrameCapturesStderr:
     """render_frame must keep stderr OUT of the terminal but RETURN it for the caller."""
 
     def test_render_frame_returns_captured_stderr(self, tmp_path: Path) -> None:
-        def fake_display(_run_id: str, _project_root: Path) -> int:
+        def fake_display(_run_id: str, _project_root: Path, title_cache=None) -> int:
             import sys as _sys
 
             print("boom: cannot read state", file=_sys.stderr)
@@ -1054,3 +1054,34 @@ class TestAuditMtimeRunScoping:
 
         resolved = status_watch._resolve_sprint_log_dir("run-x", tmp_path)
         assert resolved == sprint_dir
+
+
+class TestWatchTitleCachePersistence:
+    """render_frame must reuse the same title cache dict across frames."""
+
+    def test_title_cache_persisted_in_state(self, tmp_path: Path) -> None:
+        seen_caches: list[dict] = []
+
+        def fake_display(_run_id: str, _project_root: Path, title_cache=None) -> int:
+            seen_caches.append(title_cache)
+            if title_cache is not None:
+                title_cache[42] = "cached title"
+            return 0
+
+        state: dict = {"costs": {}, "interval": 2.0}
+        with (
+            patch(
+                "theforge.cli.sprint_status.display_sprint_status",
+                side_effect=fake_display,
+            ),
+            patch(
+                "theforge.sprint.status_reader.read_live_status",
+                return_value=[],
+            ),
+        ):
+            status_watch.render_frame("run-x", tmp_path, state, 0, color=False)
+            status_watch.render_frame("run-x", tmp_path, state, 1, color=False)
+
+        # Same dict object handed to display on both frames, and it survives in state.
+        assert seen_caches[0] is seen_caches[1]
+        assert state["title_cache"] == {42: "cached title"}

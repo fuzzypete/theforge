@@ -146,7 +146,7 @@ def test_read_live_status_blocked_story(tmp_path: Path) -> None:
     assert entries[0].phase == "waiting"
     assert entries[0].stage == "dependency"
     assert entries[0].blocked_by == ["issue-98"]
-    assert entries[0].detail == "depends on issue-98"
+    assert entries[0].detail == "depends on #98"
 
 
 def test_read_live_status_merges_accumulated_prior_run_stories(tmp_path: Path) -> None:
@@ -341,7 +341,7 @@ def test_read_completed_status_blocked_by_from_depends_on(tmp_path: Path) -> Non
     assert by_slug["issue-6"].phase == "waiting"
     assert by_slug["issue-6"].stage == "dependency"
     assert by_slug["issue-6"].blocked_by == ["issue-5"]
-    assert by_slug["issue-6"].detail == "depends on issue-5"
+    assert by_slug["issue-6"].detail == "depends on #5"
     # Non-skipped stories should not show depends_on as blocked_by
     assert by_slug["issue-5"].blocked_by == []
     assert by_slug["issue-7"].blocked_by == []
@@ -612,7 +612,7 @@ def test_cmd_sprint_status_blocked_story_shows_dependency(tmp_path: Path) -> Non
 
     assert code == 0
     assert "Issue #31" in output
-    assert "issue-30" in output  # shows blocked_by slug in the dependency list
+    assert "#30" in output  # shows blocked_by dependency in #N notation
 
 
 def test_cmd_sprint_status_not_found(tmp_path: Path) -> None:
@@ -726,7 +726,7 @@ def test_display_sprint_status_live_row_shows_phase_and_status(tmp_path: Path) -
     assert "DEV" in output
     assert "blocked" in output
     assert "dependency" in output
-    assert "issue-10" in output  # blocked_by appears in detail
+    assert "#10" in output  # blocked_by appears in detail as #N notation
 
 
 def test_display_sprint_status_crashed_sprint(tmp_path: Path) -> None:
@@ -1223,3 +1223,139 @@ def test_completed_already_done_story_prefers_preflight_reason_over_outcome_mess
     )
 
     assert detail == "Preflight verdict: Main already satisfies all acceptance criteria."
+
+
+# ── Title cache + #N enrichment (issue #1486) ────────────────────────────────
+
+
+def test_issue_number_from_slug_variants() -> None:
+    from theforge.cli.sprint_status import _issue_number_from_slug
+
+    assert _issue_number_from_slug("issue-1424") == 1424
+    assert _issue_number_from_slug("Issue #1424") == 1424
+    assert _issue_number_from_slug("#1462") == 1462
+    assert _issue_number_from_slug("no-number-here") is None
+    assert _issue_number_from_slug("") is None
+
+
+def test_format_story_cell_uses_cached_title() -> None:
+    from theforge.cli.sprint_status import _format_story_cell
+
+    cache = {1424: "Write changelog gen"}
+    assert _format_story_cell("Issue #1424", cache) == "#1424 Write changelog gen"
+    # No cached title -> original path unchanged.
+    assert _format_story_cell("Issue #1425", cache) == "Issue #1425"
+    # Non-issue path unchanged.
+    assert _format_story_cell("some-file.md", cache) == "some-file.md"
+
+
+def test_enrich_detail_appends_titles_to_hash_tokens() -> None:
+    from theforge.cli.sprint_status import _enrich_detail
+
+    cache = {1462: "Fix audit rollup"}
+    assert _enrich_detail("depends on #1462", cache) == "depends on #1462 Fix audit rollup"
+    # Details with no #N tokens are unchanged.
+    assert _enrich_detail("parallel cap", cache) == "parallel cap"
+    # Unknown number left bare.
+    assert _enrich_detail("depends on #999", cache) == "depends on #999"
+
+
+def test_ensure_titles_fetches_only_missing_numbers(monkeypatch, tmp_path: Path) -> None:
+    from dataclasses import dataclass, field
+
+    import theforge.sprint.query as query
+    from theforge.cli.sprint_status import _ensure_titles
+
+    @dataclass
+    class _Entry:
+        path: str
+        blocked_by: list = field(default_factory=list)
+
+    calls: list[list[int]] = []
+
+    def _fake_fetch(numbers, project_root=None):
+        calls.append(list(numbers))
+        return [{"number": n, "title": f"Title {n}"} for n in numbers]
+
+    monkeypatch.setattr(query, "fetch_issues_by_numbers", _fake_fetch)
+
+    entries = [_Entry("Issue #10", ["issue-20"]), _Entry("Issue #10")]
+    cache: dict = {}
+    _ensure_titles(entries, tmp_path, cache)
+
+    assert cache == {10: "Title 10", 20: "Title 20"}
+    # Fetched one number at a time so a batch failure can't discard partials.
+    assert calls == [[10], [20]]
+
+    # Second call with everything cached does not fetch again.
+    _ensure_titles(entries, tmp_path, cache)
+    assert calls == [[10], [20]]
+
+
+def test_ensure_titles_caches_partials_when_one_number_unresolvable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A single not-found number must not discard the titles that did resolve,
+    and the not-found number must not be re-fetched on the next frame."""
+    from dataclasses import dataclass, field
+
+    import theforge.sprint.query as query
+    from theforge.cli.sprint_status import _ensure_titles
+
+    @dataclass
+    class _Entry:
+        path: str
+        blocked_by: list = field(default_factory=list)
+
+    calls: list[list[int]] = []
+
+    def _fake_fetch(numbers, project_root=None):
+        calls.append(list(numbers))
+        # Number 20 does not exist in the repo — mirror the real primitive,
+        # which raises for the whole batch when a requested number is missing.
+        if 20 in numbers:
+            raise RuntimeError("Issue number(s) not found in this repository: 20")
+        return [{"number": n, "title": f"Title {n}"} for n in numbers]
+
+    monkeypatch.setattr(query, "fetch_issues_by_numbers", _fake_fetch)
+
+    entries = [_Entry("Issue #10", ["issue-20"])]
+    cache: dict = {}
+    _ensure_titles(entries, tmp_path, cache)
+
+    # 10 resolved and cached; 20 recorded as a negative sentinel.
+    assert cache == {10: "Title 10", 20: None}
+    assert calls == [[10], [20]]
+
+    # Next frame: nothing re-fetched — both numbers are already in the cache.
+    _ensure_titles(entries, tmp_path, cache)
+    assert calls == [[10], [20]]
+
+
+def test_format_story_cell_ignores_negative_sentinel() -> None:
+    from theforge.cli.sprint_status import _format_story_cell
+
+    # None sentinel (issue confirmed absent) must not render "#N None".
+    assert _format_story_cell("Issue #20", {20: None}) == "Issue #20"
+
+
+def test_ensure_titles_leaves_transient_failure_uncached(monkeypatch, tmp_path: Path) -> None:
+    from dataclasses import dataclass, field
+
+    import theforge.sprint.query as query
+    from theforge.cli.sprint_status import _ensure_titles
+
+    @dataclass
+    class _Entry:
+        path: str
+        blocked_by: list = field(default_factory=list)
+
+    def _boom(numbers, project_root=None):
+        raise RuntimeError("gh issue view 10 failed: network down")
+
+    monkeypatch.setattr(query, "fetch_issues_by_numbers", _boom)
+
+    cache: dict = {}
+    _ensure_titles([_Entry("Issue #10")], tmp_path, cache)
+    # Transient failure leaves the number uncached so a later frame can retry.
+    assert cache == {}
