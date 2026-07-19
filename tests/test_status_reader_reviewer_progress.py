@@ -180,6 +180,36 @@ class TestReviewerProgressSeam:
         assert entry.detail == "running"
         assert entry.last_event_ts is None
 
+    def test_pool_start_shows_pool_zero_of_n_before_any_event(self, tmp_path: Path) -> None:
+        # Constructing the channel (i.e. a reviewer pool starting) must emit the
+        # seeded state immediately, so the row shows "pool 0/N done" rather than
+        # legacy "running" before any reviewer emits its first event.
+        story: dict = {"slug": "s", "path": "s", "status": "running"}
+        ReviewerProgressChannel(
+            reviewer_names=["deepseek", "gemini", "gpt"],
+            phase="REVIEW",
+            iteration=1,
+            cost_usd=0.0,
+            complexity="medium",
+            state_update_fn=_worker_style_state_update(story),
+        )
+
+        # The seeded detail is present with every reviewer at zero progress.
+        detail = story["detail"]
+        assert set(detail["reviewer_progress"]) == {"deepseek", "gemini", "gpt"}
+        assert all(not e["done"] for e in detail["reviewer_progress"].values())
+        assert detail["reviewer_pool_size"] == 3
+        assert isinstance(detail["last_reviewer_event_ts"], float)
+
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert entry.detail == "pool 0/3 done"
+        # STAGE lists each reviewer (no iterations yet → ellipsis, no ↻ glyph).
+        assert "deepseek=…" in entry.stage
+        assert "↻" not in entry.stage
+        # EVENT AGE has a source from the very first frame.
+        assert entry.last_event_ts == detail["last_reviewer_event_ts"]
+
     def test_retry_glyph_clears_on_next_progress_event(self, tmp_path: Path) -> None:
         # AC #3: the ↻rN/M marker must show "while it is retrying", not stick for
         # the rest of the review. A fresh iter/done event for the reviewer clears

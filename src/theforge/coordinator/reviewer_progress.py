@@ -55,6 +55,12 @@ class ReviewerProgressChannel:
             name: {"iter": 0, "tool_calls": 0, "retry": None, "done": False}
             for name in reviewer_names
         }
+        # Emit the seeded pool state immediately so the watch view renders
+        # "pool 0/N done" the moment a reviewer pool starts — before any
+        # reviewer has emitted its first tool-call event — instead of falling
+        # back to legacy "running". Best-effort (never raises into the caller).
+        with self._lock:
+            self._emit_locked()
 
     # ── event ingress ────────────────────────────────────────────────
     def cb(self, event: dict) -> None:
