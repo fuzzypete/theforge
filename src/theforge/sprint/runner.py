@@ -77,7 +77,12 @@ from .manifest import (
 from .query import NormalizedDependencyPlan, normalize_dependency_plan
 from .sources import StorySource
 from .state_writer import SprintStateWriter
-from .story_state import SprintStoryState, StoryOutcome, coerce_outcome
+from .story_state import (
+    SprintStoryState,
+    StoryOutcome,
+    coerce_outcome,
+    landing_failure_outcome,
+)
 
 _UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
 run_agent = None
@@ -1511,10 +1516,7 @@ def _classify_and_record(
         dag.mark_complete(task.slug)
     elif landing_status == "failed":
         merge_info = getattr(result, "merge", None) or {}
-        if isinstance(merge_info, dict) and merge_info.get("arming_failed"):
-            outcome = StoryOutcome.MERGE_ARMING_FAILED
-        else:
-            outcome = StoryOutcome.MERGE_FAILED
+        outcome = landing_failure_outcome(merge_info if isinstance(merge_info, dict) else None)
         dag.mark_skipped(task.slug)
     elif landing_status == "pending_integration":
         # Approved but merge deferred or queued — counts as succeeded, not yet in DAG
@@ -2630,7 +2632,13 @@ def run_sprint(
         if landing_status == "failed":
             from ..coordinator.completion import mark_merge_failed  # noqa: PLC0415
 
-            mark_merge_failed(result.state, result, merge_info.get("error"), branch)
+            mark_merge_failed(
+                result.state,
+                result,
+                merge_info.get("error"),
+                branch,
+                inherited_dev_residue=bool(merge_info.get("inherited_dev_residue")),
+            )
 
         if merge_info.get("merged"):
             merged_slugs.add(slug)
@@ -3198,11 +3206,7 @@ def run_sprint(
                         # failed — correct the canonical outcome (terminal-to-
                         # terminal correction is permitted).
                         _merge_info = result.merge if isinstance(result.merge, dict) else {}
-                        _failed_outcome = (
-                            StoryOutcome.MERGE_ARMING_FAILED
-                            if _merge_info.get("arming_failed")
-                            else StoryOutcome.MERGE_FAILED
-                        )
+                        _failed_outcome = landing_failure_outcome(_merge_info)
                         _set_outcome(slug, _failed_outcome, phase=result.phase.name)
                     changed = True
                     while changed:
@@ -3218,10 +3222,8 @@ def run_sprint(
                                         if isinstance(pending_result.merge, dict)
                                         else {}
                                     )
-                                    _pending_failed_outcome = (
-                                        StoryOutcome.MERGE_ARMING_FAILED
-                                        if _pending_merge_info.get("arming_failed")
-                                        else StoryOutcome.MERGE_FAILED
+                                    _pending_failed_outcome = landing_failure_outcome(
+                                        _pending_merge_info
                                     )
                                     _set_outcome(
                                         pending_slug,

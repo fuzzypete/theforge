@@ -172,6 +172,29 @@ def coerce_outcome(value: object) -> StoryOutcome:
     return StoryOutcome.WAITING
 
 
+def landing_failure_outcome(merge_info: dict | None) -> StoryOutcome:
+    """Classify a failed landing (landing_status == "failed") into an outcome.
+
+    A merge-step failure is not one undifferentiated bucket. The merge_info flags
+    distinguish who is responsible so the operator is pointed at the right fix:
+
+    * ``inherited_dev_residue`` — integration refused git state a prior DEV
+      iteration left behind (issue #1365). Integration is the victim, so this is
+      a DEV-attributed ``ESCALATED``, never ``MERGE_FAILED``.
+    * ``arming_failed`` — the PR is fine; only ``gh pr merge --auto`` arming
+      failed → ``MERGE_ARMING_FAILED`` (configure branch protection).
+    * otherwise → ``MERGE_FAILED`` (the generic post-approval merge failure).
+
+    Centralised so every sprint landing site classifies identically.
+    """
+    m = merge_info or {}
+    if m.get("inherited_dev_residue"):
+        return StoryOutcome.ESCALATED
+    if m.get("arming_failed"):
+        return StoryOutcome.MERGE_ARMING_FAILED
+    return StoryOutcome.MERGE_FAILED
+
+
 @dataclass
 class StoryStateEntry:
     """Per-story state. The canonical record for one story in one sprint."""

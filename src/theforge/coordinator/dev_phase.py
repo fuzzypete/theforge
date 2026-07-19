@@ -47,6 +47,7 @@ from .util import (
     _log_verbose,
     resolve_timeout_with_active,
 )
+from .worktree_state import check_worktree_git_consistency
 
 # ── Lazy runner slot ──────────────────────────────────────────────────
 # None until first call; tests may replace before calling run_task.
@@ -1316,5 +1317,57 @@ def _run_dev_phase(
                 state=state,
                 message=state.error,
             )
+
+    # ── Worktree git-state consistency boundary (advance path only) ──────
+    # A dev iteration has no legitimate need to mutate the branch state of its
+    # worktree. Residue from a partially applied operation (in-progress
+    # rebase/merge/cherry-pick/revert/bisect), a clean-but-illegitimate HEAD/ref
+    # change (reset --hard / force-push behind the pre-dev base), a
+    # dev-introduced merge commit, or a checkout onto the wrong branch is
+    # corrupted state that must never flow silently into review or integration.
+    # Establish the boundary invariant here — fail-closed on residue, attributed
+    # to DEV — before advancing (#1365). Only runs on the successful-dev
+    # fall-through; the timeout/max-iterations retry returns above re-enter DEV.
+    #
+    # expected_branch_name=branch_name enforces the spec's "refs matching what
+    # the coordinator expects" clause: a coordinator worktree is created on the
+    # story branch (`git worktree add <path> <branch>`) and every rebase keeps
+    # HEAD on it, so a dev iteration that ends detached — or checked out onto a
+    # different ref — has mutated branch state that integration would silently
+    # skip (it force-pushes the *named* branch, not the detached commit). A
+    # detached HEAD is treated as corrupt here exactly as workspace.py already
+    # treats it during worktree reuse. The branch check fails open on a git
+    # error (e.g. a non-repo scratch dir), so only a genuine wrong-ref state
+    # escalates.
+    _wt_state = check_worktree_git_consistency(
+        workspace_path,
+        expected_base_sha=state.last_dev_start_commit,
+        base_branch=config.workspace.base_branch,
+        expected_branch_name=branch_name,
+    )
+    if not _wt_state.consistent:
+        state.phase = Phase.ESCALATE
+        _wt_detail = f" ({_wt_state.detail})" if _wt_state.detail else ""
+        state.error = (
+            f"DEV phase left the worktree in an inconsistent git state "
+            f"({_wt_state.inconsistency}){_wt_detail} — refusing to advance to "
+            "review/integration"
+        )
+        record_dev_iteration_telemetry(
+            state,
+            workspace_path,
+            max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+            gate_result="WORKTREE_STATE_INCONSISTENT",
+        )
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("escalate", reason=state.error, phase="DEV")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
 
     return None

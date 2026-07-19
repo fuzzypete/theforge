@@ -22,6 +22,7 @@ from .run_setup import delete_merge_state, load_merge_state, save_merge_state
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, MergeStepState, Phase
 from .util import _fmt_duration, _log, _log_verbose, _run_shell
 from .workspace import _deindex_forge_artifacts, _merge_branch
+from .worktree_state import check_worktree_git_consistency
 
 _pr_log = logging.getLogger(__name__)
 MAX_MERGE_RETRIES = 3
@@ -34,6 +35,7 @@ def mark_merge_failed(
     branch_name: str | None,
     *,
     arming_failed: bool = False,
+    inherited_dev_residue: bool = False,
 ) -> None:
     """Mutate state and result coherently when the merge step fails.
 
@@ -45,15 +47,33 @@ def mark_merge_failed(
     When ``arming_failed`` is True, the failure is the auto-merge *arming* RPC
     (the PR itself is fine); the message names the distinction so operators
     pursue branch-protection configuration instead of investigating the PR.
+
+    When ``inherited_dev_residue`` is True, integration refused git state a prior
+    DEV iteration left behind (issue #1365). Integration is the victim, not the
+    cause, so this is recorded as ``Phase.ESCALATE`` attributed to DEV rather
+    than ``Phase.MERGE_FAILED`` — the operator must not have to read the reflog
+    to discover the corruption originated upstream. ``landing_status`` stays
+    ``"failed"`` so the story still counts as unlanded, but the terminal phase
+    and message name DEV as responsible.
     """
-    state.phase = Phase.MERGE_FAILED
-    result.phase = Phase.MERGE_FAILED
+    if inherited_dev_residue:
+        state.phase = Phase.ESCALATE
+        result.phase = Phase.ESCALATE
+    else:
+        state.phase = Phase.MERGE_FAILED
+        result.phase = Phase.MERGE_FAILED
     result.success = False
     result.landing_status = "failed"
     cause = error or "unknown"
     state.error = cause
     branch_part = f" Branch '{branch_name}' carries reviewed work." if branch_name else ""
-    if arming_failed:
+    if inherited_dev_residue:
+        result.message = (
+            f"Integration refused inconsistent worktree git state left by the DEV "
+            f"phase: {cause}.{branch_part} This is a DEV-phase escalation, not a "
+            "merge failure — integration is the victim, not the cause."
+        )
+    elif arming_failed:
         result.message = (
             f"Auto-merge arming failed: {cause}.{branch_part} "
             "The PR itself is not rejected — configure branch protection on the "
@@ -569,6 +589,35 @@ def _step_fetch_rebase(push_cwd: Path, base_branch: str) -> dict:
     Returns ``{"success": True}`` or ``{"success": False, "error": ...}``.
     """
     _deindex_forge_artifacts(push_cwd)
+    # ── Refuse inherited worktree inconsistency (#1365) ──────────────────
+    # If a dev iteration left the worktree in an in-progress rebase/merge/
+    # cherry-pick/revert/bisect, git's own ``git rebase`` below fails with a
+    # raw "there is already a rebase-merge directory" error, and the operator
+    # must read the reflog to discover the residue originated upstream. Detect
+    # it here (residue-only; no pre-dev base SHA is available at this seam) and
+    # return a structured diagnosis that names the offending state and attributes
+    # it to the DEV phase, so corruption from one phase is never reframed as
+    # integration's failure. This is the victim refusing to be blamed; the
+    # authoritative fail-closed catch is at the DEV-phase boundary.
+    _wt_state = check_worktree_git_consistency(push_cwd)
+    if not _wt_state.consistent:
+        _wt_detail = f" ({_wt_state.detail})" if _wt_state.detail else ""
+        _pr_log.warning(
+            "refusing rebase: worktree left inconsistent by dev (%s)", _wt_state.inconsistency
+        )
+        return {
+            "success": False,
+            # DEV-attributed classification flag: the failure originates in state
+            # a prior DEV iteration left behind, not in integration. Landing paths
+            # read this to escalate (DEV-attributed) rather than record the story
+            # as MERGE_FAILED — integration is the victim, not the cause (#1365).
+            "inherited_dev_residue": True,
+            "error": (
+                f"dev left inconsistent git state: {_wt_state.inconsistency}"
+                f"{_wt_detail} present in worktree — attributed to the DEV phase, "
+                "not integration; refusing to rebase"
+            ),
+        }
     try:
         fetch_proc = subprocess.run(
             ["git", "fetch", "origin", base_branch],
@@ -1139,6 +1188,9 @@ def _merge_pr(
                     merge_state=merge_state,
                     detail={
                         "error_context": fetch_rebase_result.get("error_context"),
+                        # Carry the DEV-attribution flag so landing paths escalate
+                        # instead of recording MERGE_FAILED (#1365).
+                        "inherited_dev_residue": fetch_rebase_result.get("inherited_dev_residue"),
                     },
                 )
 
