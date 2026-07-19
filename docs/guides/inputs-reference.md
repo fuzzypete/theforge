@@ -368,7 +368,7 @@ plan_agent_review:
 
 # ── Notifications (optional) ──────────────────────────────
 notifications:
-  backend: ntfy               # "none", "ntfy", "osascript"
+  backend: ntfy               # "none", "ntfy", "slack", "osascript"
   ntfy:
     priority: high
     # url resolved from NTFY_URL in .forge/.env
