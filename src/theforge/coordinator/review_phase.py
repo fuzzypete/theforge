@@ -973,6 +973,7 @@ def _run_review_phase(
     state.review_cycle_metadata.append(meta)
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
+    from . import scope_guard  # noqa: PLC0415
     from .workspace_hygiene import (  # noqa: PLC0415
         enforce_pre_review_hygiene,
         reconcile_post_review_mutations,
@@ -1000,6 +1001,36 @@ def _run_review_phase(
     if not _pre_review_ok:
         state.phase = Phase.ESCALATE
         state.error = _pre_review_diag or "Workspace hygiene gate refused REVIEW entry"
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(success=False, phase=state.phase, state=state, message=state.error),
+            config,
+        )
+
+    # ── Diff-scope guard (DEV → REVIEW boundary) ──────────────────────
+    # The DEV phase owns tree mutation, so any file the dev agent commits into
+    # its feature branch — including repo-root environment/tooling config it
+    # added to unblock its own broken worktree (poetry.toml, .npmrc, editor
+    # dirs, *.local) or forge's own runtime artifacts — flows through unchecked
+    # unless something inspects the committed diff. Fail closed by escalating
+    # with the offending paths rather than silently rewriting committed history
+    # over a heuristic denylist (a poetry-packaging story may legitimately edit
+    # poetry.toml). Same class as the earlier handoff.yaml leak, generalized
+    # (theforge #1615).
+    _scope_ok, _scope_diag, _scope_audit = scope_guard.check_committed_scope(
+        workspace_path,
+        config.workspace.base_branch,
+    )
+    state.workspace_hygiene_audit.append({"phase": "SCOPE_GUARD", **_scope_audit})
+    if not _scope_ok:
+        state.phase = Phase.ESCALATE
+        state.error = _scope_diag or "Diff-scope guard refused REVIEW entry"
+        state.escalate_kind = "hygiene"
         _log(f"✗ ESCALATE   {state.error}")
         if logger:
             logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
