@@ -1031,6 +1031,7 @@ def run_task(
                     _merge_info.get("error"),
                     branch_name,
                     arming_failed=bool(_merge_info.get("arming_failed")),
+                    inherited_dev_residue=bool(_merge_info.get("inherited_dev_residue")),
                 )
 
         _total_elapsed = time.monotonic() - _task_start
@@ -1256,6 +1257,7 @@ def _run_resume_coordinator(
                     _merge_info.get("error"),
                     branch_name,
                     arming_failed=bool(_merge_info.get("arming_failed")),
+                    inherited_dev_residue=bool(_merge_info.get("inherited_dev_residue")),
                 )
 
         _total_elapsed = time.monotonic() - _task_start

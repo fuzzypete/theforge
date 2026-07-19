@@ -35,6 +35,7 @@ def mark_merge_failed(
     branch_name: str | None,
     *,
     arming_failed: bool = False,
+    inherited_dev_residue: bool = False,
 ) -> None:
     """Mutate state and result coherently when the merge step fails.
 
@@ -46,15 +47,33 @@ def mark_merge_failed(
     When ``arming_failed`` is True, the failure is the auto-merge *arming* RPC
     (the PR itself is fine); the message names the distinction so operators
     pursue branch-protection configuration instead of investigating the PR.
+
+    When ``inherited_dev_residue`` is True, integration refused git state a prior
+    DEV iteration left behind (issue #1365). Integration is the victim, not the
+    cause, so this is recorded as ``Phase.ESCALATE`` attributed to DEV rather
+    than ``Phase.MERGE_FAILED`` — the operator must not have to read the reflog
+    to discover the corruption originated upstream. ``landing_status`` stays
+    ``"failed"`` so the story still counts as unlanded, but the terminal phase
+    and message name DEV as responsible.
     """
-    state.phase = Phase.MERGE_FAILED
-    result.phase = Phase.MERGE_FAILED
+    if inherited_dev_residue:
+        state.phase = Phase.ESCALATE
+        result.phase = Phase.ESCALATE
+    else:
+        state.phase = Phase.MERGE_FAILED
+        result.phase = Phase.MERGE_FAILED
     result.success = False
     result.landing_status = "failed"
     cause = error or "unknown"
     state.error = cause
     branch_part = f" Branch '{branch_name}' carries reviewed work." if branch_name else ""
-    if arming_failed:
+    if inherited_dev_residue:
+        result.message = (
+            f"Integration refused inconsistent worktree git state left by the DEV "
+            f"phase: {cause}.{branch_part} This is a DEV-phase escalation, not a "
+            "merge failure — integration is the victim, not the cause."
+        )
+    elif arming_failed:
         result.message = (
             f"Auto-merge arming failed: {cause}.{branch_part} "
             "The PR itself is not rejected — configure branch protection on the "
@@ -588,6 +607,11 @@ def _step_fetch_rebase(push_cwd: Path, base_branch: str) -> dict:
         )
         return {
             "success": False,
+            # DEV-attributed classification flag: the failure originates in state
+            # a prior DEV iteration left behind, not in integration. Landing paths
+            # read this to escalate (DEV-attributed) rather than record the story
+            # as MERGE_FAILED — integration is the victim, not the cause (#1365).
+            "inherited_dev_residue": True,
             "error": (
                 f"dev left inconsistent git state: {_wt_state.inconsistency}"
                 f"{_wt_detail} present in worktree — attributed to the DEV phase, "
@@ -1164,6 +1188,9 @@ def _merge_pr(
                     merge_state=merge_state,
                     detail={
                         "error_context": fetch_rebase_result.get("error_context"),
+                        # Carry the DEV-attribution flag so landing paths escalate
+                        # instead of recording MERGE_FAILED (#1365).
+                        "inherited_dev_residue": fetch_rebase_result.get("inherited_dev_residue"),
                     },
                 )
 

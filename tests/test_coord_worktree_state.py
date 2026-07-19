@@ -448,6 +448,8 @@ def test_step_fetch_rebase_refuses_inherited_residue_without_rebasing(tmp_path: 
     assert "inconsistent git state" in result["error"]
     assert "rebase-merge" in result["error"]
     assert "DEV phase" in result["error"]
+    # DEV-attribution flag so landing paths escalate instead of MERGE_FAILED.
+    assert result["inherited_dev_residue"] is True
     # The rebase must never have been attempted — no raw git rebase error.
     assert "rebase" not in called_git
     assert "fetch" not in called_git
@@ -475,3 +477,140 @@ def test_step_fetch_rebase_proceeds_when_no_residue(tmp_path: Path) -> None:
     assert "fetch" in attempted
     assert result["success"] is False
     assert "inconsistent git state" not in result["error"]
+
+
+# ── Seam test 3: inherited residue is classified as DEV escalation, ─────
+#     never as a merge failure pinned on integration.
+
+
+def _merge_pr_config(tmp_path: Path):
+    from theforge.config import (
+        DEFAULT_DEV_PROFILE,
+        DEFAULT_PREFLIGHT_PROFILE,
+        DEFAULT_REVIEW_PROFILE,
+        DEFAULT_VALIDATION,
+        ForgeConfig,
+        LogConfig,
+        RetryPolicy,
+        WorkspaceConfig,
+    )
+
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+            on_approve="merge-pr",
+            auto_push=True,
+            base_branch="main",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        log=LogConfig(enabled=False),
+    )
+
+
+def test_merge_pr_residue_propagates_dev_attribution_flag(tmp_path: Path) -> None:
+    """_merge_pr must surface the inherited_dev_residue flag (and never rebase)
+    when the worktree carries residue from a prior DEV iteration (#1365)."""
+    from theforge.coordinator import completion
+
+    config = _merge_pr_config(tmp_path)
+    task = TaskStory(name="test-task", slug="test-task", story_path="specs/t.md")
+    # Build the worktree the way _merge_pr resolves it and leave residue in it.
+    worktree = tmp_path / "test-task"
+    worktree.mkdir()
+    _init_repo(worktree)
+    (worktree / ".git" / "rebase-merge").mkdir()
+
+    review = MagicMock()
+    state = MagicMock()
+
+    git_verbs = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd:
+            if cmd[0] == "gh":
+                # "already merged?" lookup → not merged, proceed to fetch/rebase.
+                return _make_mock_proc(0, "[]")
+            if cmd[0] == "git":
+                git_verbs.append(cmd[1] if len(cmd) > 1 else "")
+        return real_run(cmd, *args, **kwargs)
+
+    with patch.object(completion.subprocess, "run", side_effect=fake_run):
+        merge_info = completion._merge_pr(config, task, "forge/test-task", review, state)
+
+    assert merge_info["success"] is False
+    assert merge_info.get("inherited_dev_residue") is True
+    assert "DEV phase" in merge_info["error"]
+    # Residue short-circuits before any rebase is attempted.
+    assert "rebase" not in git_verbs
+
+
+def _make_mock_proc(returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
+    m = MagicMock()
+    m.returncode = returncode
+    m.stdout = stdout
+    m.stderr = stderr
+    return m
+
+
+def test_landing_failure_outcome_classifies_inherited_residue_as_escalated() -> None:
+    """The shared landing-failure classifier maps inherited DEV residue to a
+    DEV-attributed ESCALATED outcome, arming failures to MERGE_ARMING_FAILED, and
+    everything else to the generic MERGE_FAILED."""
+    from theforge.sprint.story_state import StoryOutcome, landing_failure_outcome
+
+    assert landing_failure_outcome({"inherited_dev_residue": True}) is StoryOutcome.ESCALATED
+    # Residue attribution takes precedence over a co-present arming flag.
+    assert (
+        landing_failure_outcome({"inherited_dev_residue": True, "arming_failed": True})
+        is StoryOutcome.ESCALATED
+    )
+    assert landing_failure_outcome({"arming_failed": True}) is StoryOutcome.MERGE_ARMING_FAILED
+    assert landing_failure_outcome({}) is StoryOutcome.MERGE_FAILED
+    assert landing_failure_outcome(None) is StoryOutcome.MERGE_FAILED
+
+
+def test_mark_merge_failed_inherited_residue_escalates_not_merge_failed() -> None:
+    """mark_merge_failed(inherited_dev_residue=True) records a DEV-attributed
+    Phase.ESCALATE — not Phase.MERGE_FAILED — so integration is not blamed for
+    state the DEV phase created."""
+    from theforge.coordinator.completion import mark_merge_failed
+    from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+
+    state = CoordinatorState()
+    result = CoordinatorResult(
+        success=True, phase=Phase.DONE, state=state, message="done", landing_status="failed"
+    )
+
+    mark_merge_failed(
+        state,
+        result,
+        "dev left inconsistent git state: in-progress rebase (rebase-merge)",
+        "forge/test-task",
+        inherited_dev_residue=True,
+    )
+
+    assert state.phase is Phase.ESCALATE
+    assert result.phase is Phase.ESCALATE
+    assert result.success is False
+    assert result.landing_status == "failed"
+    assert "DEV" in result.message
+    assert "merge failure" in result.message  # message disavows the merge-failure framing
+
+    # Contrast: a normal merge failure still records MERGE_FAILED.
+    state2 = CoordinatorState()
+    result2 = CoordinatorResult(
+        success=True, phase=Phase.DONE, state=state2, message="done", landing_status="failed"
+    )
+    mark_merge_failed(state2, result2, "conflict", "forge/test-task")
+    assert state2.phase is Phase.MERGE_FAILED
+    assert result2.phase is Phase.MERGE_FAILED
