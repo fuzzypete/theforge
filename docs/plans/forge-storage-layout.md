@@ -1,7 +1,9 @@
 # Design Note: `.forge/` Storage Layout & Git Policy
 
-Predecessor to knowledge-capture Layer 1. Settles what gets tracked, what
-format it takes, and how existing consumers migrate.
+**Status: Shipped (v0.11.0).** The audit substrate
+(`coordinator/audit_substrate.py`, `forge audits rebuild`) and the git policy
+described here are live. Predecessor to knowledge-capture Layer 1. Settles what
+gets tracked, what format it takes, and how existing consumers migrate.
 
 ---
 

@@ -165,7 +165,8 @@ and remove the old file.
 
 **Fix:**
 ```bash
-forge check-providers --verbose  # shows raw response from each provider
+forge check-providers            # smoke-tests every API-mode profile
+forge check-providers --profile dev  # test a single profile
 ```
 
 Common errors:
