@@ -152,8 +152,8 @@ your-project/
 - Worktrees are where agent edits happen, so your main branch stays untouched until you merge.
 - The latest persistent audit lands in `.forge/audits/forge_audit.yaml`.
 
-See [Getting Started](docs/guides/getting-started.md#what-gets-created) for the
-full ownership and cleanup breakdown.
+See the [Storage Layout guide](docs/guides/forge-storage.md) for the category
+model behind `.forge/` — what's tracked, what's local-only, and why.
 
 ## Choose your setup
 
@@ -212,6 +212,7 @@ volume, and the number of review loops. Budget enforcement is built in via
 |-------|-------------|
 | [Getting Started](docs/guides/getting-started.md) | Full first-run walkthrough from install to merge |
 | [Example Project](examples/hello-forge/) | Canonical proof path for a fresh setup |
+| [Storage Layout](docs/guides/forge-storage.md) | The four-category model behind `.forge/`: what's tracked, what's local |
 | [First-Run Walkthrough](docs/guides/first-run-walkthrough.md) | Narrated phase-by-phase terminal transcript |
 | [Troubleshooting](docs/guides/troubleshooting.md) | Recovery guidance for setup, gate, and worktree issues |
 | [CLI Reference](docs/guides/cli-reference.md) | Commands, flags, and when to use them |
