@@ -538,6 +538,71 @@ class TestTransientRetry:
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_transient_retry_updates_reviewer_progress_state(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        """Production retry path: a transient-failed reviewer surfaces the retry
+        glyph via the aggregator, and a resolved retry clears it and marks done
+        (issue #1086, review cycle 1 P1)."""
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=2,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # r1 comes back transient-failed from the pool; the retry then succeeds.
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="r1"
+        )
+
+        captured: dict = {}
+
+        def _state_update(updates: dict) -> None:
+            detail = updates.get("detail")
+            if isinstance(detail, dict) and "reviewer_progress" in detail:
+                captured["detail"] = detail
+
+        meta = _meta()
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+            state_update_fn=_state_update,
+        )
+
+        # The final emitted detail reflects the resolved retry: r1 is done and
+        # carries no lingering retry marker (set_retry armed it, the success
+        # cleared it).
+        rp = captured["detail"]["reviewer_progress"]["r1"]
+        assert rp["done"] is True
+        assert rp["retry"] is None
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     def test_transient_retry_exhausts_budget_records_failed_outcome(
         self, mock_pool, mock_run_agent, _mock_log, tmp_path
     ):

@@ -64,6 +64,7 @@ from .plan_trajectory import (
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .preflight_evidence import render_partial_evidence
 from .remote_gates import _plan_review_remote
+from .reviewer_progress import ReviewerProgressChannel
 from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
 from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout_with_active
 
@@ -259,6 +260,7 @@ def _retry_transient_plan_review_failures(
     config: ForgeConfig,
     workspace_path: Path,
     attempt: int,
+    progress_channel: "ReviewerProgressChannel | None" = None,
 ) -> tuple[list["AgentResult"], list[dict]]:
     """Retry transient plan-review transport failures per reviewer."""
     max_retries = config.retry.max_plan_review_transport_retries
@@ -281,6 +283,8 @@ def _retry_transient_plan_review_failures(
                 f"  ↻ PLAN_REVIEW   {profile.name} transient transport failure "
                 f"(retry {retry_count}/{max_retries})"
             )
+            if progress_channel is not None:
+                progress_channel.set_retry(profile.name, retry_count, max_retries)
             retried = run_agent(
                 prompt=prompt,
                 profile=profile,
@@ -288,6 +292,7 @@ def _retry_transient_plan_review_failures(
                 quiet=True,
                 secrets=config.secrets,
                 session_id=current.session_id if profile.mode == "cli" else None,
+                progress_cb=progress_channel.cb if progress_channel is not None else None,
             )
             if retried.session_id:
                 state.plan_review_session_ids[profile.name] = retried.session_id
@@ -306,6 +311,10 @@ def _retry_transient_plan_review_failures(
             )
             current = retried
 
+        # A resolved retry marks the reviewer done (also clears the ↻rN/M glyph)
+        # so the pool-done count stays accurate.
+        if retry_count > 0 and current.success and progress_channel is not None:
+            progress_channel.cb({"label": profile.name, "done": True})
         retried_results[index] = current
 
     return retried_results, retry_events
@@ -735,6 +744,7 @@ def _run_plan_phase(
                 notify=notify,
                 logger=logger,
                 advisory=(_work_type == "refactor"),
+                state_update_fn=state_update_fn,
             )
             if result is not None:
                 return result
@@ -834,6 +844,7 @@ def _run_plan_agent_review(
     notify: bool,
     logger: "StructuredLogger | None",
     advisory: bool = False,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> CoordinatorResult | None:
     """Run agent-based plan review pool with regen loop.
 
@@ -884,12 +895,22 @@ def _run_plan_agent_review(
 
         _pr_start = time.monotonic()
         _pool_session_ids = [state.plan_review_session_ids.get(p.name) for p in par_profiles]
+        # Passive per-reviewer progress channel — identical contract to REVIEW.
+        _pr_channel = ReviewerProgressChannel(
+            reviewer_names=_pool_names,
+            phase="PLAN_REVIEW",
+            iteration=_attempt,
+            cost_usd=state.total_cost,
+            complexity=state.preflight_complexity,
+            state_update_fn=state_update_fn,
+        )
         pr_results = run_agent_pool(
             prompt=pr_prompt,
             profiles=par_profiles,
             working_dir=workspace_path,
             session_ids=_pool_session_ids,
             secrets=config.secrets,
+            progress_cb=_pr_channel.cb,
         )
         pr_results, _transport_retry_events = _retry_transient_plan_review_failures(
             prompt=pr_prompt,
@@ -899,6 +920,7 @@ def _run_plan_agent_review(
             config=config,
             workspace_path=workspace_path,
             attempt=_attempt,
+            progress_channel=_pr_channel,
         )
         state.plan_review_transport_retries.extend(_transport_retry_events)
         pr_results, _parse_retry_events = _retry_parse_failed_plan_reviews(

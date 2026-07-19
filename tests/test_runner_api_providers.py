@@ -280,7 +280,7 @@ class TestRunApiAgentLoopIntegration:
                 working_dir=tmp_path,
                 quiet=True,
             )
-            mock_fn.assert_called_once_with("review", profile, tmp_path, None)
+            mock_fn.assert_called_once_with("review", profile, tmp_path, None, progress_cb=None)
 
     def test_google_plain_text_with_tools_bypasses_loop_runner(self, tmp_path):
         profile = _make_profile(
@@ -593,7 +593,7 @@ class TestDeepSeekProvider:
         mock_fn = MagicMock(return_value=mock_result)
         with patch.dict("theforge.runners.api._LOOP_RUNNERS", {"deepseek": mock_fn}):
             run_api_agent(prompt="review", profile=profile, working_dir=tmp_path, quiet=True)
-        mock_fn.assert_called_once_with("review", profile, tmp_path, None)
+        mock_fn.assert_called_once_with("review", profile, tmp_path, None, progress_cb=None)
 
 
 class TestWriteFileHandler:

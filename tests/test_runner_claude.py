@@ -72,6 +72,7 @@ class TestHybridRunner:
             quiet=False,
             secrets={},
             plain_text=False,
+            progress_cb=None,
         )
         assert result == AgentResult(**{**mock_result.__dict__, "transport_used": "api"})
 
@@ -106,6 +107,7 @@ class TestHybridRunner:
             quiet=False,
             secrets={},
             plain_text=False,
+            progress_cb=None,
         )
         assert result == AgentResult(**{**mock_result.__dict__, "transport_used": "api"})
 

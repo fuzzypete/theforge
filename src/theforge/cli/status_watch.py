@@ -255,7 +255,14 @@ def render_frame(
         delta = cost - prev
         new_costs[slug] = cost
 
-        last_evt = _last_audit_mtime(slug, run_id, project_root, sprint_log_dir)
+        # EVENT AGE ticks from the freshest of the audit.yaml mtime (dev/other
+        # phases) and the most recent reviewer tool-call event (REVIEW /
+        # PLAN_REVIEW). Each reviewer iteration rewrites .state and bumps
+        # last_reviewer_event_ts, so review no longer shows a frozen "—".
+        _audit_mtime = _last_audit_mtime(slug, run_id, project_root, sprint_log_dir)
+        _reviewer_ts = getattr(e, "last_event_ts", None)
+        _candidates = [t for t in (_audit_mtime, _reviewer_ts) if isinstance(t, (int, float))]
+        last_evt = max(_candidates) if _candidates else None
         if last_evt is None:
             age_str = "—"
             stalled = False

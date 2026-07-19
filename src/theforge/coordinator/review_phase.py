@@ -1016,6 +1016,7 @@ def _run_review_phase(
         max_review_parse_retries=max_parse_retries,
         logger=logger,
         stop_event=stop_event,
+        state_update_fn=state_update_fn,
     )
     state.last_cycle_reviewer_results = _named_parsed
 
