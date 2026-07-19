@@ -117,7 +117,7 @@ def test_completed_skipped_story_with_dependencies_keeps_waiting_detail() -> Non
     )
 
     assert stage == "dependency"
-    assert detail == "depends on issue-1"
+    assert detail == "depends on #1"
 
 
 def test_live_skipped_story_uses_reason_detail() -> None:

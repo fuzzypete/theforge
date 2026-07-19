@@ -212,15 +212,19 @@ def render_frame(
     in-place CURSOR_UP redraw region. ``state`` is mutated to record
     per-slug cost so the next frame can compute deltas.
     """
-    from theforge.cli.sprint_status import display_sprint_status
+    from theforge.cli.sprint_status import _format_story_cell, display_sprint_status
     from theforge.sprint.status_reader import read_live_status
+
+    # Persist the GitHub title cache across frames so titles fetched on frame 1
+    # are reused on every subsequent frame (zero re-fetch).
+    title_cache = state.setdefault("title_cache", {})
 
     buf = io.StringIO()
     err_buf = io.StringIO()
     # Capture stderr too: a mid-loop failure (e.g. state file just removed)
     # would otherwise scroll the terminal and break the in-place redraw math.
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err_buf):
-        rc = display_sprint_status(run_id, project_root)
+        rc = display_sprint_status(run_id, project_root, title_cache=title_cache)
     base = buf.getvalue()
     snapshot_ok = rc == 0
 
@@ -300,6 +304,7 @@ def render_frame(
         if color and delta != 0 and abs(delta) >= 0.005:
             delta_str = _c(delta_str, DIM, True)
 
+        path = _format_story_cell(path, title_cache)
         path_disp = path if len(path) <= 30 else path[:29] + "…"
         act_padded = act + " " * max(0, _ACT_COL - len(label))
         overlay_lines.append(f"{path_disp:<30}  {act_padded}  {delta_str:>8}  {age_str:>9}")
