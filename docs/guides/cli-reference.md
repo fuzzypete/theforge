@@ -601,8 +601,8 @@ Inspect and maintain model capability profiles (the cumulative per-model
 counters adaptive routing reads).
 
 ```bash
-forge profiles list              # show current profile counters
-forge profiles reset <model-id>  # reset counters for one canonical model ID
+forge profiles list                          # show current profile counters
+forge profiles reset --model <model-id>      # reset counters for one canonical model ID
 ```
 
 ---
