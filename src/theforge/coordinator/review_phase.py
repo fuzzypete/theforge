@@ -940,6 +940,16 @@ def _run_review_phase(
                 "cost_usd": state.total_cost,
                 "complexity": state.preflight_complexity,
                 "current_model": f"panel({len(config.review_pool)})",
+                # Populate detail on REVIEW entry so STAGE renders cycle=N/M and
+                # the stale prior-phase detail (e.g. GATE/VALIDATE gate_status) is
+                # overwritten immediately. story_state.transition replaces detail
+                # wholesale, so supplying it here clears the leftover field.
+                "detail": {
+                    "review_cycle": state.review_cycle + 1,
+                    "review_max_cycles": (
+                        state.adaptive_review_max or config.retry.max_review_cycles
+                    ),
+                },
             }
         )
     if logger:
@@ -1182,6 +1192,13 @@ def _run_review_phase(
                 "cost_usd": state.total_cost,
                 "complexity": state.preflight_complexity,
                 "detail": {
+                    # Re-include cycle context so the wholesale detail replace at
+                    # story_state.transition does not wipe STAGE after a cycle
+                    # completes while DETAIL shows the P1/P2 counts.
+                    "review_cycle": state.review_cycle,
+                    "review_max_cycles": (
+                        state.adaptive_review_max or config.retry.max_review_cycles
+                    ),
                     "review_p1": _p1_count,
                     "review_p2": _p2_count,
                 },
