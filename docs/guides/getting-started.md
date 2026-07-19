@@ -355,42 +355,19 @@ abort the forge run. See `.forge/hooks/README.md` for full documentation.
 
 ## What gets created
 
-A full view of every file TheForge touches and who owns it.
+`forge.yaml`, `stories/`, `sprints/`, and `briefs/` at your repo root are
+yours — TheForge never rewrites them. Everything TheForge generates lives
+under `.forge/`.
 
-```
-your-project/
-├── forge.yaml                         # USER — project config (models, budgets, gate)
-├── stories/                           # USER — story inputs
-│   ├── TEMPLATE.md                    # USER — annotated story template (from forge init)
-│   └── my-feature.md                  # USER — your stories
-├── sprints/                           # USER — sprint manifests
-├── briefs/                            # USER — ideation inputs for forge ideate
-│
-├── .forge/
-│   ├── .env                           # USER — API keys (auto-gitignored)
-│   ├── hooks/                         # USER — lifecycle hook scripts
-│   │   └── post_run.sh                # USER — (from forge init-hooks)
-│   ├── logs/                          # GENERATED — per-run log files
-│   ├── audits/                        # GENERATED — persistent audit trail
-│   │   └── forge_audit.yaml           # GENERATED — latest run audit (overwritten per run)
-│   └── worktrees/                     # GENERATED — managed git worktrees
-│       └── my-feature/                # GENERATED — one per story run
-│           ├── <all repo files>       # GENERATED — full worktree copy on feature branch
-│           └── forge_audit.yaml       # GENERATED — worktree copy of audit trail
-```
-
-### Ownership and lifecycle
-
-| Entry | Owner | Safe to delete? | When? |
-|-------|-------|----------------|-------|
-| `forge.yaml` | You | No | — |
-| `stories/`, `sprints/`, `briefs/` | You | No | — |
-| `.forge/.env` | You | No — contains secrets | — |
-| `.forge/hooks/` | You | Yes | If you don't use hooks |
-| `.forge/logs/` | Generated | Yes | After reviewing |
-| `.forge/audits/forge_audit.yaml` | Generated | Yes | Overwritten each run |
-| `.forge/worktrees/<slug>/` | Generated | Yes | After merge or abandonment |
-| `.forge/worktrees/<slug>/forge_audit.yaml` | Generated | Yes | After merge or abandonment |
+`.forge/` contents fall into four categories — secrets, machine-local
+runtime state, derived views, and project memory — rather than a fixed
+file list, because new subdirectories get added as TheForge grows. What
+each category means, whether it travels with the repo, and what
+committing the wrong one would break is covered in the dedicated
+[Storage Layout guide](forge-storage.md), which also explains the
+shared-memory vs. local-memory choice you make at `forge init` time and
+points at the canonical `.gitignore`/`.gitattributes` template as the
+single source of truth for exactly what's tracked.
 
 ### Mental model
 
