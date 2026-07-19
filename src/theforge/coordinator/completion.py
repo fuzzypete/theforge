@@ -22,6 +22,7 @@ from .run_setup import delete_merge_state, load_merge_state, save_merge_state
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, MergeStepState, Phase
 from .util import _fmt_duration, _log, _log_verbose, _run_shell
 from .workspace import _deindex_forge_artifacts, _merge_branch
+from .worktree_state import check_worktree_git_consistency
 
 _pr_log = logging.getLogger(__name__)
 MAX_MERGE_RETRIES = 3
@@ -569,6 +570,30 @@ def _step_fetch_rebase(push_cwd: Path, base_branch: str) -> dict:
     Returns ``{"success": True}`` or ``{"success": False, "error": ...}``.
     """
     _deindex_forge_artifacts(push_cwd)
+    # ── Refuse inherited worktree inconsistency (#1365) ──────────────────
+    # If a dev iteration left the worktree in an in-progress rebase/merge/
+    # cherry-pick/revert/bisect, git's own ``git rebase`` below fails with a
+    # raw "there is already a rebase-merge directory" error, and the operator
+    # must read the reflog to discover the residue originated upstream. Detect
+    # it here (residue-only; no pre-dev base SHA is available at this seam) and
+    # return a structured diagnosis that names the offending state and attributes
+    # it to the DEV phase, so corruption from one phase is never reframed as
+    # integration's failure. This is the victim refusing to be blamed; the
+    # authoritative fail-closed catch is at the DEV-phase boundary.
+    _wt_state = check_worktree_git_consistency(push_cwd)
+    if not _wt_state.consistent:
+        _wt_detail = f" ({_wt_state.detail})" if _wt_state.detail else ""
+        _pr_log.warning(
+            "refusing rebase: worktree left inconsistent by dev (%s)", _wt_state.inconsistency
+        )
+        return {
+            "success": False,
+            "error": (
+                f"dev left inconsistent git state: {_wt_state.inconsistency}"
+                f"{_wt_detail} present in worktree — attributed to the DEV phase, "
+                "not integration; refusing to rebase"
+            ),
+        }
     try:
         fetch_proc = subprocess.run(
             ["git", "fetch", "origin", base_branch],
