@@ -431,7 +431,7 @@ file, or a freshly-filed issue) and need to know what kind of work object it
 should become before grooming or diagnosing it.
 
 **The command never auto-invokes a producer.** `--next` prints a hint
-(`forge diagnose 123`, `forge groom 123`, etc.); it does not run it.
+(`forge diagnose --issue 123`, `forge groom 123`, etc.); it does not run it.
 `--next` output is human-readable in v0.11; no stable machine-readable
 contract is promised yet.
 
@@ -456,8 +456,8 @@ investigation-ready to implementation-ready. Bugs without a confirmed cause
 cannot be labeled `ready` (see `forge groom` below).
 
 ```bash
-forge diagnose <issue>          # investigate one issue
-forge diagnose <issue> --interactive
+forge diagnose --issue <issue>          # investigate one issue
+forge diagnose --issue <issue> --interactive
 ```
 
 `forge diagnose` is the third step of the mid-sprint capture flow — see

@@ -86,7 +86,7 @@ Concrete instantiations of compound engineering in the current codebase and road
 - **`assignment_history.yaml` → adaptive router.** The earliest concrete compounding loop in TheForge: per-run model performance is recorded, future assignments adjust. Today this is the only routing decision that uses historical evidence. Future router work (a planned ADR before v0.13 implementation) generalizes this pattern.
 - **ADR-0001 intake readiness.** Operator corrections to half-formed issues used to evaporate (file → refuse → hand-edit → retry → next time same loop). The intake-readiness workflow captures each correction as a structured action (`forge shape`, `forge groom`, `forge diagnose`) that produces substrate-visible artifacts. The doctrine made the workflow worth defining; ADR-0001 made it concrete.
 - **ADR-0002 audit substrate.** The refusal-to-forget invariant — no operator-facing delete/redact API for run records — is compound engineering's most basic mechanical guarantee. Failures cannot be erased to make current state look better. The audit substrate is a record, not a portfolio.
-- **#1516 diagnosis-staleness check** *(open, v0.11.0)*. Once shipped, a diagnosis written against commit A will be mechanically detected as stale when commit B lands. The operator's earlier diagnostic work is preserved (compounding) and explicitly invalidated (refusal-capable) rather than silently rotting. Both axes in one feature.
+- **#1516 diagnosis-staleness check** *(shipped, v0.11.0 — `src/theforge/intake/diagnosis_staleness.py`)*. A diagnosis written against commit A is mechanically detected as stale when commit B lands. The operator's earlier diagnostic work is preserved (compounding) and explicitly invalidated (refusal-capable) rather than silently rotting. Both axes in one feature.
 
 ## Categories of compounding output
 
@@ -105,7 +105,7 @@ These are signals the system should make legible over time. Not all are implemen
 - **Rediscovery rate.** How often agents re-learn conventions, patterns, or failure modes the substrate already contains. A doctrine-aligned system trends this down.
 - **Refusal economics.** The remediation-to-runnable cost ratio (defined as a substrate query obligation in ADR-0002 §6). Makes refusal-capability legible as cost saved rather than friction felt.
 - **Operator-correction reuse.** How often a captured operator correction influences a later automated decision. Today this is partially measurable through the assignment-history → router loop; future work will broaden it.
-- **Diagnosis trust horizon.** How long a diagnosis stays valid before staleness invalidates it. Once #1516 ships, the staleness check will make this measurable mechanically; the metric over time tells us how aggressive the codebase's churn is relative to the diagnosis-decay rate.
+- **Diagnosis trust horizon.** How long a diagnosis stays valid before staleness invalidates it. The #1516 staleness check (shipped) makes this measurable mechanically; the metric over time tells us how aggressive the codebase's churn is relative to the diagnosis-decay rate.
 
 ## Relationship to other documents
 

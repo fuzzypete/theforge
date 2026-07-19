@@ -1,6 +1,13 @@
 # Plan: Plan Review — Human Gate Between PLAN and DEV
 
-Generated 2026-03-16. For injection via `forge run specs/plan-review.md --plan docs/plans/plan-review.md`.
+**Status: Shipped (v0.10.0).** The PLAN_REVIEW phase and its `plan_agent_review`
+config (`mode`, `timeout_seconds`) are live. The file map and module names below
+predate the `coordinator/` and `config/` package refactor (e.g. `coordinator.py`
+→ `coordinator/engine.py`, `config.py` → `config/`, `coord_*.py` →
+`coordinator/*.py`) and the `specs/`→GitHub-issues migration; they are retained
+for historical context, not as a current source map.
+
+Generated 2026-03-16.
 
 ---
 
