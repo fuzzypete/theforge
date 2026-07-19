@@ -139,6 +139,20 @@ def test_check_committed_scope_fails_closed_when_diff_unavailable(tmp_path: Path
     assert audit["diff_error"] is True
 
 
+def test_check_committed_scope_fails_open_when_no_committed_head(tmp_path: Path) -> None:
+    """A workspace with no resolvable committed HEAD (not a git repo / no
+    commits) has no committed diff for an agent to leak into, so the guard
+    fails open rather than manufacturing a spurious escalation — distinct from
+    the unverifiable-but-real state above (#1615 review P1)."""
+    # tmp_path is a bare directory, not a git repo.
+    ok, diagnostic, audit = check_committed_scope(tmp_path, "main")
+
+    assert ok is True
+    assert diagnostic is None
+    assert audit["diff_error"] is False
+    assert audit["offending"] == []
+
+
 def test_check_committed_scope_flags_committed_forge_artifact(tmp_path: Path) -> None:
     """Force-committing a forge runtime artifact (the way the original
     handoff.yaml leak actually happened despite .gitignore) is flagged

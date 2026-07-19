@@ -118,6 +118,28 @@ def committed_diff_paths(workspace_path: Path, base_branch: str) -> list[str] | 
     return None
 
 
+def _has_committed_head(workspace_path: Path) -> bool:
+    """True if ``workspace_path`` is a git repo whose HEAD resolves to a commit.
+
+    Distinguishes "there is committed content to inspect but the base ref is
+    unreachable" (a real unverifiable state worth escalating) from "no repo /
+    no commits yet" (nothing the scope guard protects). Returns False on any git
+    error or when HEAD is unborn.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+            cwd=str(workspace_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
 def find_out_of_scope_config(paths: list[str]) -> list[str]:
     """Return the sorted subset of ``paths`` that are out-of-scope config."""
     return sorted({p for p in paths if _is_out_of_scope_config(p)})
@@ -138,19 +160,29 @@ def check_committed_scope(
     """
     diff_paths = committed_diff_paths(workspace_path, base_branch)
     if diff_paths is None:
-        # Neither the remote nor local base ref could be diffed. The guard
-        # cannot see the committed diff, so it must not certify it clean —
-        # fail closed with an operator-visible diagnostic (invariant: prefer
-        # failing closed over silently continuing with an unverifiable tree).
-        audit = {"diff_paths": [], "offending": [], "diff_error": True}
-        diagnostic = (
-            f"Diff-scope guard could not compute the committed diff against "
-            f"base branch '{base_branch}' (neither origin/{base_branch} nor "
-            f"{base_branch} could be diffed). Refusing to certify the branch "
-            "clean of out-of-scope environment config when the diff is "
-            "unverifiable. Ensure the base branch is fetched/reachable and retry."
-        )
-        return False, diagnostic, audit
+        # Neither the remote nor local base ref could be diffed. Two cases:
+        #   1. The workspace has a resolvable committed HEAD — there IS content
+        #      to inspect but the declared base is unreachable. The guard cannot
+        #      see the diff, so it must not certify it clean: fail closed with an
+        #      operator-visible diagnostic (invariant: prefer failing closed over
+        #      silently continuing with an unverifiable tree). This is the #1615
+        #      review P1 fix.
+        #   2. No repo / no committed HEAD (unborn HEAD, or not a git worktree at
+        #      all) — there is no committed diff for an agent to have leaked
+        #      anything into, so there is nothing for the scope guard to protect.
+        #      Fail open rather than manufacture a spurious escalation.
+        if _has_committed_head(workspace_path):
+            audit = {"diff_paths": [], "offending": [], "diff_error": True}
+            diagnostic = (
+                f"Diff-scope guard could not compute the committed diff against "
+                f"base branch '{base_branch}' (neither origin/{base_branch} nor "
+                f"{base_branch} could be diffed) even though HEAD carries commits. "
+                "Refusing to certify the branch clean of out-of-scope environment "
+                "config when the committed diff is unverifiable. Ensure the base "
+                "branch is fetched/reachable and retry."
+            )
+            return False, diagnostic, audit
+        return True, None, {"diff_paths": [], "offending": [], "diff_error": False}
     offending = find_out_of_scope_config(diff_paths)
     audit: dict = {"diff_paths": sorted(diff_paths), "offending": offending, "diff_error": False}
     if not offending:
