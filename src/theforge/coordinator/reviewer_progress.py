@@ -126,6 +126,11 @@ class ReviewerProgressChannel:
             "reviewer_progress": {k: dict(v) for k, v in self._progress.items()},
             "reviewer_pool_size": len(self._progress),
             "last_reviewer_event_ts": time.time(),
+            # Carry the cycle number so it survives this writer's wholesale detail
+            # replace. self._iteration is seeded at state.review_cycle + 1, i.e.
+            # the current cycle. Keeps STAGE cycle context present while reviewers
+            # are actively emitting events.
+            "review_cycle": self._iteration,
         }
         try:
             self._state_update_fn(

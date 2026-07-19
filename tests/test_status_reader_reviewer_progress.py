@@ -208,6 +208,9 @@ class TestReviewerProgressSeam:
         assert entries is not None
         entry = entries[0]
         assert "iter" not in entry.stage  # not per-reviewer
+        # On REVIEW entry (before any reviewer event) STAGE must still render the
+        # cycle from the seeded detail rather than go blank (issue #1488).
+        assert entry.stage == "cycle=1/3"
         assert entry.detail == "running"
         assert entry.last_event_ts is None
 
@@ -332,3 +335,78 @@ class TestReviewerProgressSeam:
         # Must not propagate — reviewers can never be broken by a bad state sink.
         channel.cb({"label": "a", "iter": 1, "tool_calls": 1})
         channel.set_retry("a", 1, 2)
+
+
+# ── REVIEW detail contract across entry / in-flight / completion (issue #1488) ─
+
+
+class TestReviewDetailContract:
+    """The REVIEW STAGE/DETAIL columns must stay meaningful across the whole
+    cycle: on entry (cycle rendered, no stale gate_status leaking), while
+    reviewers run (pool progress), and after a cycle completes (cycle STILL
+    rendered alongside the P1/P2 counts). This drives the real renderer with the
+    detail dicts the three coordinator writers now emit.
+    """
+
+    def test_entry_detail_renders_cycle_and_clears_prior_phase_gate_status(
+        self, tmp_path: Path
+    ) -> None:
+        # On REVIEW entry the writer replaces detail wholesale with the cycle
+        # context (review_phase.py). Even if the prior phase left gate_status
+        # behind, the fresh detail must not carry it, and STAGE must render.
+        story = {
+            "slug": "issue-1488",
+            "path": "Issue #1488",
+            "status": "running",
+            "phase": "REVIEW",
+            "detail": {"review_cycle": 1, "review_max_cycles": 3},
+        }
+        assert "gate_status" not in story["detail"]
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert entry.stage == "cycle=1/3"
+        # No leftover GATE/VALIDATE fragment surfaces in DETAIL.
+        assert "PASS" not in entry.detail
+        assert entry.detail == "running"
+
+    def test_in_flight_reviewer_progress_renders_pool_stage(self, tmp_path: Path) -> None:
+        # While reviewers emit events the reviewer_progress dict drives STAGE; the
+        # cycle number is carried alongside for continuity.
+        story: dict = {"slug": "issue-1488", "path": "Issue #1488", "status": "running"}
+        channel = ReviewerProgressChannel(
+            reviewer_names=["deepseek", "gemini"],
+            phase="REVIEW",
+            iteration=2,
+            cost_usd=0.0,
+            complexity="medium",
+            state_update_fn=_worker_style_state_update(story),
+        )
+        channel.cb({"label": "deepseek", "iter": 1, "tool_calls": 2})
+        channel.cb({"label": "gemini", "done": True})
+        # review_cycle rides along with the reviewer-progress detail.
+        assert story["detail"]["review_cycle"] == 2
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert "deepseek=iter1" in entry.stage
+        assert entry.detail == "pool 1/2 done"
+
+    def test_completion_detail_keeps_cycle_alongside_counts(self, tmp_path: Path) -> None:
+        # After a cycle completes the writer emits {review_cycle, review_max_cycles,
+        # review_p1, review_p2}. STAGE must still render the cycle and DETAIL the
+        # counts — neither goes blank (the original symptom).
+        story = {
+            "slug": "issue-1488",
+            "path": "Issue #1488",
+            "status": "running",
+            "phase": "REVIEW",
+            "detail": {
+                "review_cycle": 2,
+                "review_max_cycles": 3,
+                "review_p1": 0,
+                "review_p2": 0,
+            },
+        }
+        _write_state(tmp_path, "run-x", story)
+        entry = read_live_status("run-x", tmp_path)[0]
+        assert entry.stage == "cycle=2/3"
+        assert entry.detail == "0P1 0P2"

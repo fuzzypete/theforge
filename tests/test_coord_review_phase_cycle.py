@@ -388,6 +388,47 @@ class TestRunFromReview:
         assert len(captured_session_ids) == 1
         assert captured_session_ids[0] == ["prior-rev-sess"]
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch_gate_shell()
+    def test_review_state_updates_carry_review_cycle(self, mock_shell, mock_pool, tmp_path):
+        """Every REVIEW-phase detail payload the coordinator emits carries
+        ``review_cycle`` so the status reader's STAGE column never goes blank
+        (issue #1488). Covers the entry write, the reviewer-progress seed, and the
+        cycle-completion write — the reader replaces detail wholesale, so each
+        writer must re-include the cycle.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "", 0, False)
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        updates: list[dict] = []
+
+        result = run_from_review(config, task, workspace, state_update_fn=updates.append)
+        assert result.success is True
+
+        review_details = [
+            u["detail"]
+            for u in updates
+            if u.get("phase") == "REVIEW" and isinstance(u.get("detail"), dict)
+        ]
+        # At least the entry write and the completion write must have fired.
+        assert len(review_details) >= 2
+        # No REVIEW detail payload may drop the cycle — that is what the reader
+        # renders as STAGE, and a wholesale replace without it blanks the column.
+        assert all("review_cycle" in d for d in review_details)
+        # The entry write seeds cycle context (review_max_cycles, no counts yet).
+        assert any("review_max_cycles" in d and "review_p1" not in d for d in review_details)
+        # The completion write carries both the cycle AND the P1/P2 counts.
+        assert any(
+            "review_cycle" in d and "review_p1" in d and "review_p2" in d for d in review_details
+        )
+
 
 class TestHasPersistentP1:
     """Unit tests for _has_persistent_p1 in coord_preflight."""
