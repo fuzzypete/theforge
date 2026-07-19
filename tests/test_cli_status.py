@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from theforge.config import (
@@ -620,6 +621,65 @@ class TestAwaitWatchableSprintRun:
             patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.2, 1.1]),
         ):
             assert _await_watchable_sprint_run("run-1", tmp_path, grace_seconds=1.0) is False
+
+
+class TestShowPendingDecisionsReason:
+    def test_multiline_reason_indented_and_not_truncated_mid_sentence(
+        self, capsys: object
+    ) -> None:
+        """Each line of a multi-line reason is indented under `reason:` and the
+        meaning-carrying tail of a long final line is preserved, not cut off."""
+        from theforge.cli.status import _show_pending_decisions
+
+        long_tail = "Max cycles (3) exhausted."
+        reason = "\n".join(["2/3 reviewers APPROVE", "PASS", long_tail])
+        entry = {
+            "run_id": "72a081f9c8c8",
+            "story": "issue-173",
+            "phase": "ESCALATE",
+            "reason": reason,
+            "created_at": "",
+            "timeout_at": "",
+            "options": ["approve", "reject", "continue"],
+        }
+        pending_mod = SimpleNamespace(list_pending=lambda project_root: [entry])
+
+        _show_pending_decisions(pending_mod, Path("."))
+
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+
+        reason_line = next(line for line in lines if "reason:" in line)
+        reason_idx = lines.index(reason_line)
+        continuation_1 = lines[reason_idx + 1]
+        continuation_2 = lines[reason_idx + 2]
+
+        assert reason_line.startswith("    reason: 2/3 reviewers APPROVE")
+        assert continuation_1.startswith("             PASS")
+        assert continuation_1.strip() == "PASS"
+        assert continuation_2.startswith("             ")
+        assert long_tail in continuation_2
+
+    def test_single_long_line_truncated_with_marker_not_silently(self, capsys: object) -> None:
+        from theforge.cli.status import _show_pending_decisions
+
+        entry = {
+            "run_id": "abc123",
+            "story": "issue-1",
+            "phase": "ESCALATE",
+            "reason": "x" * 300,
+            "created_at": "",
+            "timeout_at": "",
+            "options": [],
+        }
+        pending_mod = SimpleNamespace(list_pending=lambda project_root: [entry])
+
+        _show_pending_decisions(pending_mod, Path("."))
+
+        out = capsys.readouterr().out
+        reason_line = next(line for line in out.splitlines() if "reason:" in line)
+        assert reason_line.endswith("...")
+        assert len(reason_line) < 250
 
 
 def test_sprint_status_absent_from_cli_parser() -> None:

@@ -548,6 +548,25 @@ def _show_ready_queue(project_root: Path, milestone: str | None) -> int:
     return 0
 
 
+_PENDING_REASON_LINE_LIMIT = 200
+
+
+def _print_pending_reason(reason: str) -> None:
+    """Print a (possibly multi-line) pending-decision reason under a `reason:` label.
+
+    Continuation lines are indented to stay visually attached to the label.
+    Each line is length-limited independently (never the whole multi-line
+    string as one slice) so a long final line isn't cut off before its
+    meaning-carrying tail.
+    """
+    lines = reason.splitlines() or [""]
+    for i, line in enumerate(lines):
+        if len(line) > _PENDING_REASON_LINE_LIMIT:
+            line = line[: _PENDING_REASON_LINE_LIMIT - 3] + "..."
+        prefix = "    reason: " if i == 0 else "             "
+        print(f"{prefix}{line}")
+
+
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
     """Print the pending-decisions section."""
     pending_entries = pending_mod.list_pending(project_root)
@@ -558,7 +577,7 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
             run_id = entry.get("run_id", "?")
             story = entry.get("story", "?")
             phase = entry.get("phase", "?")
-            reason = (entry.get("reason") or "")[:80]
+            reason = entry.get("reason") or ""
             created_at = entry.get("created_at", "")
             timeout_at_str = entry.get("timeout_at", "")
             options = entry.get("options", [])
@@ -582,7 +601,7 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
             opts_str = "/".join(options) if options else ""
             print(f"  {run_id}  [{phase}]  story={story}  {status_str}")
             if reason:
-                print(f"    reason: {reason}")
+                _print_pending_reason(reason)
             if opts_str:
                 print(f"    options: {opts_str}")
             if created_at:
