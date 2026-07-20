@@ -178,7 +178,7 @@ class TestCmdStatusRouting:
 
         assert result == 0
         mock_dss.assert_called_once_with("run-a", config.project_root)
-        mock_single.assert_called_once_with("run-b", config.project_root)
+        mock_single.assert_called_once_with("run-b", config.project_root, run_type="single")
 
     def test_explicit_run_id_resolves_and_shows_status(
         self, tmp_path: Path, capsys: object

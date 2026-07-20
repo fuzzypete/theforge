@@ -30,6 +30,7 @@ from pathlib import Path
 
 import yaml
 
+from theforge import detach
 from theforge.config import ForgeConfig, ModelProfile
 from theforge.coordinator.diagnose_evidence import build_starting_evidence
 from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
@@ -475,6 +476,7 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
                 round(state.agent_cost_usd, 6) if state.agent_cost_usd is not None else None
             ),
             "duration_s": round(state.agent_duration_s, 3),
+            "failure_code": state.agent_failure_code,
             "raw_output_tail": state.agent_output[-2000:] if state.agent_output else "",
         },
         "landing": {
@@ -580,6 +582,7 @@ def _run_agent_with_heartbeat(
     working_dir: Path,
     secrets: dict[str, str] | None,
     heartbeat_interval_s: float | None = None,
+    on_heartbeat: "callable | None" = None,
 ) -> "object":
     """Run the investigative agent, emitting a periodic progress heartbeat.
 
@@ -588,12 +591,19 @@ def _run_agent_with_heartbeat(
     (always shown, not verbose-gated) so the operator can see the agent is still
     working rather than staring at a silent console for up to the full timeout.
 
+    ``on_heartbeat`` is the sink each heartbeat line is routed through; it
+    defaults to ``_progress_log`` (console only). ``run_diagnose_flow`` passes a
+    sink that also tees the line into the per-run log so ``forge logs`` follows
+    the heartbeat live.
+
     Any exception raised inside the agent thread is re-raised to the caller so
     the existing INVESTIGATE error handling is unchanged. Returns the
     ``AgentResult`` produced by ``run_agent``.
     """
     if heartbeat_interval_s is None:
         heartbeat_interval_s = _DIAGNOSE_HEARTBEAT_INTERVAL_S
+    if on_heartbeat is None:
+        on_heartbeat = _progress_log
     box: dict[str, object] = {}
 
     # The worker slug is thread-local; propagate it into the nested agent
@@ -621,7 +631,7 @@ def _run_agent_with_heartbeat(
         thread.join(timeout=heartbeat_interval_s)
         if thread.is_alive():
             elapsed = int(time.monotonic() - start)
-            _progress_log(
+            on_heartbeat(
                 f"  [diagnose] still investigating "
                 f"({elapsed}s elapsed, timeout {int(profile.timeout_seconds)}s)"
             )
@@ -730,7 +740,101 @@ def run_diagnose_flow(
         run_id=_generate_run_id(),
         started_at=_now_iso(),
     )
-    state.transition(DiagnosePhase.INIT, _now_iso())
+
+    # ── Register the run for live observability ────────────────────────
+    # Give the foreground diagnose flow the same PID-file + per-run-log
+    # registration detached sprint/run use, so ``forge status`` sees the live
+    # run and ``forge logs <run_id>`` can follow it. Bespoke and lightweight —
+    # no daemonize (diagnose stays foreground and, under --parallel, runs as
+    # threads sharing one PID; each thread owns its own run_id/file/marker).
+    slug = f"diagnose-{issue_number}"
+    state.run_slug = slug
+    log_fh = None
+    try:
+        log_dir = project_root / ".forge" / "logs" / slug
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_fh = open(  # noqa: SIM115 — closed in the finally below
+            log_dir / f"run-{state.run_id}.log", "a", encoding="utf-8"
+        )
+    except OSError:
+        log_fh = None
+    detach.write_pid(state.run_id, slug, project_root)
+    detach.write_diagnose_marker(state.run_id, project_root)
+
+    def _write_log(line: str) -> None:
+        if log_fh is None:
+            return
+        try:
+            log_fh.write(line + "\n")
+            log_fh.flush()
+        except OSError:
+            pass
+
+    def _emit(line: str) -> None:
+        """Tee a progress line into the per-run log AND the console."""
+        _write_log(line)
+        _progress_log(line)
+
+    def _emit_phase(phase: DiagnosePhase) -> None:
+        """Record a phase transition and tee it as a followable log line.
+
+        The literal ``[forge] ▸ <PHASE>`` prefix is the exact token
+        ``detach.read_run_status`` greps for, so ``forge status`` reports the
+        live phase off the per-run log.
+        """
+        state.transition(phase, _now_iso())
+        _write_log(f"[forge] ▸ {phase.name}")
+        _progress_log(f"▸ {phase.name}")
+
+    outcome = "completed"
+    try:
+        return _run_diagnose_flow_body(
+            state=state,
+            issue_number=issue_number,
+            config=config,
+            project_root=project_root,
+            interactive=interactive,
+            output_destination=output_destination,
+            dry_run=dry_run,
+            confirm_landing=confirm_landing,
+            emit=_emit,
+            emit_phase=_emit_phase,
+        )
+    except BaseException:
+        outcome = "stopped"
+        raise
+    finally:
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except OSError:
+                pass
+        detach.remove_pid(state.run_id, project_root)
+        detach.write_run_ended(state.run_id, project_root, outcome)
+
+
+def _run_diagnose_flow_body(
+    *,
+    state: DiagnoseState,
+    issue_number: int,
+    config: ForgeConfig,
+    project_root: Path,
+    interactive: bool,
+    output_destination: str | None,
+    dry_run: bool,
+    confirm_landing: "callable | None",
+    emit: "callable",
+    emit_phase: "callable",
+) -> DiagnoseResult:
+    """Body of :func:`run_diagnose_flow`, run under run registration.
+
+    Split out so the caller can wrap the entire flow in a try/finally that
+    tears down the PID file, diagnose marker, per-run log, and ``.ended``
+    sentinel on any exit path. ``emit`` tees a progress line into the per-run
+    log and the console; ``emit_phase`` records a phase transition and tees its
+    followable ``[forge] ▸ <PHASE>`` marker line.
+    """
+    emit_phase(DiagnosePhase.INIT)
 
     destination = output_destination or config.diagnose.output_destination
     if destination not in DIAGNOSE_OUTPUT_DESTINATIONS:
@@ -738,17 +842,17 @@ def run_diagnose_flow(
             f"Unknown output_destination {destination!r}; "
             f"valid: {sorted(DIAGNOSE_OUTPUT_DESTINATIONS)}"
         )
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
     # ── FETCH ─────────────────────────────────────────────────────────
-    state.transition(DiagnosePhase.FETCH, _now_iso())
+    emit_phase(DiagnosePhase.FETCH)
     try:
         issue = _gh_fetch_issue(issue_number, project_root)
     except Exception as exc:
         state.error = f"FETCH failed: {exc}"
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
@@ -777,7 +881,7 @@ def run_diagnose_flow(
             "deliverables; they are not candidates for forge diagnose. Close "
             "manually when the action is done."
         )
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
@@ -790,7 +894,7 @@ def run_diagnose_flow(
     issue_state = str(issue.get("state", "OPEN")).upper()
     if issue_state != "OPEN":
         state.error = f"Issue #{issue_number} is {issue_state.lower()}; refusing to diagnose"
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
@@ -809,14 +913,14 @@ def run_diagnose_flow(
     state.starting_evidence_labels = list(evidence.reference_labels)
     state.starting_evidence_chars = len(evidence.text)
     if evidence.reference_labels:
-        _progress_log(
+        emit(
             f"  [diagnose] pre-loaded {len(evidence.reference_labels)} evidence "
             f"excerpt(s) from issue-body references: "
             f"{', '.join(evidence.reference_labels)}"
         )
 
     # ── INVESTIGATE ───────────────────────────────────────────────────
-    state.transition(DiagnosePhase.INVESTIGATE, _now_iso())
+    emit_phase(DiagnosePhase.INVESTIGATE)
     profile = _build_diagnose_profile(config)
     mode = "interactive" if interactive else "autonomous"
     prompt = build_diagnose_prompt(
@@ -834,16 +938,26 @@ def run_diagnose_flow(
             profile=profile,
             working_dir=project_root,
             secrets=config.secrets,
+            on_heartbeat=emit,
         )
     except Exception as exc:
-        state.error = f"INVESTIGATE failed: {exc}"
+        # The runner RETURNS timeout/budget as an AgentResult (success=False,
+        # failure_code="timeout"); it does not raise. So this path is a genuine
+        # crash, not a timeout — label it as such.
+        state.error = f"INVESTIGATE crashed: {exc}"
         state.agent_duration_s = time.monotonic() - t0
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
     state.agent_duration_s = time.monotonic() - t0
     state.agent_output = getattr(agent_result, "output", "") or ""
+    # Capture the runner's machine-readable failure identifier (e.g. "timeout")
+    # so terminal messaging and the audit trail can distinguish a timeout from a
+    # budget breach or an empty completion. Normalize to str|None so a
+    # non-string value never reaches the YAML audit serializer.
+    _failure_code = getattr(agent_result, "failure_code", None)
+    state.agent_failure_code = _failure_code if isinstance(_failure_code, str) else None
     # Preserve an unmeasured cost (None) faithfully — a run killed at timeout
     # still spent real money, and coercing None to 0.0 would record that spend
     # as free in the audit. Reconstruction happens in the runner; here we only
@@ -868,7 +982,7 @@ def run_diagnose_flow(
         partial = True
 
     # ── PARSE ─────────────────────────────────────────────────────────
-    state.transition(DiagnosePhase.PARSE, _now_iso())
+    emit_phase(DiagnosePhase.PARSE)
     artifact = parse_diagnose_output(
         state.agent_output, issue_number=issue_number, partial=partial
     )
@@ -877,7 +991,7 @@ def run_diagnose_flow(
             f"PARSE failed: investigative agent did not emit a parseable YAML block. "
             f"Raw tail: {state.agent_output[-200:]!r}"
         )
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
@@ -904,12 +1018,21 @@ def run_diagnose_flow(
     # diagnosis landed" when there is nothing to review. Fail without mutating
     # any operator-visible state.
     if not artifact.has_substantive_content():
+        # Name the actual terminal cause rather than lumping timeout/budget/empty
+        # together (#1595). The runner returns "timeout" as a failure_code; a
+        # budget breach is detected above; anything else is an empty completion.
+        if state.agent_failure_code == "timeout":
+            cause = f"timed out after {int(profile.timeout_seconds)}s"
+        elif budget_exceeded:
+            cause = f"exceeded budget ${config.diagnose.budget_usd}"
+        else:
+            cause = "completed without emitting a diagnosis"
         state.error = (
-            "INVESTIGATE produced no diagnosis: the investigative agent "
-            "terminated (timeout, budget, or empty completion) without emitting "
-            "any substantive content. Nothing landed; issue body left untouched."
+            f"INVESTIGATE produced no diagnosis: the investigative agent {cause} "
+            "without emitting any substantive content. Nothing landed; issue body "
+            "left untouched."
         )
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
@@ -920,12 +1043,12 @@ def run_diagnose_flow(
     # described symptom cannot reproduce against code that is gone — report
     # "appears already resolved" (naming the removing commit) and write no
     # confirmed-cause body, rather than manufacturing a live diagnosis.
-    state.transition(DiagnosePhase.VERIFY_PREMISE, _now_iso())
+    emit_phase(DiagnosePhase.VERIFY_PREMISE)
     verdict = verify_premise(artifact, state.baseline_sha, project_root)
     if verdict.resolved:
         state.already_resolved = True
         state.absent_premises = verdict.absent
-        state.transition(DiagnosePhase.ALREADY_RESOLVED, _now_iso())
+        emit_phase(DiagnosePhase.ALREADY_RESOLVED)
         report = render_already_resolved_markdown(
             issue_number=issue_number,
             baseline_sha=state.baseline_sha,
@@ -953,7 +1076,7 @@ def run_diagnose_flow(
         partial_phase = (
             DiagnosePhase.BUDGET_EXCEEDED if budget_exceeded else DiagnosePhase.TIMEOUT_PARTIAL
         )
-        state.transition(partial_phase, _now_iso())
+        emit_phase(partial_phase)
         if interactive and confirm_landing is None:
             confirm_landing = _stdin_confirm
         if interactive and confirm_landing is not None:
@@ -970,14 +1093,22 @@ def run_diagnose_flow(
             write_diagnose_audit(state, project_root)
             return DiagnoseResult(success=False, state=state, message=state.error)
         write_diagnose_audit(state, project_root)
+        # Name the actual cause in the operator message rather than a generic
+        # "Partial diagnosis landed" (#1595).
+        if budget_exceeded:
+            cause_label = f"budget exceeded (${config.diagnose.budget_usd})"
+        elif state.agent_failure_code == "timeout":
+            cause_label = f"timed out after {int(profile.timeout_seconds)}s"
+        else:
+            cause_label = "incomplete diagnosis"
         return DiagnoseResult(
             success=False,
             state=state,
-            message="Partial diagnosis landed — operator review required",
+            message=f"Partial diagnosis landed ({cause_label}) — operator review required",
         )
 
     # ── LAND ──────────────────────────────────────────────────────────
-    state.transition(DiagnosePhase.LAND, _now_iso())
+    emit_phase(DiagnosePhase.LAND)
     if interactive and confirm_landing is None:
         confirm_landing = _stdin_confirm
     if interactive and confirm_landing is not None:
@@ -990,13 +1121,13 @@ def run_diagnose_flow(
         location = _land_artifact(state, artifact, destination, project_root, dry_run=dry_run)
     except Exception as exc:
         state.error = f"LAND failed: {exc}"
-        state.transition(DiagnosePhase.FAILED, _now_iso())
+        emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
     state.landing_destination = destination
     state.landed_location = location
-    state.transition(DiagnosePhase.DONE, _now_iso())
+    emit_phase(DiagnosePhase.DONE)
     write_diagnose_audit(state, project_root)
     return DiagnoseResult(
         success=True,

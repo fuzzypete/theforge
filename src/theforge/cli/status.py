@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
+from theforge.cli.status_run_helpers import is_diagnose_run as _is_diagnose_run
 from theforge.cli.status_run_helpers import is_sprint_run as _is_sprint_run
 from theforge.config import load_config
 
@@ -274,7 +275,14 @@ def _show_recent_runs(project_root: Path) -> int:
         run_id = run["run_id"]
         slug = run["slug"]
         st = _detach.read_run_status(run_id, slug, project_root)
-        run_type = "sprint" if _is_sprint_run(run_id, project_root) else "single"
+        # Diagnose runs are PID-backed but non-sprint; check the diagnose marker
+        # before the sprint check so a live diagnose reads as its own type.
+        if _is_diagnose_run(run_id, project_root):
+            run_type = "diagnose"
+        elif _is_sprint_run(run_id, project_root):
+            run_type = "sprint"
+        else:
+            run_type = "single"
         cost_usd = st.get("cost_usd")
         elapsed_s = st.get("elapsed_seconds")
         cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "—"
@@ -328,8 +336,12 @@ def _show_recent_runs(project_root: Path) -> int:
     return 0
 
 
-def _show_single_run_status(run_id: str, project_root: Path) -> None:
-    """Print a single-row status line for a non-sprint run."""
+def _show_single_run_status(run_id: str, project_root: Path, *, run_type: str = "single") -> None:
+    """Print a single-row status line for a non-sprint run.
+
+    ``run_type`` labels the row (``single`` or ``diagnose``) so an operator can
+    tell an in-flight diagnose apart from an ordinary single run at a glance.
+    """
     from theforge import detach as _detach
 
     # Try to find slug from PID file
@@ -356,9 +368,14 @@ def _show_single_run_status(run_id: str, project_root: Path) -> None:
     elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
 
     story_label = slug or run_id
-    print(f"{'RUN ID':<12}  {'STORY':<30}  {'PHASE':<12}  {'COST':>7}  {'ELAPSED':>8}")
-    print("-" * 78)
-    print(f"{run_id:<12}  {story_label:<30}  {phase:<12}  {cost_str:>7}  {elapsed_str:>8}")
+    print(
+        f"{'RUN ID':<12}  {'TYPE':<8}  {'STORY':<30}  {'PHASE':<12}  {'COST':>7}  {'ELAPSED':>8}"
+    )
+    print("-" * 88)
+    print(
+        f"{run_id:<12}  {run_type:<8}  {story_label:<30}  "
+        f"{phase:<12}  {cost_str:>7}  {elapsed_str:>8}"
+    )
 
 
 def _is_completed_sprint(run_id: str, project_root: Path) -> bool:
@@ -399,7 +416,9 @@ def _render_status_blocks(run_ids: list[str], project_root: Path) -> int:
             else:
                 rc = display_sprint_status(run_id, project_root)
         else:
-            _show_single_run_status(run_id, project_root)
+            # Diagnose runs are non-sprint but get their own type label.
+            run_type = "diagnose" if _is_diagnose_run(run_id, project_root) else "single"
+            _show_single_run_status(run_id, project_root, run_type=run_type)
             rc = 0
         rcs.append(rc)
     if not rcs:
