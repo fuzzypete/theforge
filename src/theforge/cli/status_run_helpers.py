@@ -45,6 +45,16 @@ def is_sprint_run(run_id: str, project_root: Path) -> bool:
     return False
 
 
+def is_diagnose_run(run_id: str, project_root: Path) -> bool:
+    """Return True when run_id belongs to a diagnose run.
+
+    Keyed off the ``.forge/runs/<run_id>.diagnose`` marker written by the
+    diagnose flow at run registration (before any diagnose-specific state
+    lands on disk). stdlib/Path-only, matching this module's style.
+    """
+    return (project_root / ".forge" / "runs" / f"{run_id}.diagnose").exists()
+
+
 def await_watchable_sprint_run(
     run_id: str,
     project_root: Path,

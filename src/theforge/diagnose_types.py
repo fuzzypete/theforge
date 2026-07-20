@@ -230,6 +230,13 @@ class DiagnoseState:
     # nothing recognizable. Recorded so the audit shows exactly what the
     # orchestrator handed the agent (convention: instrument cross-phase data).
     starting_evidence_chars: int = 0
+    # Machine-readable failure identifier returned by the runner (e.g.
+    # "timeout"). None when the run did not fail or the runner reported no
+    # code. Recorded so the audit trail distinguishes a timeout from a crash.
+    agent_failure_code: str | None = None
+    # Followable-log slug for this run (``diagnose-<issue>``). Set at run
+    # registration so status/logs can resolve the per-run log file.
+    run_slug: str = ""
 
     def transition(self, new_phase: DiagnosePhase, when: str) -> None:
         self.phase = new_phase
