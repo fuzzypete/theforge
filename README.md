@@ -218,6 +218,7 @@ volume, and the number of review loops. Budget enforcement is built in via
 | [CLI Reference](docs/guides/cli-reference.md) | Commands, flags, and when to use them |
 | [Inputs Reference](docs/guides/inputs-reference.md) | Story, sprint, config, and brief file formats |
 | [Provider Setup Guide](docs/guides/choose-your-provider-setup.md) | Choosing between CLI and API patterns |
+| [Reviewer Prompt Template](docs/guides/reviewer-prompt-template.md) | Verification-gated reviewer prompt: tree-state proof, certainty tags, anti-flattery |
 | [Local Models](docs/guides/local-models.md) | Ollama and vLLM setup for private or offline use |
 | [Vision](docs/vision.md) | Philosophy, architecture principles, and roadmap |
 
