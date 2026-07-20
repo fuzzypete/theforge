@@ -179,6 +179,11 @@ class AgentDef:
     strengths: tuple[str, ...] = ()
     registry_id: str | None = None
     registry_source: str = "builtin"
+    # Per-MTok pricing carried through from the registry so ranking helpers can
+    # break equal-tier ties by real cost rather than pool list order. See
+    # price_tiebreak_signal and issue #1617.
+    input_cost_per_mtok: float | None = None
+    output_cost_per_mtok: float | None = None
 
     @property
     def effective_provider(self) -> str | None:
@@ -227,6 +232,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="fast",
         capability=7,
         cost_rank=1,
+        input_cost_per_mtok=3.00,
+        output_cost_per_mtok=15.00,
     ),
     "claude/opus": AgentSpec(
         provider="anthropic",
@@ -235,6 +242,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=10,
         cost_rank=3,
+        input_cost_per_mtok=15.00,
+        output_cost_per_mtok=75.00,
     ),
     # ── OpenAI (CLI via Codex) ────────────────────────────────────────
     "openai/gpt-5.4": AgentSpec(
@@ -244,6 +253,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=9,
         cost_rank=2,
+        input_cost_per_mtok=1.25,
+        output_cost_per_mtok=10.00,
     ),
     "openai/gpt-5.4-mini": AgentSpec(
         provider="openai",
@@ -252,6 +263,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="cheap",
         capability=7,
         cost_rank=1,
+        input_cost_per_mtok=0.25,
+        output_cost_per_mtok=2.00,
     ),
     "openai/gpt-5.4-pro": AgentSpec(
         provider="openai",
@@ -260,6 +273,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=10,
         cost_rank=3,
+        input_cost_per_mtok=15.00,
+        output_cost_per_mtok=120.00,
     ),
     # ── DeepSeek (API) ────────────────────────────────────────────────
     "deepseek/deepseek-reasoner": AgentSpec(
@@ -269,6 +284,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=9,
         cost_rank=2,
+        input_cost_per_mtok=0.55,
+        output_cost_per_mtok=2.19,
     ),
     "deepseek/deepseek-chat": AgentSpec(
         provider="deepseek",
@@ -277,6 +294,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="fast",
         capability=7,
         cost_rank=1,
+        input_cost_per_mtok=0.27,
+        output_cost_per_mtok=1.10,
     ),
     # ── Google (API) ─────────────────────────────────────────────────
     "google/gemini-3-flash-preview": AgentSpec(
@@ -294,6 +313,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=9,
         cost_rank=2,
+        input_cost_per_mtok=2.00,
+        output_cost_per_mtok=12.00,
     ),
     "google/gemini-2.5-pro": AgentSpec(
         provider="google",
@@ -302,6 +323,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=8,
         cost_rank=2,
+        input_cost_per_mtok=1.25,
+        output_cost_per_mtok=10.00,
     ),
     # ── Local OpenAI-compatible models (route via Codex CLI with base_url) ──
     "openai/codestral": AgentSpec(
@@ -345,6 +368,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=9,
         cost_rank=2,
+        input_cost_per_mtok=1.25,
+        output_cost_per_mtok=10.00,
     ),
     "openai-api/gpt-5.4-mini": AgentSpec(
         provider="openai",
@@ -353,6 +378,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="cheap",
         capability=7,
         cost_rank=1,
+        input_cost_per_mtok=0.25,
+        output_cost_per_mtok=2.00,
     ),
     "openai-api/gpt-5.4-pro": AgentSpec(
         provider="openai",
@@ -361,6 +388,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         tier="strong",
         capability=10,
         cost_rank=3,
+        input_cost_per_mtok=15.00,
+        output_cost_per_mtok=120.00,
         # Reasoning-heavy — intentionally excluded from the preflight role.
         phase_eligibility=frozenset({"dev", "plan", "review"}),
     ),
@@ -373,6 +402,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         capability=8,
         cost_rank=2,
         dev_capable=False,
+        input_cost_per_mtok=1.25,
+        output_cost_per_mtok=10.00,
     ),
     "gemini-cli/gemini-3-flash-preview": AgentSpec(
         provider="google",
@@ -391,6 +422,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         capability=9,
         cost_rank=2,
         dev_capable=False,
+        input_cost_per_mtok=2.00,
+        output_cost_per_mtok=12.00,
     ),
 }
 
@@ -453,6 +486,38 @@ def custom_model_cost_rank(input_cost_per_mtok: float, output_cost_per_mtok: flo
     if price_signal <= 25.0:
         return 2
     return 3
+
+
+# Sentinel returned by ``price_tiebreak_signal`` when a candidate carries no
+# pricing data. It sorts *after* every priced candidate so unpriced models keep
+# their original relative order (list-order fallback) among themselves rather
+# than jumping ahead of a model whose real cost is known.
+_UNPRICED_SIGNAL: float = float("inf")
+
+
+def price_tiebreak_signal(
+    input_cost_per_mtok: float | None,
+    output_cost_per_mtok: float | None,
+) -> float:
+    """Return a per-MTok price signal for breaking equal-``cost_rank`` ties.
+
+    Two models can share a ``cost_rank`` band (and even a ``capability`` score) yet
+    differ substantially in real price — e.g. the cheap-tier bucket holds both
+    ``claude/sonnet`` and ``openai/gpt-5.4-mini``. Ranking helpers previously broke
+    that tie by ``models.enabled`` list order, permanently starving whichever model
+    was listed second. This collapses the two per-MTok costs into one comparable
+    number (``max`` of input/output, mirroring :func:`custom_model_cost_rank`'s
+    price banding) so the cheaper candidate wins the tie deterministically.
+
+    Candidates with no pricing data return :data:`_UNPRICED_SIGNAL` so they rank
+    behind any priced peer while preserving list order among unpriced models.
+    """
+    if input_cost_per_mtok is None and output_cost_per_mtok is None:
+        return _UNPRICED_SIGNAL
+    return max(
+        float(input_cost_per_mtok) if input_cost_per_mtok is not None else 0.0,
+        float(output_cost_per_mtok) if output_cost_per_mtok is not None else 0.0,
+    )
 
 
 def custom_model_dev_capable(transport: TransportSpec) -> bool:
@@ -618,7 +683,15 @@ def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
 
     candidate_models: set[str] = set()
     for tier in planner_tiers.values():
-        tier_agents = sorted([a for a in agents if a.tier == tier], key=lambda a: a.budget_usd)
+        # Mirror _agents_by_tier: equal-budget ties break on real per-MTok price
+        # so the predicted candidate matches the model assign_models actually picks.
+        tier_agents = sorted(
+            [a for a in agents if a.tier == tier],
+            key=lambda a: (
+                a.budget_usd,
+                price_tiebreak_signal(a.input_cost_per_mtok, a.output_cost_per_mtok),
+            ),
+        )
         if tier_agents:
             candidate_models.add(tier_agents[0].model)
         else:
