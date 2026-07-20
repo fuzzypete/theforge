@@ -90,6 +90,24 @@ def _replace_npx_with_codex(argv: list[str]) -> list[str]:
                 session_id="00000000-0000-0000-0000-000000000000",
             ),
         ),
+        (
+            # Reassertion contract: `-c sandbox_mode=read-only` under
+            # `--strict-config` must be accepted on the resume path (issue #1012).
+            "exec_resume_read_only",
+            lambda: runner_codex.build_resume_argv(
+                profile=_profile(sandbox_mode="read-only"),
+                output_file=Path("/tmp/contract-out.txt"),
+                session_id="00000000-0000-0000-0000-000000000000",
+            ),
+        ),
+        (
+            "exec_resume_no_sandbox",
+            lambda: runner_codex.build_resume_argv(
+                profile=_profile(sandbox_mode="none"),
+                output_file=Path("/tmp/contract-out.txt"),
+                session_id="00000000-0000-0000-0000-000000000000",
+            ),
+        ),
     ],
 )
 def test_codex_argv_accepted(shape: str, builder) -> None:
