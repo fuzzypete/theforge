@@ -274,11 +274,17 @@ The architectural direction is HDP-style review:
 
 - dev gets the spec and implements freely,
 - commits are the primary handoff artifact,
-- reviewers evaluate commits against the spec and project structure,
+- reviewers evaluate commits against the spec and project structure — never
+  against a pre-groomed file scope or a diff-stat summary,
 - and the audit trail lives in the repo rather than depending on GitHub.
 
-Be skeptical of replacement metadata that compensates for missing commit context
-instead of exposing the commits directly.
+Be skeptical of replacement metadata (expected-file lists, diff-stat digests)
+that compensates for missing commit context instead of exposing the commits
+directly — that pattern is the specific failure mode this rule rules out.
+
+Full rationale, the failure mode it prevents, and the connection to the
+audit-substrate trust model: [ADR-0005: Commit-Centric Review
+Handoff](docs/adr/0005-commit-centric-review-handoff.md).
 
 Sources: `project_commit_centric_review.md`, `project_hdp_vision.md`
 
