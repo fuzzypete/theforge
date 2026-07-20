@@ -15,7 +15,7 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import AgentDef, AgentSpec, _resolve_model_info
+from .models import AgentDef, AgentSpec, _resolve_model_info, price_tiebreak_signal
 from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
 
 _COST_RANK_TO_TIER = {1: "cheap", 2: "mid", 3: "strong"}
@@ -53,6 +53,8 @@ def _agents_from_models(
                 cli=info.cli,
                 registry_id=info.registry_id,
                 registry_source=info.registry_source,
+                input_cost_per_mtok=info.input_cost_per_mtok,
+                output_cost_per_mtok=info.output_cost_per_mtok,
             )
         )
     return agents
@@ -241,7 +243,14 @@ def _auto_assign_models(
     - each reviewer: remaining / pool_size
     """
     infos = [(m, _resolve_model_info(m, registry=registry)) for m in models]
-    sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
+    sorted_models = sorted(
+        infos,
+        key=lambda x: (
+            x[1].cost_rank,
+            -x[1].capability,
+            price_tiebreak_signal(x[1].input_cost_per_mtok, x[1].output_cost_per_mtok),
+        ),
+    )
 
     dev_key, dev_info = sorted_models[0]
 

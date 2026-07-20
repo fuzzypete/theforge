@@ -13,7 +13,7 @@ from typing import Any
 
 from ..routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 from .defaults import DEFAULT_DEV_PROFILE, DEFAULT_PREFLIGHT_PROFILE, DEFAULT_REVIEW_PROFILE
-from .models import AgentSpec, ModelInfo, _resolve_model_info
+from .models import AgentSpec, ModelInfo, _resolve_model_info, price_tiebreak_signal
 from .schema import (
     DevRoleConfig,
     ModelRef,
@@ -215,9 +215,18 @@ def derive_roles(
         _COMPLEXITY_NORM.get(complexity.lower()) if complexity is not None else None
     )
 
-    # Build (model_key, ModelInfo) pairs and sort: cheapest first, then by capability desc
+    # Build (model_key, ModelInfo) pairs and sort: cheapest cost_rank first, then
+    # capability desc, then real per-MTok price so equal-tier/equal-capability
+    # candidates break the tie by cost rather than models list order (#1617).
     infos = [(m, _resolve_model_info(m, registry=registry)) for m in models]
-    sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
+    sorted_models = sorted(
+        infos,
+        key=lambda x: (
+            x[1].cost_rank,
+            -x[1].capability,
+            price_tiebreak_signal(x[1].input_cost_per_mtok, x[1].output_cost_per_mtok),
+        ),
+    )
 
     # Phase-eligibility-aware candidate pools — a model's AgentSpec may exclude it
     # from specific phases (e.g. a pro model excluded from preflight to avoid overspend).
@@ -269,7 +278,16 @@ def derive_roles(
     if norm_complexity == "LOW":
         mid_strong = [(k, i) for k, i in review_pairs if i.cost_rank >= 2]
         review_pairs = (
-            [min(mid_strong, key=lambda x: (x[1].cost_rank, -x[1].capability))]
+            [
+                min(
+                    mid_strong,
+                    key=lambda x: (
+                        x[1].cost_rank,
+                        -x[1].capability,
+                        price_tiebreak_signal(x[1].input_cost_per_mtok, x[1].output_cost_per_mtok),
+                    ),
+                )
+            ]
             if mid_strong
             else [review_pairs[0]]
         )

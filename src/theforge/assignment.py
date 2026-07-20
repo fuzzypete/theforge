@@ -23,6 +23,7 @@ from .config import (
     ModelProfile,
 )
 from .config.auth import check_agent_auth
+from .config.models import price_tiebreak_signal
 from .routing import score_to_dev_tier
 
 log = logging.getLogger(__name__)
@@ -178,9 +179,23 @@ def _decision_total(decision: AssignmentDecision) -> float:
 
 
 def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
-    """Return agents matching tier, sorted by budget_usd ascending."""
+    """Return agents matching tier, sorted by budget_usd then real per-MTok price.
+
+    Within a tier every agent carries an identical even-split ``budget_usd``, so
+    that key alone leaves same-tier candidates tied and the stable sort falls back
+    to ``models.enabled`` list order — permanently starving whichever cheap-tier
+    model is listed second (issue #1617). Breaking the tie on the real per-MTok
+    price already carried on the registry lets the genuinely cheaper model win
+    deterministically instead of by pool order.
+    """
     matches = [a for a in agents if a.tier == tier]
-    return sorted(matches, key=lambda a: a.budget_usd)
+    return sorted(
+        matches,
+        key=lambda a: (
+            a.budget_usd,
+            price_tiebreak_signal(a.input_cost_per_mtok, a.output_cost_per_mtok),
+        ),
+    )
 
 
 def _rerank_by_profiles(
@@ -193,9 +208,10 @@ def _rerank_by_profiles(
     """Stable-sort candidates: high-success-rate first when enough data exists.
 
     Only role="dev" is profile-aware today; other roles pass through unchanged.
-    Candidates without ``min_runs`` observations retain their original relative
-    order (sort is stable) so the cheapest-budget tie-break still wins when
-    nobody has a track record yet.
+    Candidates without ``min_runs`` observations are ordered behind every
+    observed model but among themselves fall back to the real per-MTok price
+    (via :func:`price_tiebreak_signal`), so the cheapest unobserved model is the
+    first explored rather than whichever the pool happened to list first (#1617).
     """
     if not model_profiles or role != "dev":
         return candidates
@@ -212,7 +228,12 @@ def _rerank_by_profiles(
             cli=agent.cli,
         )
         if rate is None:
-            return (1, 0.0)
+            # Unobserved: sort behind observed models (leading 1), then cheapest
+            # first so a zero-history model still gets an evidence-gathering turn.
+            return (
+                1,
+                price_tiebreak_signal(agent.input_cost_per_mtok, agent.output_cost_per_mtok),
+            )
         # Negative rate so higher success sorts first among observed agents.
         return (0, -rate)
 
