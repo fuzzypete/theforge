@@ -84,16 +84,43 @@ def build_resume_argv(
     output_file: Path,
     session_id: str,
 ) -> list[str]:
-    """Construct argv for `codex exec resume` (prompt provided via stdin)."""
+    """Construct argv for `codex exec resume` (prompt provided via stdin).
+
+    Sandbox continuity is reasserted explicitly here rather than inherited from
+    the resumed session. The fresh `codex exec` run selects its containment with
+    ``--sandbox <mode>``, but the resume subcommand rejects that flag, so forge
+    restates the SAME native Codex policy via the config override
+    ``-c sandbox_mode=<mode>`` — accepted on the resume path — instead of trusting
+    the CLI to carry the original policy forward. This keeps containment a
+    mechanical guarantee of forge's rather than a documented assumption about CLI
+    inheritance.
+
+    ``--strict-config`` makes the reassertion fail closed: today codex silently
+    ignores an unrecognized ``-c`` key, so if a future CLI renames or drops the
+    ``sandbox_mode`` field the override would be dropped and the resume would run
+    under whatever policy the session defaulted to — a silent containment
+    downgrade. With ``--strict-config`` codex instead errors out on the unknown
+    field, and the run surfaces as a failure rather than a quiet loss of
+    containment.
+
+    ``sandbox_mode: none`` opts out of the reassertion (as on the fresh path);
+    the ``--full-auto`` alias is intentionally dropped because it is deprecated
+    (codex maps it to ``--sandbox workspace-write``) and would contradict an
+    explicit ``read-only`` override.
+    """
     cmd: list[str] = [
         "npx",
         "@openai/codex",
         "exec",
         "resume",
-        "--full-auto",
         "-m",
         profile.model,
     ]
+    # Reassert the session's sandbox policy explicitly (see docstring). Guarded
+    # by --strict-config so a future CLI that stops recognizing sandbox_mode
+    # fails loudly instead of silently downgrading containment.
+    if profile.sandbox_mode != "none":
+        cmd += ["--strict-config", "-c", f"sandbox_mode={profile.sandbox_mode}"]
     if profile.reasoning_effort:
         cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
     cmd += ["-o", str(output_file), session_id, "-"]
@@ -291,8 +318,9 @@ def _run_codex(
     output_file = Path(output_path_str)
 
     # Resume: `codex exec resume [flags] <id> -` (prompt via stdin).
-    # Current Codex CLI exposes `--full-auto` on resume but not `--sandbox`.
-    # Fresh runs still accept the explicit sandbox flag.
+    # The resume path rejects `--sandbox`, so build_resume_argv reasserts the
+    # same containment via `-c sandbox_mode=<mode>` (guarded by --strict-config
+    # to fail closed on CLI drift). Fresh runs still take the explicit --sandbox.
     # Fresh start: `codex exec [flags] <prompt>` (prompt as positional arg).
     if session_id:
         cmd: list[str] = build_resume_argv(

@@ -178,6 +178,77 @@ class TestCodexSandboxFlag:
         assert env_passed["OPENAI_API_KEY"] == "secret"
 
 
+class TestCodexResumeSandboxReassertion:
+    """Resume reasserts the session's sandbox policy explicitly (issue #1012).
+
+    The fresh run selects containment with ``--sandbox <mode>``; the resume
+    subcommand rejects that flag, so forge restates the same native policy via
+    ``-c sandbox_mode=<mode>`` guarded by ``--strict-config`` (fail closed on CLI
+    drift) rather than trusting the CLI to carry the policy forward.
+    """
+
+    def _resume_cmd(self, tmp_path: Path, sandbox_mode: str) -> list[str]:
+        profile = _make_profile(sandbox_mode=sandbox_mode)
+        mock_proc = _make_subprocess_mock()
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
+            _run_codex(
+                prompt="continue",
+                profile=profile,
+                working_dir=tmp_path,
+                session_id="sess-abc123",
+            )
+        return _extract_codex_cmd(mock_run)
+
+    def test_workspace_write_reasserts_via_config_override(self, tmp_path: Path) -> None:
+        """workspace-write resume restates the policy with -c sandbox_mode, not --sandbox."""
+        cmd = self._resume_cmd(tmp_path, "workspace-write")
+        assert "--sandbox" not in cmd  # resume path rejects the flag
+        assert "-c" in cmd
+        c_idx = cmd.index("-c")
+        assert cmd[c_idx + 1] == "sandbox_mode=workspace-write"
+
+    def test_read_only_reasserts_matching_policy(self, tmp_path: Path) -> None:
+        """read-only resume restates read-only (continuity, not full-auto's workspace-write)."""
+        cmd = self._resume_cmd(tmp_path, "read-only")
+        assert "sandbox_mode=read-only" in cmd
+        assert "sandbox_mode=workspace-write" not in cmd
+
+    def test_strict_config_guards_the_reassertion(self, tmp_path: Path) -> None:
+        """--strict-config precedes the sandbox override so an unknown field fails closed."""
+        cmd = self._resume_cmd(tmp_path, "workspace-write")
+        assert "--strict-config" in cmd
+        # The guard must come before the override it protects.
+        assert cmd.index("--strict-config") < cmd.index("sandbox_mode=workspace-write")
+
+    def test_none_opts_out_of_reassertion(self, tmp_path: Path) -> None:
+        """sandbox_mode=none reasserts nothing and does not force the strict-config guard."""
+        cmd = self._resume_cmd(tmp_path, "none")
+        assert not any(a.startswith("sandbox_mode=") for a in cmd)
+        assert "--strict-config" not in cmd
+
+    def test_deprecated_full_auto_flag_dropped_on_resume(self, tmp_path: Path) -> None:
+        """--full-auto (deprecated; contradicts an explicit read-only override) is gone."""
+        assert "--full-auto" not in self._resume_cmd(tmp_path, "workspace-write")
+        assert "--full-auto" not in self._resume_cmd(tmp_path, "read-only")
+        assert "--full-auto" not in self._resume_cmd(tmp_path, "none")
+
+    def test_reassertion_coexists_with_reasoning_override(self, tmp_path: Path) -> None:
+        """Both -c overrides are present and each is validated under --strict-config."""
+        profile = _make_profile(sandbox_mode="read-only", reasoning_effort="high")
+        mock_proc = _make_subprocess_mock()
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
+            _run_codex(
+                prompt="continue",
+                profile=profile,
+                working_dir=tmp_path,
+                session_id="sess-abc123",
+            )
+        cmd = _extract_codex_cmd(mock_run)
+        assert "sandbox_mode=read-only" in cmd
+        assert "model_reasoning_effort=high" in cmd
+        assert "--strict-config" in cmd
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle tests — real subprocess, fake-CLI fixture
 # ---------------------------------------------------------------------------
