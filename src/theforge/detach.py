@@ -51,13 +51,14 @@ def write_pid(run_id: str, slug: str, project_root: Path) -> Path:
 
 
 def remove_pid(run_id: str, project_root: Path) -> None:
-    """Remove .forge/runs/<run-id>.pid (and the sprint marker), ignoring missing files."""
+    """Remove .forge/runs/<run-id>.pid (and run-type markers), ignoring missing files."""
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
     try:
         pid_file.unlink()
     except FileNotFoundError:
         pass
     remove_sprint_marker(run_id, project_root)
+    remove_diagnose_marker(run_id, project_root)
 
 
 def write_sprint_marker(run_id: str, project_root: Path) -> Path:
@@ -86,6 +87,36 @@ def remove_sprint_marker(run_id: str, project_root: Path) -> None:
 def has_sprint_marker(run_id: str, project_root: Path) -> bool:
     """Return True when <run_id>.sprint marker exists."""
     return (project_root / ".forge" / "runs" / f"{run_id}.sprint").exists()
+
+
+def write_diagnose_marker(run_id: str, project_root: Path) -> Path:
+    """Mark <run_id> as a diagnose run before any diagnose state is written.
+
+    Diagnose runs execute in the foreground (and, under ``--parallel``, as
+    threads sharing one PID), so there is no detached child that writes a
+    per-run type marker. This marker lets ``forge status`` classify a live
+    PID-backed run as a diagnose before any diagnose-specific state exists on
+    disk — mirroring the sprint marker for the detached sprint path.
+    """
+    runs_dir = project_root / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    marker = runs_dir / f"{run_id}.diagnose"
+    marker.write_text("diagnose\n", encoding="utf-8")
+    return marker
+
+
+def remove_diagnose_marker(run_id: str, project_root: Path) -> None:
+    """Remove .forge/runs/<run_id>.diagnose, ignoring missing files."""
+    marker = project_root / ".forge" / "runs" / f"{run_id}.diagnose"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def has_diagnose_marker(run_id: str, project_root: Path) -> bool:
+    """Return True when <run_id>.diagnose marker exists."""
+    return (project_root / ".forge" / "runs" / f"{run_id}.diagnose").exists()
 
 
 def write_run_ended(
