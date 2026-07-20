@@ -80,6 +80,11 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     else:
         interactive = not config.diagnose.autonomous_default
 
+    timeout_override = getattr(args, "timeout", None)
+    if timeout_override is not None and timeout_override <= 0:
+        print(f"--timeout: must be > 0, got {timeout_override}", file=sys.stderr)
+        return 1
+
     # ── Concurrency ────────────────────────────────────────────────────
     # Per-issue diagnosis is independent (fresh-context investigative agent,
     # no shared mutable state), so it parallelizes cleanly under a worker cap
@@ -111,6 +116,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             interactive=interactive,
             output_destination=destination,
             dry_run=args.dry_run,
+            timeout_seconds=timeout_override,
         )
         icon = "✓" if result.success else "✗"
         _cost = result.state.agent_cost_usd
@@ -203,6 +209,16 @@ def register_parser(subparsers: object) -> None:
         type=int,
         default=None,
         help="Maximum concurrent issue diagnoses (default: serial)",
+    )
+    p.add_argument(
+        "--timeout",
+        metavar="SECONDS",
+        type=float,
+        default=None,
+        help=(
+            "Per-invocation timeout override in seconds "
+            "(overrides forge.yaml diagnose.timeout_seconds)"
+        ),
     )
     p.add_argument(
         "--dry-run",
