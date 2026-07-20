@@ -331,13 +331,14 @@ sequencing claims.
 
 Source: `project_checkconfig_sequence.md`
 
-### Epic representation was chosen under incomplete comparison
+### Epic representation was revisited and resolved
 
-The current epic convention (`Epic:` title prefix plus labeling and tracking
-headers) emerged without a strong comparison against GitHub-native sub-issues
-and relationships. If epic representation is revisited, compare the current
-convention directly against the platform-native alternative rather than assuming
-the original pushback still holds.
+The prior epic convention (`Epic:` title prefix with prose tracking headers,
+no native linkage) was compared against GitHub-native sub-issues and
+superseded. Epics now use native sub-issues to enumerate their slices, use
+bounded framing instead of "tracked here forever," and never carry a work
+milestone — see the Epic section in `docs/guides/authoring.md`. This note is
+retained only as a historical record of the earlier undecided state.
 
 Source: `project_epic_representation_origin.md`
 
