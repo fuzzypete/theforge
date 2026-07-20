@@ -212,6 +212,14 @@ class TestParserArg:
         args = _parse(["--issue", "1", "--parallel", "3"])
         assert args.parallel == 3
 
+    def test_timeout_defaults_to_none(self):
+        args = _parse(["--issue", "1"])
+        assert args.timeout is None
+
+    def test_timeout_parsed_as_float(self):
+        args = _parse(["--issue", "1", "--timeout", "120"])
+        assert args.timeout == 120.0
+
 
 class TestCmdDiagnose:
     def _args(self, **over) -> argparse.Namespace:
@@ -223,6 +231,7 @@ class TestCmdDiagnose:
             autonomous=True,
             dry_run=False,
             parallel=None,
+            timeout=None,
             verbose=False,
         )
         base.update(over)
@@ -270,6 +279,42 @@ class TestCmdDiagnose:
             patch("theforge.cli.diagnose.run_diagnose_flow") as flow,
         ):
             rc = cmd_diagnose(self._args(parallel=0))
+        assert rc == 1
+        flow.assert_not_called()
+
+    def test_timeout_override_passed_to_flow(self, tmp_path):
+        cfg_path = tmp_path / "forge.yaml"
+        cfg_path.write_text("x")
+        with (
+            patch("theforge.cli.diagnose._find_config", return_value=cfg_path),
+            patch("theforge.cli.diagnose.load_config", return_value=self._patched_config()),
+            patch("theforge.cli.diagnose.run_diagnose_flow", return_value=_result(1)) as flow,
+        ):
+            rc = cmd_diagnose(self._args(issue=["1"], timeout=120.0))
+        assert rc == 0
+        assert flow.call_args.kwargs["timeout_seconds"] == 120.0
+
+    def test_omitted_timeout_passes_none_to_flow(self, tmp_path):
+        cfg_path = tmp_path / "forge.yaml"
+        cfg_path.write_text("x")
+        with (
+            patch("theforge.cli.diagnose._find_config", return_value=cfg_path),
+            patch("theforge.cli.diagnose.load_config", return_value=self._patched_config()),
+            patch("theforge.cli.diagnose.run_diagnose_flow", return_value=_result(1)) as flow,
+        ):
+            rc = cmd_diagnose(self._args(issue=["1"]))
+        assert rc == 0
+        assert flow.call_args.kwargs["timeout_seconds"] is None
+
+    def test_invalid_timeout_returns_error(self, tmp_path):
+        cfg_path = tmp_path / "forge.yaml"
+        cfg_path.write_text("x")
+        with (
+            patch("theforge.cli.diagnose._find_config", return_value=cfg_path),
+            patch("theforge.cli.diagnose.load_config", return_value=self._patched_config()),
+            patch("theforge.cli.diagnose.run_diagnose_flow") as flow,
+        ):
+            rc = cmd_diagnose(self._args(timeout=0))
         assert rc == 1
         flow.assert_not_called()
 
