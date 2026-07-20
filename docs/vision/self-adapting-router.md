@@ -137,6 +137,13 @@ for complex stories). Within a week of real usage the router has enough signal
 to outperform any static config. New projects bootstrap from the global
 performance table; per-project overrides accumulate over time.
 
+When two models land in the same tier (same `cost_rank` and capability), the
+router breaks the tie on their real per-MTok price rather than on
+`models.enabled` list order — so an enabled but never-dispatched model is not
+starved by the accident of being listed second. That first dispatch is what
+lets a zero-history model accrue a profile entry, after which normal
+evidence-based ranking takes over (issue #1617).
+
 ## What Stays in forge.yaml
 
 Only what forge cannot discover:
