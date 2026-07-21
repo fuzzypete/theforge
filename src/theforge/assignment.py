@@ -29,6 +29,32 @@ from .routing import score_to_dev_tier
 log = logging.getLogger(__name__)
 
 
+# ── Routing explainability: canonical exclusion-reason vocabulary ──────
+#
+# The routing_decision audit block (#1391) records why each candidate was in
+# or out of a role's pool. Reasons are drawn ONLY from this closed set so the
+# audit is machine-queryable — no free-form strings for the canonical set.
+REASON_AUTH_MISSING = "auth_missing"
+REASON_TRANSPORT_UNAVAILABLE = "transport_unavailable"
+REASON_TIER_MISMATCH = "tier_mismatch"
+REASON_ANTI_SELF_REVIEW = "anti_self_review"
+REASON_PHASE_ELIGIBILITY = "phase_eligibility"
+REASON_EXPLICIT_OVERRIDE_LOCKED = "explicit_override_locked"
+REASON_NONE = "none"  # selected / included candidate
+
+EXCLUSION_REASONS: frozenset[str] = frozenset(
+    {
+        REASON_AUTH_MISSING,
+        REASON_TRANSPORT_UNAVAILABLE,
+        REASON_TIER_MISMATCH,
+        REASON_ANTI_SELF_REVIEW,
+        REASON_PHASE_ELIGIBILITY,
+        REASON_EXPLICIT_OVERRIDE_LOCKED,
+        REASON_NONE,
+    }
+)
+
+
 def _agent_canonical_id(agent: AgentDef) -> str | None:
     """Derive the canonical model ID (provider/model/transport) for an agent."""
     from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
@@ -53,6 +79,33 @@ def _has_auth(agent: AgentDef, secrets: dict[str, str] | None = None) -> bool:
         return ready
     except ValueError:
         return True  # unknown provider/CLI — assume OK to avoid hard failure
+
+
+def _auth_reason(
+    agent: AgentDef, secrets: dict[str, str] | None = None
+) -> tuple[bool, str | None]:
+    """Return ``(ready, canonical_reason)`` for routing explainability.
+
+    Mirrors :func:`_has_auth`'s readiness verdict but canonicalizes *why* an
+    agent is unavailable into the closed reason vocabulary without parsing
+    prose beyond a coarse transport-vs-key distinction:
+
+    - a missing CLI binary / ``npx`` / ``gh`` launcher → ``transport_unavailable``
+    - a missing API key → ``auth_missing``
+
+    ``reason`` is ``None`` when the agent is ready.
+    """
+    profile = agent.to_model_profile()
+    try:
+        ready, reason = check_agent_auth(profile, secrets, include_sandbox_readiness=False)
+    except ValueError:
+        return True, None  # unknown provider/CLI — assume OK (mirrors _has_auth)
+    if ready:
+        return True, None
+    low = reason.lower()
+    if "not found in path" in low or "npx" in low:
+        return False, REASON_TRANSPORT_UNAVAILABLE
+    return False, REASON_AUTH_MISSING
 
 
 # ── Data classes ───────────────────────────────────────────────────────
@@ -87,6 +140,11 @@ class AssignmentDecision:
     code_reviewers: list[ModelProfile]
     rationale: dict[str, str] = field(default_factory=dict)
     budget_audit: dict[str, object] = field(default_factory=dict)
+    # Per-role routing explainability block (#1391). Additive and observational:
+    # candidate pool, exclusions with canonical reason, profile signals, adaptive
+    # check outcomes, exploration mode, and origin-labeled final rationale. Empty
+    # by default so existing constructors/consumers stay intact.
+    routing_decision: dict[str, object] = field(default_factory=dict)
 
 
 # ── Phase → tier mapping ───────────────────────────────────────────────
@@ -204,6 +262,7 @@ def _rerank_by_profiles(
     role: str,
     complexity: str | None,
     min_runs: int = 3,
+    signals_out: dict[str, dict] | None = None,
 ) -> list[AgentDef]:
     """Stable-sort candidates: high-success-rate first when enough data exists.
 
@@ -215,10 +274,13 @@ def _rerank_by_profiles(
     """
     if not model_profiles or role != "dev":
         return candidates
-    from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
+    from theforge.model_profiles import get_dev_signal  # noqa: PLC0415
 
     def _key(agent: AgentDef) -> tuple[int, float]:
-        rate = get_dev_success_rate(
+        # Single lookup feeds both the ranking key and the explainability signal
+        # — reusing this pass rather than re-reading profiles keeps the audit's
+        # cost overhead bounded (#1391 AC: no profile re-reads).
+        signal = get_dev_signal(
             model_profiles,
             agent.name,
             complexity,
@@ -227,6 +289,9 @@ def _rerank_by_profiles(
             provider=agent.provider,
             cli=agent.cli,
         )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        rate = signal["rate"]
         if rate is None:
             # Unobserved: sort behind observed models (leading 1), then cheapest
             # first so a zero-history model still gets an evidence-gathering turn.
@@ -247,6 +312,7 @@ def _pick_agent(
     model_profiles: dict | None = None,
     role: str = "",
     complexity: str | None = None,
+    signals_out: dict[str, dict] | None = None,
 ) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
@@ -254,9 +320,15 @@ def _pick_agent(
     When ``model_profiles`` is provided and ``role == "dev"``, agents with a
     higher observed success rate at the given complexity are preferred over
     the budget-ordered default.
+
+    When ``signals_out`` is provided, per-candidate profile signals consulted
+    during reranking are recorded into it (keyed by agent name) for the routing
+    explainability block — no extra profile reads beyond this pass.
     """
     candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
-    candidates = _rerank_by_profiles(candidates, model_profiles, role, complexity)
+    candidates = _rerank_by_profiles(
+        candidates, model_profiles, role, complexity, signals_out=signals_out
+    )
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
@@ -772,6 +844,381 @@ def _agent_to_profile(
     )
 
 
+# ── Routing explainability (#1391) ─────────────────────────────────────
+
+
+def _selected_tier(agents: list[AgentDef], name: str, fallback: str | None) -> str | None:
+    """Return the tier of the agent selected for a role, or ``fallback``."""
+    for a in agents:
+        if a.name == name:
+            return a.tier
+    return fallback
+
+
+def _single_model_pool(
+    agents: list[AgentDef],
+    target_tier: str | None,
+    selected_name: str,
+    locked: bool,
+    secrets: dict[str, str] | None,
+) -> list[dict[str, object]]:
+    """Build the candidate pool for a single-model role (preflight/planner/dev).
+
+    Every agent is listed with ``included`` and, when excluded, a canonical
+    ``reason``. Priority of exclusion reasons is deterministic: the selected
+    model is always included; an explicit override locks out the rest; then
+    tier mismatch; then auth/transport unavailability.
+    """
+    pool: list[dict[str, object]] = []
+    for a in agents:
+        entry: dict[str, object] = {"name": a.name, "tier": a.tier}
+        if a.name == selected_name:
+            entry["included"] = True
+            entry["reason"] = REASON_NONE
+        elif locked:
+            entry["included"] = False
+            entry["reason"] = REASON_EXPLICIT_OVERRIDE_LOCKED
+        elif target_tier is not None and a.tier != target_tier:
+            entry["included"] = False
+            entry["reason"] = REASON_TIER_MISMATCH
+        else:
+            ready, reason = _auth_reason(a, secrets)
+            if not ready:
+                entry["included"] = False
+                entry["reason"] = reason
+            else:
+                entry["included"] = True
+                entry["reason"] = REASON_NONE
+        pool.append(entry)
+    return pool
+
+
+def _reviewer_health_context(
+    agents: list[AgentDef],
+    selected_names: set[str],
+    exclude_model: str | None,
+    locked: bool,
+    unhealthy_models: set[str] | None,
+    secrets: dict[str, str] | None,
+) -> tuple[bool, set[str], set[str]]:
+    """Reconstruct the provider-health demotion that shaped reviewer selection.
+
+    Mirrors :func:`_select_reviewers`: when at least one *healthy* authed,
+    non-self-excluded candidate exists, every *unhealthy* candidate (one that
+    recently returned a provider-shape failure — capacity/rate-limit/5xx/quota
+    still within the health window) is dropped from the pool. This is a live
+    demotion/recovery mechanism (ADR-0006 clause 5), so the routing_decision
+    block must record its outcome rather than silently marking a
+    health-deprioritized candidate ``included: true``.
+
+    Returns ``(fired, deprioritized, fell_back)``:
+    - ``fired``: health demotion actually removed a candidate.
+    - ``deprioritized``: unhealthy candidates dropped because a healthy
+      alternative existed (excluded from the pool).
+    - ``fell_back``: unhealthy candidates that ran anyway — the no-healthy-
+      alternative last resort — which stay ``included: true`` (they are in
+      ``final.models``, so the block is self-consistent).
+    """
+    if not unhealthy_models or locked:
+        return (False, set(), set())
+    eligible = [
+        a
+        for a in agents
+        if (exclude_model is None or a.model != exclude_model) and _has_auth(a, secrets)
+    ]
+    unhealthy_eligible = {a.name for a in eligible if a.name in unhealthy_models}
+    healthy_eligible = {a.name for a in eligible if a.name not in unhealthy_models}
+    fired = bool(unhealthy_eligible) and bool(healthy_eligible)
+    fell_back = {n for n in unhealthy_eligible if n in selected_names}
+    deprioritized = {n for n in unhealthy_eligible if n not in selected_names} if fired else set()
+    return (fired, deprioritized, fell_back)
+
+
+def _reviewer_candidate_pool(
+    agents: list[AgentDef],
+    selected_names: set[str],
+    exclude_model: str | None,
+    locked: bool,
+    secrets: dict[str, str] | None,
+    health_deprioritized: set[str] | None = None,
+) -> list[dict[str, object]]:
+    """Build the candidate pool for a reviewer role (plan_review/code_review).
+
+    Reviewers span the full tier ladder, so tier is not an exclusion axis here.
+    ``included: true`` marks a genuine candidate (authed, not self-excluded, not
+    health-deprioritized); the role's ``final.models`` names who actually ran.
+    The anti-self-review filter (``exclude_model``) surfaces as
+    ``anti_self_review``; a candidate dropped by provider-health demotion
+    surfaces as ``transport_unavailable`` with a ``health_deprioritized`` detail
+    (a recent provider-shape failure is a transient transport unavailability).
+    """
+    health_deprioritized = health_deprioritized or set()
+    pool: list[dict[str, object]] = []
+    for a in agents:
+        entry: dict[str, object] = {"name": a.name, "tier": a.tier}
+        if a.name in selected_names:
+            entry["included"] = True
+            entry["reason"] = REASON_NONE
+        elif locked:
+            entry["included"] = False
+            entry["reason"] = REASON_EXPLICIT_OVERRIDE_LOCKED
+        elif exclude_model is not None and a.model == exclude_model:
+            entry["included"] = False
+            entry["reason"] = REASON_ANTI_SELF_REVIEW
+        else:
+            ready, reason = _auth_reason(a, secrets)
+            if not ready:
+                entry["included"] = False
+                entry["reason"] = reason
+            elif a.name in health_deprioritized:
+                entry["included"] = False
+                entry["reason"] = REASON_TRANSPORT_UNAVAILABLE
+                entry["detail"] = "health_deprioritized"
+            else:
+                entry["included"] = True
+                entry["reason"] = REASON_NONE
+        pool.append(entry)
+    return pool
+
+
+def _reviewer_demotion_check(
+    fired: bool,
+    deprioritized: set[str],
+    fell_back: set[str],
+    unhealthy_models: set[str] | None,
+) -> dict[str, object]:
+    """Build the per-reviewer-role demotion_check block from health context.
+
+    Records the provider-health demotion path whether or not it fired, so the
+    audit shows a checked-but-didn't-fire mechanism with its reason (AC clause 5).
+    """
+    if not unhealthy_models:
+        reason = "no_unhealthy_candidates"
+    elif fired:
+        reason = f"health_deprioritized: {', '.join(sorted(deprioritized))}"
+    elif fell_back:
+        reason = "no_healthy_alternative_fell_back"
+    else:
+        reason = "no_unhealthy_candidates_in_pool"
+    return {
+        "mechanism": "provider_health",
+        "fired": fired,
+        "deprioritized": sorted(deprioritized),
+        "fell_back": sorted(fell_back),
+        "reason": reason,
+    }
+
+
+def _build_routing_decision(
+    decision: AssignmentDecision,
+    agents: list[AgentDef],
+    *,
+    origin: str,
+    score: int | None,
+    dev_base_tier: str,
+    dev_effective_tier: str,
+    preflight_tier: str | None,
+    planner_tier: str | None,
+    dev_signals: dict[str, dict],
+    promotion_block: dict[str, object],
+    planner_model: str,
+    dev_model: str,
+    explicit_roles: set[str],
+    secrets: dict[str, str] | None,
+    unhealthy_models: set[str] | None = None,
+) -> dict[str, object]:
+    """Assemble the per-role routing_decision explainability block (#1391).
+
+    Built at the end of :func:`assign_models` from the FINAL decision (after any
+    budget-driven downgrades) so the recorded models/tiers match what runs. Pure
+    assembly: no LLM calls, no profile re-reads — profile signals come from the
+    ``dev_signals`` already collected during routing.
+    """
+    rationale = decision.rationale
+
+    def _rat(role: str) -> str:
+        # Origin-labeled so future post-assignment checkpoints (#1387) can write
+        # into the same block and stay distinguishable from the preflight pass.
+        text = (rationale.get(role, "") or "").strip()
+        return f"[{origin}] {text}".rstrip()
+
+    # Dev pool at the effective (post-promotion) tier, annotated with the
+    # profile signals the router actually weighed for each included candidate.
+    dev_pool = _single_model_pool(
+        agents, dev_effective_tier, decision.dev.name, "dev" in explicit_roles, secrets
+    )
+    for entry in dev_pool:
+        if entry.get("included") and entry["name"] in dev_signals:
+            entry["signals"] = {"success_rate": dev_signals[entry["name"]]}
+
+    exploration = {"mode": "winner"}  # v1: on-policy only (#170/#325 not landed)
+
+    # Provider-health demotion (ADR-0006 clause 5) is a live reviewer-only
+    # mechanism. Reconstruct its outcome for each reviewer role so a
+    # health-deprioritized candidate is recorded excluded (not falsely included)
+    # and the checked-but-didn't-fire path is visible.
+    pr_selected = {p.name for p in decision.plan_reviewers}
+    pr_exclude = None if "plan_review" in explicit_roles else planner_model
+    pr_fired, pr_depri, pr_fellback = _reviewer_health_context(
+        agents, pr_selected, pr_exclude, "plan_review" in explicit_roles, unhealthy_models, secrets
+    )
+    cr_selected = {p.name for p in decision.code_reviewers}
+    cr_exclude = None if "code_review" in explicit_roles else dev_model
+    cr_fired, cr_depri, cr_fellback = _reviewer_health_context(
+        agents, cr_selected, cr_exclude, "code_review" in explicit_roles, unhealthy_models, secrets
+    )
+
+    return {
+        "origin": origin,
+        "preflight": {
+            "candidate_pool": _single_model_pool(
+                agents,
+                preflight_tier,
+                decision.preflight.name,
+                "preflight" in explicit_roles,
+                secrets,
+            ),
+            "exploration": dict(exploration),
+            "final": {
+                "model": decision.preflight.model,
+                "tier": _selected_tier(agents, decision.preflight.name, preflight_tier),
+                "rationale": _rat("preflight"),
+            },
+        },
+        "planner": {
+            "candidate_pool": _single_model_pool(
+                agents,
+                planner_tier,
+                decision.planner.name,
+                "planner" in explicit_roles,
+                secrets,
+            ),
+            "exploration": dict(exploration),
+            "final": {
+                "model": decision.planner.model,
+                "tier": _selected_tier(agents, decision.planner.name, planner_tier),
+                "rationale": _rat("planner"),
+            },
+        },
+        "dev": {
+            "score": score,
+            "base_tier_from_score": dev_base_tier,
+            "candidate_pool": dev_pool,
+            "promotion_check": promotion_block,
+            # Dev-tier demotion/recovery (ADR-0006 clause 5 tier-demotion) is a
+            # future enforcement (#1389) — no dev-tier demotion runs in v1, so this
+            # records "no such mechanism ran" (a complete explanation, not a gap).
+            # Provider-health demotion is reviewer-only; see each reviewer role's
+            # own demotion_check for that live mechanism's outcome.
+            "demotion_check": {
+                "mechanism": "dev_tier_demotion",
+                "applicable": False,
+                "fired": False,
+                "checked": None,
+                "reason": "no_dev_tier_demotion_mechanism_v1",
+            },
+            # Post-plan checkpoint (#1387) writes here once landed; absent in v1.
+            "post_plan_checkpoint": {
+                "applied": False,
+                "reason": "checkpoint_not_implemented_v1",
+            },
+            "exploration": dict(exploration),
+            "final": {
+                "model": decision.dev.model,
+                "tier": _selected_tier(agents, decision.dev.name, dev_effective_tier),
+                "rationale": _rat("dev"),
+            },
+        },
+        "plan_review": {
+            "candidate_pool": _reviewer_candidate_pool(
+                agents,
+                pr_selected,
+                pr_exclude,
+                "plan_review" in explicit_roles,
+                secrets,
+                health_deprioritized=pr_depri,
+            ),
+            "demotion_check": _reviewer_demotion_check(
+                pr_fired, pr_depri, pr_fellback, unhealthy_models
+            ),
+            "exploration": dict(exploration),
+            "final": {
+                "models": [p.model for p in decision.plan_reviewers],
+                "rationale": _rat("plan_review"),
+            },
+        },
+        "code_review": {
+            "candidate_pool": _reviewer_candidate_pool(
+                agents,
+                cr_selected,
+                cr_exclude,
+                "code_review" in explicit_roles,
+                secrets,
+                health_deprioritized=cr_depri,
+            ),
+            "demotion_check": _reviewer_demotion_check(
+                cr_fired, cr_depri, cr_fellback, unhealthy_models
+            ),
+            "exploration": dict(exploration),
+            "final": {
+                "models": [p.model for p in decision.code_reviewers],
+                "rationale": _rat("code_review"),
+            },
+        },
+    }
+
+
+def reconcile_explicit_reviewer_pools(
+    routing_decision: dict[str, object],
+    agents: list[AgentDef],
+    *,
+    plan_reviewers: list[ModelProfile] | None = None,
+    code_reviewers: list[ModelProfile] | None = None,
+    secrets: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Reconcile reviewer role blocks with explicit pools spliced post-assign.
+
+    :func:`assign_models` only sees the FIRST override profile per reviewer role
+    (``explicit_profiles`` carries one entry each), so when the coordinator
+    splices a fuller explicit ``review_pool`` / ``plan_agent_review`` pool into
+    the decision after ``assign_models`` returns, the block's ``final.models``
+    and ``candidate_pool`` under-report the reviewers that actually run. This
+    rebuilds only the affected reviewer role blocks from the real post-splice
+    profiles so the persisted block stays reconstructable and consistent with
+    runtime (#1391 iter1). Other roles and the block ``origin`` are preserved.
+
+    Mutates and returns ``routing_decision`` for convenience.
+    """
+    if not routing_decision:
+        return routing_decision
+
+    def _rebuild(role: str, reviewers: list[ModelProfile]) -> None:
+        role_block = routing_decision.get(role)
+        if not isinstance(role_block, dict):
+            return
+        selected = {p.name for p in reviewers}
+        # Explicit pools are operator-locked: agents outside the pool are locked
+        # out; every profile that will run is an included candidate — even ones
+        # not present in the adaptive ``agents`` registry.
+        pool = _reviewer_candidate_pool(agents, selected, None, True, secrets)
+        present = {e["name"] for e in pool}
+        for p in reviewers:
+            if p.name not in present:
+                pool.append(
+                    {"name": p.name, "tier": None, "included": True, "reason": REASON_NONE}
+                )
+        role_block["candidate_pool"] = pool
+        final = role_block.get("final")
+        if isinstance(final, dict):
+            final["models"] = [p.model for p in reviewers]
+
+    if plan_reviewers:
+        _rebuild("plan_review", plan_reviewers)
+    if code_reviewers:
+        _rebuild("code_review", code_reviewers)
+    return routing_decision
+
+
 # ── Main public function ───────────────────────────────────────────────
 
 
@@ -786,6 +1233,7 @@ def assign_models(
     secrets: dict[str, str] | None = None,
     model_profiles: dict | None = None,
     unhealthy_models: set[str] | None = None,
+    routing_origin: str = "preflight",
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -806,6 +1254,18 @@ def assign_models(
 
     norm_complexity = _normalize_complexity(complexity)
     rationale: dict[str, str] = {}
+    # ── Routing explainability accumulators (#1391) ────────────────────
+    # Populated during the routing pass and consumed by _build_routing_decision
+    # at the end so the block reflects the final (post-budget) decision.
+    _dev_signals: dict[str, dict] = {}
+    _preflight_tier: str | None = None
+    _dev_effective_tier: str = "cheap"
+    _promotion_block: dict[str, object] = {
+        "fired": False,
+        "matching_records": 0,
+        "escalations": 0,
+        "outcome": "not_checked",
+    }
     adaptive_enabled = assignment_config.adaptive_enabled
     # In static mode, ignore the numeric score, capability profiles, and
     # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
@@ -849,25 +1309,40 @@ def assign_models(
             dev_canonical_id=dev_canonical,
         )
         effective_dev_tier = dev_base_tier
+        # Capture the promotion-check outcome for the routing_decision block
+        # regardless of whether it fired — a checked-but-didn't-fire path is
+        # part of the explanation. Uses the same matching slice _check_promotion
+        # consulted, so no additional history scan drives selection.
+        _promo_matching = [
+            r
+            for r in effective_history
+            if r.complexity == norm_complexity
+            and (r.dev_model == dev_model_name or (dev_canonical and r.dev_model == dev_canonical))
+        ][-10:]
+        _promo_escalations = sum(1 for r in _promo_matching if r.outcome == "ESCALATE")
         if promoted is not None:
             effective_dev_tier = _promote_tier(dev_base_tier)
+            _promotion_block = {
+                "fired": True,
+                "matching_records": len(_promo_matching),
+                "escalations": _promo_escalations,
+                "outcome": f"promoted_to_{effective_dev_tier}",
+            }
             # Use filtered matching records (same slice as _check_promotion uses)
-            _matching = [
-                r
-                for r in effective_history
-                if r.complexity == norm_complexity
-                and (
-                    r.dev_model == dev_model_name
-                    or (dev_canonical and r.dev_model == dev_canonical)
-                )
-            ][-10:]
-            escalation_cnt = sum(1 for r in _matching if r.outcome == "ESCALATE")
+            _matching = _promo_matching
+            escalation_cnt = _promo_escalations
             rationale["dev"] = (
                 f"{norm_complexity} dev promoted {dev_model_name} "
                 f"(tier {dev_base_tier} → {effective_dev_tier}) — "
                 f"{escalation_cnt}/10 recent {norm_complexity} stories escalated"
             )
         else:
+            _promotion_block = {
+                "fired": False,
+                "matching_records": len(_promo_matching),
+                "escalations": _promo_escalations,
+                "outcome": "no_promotion",
+            }
             if score is not None:
                 rationale["dev"] = (
                     f"complexity score {score} ({norm_complexity}) → tier {effective_dev_tier}"
@@ -875,6 +1350,7 @@ def assign_models(
             else:
                 rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
 
+        _dev_effective_tier = effective_dev_tier
         dev_agent = _pick_agent(
             agents,
             effective_dev_tier,
@@ -882,6 +1358,7 @@ def assign_models(
             model_profiles=effective_profiles,
             role="dev",
             complexity=norm_complexity,
+            signals_out=_dev_signals,
         )
         if dev_agent is not None and effective_profiles:
             from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
@@ -946,6 +1423,7 @@ def assign_models(
         rationale["preflight"] = f"explicit override: {preflight_profile.model}"
     else:
         tier = PHASE_TIER["preflight"][norm_complexity]
+        _preflight_tier = tier
         agent = _pick_agent(agents, tier, secrets)
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
@@ -1092,6 +1570,33 @@ def assign_models(
         rationale=rationale,
     )
 
+    def _attach_routing_decision(dec: AssignmentDecision) -> AssignmentDecision:
+        """Build the explainability block from the FINAL decision and attach it.
+
+        Called at every return so budget-driven downgrades are reflected in the
+        recorded final models/tiers (plan-review note P1-impl).
+        """
+        from dataclasses import replace as _dc_replace  # noqa: PLC0415
+
+        block = _build_routing_decision(
+            dec,
+            agents,
+            origin=routing_origin,
+            score=score,
+            dev_base_tier=dev_base_tier,
+            dev_effective_tier=_dev_effective_tier,
+            preflight_tier=_preflight_tier,
+            planner_tier=planner_target_tier,
+            dev_signals=_dev_signals,
+            promotion_block=_promotion_block,
+            planner_model=dec.planner.model,
+            dev_model=dec.dev.model,
+            explicit_roles=set(explicit_profiles),
+            secrets=secrets,
+            unhealthy_models=unhealthy_models,
+        )
+        return _dc_replace(dec, routing_decision=block)
+
     # Enforce per-story routing cost target — pass dev floor so the enforcer never
     # downgrades dev below the complexity-required tier.  When the cap is unset
     # (None), adaptive's selection is preserved as-is and only the sprint-wide
@@ -1120,7 +1625,7 @@ def assign_models(
                 "preferred": _preferred_snapshot(decision, _initial_total),
             },
         )
-        return decision
+        return _attach_routing_decision(decision)
 
     planner_floor_tier = None
     if (
@@ -1138,7 +1643,7 @@ def assign_models(
         locked_roles=locked_roles,
     )
 
-    return decision
+    return _attach_routing_decision(decision)
 
 
 # ── I/O helpers (used only by coordinator) ────────────────────────────

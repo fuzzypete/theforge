@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 6
+CURRENT_RECORD_SCHEMA_VERSION = 7
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -749,6 +749,22 @@ def _migrate_v5_to_v6(record: dict) -> dict:
     return {**record, "symptom_test_escalations": None}
 
 
+def _migrate_v6_to_v7(record: dict) -> dict:
+    """Add top-level ``routing_decision`` (issue #1391).
+
+    v6 records captured only the outcome-oriented ``preflight.complexity_routing``
+    summary (final per-role picks + free-text rationale). v7 adds the top-level
+    ``routing_decision`` explainability block — candidate pool, canonical
+    exclusion reasons, profile signals, adaptive-check outcomes, exploration
+    state, and origin-labeled final rationale (ADR-0006 clause 7). Older records
+    ran before the block existed and cannot be reconstructed after the fact, so
+    backfill None (the "not recorded" shape) rather than fabricating one.
+    """
+    if "routing_decision" in record:
+        return record
+    return {**record, "routing_decision": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -763,6 +779,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
+    6: _migrate_v6_to_v7,
 }
 
 

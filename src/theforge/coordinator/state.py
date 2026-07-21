@@ -564,6 +564,10 @@ class CoordinatorState:
     _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
     _explicit_roles: set = field(default_factory=set)  # roles with explicit forge.yaml config
     complexity_routing_audit: dict | None = None  # set by _apply_complexity_adaptation
+    # Per-role routing explainability block (#1391). Set from the assignment
+    # decision at the preflight assign_models call site; persisted as a top-level
+    # routing_decision key in the native per-run audit record.
+    routing_decision: dict | None = None
     # Adaptive iteration limits (per-story). Populated by derive_limits() before
     # the dev/review loop starts. 0 means "not computed yet"; engine falls back
     # to config.retry.max_dev_iterations / max_review_cycles in that case.

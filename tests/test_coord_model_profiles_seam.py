@@ -481,6 +481,23 @@ def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, mon
     )
     assert audit["per_story_routing_cost_target"]["final_total_usd"] == round(runtime_total, 2)
 
+    # #1391 iter1: the persisted routing_decision block must reflect the FULL
+    # spliced explicit reviewer pool, not the single pre-splice override profile.
+    block = state.routing_decision
+    assert block is not None
+    assert block["code_review"]["final"]["models"] == [
+        explicit_reviewer.model,
+        explicit_reviewer.model,
+    ]
+    # And the running reviewer appears as an included candidate — no
+    # included-vs-final contradiction the reconstructability contract forbids.
+    cr_pool = {e["name"]: e for e in block["code_review"]["candidate_pool"]}
+    assert cr_pool[explicit_reviewer.name]["included"] is True
+    assert cr_pool[explicit_reviewer.name]["reason"] == "none"
+    # Every final model is reconstructable as an included candidate.
+    included = {e["name"] for e in block["code_review"]["candidate_pool"] if e["included"]}
+    assert explicit_reviewer.name in included
+
 
 def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_path, monkeypatch):
     """An expensive explicit review_pool must surface override_forced_overrun in audit."""

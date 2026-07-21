@@ -1197,6 +1197,33 @@ def _apply_preflight_config(
 
     state._adaptive_decision = _decision
     state._explicit_roles = _explicit_roles
+    # Carry the structured routing explainability block (#1391) into run state
+    # so it persists as a top-level routing_decision key in the native per-run
+    # audit record. Origin is labeled "preflight" in each final rationale so a
+    # future post-assignment checkpoint (#1387) writing the same block stays
+    # distinguishable. Kept separate from complexity_routing_audit (which retains
+    # its existing outcome-only shape) per ADR-0006 clause 7.
+    _routing_block = getattr(_decision, "routing_decision", None)
+    if _routing_block:
+        # assign_models sees only the first override profile per reviewer role, so
+        # when a multi-profile explicit review_pool / plan_agent_review pool was
+        # spliced into _decision above, the block's final.models/candidate_pool
+        # under-report the reviewers that will actually run. Reconcile the affected
+        # reviewer roles from the post-splice pools so the persisted block stays
+        # consistent with runtime (#1391 iter1).
+        if _explicit_review_pool or _explicit_plan_review_pool:
+            from theforge.assignment import (  # noqa: PLC0415
+                reconcile_explicit_reviewer_pools as _reconcile_reviewers,
+            )
+
+            _reconcile_reviewers(
+                _routing_block,
+                config.agents,
+                plan_reviewers=(_decision.plan_reviewers if _explicit_plan_review_pool else None),
+                code_reviewers=(_decision.code_reviewers if _explicit_review_pool else None),
+                secrets=config.secrets,
+            )
+        state.routing_decision = _routing_block
     _existing_routing_audit = dict(state.complexity_routing_audit or {})
     _adaptive_enabled = config.assignment.adaptive_enabled
     _cap_audit = dict(_decision.budget_audit)
