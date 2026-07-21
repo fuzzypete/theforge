@@ -3,8 +3,8 @@
 Companion evidence for the story *"Dogfood: align TheForge's own git policy with
 the canonical template."* This is the committed, auditable record the acceptance
 criteria call for. It covers the redaction-audit spot-check, the end-to-end
-runtime verification, and the one criterion that is structurally an operator
-merge-gate rather than a dev-implementable change.
+runtime verification, and the operator follow-up that was split out of this
+implementation story.
 
 Design source of truth: `docs/plans/forge-storage-layout.md`.
 
@@ -106,39 +106,24 @@ and **real** `git` (`git ls-files`, `git check-attr`):
 
 ---
 
-## 3. The real-sprint step is an operator merge-gate
+## 3. Live-sprint verification moved to operator follow-up
 
-**Status: operator action, not a dev-agent deliverable.**
+**Status: tracked separately in #1842.**
 
-The AC's literal "a real sprint has run against the new template before merge" is
-a *pre-merge operational verification the operator performs*, and it cannot be
-discharged from inside the dev phase for two structural reasons:
+The original story body included a live dogfood sprint as a pre-merge acceptance
+criterion. That check is valuable, but it is not an implementation deliverable:
+running a live sprint spends budget, requires explicit operator authorization,
+and writes terminal run artifacts only after the run completes.
 
-1. **A dev agent must not run `forge sprint` / `forge run`.** Those commands spend
-   money and require explicit per-invocation operator authorization. Producing a
-   real per-run artifact requires executing one.
+That operator-only requirement has been removed from #796 so this story can ship
+the canonical policy alignment and its deterministic verification. The live
+dogfood confirmation is tracked by #1842.
 
-2. **A run's own per-run record cannot exist in its own dev-phase worktree.** By
-   the per-run file contract (`docs/plans/forge-storage-layout.md` →
-   "Per-run file contract"), a run record is written **exactly once, when the run
-   terminates** — after DEV, REVIEW, and merge. So the artifact for *this* run is
-   written after this dev phase ends, and no prior real per-run artifact exists
-   because the format is newly rolled out (§1: the runs/ directory is empty
-   everywhere on this machine). Requiring the dev-phase worktree to already
-   contain a tracked per-run artifact from a completed real sprint asks for
-   something the write-at-termination invariant makes impossible for the current
-   run and unavailable for any prior run.
+The implementation-level runtime guarantees remain covered above by real git
+tests and redaction evidence:
 
-The honest resolution is **not** to synthesize a fake sprint artifact and commit
-it (that would misrepresent an unrun sprint). It is to (a) prove the template's
-runtime guarantees mechanically, as above, and (b) let the operator confirm the
-live-sprint gate at merge time — the dogfood sprint that carries this branch to
-green **is** that real sprint; its per-run record lands when it terminates, under
-the template this branch installs.
-
-**Operator merge-gate checklist:**
-
-- [ ] The dogfood sprint carrying #796 completed against this branch's template.
-- [ ] Its terminal per-run audit record (and any knowledge summary) landed under
-      `.forge/audits/runs/` / `.forge/knowledge/summaries/` and is tracked.
-- [ ] `forge run` precondition guards raised no blockers on the checkout.
+- tracked per-run audit records are written under `.forge/audits/runs/`
+- tracked knowledge summaries are written under `.forge/knowledge/summaries/`
+- local-only secrets, logs, worktrees, and handoffs remain ignored
+- generated tracked artifacts collapse in diffs through `.gitattributes`
+- precondition guards catch catastrophic tracked local-state paths
