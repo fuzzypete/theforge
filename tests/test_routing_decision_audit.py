@@ -114,7 +114,9 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _record_through_seam(tmp_path: Path, profiles: dict | None = None) -> dict:
+def _record_through_seam(
+    tmp_path: Path, profiles: dict | None = None, unhealthy_models: set | None = None
+) -> dict:
     """Run assign_models, carry the block on state, and emit the audit record."""
     profiles = profiles or {
         "models": {
@@ -128,7 +130,12 @@ def _record_through_seam(tmp_path: Path, profiles: dict | None = None) -> dict:
         }
     }
     decision = assign_models(
-        _agents(), _cfg(), complexity="HIGH", complexity_score=9, model_profiles=profiles
+        _agents(),
+        _cfg(),
+        complexity="HIGH",
+        complexity_score=9,
+        model_profiles=profiles,
+        unhealthy_models=unhealthy_models,
     )
 
     config = _make_config(tmp_path)
@@ -242,3 +249,29 @@ def test_required_case_anti_self_review_and_auth_missing(tmp_path, _keys_except_
 
     assert pool["deepseek"]["included"] is False
     assert pool["deepseek"]["reason"] == REASON_AUTH_MISSING
+
+
+def test_health_demotion_survives_the_audit_seam(tmp_path, _keys_except_deepseek):
+    """A provider-health demotion is reconstructable from the persisted record:
+    the deprioritized reviewer is excluded (not falsely seated) and the mechanism
+    outcome is recorded per reviewer role (P1-B, ADR-0006 clause 5)."""
+    record = _record_through_seam(tmp_path, unhealthy_models={"gpt"})
+    cr = record["routing_decision"]["code_review"]
+    pool = {e["name"]: e for e in cr["candidate_pool"]}
+
+    # gpt was authed and not self-excluded, but health-deprioritized in favor of a
+    # healthy alternative → excluded, and never listed among the reviewers that ran.
+    assert pool["gpt"]["included"] is False
+    assert pool["gpt"]["reason"] == "transport_unavailable"
+    assert pool["gpt"]["detail"] == "health_deprioritized"
+    assert "gpt-5.4" not in cr["final"]["models"]
+
+    demotion = cr["demotion_check"]
+    assert demotion["mechanism"] == "provider_health"
+    assert demotion["fired"] is True
+    assert "gpt" in demotion["deprioritized"]
+
+    # No included candidate is missing from final without an explanation: every
+    # excluded reviewer carries a canonical reason.
+    for entry in cr["candidate_pool"]:
+        assert entry["reason"] in EXCLUSION_REASONS

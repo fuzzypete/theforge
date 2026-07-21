@@ -14,6 +14,7 @@ from theforge.assignment import (
     REASON_ANTI_SELF_REVIEW,
     REASON_AUTH_MISSING,
     REASON_NONE,
+    REASON_TRANSPORT_UNAVAILABLE,
     AssignmentConfig,
     _build_routing_decision,
     assign_models,
@@ -240,3 +241,97 @@ def test_block_building_does_not_re_read_profiles(monkeypatch):
     # And the rebuilt block surfaces the pre-collected signal object verbatim.
     opus_entry = next(e for e in rebuilt["dev"]["candidate_pool"] if e["name"] == "opus")
     assert opus_entry["signals"]["success_rate"] is dev_signals["opus"]
+
+
+def _health_agents() -> list[AgentDef]:
+    """Strong pool where dev picks opus (cheapest strong) and deepseek is a
+    reviewer candidate we can mark unhealthy without it becoming the dev pick."""
+    return [
+        AgentDef(
+            name="opus",
+            provider="anthropic",
+            model="opus",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            tier="strong",
+        ),
+        AgentDef(
+            name="gpt",
+            provider="openai",
+            model="gpt-5.4",
+            budget_usd=8.0,
+            timeout_seconds=900,
+            tier="strong",
+        ),
+        AgentDef(
+            name="deepseek",
+            provider="deepseek",
+            model="deepseek-reasoner",
+            budget_usd=9.0,
+            timeout_seconds=600,
+            tier="strong",
+        ),
+        AgentDef(
+            name="sonnet",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=3.0,
+            timeout_seconds=600,
+            tier="mid",
+        ),
+    ]
+
+
+def test_health_deprioritized_reviewer_is_excluded_not_falsely_included(monkeypatch):
+    """A reviewer candidate dropped by provider-health demotion is recorded
+    excluded (transport_unavailable / health_deprioritized) and absent from
+    final.models — never included=true with no seat (P1-B / ADR-0006 clause 5)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+
+    decision = assign_models(
+        _health_agents(),
+        _cfg(min_reviewers=2, max_reviewers=2),
+        complexity="HIGH",
+        complexity_score=9,
+        unhealthy_models={"deepseek"},
+    )
+    assert decision.dev.name == "opus"  # deepseek's high budget keeps it off dev
+    cr = decision.routing_decision["code_review"]
+    pool = {e["name"]: e for e in cr["candidate_pool"]}
+
+    # deepseek: unhealthy with a healthy alternative → deprioritized, not seated.
+    assert pool["deepseek"]["included"] is False
+    assert pool["deepseek"]["reason"] == REASON_TRANSPORT_UNAVAILABLE
+    assert pool["deepseek"]["detail"] == "health_deprioritized"
+    assert "deepseek-reasoner" not in cr["final"]["models"]
+
+    # The demotion path outcome is recorded per reviewer role, with attribution.
+    demotion = cr["demotion_check"]
+    assert demotion["mechanism"] == "provider_health"
+    assert demotion["fired"] is True
+    assert "deepseek" in demotion["deprioritized"]
+
+    # Every included reviewer candidate still carries a canonical reason only.
+    for entry in cr["candidate_pool"]:
+        assert entry["reason"] in EXCLUSION_REASONS
+
+
+def test_health_demotion_records_checked_but_not_fired(monkeypatch):
+    """With no unhealthy models, the reviewer demotion_check still records a
+    checked-but-didn't-fire outcome (AC clause 5), not silence."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+
+    decision = assign_models(
+        _health_agents(),
+        _cfg(min_reviewers=2, max_reviewers=2),
+        complexity="HIGH",
+        complexity_score=9,
+    )
+    demotion = decision.routing_decision["code_review"]["demotion_check"]
+    assert demotion["fired"] is False
+    assert demotion["deprioritized"] == []
+    assert demotion["reason"]  # a concrete reason, not empty

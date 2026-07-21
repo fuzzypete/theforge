@@ -893,20 +893,66 @@ def _single_model_pool(
     return pool
 
 
+def _reviewer_health_context(
+    agents: list[AgentDef],
+    selected_names: set[str],
+    exclude_model: str | None,
+    locked: bool,
+    unhealthy_models: set[str] | None,
+    secrets: dict[str, str] | None,
+) -> tuple[bool, set[str], set[str]]:
+    """Reconstruct the provider-health demotion that shaped reviewer selection.
+
+    Mirrors :func:`_select_reviewers`: when at least one *healthy* authed,
+    non-self-excluded candidate exists, every *unhealthy* candidate (one that
+    recently returned a provider-shape failure — capacity/rate-limit/5xx/quota
+    still within the health window) is dropped from the pool. This is a live
+    demotion/recovery mechanism (ADR-0006 clause 5), so the routing_decision
+    block must record its outcome rather than silently marking a
+    health-deprioritized candidate ``included: true``.
+
+    Returns ``(fired, deprioritized, fell_back)``:
+    - ``fired``: health demotion actually removed a candidate.
+    - ``deprioritized``: unhealthy candidates dropped because a healthy
+      alternative existed (excluded from the pool).
+    - ``fell_back``: unhealthy candidates that ran anyway — the no-healthy-
+      alternative last resort — which stay ``included: true`` (they are in
+      ``final.models``, so the block is self-consistent).
+    """
+    if not unhealthy_models or locked:
+        return (False, set(), set())
+    eligible = [
+        a
+        for a in agents
+        if (exclude_model is None or a.model != exclude_model) and _has_auth(a, secrets)
+    ]
+    unhealthy_eligible = {a.name for a in eligible if a.name in unhealthy_models}
+    healthy_eligible = {a.name for a in eligible if a.name not in unhealthy_models}
+    fired = bool(unhealthy_eligible) and bool(healthy_eligible)
+    fell_back = {n for n in unhealthy_eligible if n in selected_names}
+    deprioritized = {n for n in unhealthy_eligible if n not in selected_names} if fired else set()
+    return (fired, deprioritized, fell_back)
+
+
 def _reviewer_candidate_pool(
     agents: list[AgentDef],
     selected_names: set[str],
     exclude_model: str | None,
     locked: bool,
     secrets: dict[str, str] | None,
+    health_deprioritized: set[str] | None = None,
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a reviewer role (plan_review/code_review).
 
     Reviewers span the full tier ladder, so tier is not an exclusion axis here.
-    ``included: true`` marks a genuine candidate (authed, not self-excluded);
-    the role's ``final.models`` names who actually ran. The anti-self-review
-    filter (``exclude_model``) surfaces as ``anti_self_review``.
+    ``included: true`` marks a genuine candidate (authed, not self-excluded, not
+    health-deprioritized); the role's ``final.models`` names who actually ran.
+    The anti-self-review filter (``exclude_model``) surfaces as
+    ``anti_self_review``; a candidate dropped by provider-health demotion
+    surfaces as ``transport_unavailable`` with a ``health_deprioritized`` detail
+    (a recent provider-shape failure is a transient transport unavailability).
     """
+    health_deprioritized = health_deprioritized or set()
     pool: list[dict[str, object]] = []
     for a in agents:
         entry: dict[str, object] = {"name": a.name, "tier": a.tier}
@@ -924,11 +970,43 @@ def _reviewer_candidate_pool(
             if not ready:
                 entry["included"] = False
                 entry["reason"] = reason
+            elif a.name in health_deprioritized:
+                entry["included"] = False
+                entry["reason"] = REASON_TRANSPORT_UNAVAILABLE
+                entry["detail"] = "health_deprioritized"
             else:
                 entry["included"] = True
                 entry["reason"] = REASON_NONE
         pool.append(entry)
     return pool
+
+
+def _reviewer_demotion_check(
+    fired: bool,
+    deprioritized: set[str],
+    fell_back: set[str],
+    unhealthy_models: set[str] | None,
+) -> dict[str, object]:
+    """Build the per-reviewer-role demotion_check block from health context.
+
+    Records the provider-health demotion path whether or not it fired, so the
+    audit shows a checked-but-didn't-fire mechanism with its reason (AC clause 5).
+    """
+    if not unhealthy_models:
+        reason = "no_unhealthy_candidates"
+    elif fired:
+        reason = f"health_deprioritized: {', '.join(sorted(deprioritized))}"
+    elif fell_back:
+        reason = "no_healthy_alternative_fell_back"
+    else:
+        reason = "no_unhealthy_candidates_in_pool"
+    return {
+        "mechanism": "provider_health",
+        "fired": fired,
+        "deprioritized": sorted(deprioritized),
+        "fell_back": sorted(fell_back),
+        "reason": reason,
+    }
 
 
 def _build_routing_decision(
@@ -947,6 +1025,7 @@ def _build_routing_decision(
     dev_model: str,
     explicit_roles: set[str],
     secrets: dict[str, str] | None,
+    unhealthy_models: set[str] | None = None,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
@@ -973,6 +1052,21 @@ def _build_routing_decision(
             entry["signals"] = {"success_rate": dev_signals[entry["name"]]}
 
     exploration = {"mode": "winner"}  # v1: on-policy only (#170/#325 not landed)
+
+    # Provider-health demotion (ADR-0006 clause 5) is a live reviewer-only
+    # mechanism. Reconstruct its outcome for each reviewer role so a
+    # health-deprioritized candidate is recorded excluded (not falsely included)
+    # and the checked-but-didn't-fire path is visible.
+    pr_selected = {p.name for p in decision.plan_reviewers}
+    pr_exclude = None if "plan_review" in explicit_roles else planner_model
+    pr_fired, pr_depri, pr_fellback = _reviewer_health_context(
+        agents, pr_selected, pr_exclude, "plan_review" in explicit_roles, unhealthy_models, secrets
+    )
+    cr_selected = {p.name for p in decision.code_reviewers}
+    cr_exclude = None if "code_review" in explicit_roles else dev_model
+    cr_fired, cr_depri, cr_fellback = _reviewer_health_context(
+        agents, cr_selected, cr_exclude, "code_review" in explicit_roles, unhealthy_models, secrets
+    )
 
     return {
         "origin": origin,
@@ -1011,14 +1105,17 @@ def _build_routing_decision(
             "base_tier_from_score": dev_base_tier,
             "candidate_pool": dev_pool,
             "promotion_check": promotion_block,
-            # No demotion/recovery mechanism exists in v1 (ADR-0006 clause 5 is a
-            # future enforcement, #1389). Recorded as not-applicable so the block
-            # is a complete explanation: "no such mechanism ran", not a gap.
+            # Dev-tier demotion/recovery (ADR-0006 clause 5 tier-demotion) is a
+            # future enforcement (#1389) — no dev-tier demotion runs in v1, so this
+            # records "no such mechanism ran" (a complete explanation, not a gap).
+            # Provider-health demotion is reviewer-only; see each reviewer role's
+            # own demotion_check for that live mechanism's outcome.
             "demotion_check": {
+                "mechanism": "dev_tier_demotion",
                 "applicable": False,
                 "fired": False,
                 "checked": None,
-                "reason": "no_demotion_mechanism_v1",
+                "reason": "no_dev_tier_demotion_mechanism_v1",
             },
             # Post-plan checkpoint (#1387) writes here once landed; absent in v1.
             "post_plan_checkpoint": {
@@ -1035,10 +1132,14 @@ def _build_routing_decision(
         "plan_review": {
             "candidate_pool": _reviewer_candidate_pool(
                 agents,
-                {p.name for p in decision.plan_reviewers},
-                None if "plan_review" in explicit_roles else planner_model,
+                pr_selected,
+                pr_exclude,
                 "plan_review" in explicit_roles,
                 secrets,
+                health_deprioritized=pr_depri,
+            ),
+            "demotion_check": _reviewer_demotion_check(
+                pr_fired, pr_depri, pr_fellback, unhealthy_models
             ),
             "exploration": dict(exploration),
             "final": {
@@ -1049,10 +1150,14 @@ def _build_routing_decision(
         "code_review": {
             "candidate_pool": _reviewer_candidate_pool(
                 agents,
-                {p.name for p in decision.code_reviewers},
-                None if "code_review" in explicit_roles else dev_model,
+                cr_selected,
+                cr_exclude,
                 "code_review" in explicit_roles,
                 secrets,
+                health_deprioritized=cr_depri,
+            ),
+            "demotion_check": _reviewer_demotion_check(
+                cr_fired, cr_depri, cr_fellback, unhealthy_models
             ),
             "exploration": dict(exploration),
             "final": {
@@ -1061,6 +1166,57 @@ def _build_routing_decision(
             },
         },
     }
+
+
+def reconcile_explicit_reviewer_pools(
+    routing_decision: dict[str, object],
+    agents: list[AgentDef],
+    *,
+    plan_reviewers: list[ModelProfile] | None = None,
+    code_reviewers: list[ModelProfile] | None = None,
+    secrets: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Reconcile reviewer role blocks with explicit pools spliced post-assign.
+
+    :func:`assign_models` only sees the FIRST override profile per reviewer role
+    (``explicit_profiles`` carries one entry each), so when the coordinator
+    splices a fuller explicit ``review_pool`` / ``plan_agent_review`` pool into
+    the decision after ``assign_models`` returns, the block's ``final.models``
+    and ``candidate_pool`` under-report the reviewers that actually run. This
+    rebuilds only the affected reviewer role blocks from the real post-splice
+    profiles so the persisted block stays reconstructable and consistent with
+    runtime (#1391 iter1). Other roles and the block ``origin`` are preserved.
+
+    Mutates and returns ``routing_decision`` for convenience.
+    """
+    if not routing_decision:
+        return routing_decision
+
+    def _rebuild(role: str, reviewers: list[ModelProfile]) -> None:
+        role_block = routing_decision.get(role)
+        if not isinstance(role_block, dict):
+            return
+        selected = {p.name for p in reviewers}
+        # Explicit pools are operator-locked: agents outside the pool are locked
+        # out; every profile that will run is an included candidate — even ones
+        # not present in the adaptive ``agents`` registry.
+        pool = _reviewer_candidate_pool(agents, selected, None, True, secrets)
+        present = {e["name"] for e in pool}
+        for p in reviewers:
+            if p.name not in present:
+                pool.append(
+                    {"name": p.name, "tier": None, "included": True, "reason": REASON_NONE}
+                )
+        role_block["candidate_pool"] = pool
+        final = role_block.get("final")
+        if isinstance(final, dict):
+            final["models"] = [p.model for p in reviewers]
+
+    if plan_reviewers:
+        _rebuild("plan_review", plan_reviewers)
+    if code_reviewers:
+        _rebuild("code_review", code_reviewers)
+    return routing_decision
 
 
 # ── Main public function ───────────────────────────────────────────────
@@ -1437,6 +1593,7 @@ def assign_models(
             dev_model=dec.dev.model,
             explicit_roles=set(explicit_profiles),
             secrets=secrets,
+            unhealthy_models=unhealthy_models,
         )
         return _dc_replace(dec, routing_decision=block)
 
