@@ -123,7 +123,7 @@ def test_challenger_block_is_labeled_even_in_winner_mode(_anthropic_key):
     block = _dev_exploration(decision)
     assert block["mode"] == "winner"
     # Off-policy routing must never be unlabeled: key + pool recorded regardless.
-    assert block["routing_key"] == "dev:large:-"
+    assert block["routing_key"] == "dev:large"
     assert set(block["pool"]) == {"winner", "rival"}
     assert decision.dev.name == "winner"
 
@@ -288,6 +288,39 @@ def test_empirical_winner_routed_over_static_incumbent_in_winner_mode(_anthropic
     assert decision.dev.name == "strong_champ"
 
 
+def test_winner_mode_promotion_is_budget_downgradable_to_floor(_anthropic_key):
+    """A winner-mode empirical promotion is NORMAL routing: a tight per-story cost
+    target can downgrade it to a floor-compliant cheaper dev (no protected
+    challenger envelope). Contrast with challenger mode, whose budget floor IS the
+    challenger tier."""
+    data: dict = {"models": {}}
+    for _ in range(4):
+        apply_run(data, RunOutcome("medium", "mid_pick", True, 1, 0.5))
+    for _ in range(3):
+        apply_run(data, RunOutcome("medium", "mid_pick", False, 1, 0.5))
+    for _ in range(5):
+        apply_run(data, RunOutcome("medium", "strong_champ", True, 1, 0.5))
+
+    # Tight cost target: the strong empirical winner cannot fit, but a mid-tier
+    # floor-compliant dev (mid_pick) can. The enforcer must be free to downgrade.
+    decision = assign_models(
+        _tiered_agents(),
+        _cfg(explore_every_n=99, max_cost=6.0),  # winner mode, tight cap
+        complexity="MEDIUM",
+        complexity_score=5,
+        model_profiles=data,
+        sprint_exploration_budget=1,
+        explore_rng=random.Random(0),
+    )
+    assert _dev_exploration(decision)["mode"] == "winner"
+    # Promotion is recorded, but the dev is downgraded back to the mid floor
+    # (NOT protected at strong) so the per-story target is met.
+    assert decision.dev.name == "mid_pick"
+    assert decision.dev.model == "haiku"
+    assert decision.budget_audit["downgraded"] is True
+    assert decision.budget_audit["within_target"] is True
+
+
 # ── Domain-scoped routing (routing key honors domain) ──────────────────
 
 
@@ -314,13 +347,17 @@ def _domain_agents() -> list[AgentDef]:
 
 def _domain_profiles() -> dict:
     data: dict = {"models": {}}
-    # Each specialist is strong in its own domain, weak in the other; both have
-    # an identical pooled band rate (0.5), so only the domain slice distinguishes.
+    # Both specialists share the IDENTICAL band-large temporal sequence
+    # (4 successes then 4 failures), so their recency-weighted band rates are
+    # exactly equal — only the per-domain slice distinguishes them: each is
+    # strong (the successes) in its own domain and weak (the failures) in the
+    # other. This isolates the domain tie-breaker as the deciding signal.
     for _ in range(4):
         apply_run(data, RunOutcome("large", "api_specialist", True, 1, 0.5, domains=["api"]))
+        apply_run(data, RunOutcome("large", "web_specialist", True, 1, 0.5, domains=["web"]))
+    for _ in range(4):
         apply_run(data, RunOutcome("large", "api_specialist", False, 1, 0.5, domains=["web"]))
         apply_run(data, RunOutcome("large", "web_specialist", False, 1, 0.5, domains=["api"]))
-        apply_run(data, RunOutcome("large", "web_specialist", True, 1, 0.5, domains=["web"]))
     return data
 
 
@@ -346,8 +383,15 @@ def test_domain_routing_selects_domain_specialist(_anthropic_key):
         sprint_exploration_budget=1,
         explore_rng=random.Random(0),
     )
-    assert _dev_exploration(api_decision)["routing_key"] == "dev:large:api"
-    assert _dev_exploration(web_decision)["routing_key"] == "dev:large:web"
-    # The domain slice — not the identical pooled band rate — picks the winner.
+    # The cadence/aggregate key is (phase, band) for BOTH — domain is recorded as
+    # preference metadata, not folded into the key (so keys differing only in band
+    # stay distinct). Both bands are "large" here.
+    api_block = _dev_exploration(api_decision)
+    web_block = _dev_exploration(web_decision)
+    assert api_block["routing_key"] == "dev:large"
+    assert web_block["routing_key"] == "dev:large"
+    assert api_block["domains"] == ["api"]
+    assert web_block["domains"] == ["web"]
+    # Band rates tie (0.5 each); the domain-slice tie-breaker picks the specialist.
     assert api_decision.dev.name == "api_specialist"
     assert web_decision.dev.name == "web_specialist"

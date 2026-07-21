@@ -32,16 +32,29 @@ def _profiles_with(runs: dict[str, list[tuple[bool, float, int]]]) -> dict:
 # ── Routing key ────────────────────────────────────────────────────────
 
 
-def test_routing_key_normalizes_complexity_and_picks_primary_domain():
+def test_routing_key_identity_is_phase_and_band_domains_are_metadata():
     key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["python", "api"])
     assert key.band == "large"
-    assert key.domain == "api"  # lexicographically first
-    assert key.as_str() == "dev:large:api"
+    # The cadence/aggregate slot identity is (phase, band) — NOT domain. Domains
+    # ride along as a recorded preference (sorted, deduped) but do not fold into
+    # the key string, so keys differing only in band never collapse.
+    assert key.as_str() == "dev:large"
+    assert key.domains == ("api", "python")
 
 
 def test_routing_key_no_domain():
     key = exp.RoutingKey.build(phase="dev", complexity="MEDIUM", domains=[])
-    assert key.as_str() == "dev:medium:-"
+    assert key.as_str() == "dev:medium"
+    assert key.domains == ()
+
+
+def test_routing_keys_differing_only_in_band_are_distinct():
+    api_small = exp.RoutingKey.build(phase="dev", complexity="LOW", domains=["api"])
+    api_large = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
+    # Same domain, different band → distinct slots (the cycle-2 defect guard).
+    assert api_small.as_str() != api_large.as_str()
+    assert api_small.as_str() == "dev:small"
+    assert api_large.as_str() == "dev:large"
 
 
 # ── Aggregation: taint exclusion + recency ─────────────────────────────
@@ -66,12 +79,14 @@ def test_aggregates_exclude_tainted_runs():
     assert agg.success_rate == 1.0  # only the clean successes counted
 
 
-def test_domain_scoped_aggregates_differ_by_domain():
-    """A domain-keyed aggregate reads the story's domain slice, not the pooled band.
+def test_primary_rate_is_band_scoped_domain_is_secondary_signal():
+    """The primary success rate is band-scoped; the domain rate is a side signal.
 
-    Two stories at the same complexity band but different domains must NOT race
-    against an identical pooled aggregate (the routing key records the domain, so
-    the aggregation must honor it).
+    Same band, different domains → identical band-scoped ``success_rate`` (the
+    band is the aggregate identity), but distinct ``domain_success_rate`` so the
+    tie-breaker can still differentiate by domain. This keeps BOTH axes honest:
+    band drives the primary aggregate (no domain-only collapse), domain rides as
+    a preference (no band-only collapse).
     """
     data: dict = {"models": {}}
     for _ in range(4):
@@ -81,17 +96,39 @@ def test_domain_scoped_aggregates_differ_by_domain():
 
     key_api = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
     key_web = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["web"])
-    key_band = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
 
     agg_api = exp.derive_key_aggregates(data, [_cand("m1")], key_api, min_sample_size=3)["m1"]
     agg_web = exp.derive_key_aggregates(data, [_cand("m1")], key_web, min_sample_size=3)["m1"]
-    agg_band = exp.derive_key_aggregates(data, [_cand("m1")], key_band, min_sample_size=3)["m1"]
 
-    assert agg_api.success_rate == 1.0  # strong in api
-    assert agg_web.success_rate == 0.0  # weak in web
-    # Band pools both domains → lands strictly between the two domain slices
-    # (recency-weighted, so ~0.5 rather than exactly 0.5).
-    assert agg_web.success_rate < agg_band.success_rate < agg_api.success_rate
+    # Primary rate is the band aggregate (pools both domains) → identical.
+    assert agg_api.success_rate == agg_web.success_rate
+    # Domain tie-breaker distinguishes them.
+    assert agg_api.domain_success_rate == 1.0
+    assert agg_web.domain_success_rate == 0.0
+
+
+def test_aggregates_differ_by_band_same_domain():
+    """Same domain, different band → different primary aggregate (cycle-2 guard).
+
+    The prior fix made a domain key ignore the band entirely; this asserts the
+    band axis is honored, so dev:small:api and dev:large:api never collapse.
+    """
+    data: dict = {"models": {}}
+    for _ in range(4):
+        apply_run(data, RunOutcome("small", "m1", True, 1, 0.1, domains=["api"]))
+    for _ in range(4):
+        apply_run(data, RunOutcome("large", "m1", False, 1, 0.1, domains=["api"]))
+
+    key_small = exp.RoutingKey.build(phase="dev", complexity="LOW", domains=["api"])
+    key_large = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
+
+    agg_small = exp.derive_key_aggregates(data, [_cand("m1")], key_small, min_sample_size=3)["m1"]
+    agg_large = exp.derive_key_aggregates(data, [_cand("m1")], key_large, min_sample_size=3)["m1"]
+
+    assert agg_small.success_rate == 1.0  # strong at small band
+    assert agg_large.success_rate == 0.0  # weak at large band
+    assert agg_small.runs == 4
+    assert agg_large.runs == 4
 
 
 def test_aggregate_below_floor_has_no_rate():
@@ -299,10 +336,11 @@ def test_block_is_reconstructable():
     )
     block = out.to_block()
     assert block["mode"] == "challenger"
-    assert block["routing_key"] == "dev:large:-"
+    assert block["routing_key"] == "dev:large"
     assert block["pool"] == ["winner", "rival"]
     assert block["selected"] == "rival"
     assert block["winner"] == "winner"
+    assert block["domains"] == []  # no domains on this key
 
 
 # ── Failed-challenger recovery ─────────────────────────────────────────
@@ -360,7 +398,7 @@ def test_build_performance_cache_is_derived_from_audit(tmp_path):
     cache = exp.build_performance_cache(
         data, [key], {"dev": [_cand("m1"), _cand("m2")]}, min_sample_size=3
     )
-    entry = cache["keys"]["dev:large:-"]
+    entry = cache["keys"]["dev:large"]
     assert entry["winner"] == "m1"
     assert entry["models"]["m1"]["runs"] == 4
     # Writing the cache is best-effort and lands under the gitignored path.

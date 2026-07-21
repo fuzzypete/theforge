@@ -1415,6 +1415,7 @@ def _apply_dev_exploration(
             selected=incumbent.name,
             winner=incumbent.name,
             reason=_exp.REASON_ON_POLICY,
+            domains=key.domains,
         ).to_block()
         return _DevExplorationResult(block, None, incumbent.name, key.as_str())
 
@@ -1725,15 +1726,22 @@ def assign_models(
                 dev_agent = _exp.route_agent
                 dev_selected_tier = dev_agent.tier
                 dev_profile = _agent_to_profile(dev_agent, role="dev")
-                _dev_budget_floor = dev_agent.tier
                 _dev_effective_tier = dev_agent.tier
                 if _dev_exploration.get("mode") == "challenger":
+                    # Challenger-tier budget envelope (clause 8): the run spends
+                    # from the challenger's tier, so the enforcer must not
+                    # downgrade below it.
+                    _dev_budget_floor = dev_agent.tier
                     rationale["dev"] += (
                         f"; EXPLORATION challenger {dev_agent.model} "
                         f"(tier {dev_agent.tier}) replaces winner {_exp.winner_name} "
                         f"for key {_exp.routing_key}"
                     )
                 else:
+                    # Winner-mode empirical promotion is NORMAL routing, not an
+                    # exploration spend: leave the budget floor at dev_base_tier so
+                    # the per-story cost target can still downgrade it to a
+                    # floor-compliant cheaper dev (no protected envelope).
                     rationale["dev"] += (
                         f"; EXPLORATION empirical winner {dev_agent.model} "
                         f"(tier {dev_agent.tier}) routed for key {_exp.routing_key} "
