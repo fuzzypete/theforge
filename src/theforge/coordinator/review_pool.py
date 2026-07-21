@@ -173,6 +173,26 @@ def _is_non_verdict_completion(result: Any) -> bool:
     return code in _NON_VERDICT_FAILURE_CODES
 
 
+def _result_is_parseable(result: Any) -> bool:
+    """Return True iff a successful result's output parses to a valid verdict (#1388).
+
+    Parsing review output is a pure function (no LLM, no I/O), so parseability can
+    always be *established* directly rather than *proxied* from transport success.
+    This is the single source of truth for ``completed_parseable_verdict`` wherever
+    the normal parse step has not already determined it — budget-excluded reviewers
+    and early escalation returns never reach that step, and transport success alone
+    must NEVER be counted as a parseable verdict (the recurring corruption this
+    guards against). A failed-transport result is never parseable.
+    """
+    if not result.success:
+        return False
+    if getattr(result, "structured_data", None):
+        parsed = parse_review_json(result.structured_data, result.profile_name)
+    else:
+        parsed = parse_review_output(result.output or "", result.profile_name)
+    return not parsed.parse_errors
+
+
 def _classify_reviewer_attempt(
     result: Any, parseable: bool, config: ForgeConfig
 ) -> tuple[bool, str, str | None]:
@@ -263,9 +283,13 @@ def _record_reviewer_attempts(
     completion-rate profile. Every reviewer that produced a result this cycle gets
     a record regardless of outcome, closing the survivorship-bias gap where a
     reviewer that timed out / crashed / returned unparseable output evaporated
-    from the profile. ``parsed_by_name`` maps reviewer name → whether its final
-    (post parse-retry) output was a parseable verdict; when absent (an early
-    escalation return before parsing), transport success is used as the proxy.
+    from the profile. ``parsed_by_name`` maps reviewer name → whether its initial
+    output was a parseable verdict (from the parse step). When a reviewer is absent
+    from that map — a budget-excluded reviewer or an early escalation return that
+    never reached the parse step — parseability is established by parsing the
+    output directly (:func:`_result_is_parseable`), NEVER proxied from transport
+    success. Counting transport success as a parseable verdict is the recurring
+    corruption this guards against.
 
     This records the FINAL result per reviewer. Superseded transient-failure
     invocations (a fail that a later retry replaced) are recorded separately, as
@@ -280,10 +304,15 @@ def _record_reviewer_attempts(
         result = by_name.get(profile.name)
         if result is None:
             continue  # not invoked this cycle (e.g. demoted before running)
-        if parsed_by_name is None:
-            parseable = bool(result.success)
+        # Parseability is established, never proxied from transport success. Use
+        # the explicit parse result from the parse step when we have it; otherwise
+        # parse the output here (a pure function) — a budget-excluded or
+        # escalation-path reviewer that returned unparseable output must record
+        # completed=False even though its transport succeeded (#1388).
+        if parsed_by_name is not None and profile.name in parsed_by_name:
+            parseable = parsed_by_name[profile.name]
         else:
-            parseable = parsed_by_name.get(profile.name, bool(result.success))
+            parseable = _result_is_parseable(result)
         if profile.name in budget_excluded:
             _append_reviewer_attempt(
                 state,

@@ -227,6 +227,106 @@ class TestParseRetryAttemptTelemetry:
         assert all(a["outcome"] == "parse_failure" for a in attempts)
 
 
+class TestBudgetExcludedAttemptTelemetry:
+    """A budget-excluded reviewer's completion must reflect its ACTUAL output.
+
+    #1388: budget exclusion happens before the parse step, so completion cannot be
+    proxied from transport success. An excluded reviewer with unparseable output is
+    NOT a completed verdict; one with a valid verdict IS (the exclusion is a spend
+    decision, not a completion failure). Parseability is established by parsing,
+    never assumed from transport success.
+    """
+
+    def _config(self, tmp_path, over, keep):
+        config = _make_pool_config(tmp_path, [over, keep], keep)
+        return dataclasses.replace(
+            config,
+            retry=dataclasses.replace(
+                config.retry, demotion_threshold=0, review_quorum_threshold=1
+            ),
+        )
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_budget_excluded_unparseable_records_not_completed(
+        self, mock_pool, _mock_log, tmp_path
+    ):
+        over = _make_review_profile("over")
+        keep = _make_review_profile("keep")
+        config = self._config(tmp_path, over, keep)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # `over` returns UNPARSEABLE output and is over budget (cost 5.0 > 1.0),
+        # so it is excluded before parsing. It must NOT record as completed.
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=PARSE_ERROR_OUTPUT, profile_name="over", cost_usd=5.0
+            ),
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="keep", cost_usd=0.1
+            ),
+        ]
+
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=True,
+        )
+
+        assert merged is not None
+        by_name = {a["name"]: a for a in state.reviewer_attempts}
+        assert by_name["over"]["completed_parseable_verdict"] is False
+        assert by_name["over"]["outcome"] == "budget_excluded"
+        assert by_name["keep"]["completed_parseable_verdict"] is True
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_budget_excluded_parseable_records_completed(self, mock_pool, _mock_log, tmp_path):
+        over = _make_review_profile("over")
+        keep = _make_review_profile("keep")
+        config = self._config(tmp_path, over, keep)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # `over` returns a VALID verdict but is over budget: it DID complete a
+        # parseable verdict; the exclusion is a spend decision, so completed=True.
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="over", cost_usd=5.0
+            ),
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="keep", cost_usd=0.1
+            ),
+        ]
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=True,
+        )
+
+        by_name = {a["name"]: a for a in state.reviewer_attempts}
+        assert by_name["over"]["completed_parseable_verdict"] is True
+        assert by_name["over"]["outcome"] == "budget_excluded"
+
+
 class TestReviewerDemotion:
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
