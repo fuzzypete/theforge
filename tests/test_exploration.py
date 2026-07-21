@@ -13,6 +13,7 @@ from __future__ import annotations
 import random
 
 from theforge import exploration as exp
+from theforge.config.types import RecencyConfig
 from theforge.model_profiles import RunOutcome, apply_run
 
 
@@ -118,6 +119,36 @@ def test_aggregate_is_scoped_to_domain_and_band_cross_slice():
     assert api_large.runs == 4
     assert web_large.runs == 4
     assert api_small.runs == 4
+
+
+def test_domain_key_honors_configurable_recency_mode():
+    """Domain-bearing keys use the SHARED configurable recency mechanism (#1392).
+
+    An operator setting assignment.recency.mode must apply to (domain, band)
+    routing slots too, not a hardcoded window: with mode="off" the ranked rate is
+    the lifetime raw average; with exponential decay recent outcomes dominate.
+    """
+    data: dict = {"models": {}}
+    # api-large: 10 old failures then 10 recent successes → raw 0.5.
+    for _ in range(10):
+        apply_run(data, RunOutcome("large", "m1", False, 1, 0.1, domains=["api"]))
+    for _ in range(10):
+        apply_run(data, RunOutcome("large", "m1", True, 1, 0.1, domains=["api"]))
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
+
+    off = exp.derive_key_aggregates(
+        data, [_cand("m1")], key, min_sample_size=3, recency=RecencyConfig(mode="off")
+    )["m1"]
+    expo = exp.derive_key_aggregates(
+        data,
+        [_cand("m1")],
+        key,
+        min_sample_size=3,
+        recency=RecencyConfig(mode="exponential", half_life_runs=5),
+    )["m1"]
+
+    assert off.success_rate == 0.5  # recency disabled → lifetime raw average
+    assert expo.success_rate > 0.5  # exponential decay weights recent successes up
 
 
 def test_cadence_counter_is_independent_per_domain_at_same_band():

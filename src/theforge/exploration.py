@@ -187,6 +187,7 @@ def derive_key_aggregates(
     for cand in candidates:
         if key.domains:
             # Per-(domain, band) cross slice — the true per-routing-key aggregate.
+            # Honors the shared configurable recency policy, same as the band path.
             sig = mp.get_dev_domain_complexity_signal(
                 profiles,
                 cand.id,
@@ -196,6 +197,7 @@ def derive_key_aggregates(
                 actual_model=cand.model,
                 provider=cand.provider,
                 cli=cand.cli,
+                recency=recency,
             )
         else:
             # No domains → the band slot is the whole key.

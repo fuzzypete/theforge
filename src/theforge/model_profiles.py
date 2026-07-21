@@ -1211,6 +1211,7 @@ def get_dev_domain_complexity_signal(
     actual_model: str | None = None,
     provider: str | None = None,
     cli: str | None = None,
+    recency: Any | None = None,
 ) -> dict:
     """Return the per-(domain, band) dev signal — the true cross aggregate (#325).
 
@@ -1220,8 +1221,14 @@ def get_dev_domain_complexity_signal(
     key ``(phase, domain, band)`` is scoped to: unlike the flat ``by_domain``
     slice it does NOT pool across bands, and unlike ``by_complexity`` it does NOT
     pool across domains, so two keys differing on EITHER axis compute distinct
-    runs / rate / cadence. Recency-weighted (windowed) and taint-excluded, exactly
-    like :func:`get_dev_domain_signal`.
+    runs / rate / cadence.
+
+    The ranked ``rate`` is the **recency-weighted** value under the SAME shared,
+    configurable mechanism as :func:`get_dev_signal` (#1392): the ``recency``
+    object's ``mode`` / ``half_life_runs`` / ``window`` are honored, so an
+    operator setting ``assignment.recency.mode`` to ``off`` (lifetime raw) or
+    ``exponential`` gets that policy for domain-bearing routing slots too — not a
+    hardcoded window. Taint-excluded.
 
     Returns ``rate=None`` (``floor="fail"``) when ``domains`` is empty or the
     (domain, band) slice has fewer than ``min_runs`` admissible runs — an explicit
@@ -1229,6 +1236,7 @@ def get_dev_domain_complexity_signal(
     """
     requested = [d for d in (domains or []) if isinstance(d, str) and d]
     band = _normalize_band(complexity)
+    mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
         profiles,
         model,
@@ -1261,7 +1269,16 @@ def get_dev_domain_complexity_signal(
             total_runs += entry_runs
             total_successes += _success_count(bc, entry_runs)
     raw = round(total_successes / total_runs, 4) if total_runs > 0 else None
-    weighted = _windowed_rate(recent_all, fallback=raw)
+    # Shared configurable recency mechanism (#1392) — same as get_dev_signal, so
+    # assignment.recency.mode/half_life/window applies to these routing slots too.
+    weighted = _weighted_rate(
+        recent_all,
+        fallback=raw,
+        mode=mode,
+        half_life_runs=half_life,
+        window=window,
+        min_samples=min_runs,
+    )
     floor_ok = total_runs >= min_runs and total_runs > 0
     return {
         "domains": requested,
@@ -1271,7 +1288,7 @@ def get_dev_domain_complexity_signal(
         "runs": total_runs,
         "tainted_runs": total_tainted,
         "floor": "pass" if floor_ok else "fail",
-        "recency": "windowed",
+        "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
     }
 
