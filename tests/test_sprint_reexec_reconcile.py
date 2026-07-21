@@ -54,10 +54,13 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _make_spec_file(tmp_path: Path, name: str, slug: str) -> Path:
+def _make_spec_file(
+    tmp_path: Path, name: str, slug: str, depends_on: list[str] | None = None
+) -> Path:
     spec = tmp_path / f"{slug}.md"
+    deps_line = f"depends_on: {depends_on}\n" if depends_on else ""
     spec.write_text(
-        f"---\nname: {name}\nslug: {slug}\n---\n# {name}\nDo the thing.",
+        f"---\nname: {name}\nslug: {slug}\n{deps_line}---\n# {name}\nDo the thing.",
         encoding="utf-8",
     )
     return spec
@@ -266,6 +269,73 @@ def test_reexec_reconcile_prior_done_drop_ends_succeeded_and_preserves_cost(
     )
     by_slug = {s["slug"]: s for s in summary["stories"]}
     assert by_slug["feature-a"]["outcome"] == "ALREADY_DONE"
+
+
+def test_reexec_reconcile_prior_done_satisfies_dependent_story(
+    tmp_path: Path,
+) -> None:
+    """Issue #1838 (iter 1): a story that hard-depends on a reconciled
+    prior-DONE slug must still run — the reconciled slug is a *met* dependency
+    (marked complete in the DAG), not a skip that strands its dependents."""
+    from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
+
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b", depends_on=["feature-a"])
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 0.33)
+    persist_accumulated_story_state(
+        sprint_id,
+        "Test Sprint",
+        tmp_path,
+        [
+            {
+                "canonical_ref": "feature-a.md",
+                "slug": "feature-a",
+                "path": "feature-a.md",
+                "outcome": "DONE",
+                "cost_usd": 0.33,
+                "story_run_id": "run-prev",
+                "depends_on": [],
+            }
+        ],
+    )
+
+    def triage_side_effect(spec_path, config, project_root, *, task=None):
+        return StoryTriage(
+            story_path=spec_path,
+            action="full",
+            reason="x",
+            worktree_path=None,
+            slug=Path(spec_path).stem,
+        )
+
+    fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=fresh_result) as mock_run_task,
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        result = run_sprint(
+            config,
+            manifest_path,
+            reexec=True,
+            dropped_slugs={"feature-a": REASON_RECONCILE_PRIOR_DONE},
+        )
+
+    # The dependent story ran (was NOT stranded/skipped as dependency-blocked)
+    # because feature-a reconciled as a met dependency.
+    dispatched_slugs = [c.args[1].slug for c in mock_run_task.call_args_list]
+    assert dispatched_slugs == ["feature-b"]
+
+    # Both stories succeed: feature-a ALREADY_DONE, feature-b freshly done.
+    assert result.specs_succeeded == 2
+    assert result.specs_failed == 0
+    assert result.specs_skipped == 0
 
 
 def test_reexec_stranded_drop_does_not_rerun_and_keeps_distinct_reason(

@@ -2318,8 +2318,12 @@ def run_sprint(
             # The prior generation already completed this story; its worktree
             # collision is a reconcilable success, not a fresh drop. Mark it
             # ALREADY_DONE so it counts as succeeded and is preserved durably.
+            # Use mark_complete (not mark_skipped) so it satisfies the hard
+            # dependencies of any current story that depends_on this slug —
+            # a reconciled prior-DONE is a met dependency, exactly like a
+            # resume skip_merged, so dependents must not be stranded/skipped.
             _log(f"ALREADY_DONE {slug} (reconciled from prior generation)")
-            dag.mark_skipped(slug)
+            dag.mark_complete(slug)
             _set_outcome(slug, StoryOutcome.ALREADY_DONE, reason=reason)
             _record_current_story_entry(
                 slug,
