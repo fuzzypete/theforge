@@ -82,10 +82,34 @@ def cmd_migrate_profiles(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reviewer_completion_note(summary: dict) -> str:
+    """Render the reviewer attempt-completion counters for a bucket summary (#1388).
+
+    Returns an empty string when the entry carries no reviewer attempt telemetry —
+    the common case for already-migrated installs, where this dimension is new and
+    starts empty until fresh runs record native reviewer-attempt records.
+    """
+    attempted = int(summary.get("review_attempted", 0) or 0)
+    if attempted <= 0:
+        return ""
+    completed = int(summary.get("review_completed", 0) or 0)
+    rate = completed / attempted if attempted else 0.0
+    return f", review completion {completed}/{attempted} ({rate:.0%})"
+
+
 def _print_profile_report(report: list[dict]) -> None:
     if not report:
         print("[migrate-profiles] no legacy alias entries found — already canonical")
+        # Reviewer attempt-completion (#1388) is a telemetry-derived dimension:
+        # it starts empty for installs without native reviewer-attempt records and
+        # populates from fresh runs — there is nothing to canonicalize here.
+        print(
+            "[migrate-profiles] reviewer completion-rate is a new telemetry-derived "
+            "dimension (_attempted_count/_completed_count/completion_rate); it starts "
+            "empty for already-migrated installs and fills in from fresh runs"
+        )
         return
+    any_review_completion = False
     for entry in report:
         if "canonical_id" in entry:
             combined = entry["combined"]
@@ -94,15 +118,23 @@ def _print_profile_report(report: list[dict]) -> None:
                 print(
                     f"  ← {src['key']} ({src['runs']} runs, "
                     f"{src['successes']:.0f} successes, "
-                    f"${src['cost_usd']:.2f})"
+                    f"${src['cost_usd']:.2f}{_reviewer_completion_note(src)})"
                 )
+            _completion = _reviewer_completion_note(combined)
+            any_review_completion = any_review_completion or bool(_completion)
             print(
                 f"  combined: {combined['runs']} runs, "
                 f"{combined['successes']:.0f} successes, "
-                f"${combined['cost_usd']:.2f}"
+                f"${combined['cost_usd']:.2f}{_completion}"
             )
         elif "ambiguous_key" in entry:
             print(f"[migration] AMBIGUOUS: {entry['ambiguous_key']} — {entry['reason']}")
+    if not any_review_completion:
+        print(
+            "[migrate-profiles] reviewer completion-rate is a new telemetry-derived "
+            "dimension; no reviewer attempt records in the migrated entries yet — it "
+            "fills in from fresh runs"
+        )
 
 
 def _print_history_report(report: list[dict]) -> None:

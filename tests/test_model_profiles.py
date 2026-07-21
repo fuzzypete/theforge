@@ -6,11 +6,13 @@ import yaml
 
 from theforge.model_profiles import (
     COMPLEXITY_BANDS,
+    ReviewerAttempt,
     RunOutcome,
     apply_run,
     backfill_from_history,
     get_dev_complexity_stats,
     get_dev_success_rate,
+    get_review_signal,
     load_profiles,
     save_profiles,
     update_from_run,
@@ -158,6 +160,129 @@ def test_apply_run_review_attribution():
     opus = data["models"]["opus"]["review"]
     assert opus["runs"] == 1
     assert opus["avg_findings"] == 3.0
+
+
+def test_apply_run_reviewer_attempts_records_completion_counts():
+    # Every attempt — including the failure — is folded, so completion is complete
+    # over attempts rather than survivorship-biased (#1388).
+    data: dict = {"models": {}}
+    outcome = RunOutcome(
+        complexity="medium",
+        dev_model="sonnet",
+        dev_success=True,
+        dev_iterations=1,
+        dev_cost_usd=0.0,
+        reviewer_attempts=[
+            ReviewerAttempt("rev", True, "completed", "gpt", "openai", None),
+            ReviewerAttempt("rev", False, "parse_failure", "gpt", "openai", None),
+            ReviewerAttempt("rev", False, "timeout", "gpt", "openai", None),
+        ],
+    )
+    apply_run(data, outcome)
+
+    review = data["models"]["openai/gpt/api"]["review"]
+    assert review["_attempted_count"] == 3
+    assert review["_completed_count"] == 1
+    assert review["completion_rate"] == round(1 / 3, 4)
+    # The ring preserves the per-attempt outcomes so the rate stays recomputable.
+    assert review["_completion_recent"] == [1, 0, 0]
+
+
+def test_reviewer_completion_survives_across_runs_including_failures():
+    data: dict = {"models": {}}
+    # First run: reviewer completes. Second run: it times out (a failure that
+    # previously evaporated from the profile). Both must count toward attempts.
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=0.0,
+            reviewer_attempts=[ReviewerAttempt("r", True, "completed", "gpt", "openai", None)],
+        ),
+    )
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=False,
+            dev_iterations=1,
+            dev_cost_usd=0.0,
+            reviewer_attempts=[ReviewerAttempt("r", False, "timeout", "gpt", "openai", None)],
+        ),
+    )
+    review = data["models"]["openai/gpt/api"]["review"]
+    assert review["_attempted_count"] == 2
+    assert review["_completed_count"] == 1
+    assert review["completion_rate"] == 0.5
+
+
+def test_reviewer_completion_tainted_run_does_not_teach():
+    data: dict = {"models": {}}
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="sonnet",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=0.0,
+            dev_tainted=True,
+            reviewer_attempts=[ReviewerAttempt("r", True, "completed", "gpt", "openai", None)],
+        ),
+    )
+    review = data["models"]["openai/gpt/api"]["review"]
+    assert review.get("_attempted_count", 0) == 0
+    assert review["tainted_runs"] == 1
+
+
+def test_get_review_signal_cold_start_below_min_runs_is_none():
+    profiles = {
+        "models": {
+            "openai/gpt/api": {
+                "_identity": {"provider": "openai", "model": "gpt", "transport": "api"},
+                "review": {
+                    "_attempted_count": 3,
+                    "_completed_count": 3,
+                    "completion_rate": 1.0,
+                    "_completion_recent": [1, 1, 1],
+                },
+            }
+        }
+    }
+    signal = get_review_signal(
+        profiles, "rev", min_runs=5, actual_model="gpt", provider="openai", cli=None
+    )
+    assert signal["floor"] == "fail"
+    assert signal["rate"] is None
+    assert signal["attempted"] == 3
+
+
+def test_get_review_signal_above_min_runs_returns_weighted_rate():
+    profiles = {
+        "models": {
+            "openai/gpt/api": {
+                "_identity": {"provider": "openai", "model": "gpt", "transport": "api"},
+                "review": {
+                    "_attempted_count": 8,
+                    "_completed_count": 4,
+                    "completion_rate": 0.5,
+                    "_completion_recent": [1, 0, 1, 0, 1, 0, 1, 0],
+                },
+            }
+        }
+    }
+    signal = get_review_signal(
+        profiles, "rev", min_runs=5, actual_model="gpt", provider="openai", cli=None
+    )
+    assert signal["floor"] == "pass"
+    assert signal["raw"] == 0.5
+    assert signal["rate"] is not None
+    assert signal["completed"] == 4
+    assert signal["attempted"] == 8
 
 
 def test_apply_run_preflight():

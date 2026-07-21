@@ -20,6 +20,7 @@ Schema on disk::
             <tag>: {runs, success_rate, avg_iterations, avg_cost_usd}
         review:
           runs, avg_findings, avg_cost_usd
+          _attempted_count, _completed_count, completion_rate  # reviewer attempts (#1388)
         preflight:
           runs, avg_cost_usd
 
@@ -89,6 +90,35 @@ CAPABILITY_RECENCY_WINDOW = 200
 
 
 @dataclass
+class ReviewerAttempt:
+    """One reviewer invocation outcome, recorded regardless of success (#1388).
+
+    The signal scope is intentionally narrow: ``completed_parseable_verdict`` is
+    the single load-bearing boolean — did the reviewer return something the
+    coordinator could act on (a schema-valid verdict) at all? Transport failures,
+    timeouts, parse failures, and crashes all record ``False`` before the phase
+    continues, closing the survivorship-bias gap where a reviewer that failed
+    silently evaporated from the profile and kept being re-selected.
+
+    Identity fields (``actual_model``/``provider``/``cli``) let the completion
+    telemetry be folded under the same canonical model ID the router looks a
+    reviewer up by, so a reviewer's completion history and its findings/cost
+    history live in one profile entry. ``outcome`` is a coarse category
+    (``completed`` / ``transport_failure`` / ``timeout`` / ``parse_failure`` /
+    ``crash`` / ``non_verdict`` / ``budget_excluded``) kept for audit legibility;
+    only ``completed_parseable_verdict`` carries routing weight.
+    """
+
+    name: str
+    completed_parseable_verdict: bool
+    outcome: str = "completed"
+    actual_model: str | None = None
+    provider: str | None = None
+    cli: str | None = None
+    failure_reason: str | None = None
+
+
+@dataclass
 class RunOutcome:
     """Everything ``update_from_run`` needs about one coordinator run.
 
@@ -131,6 +161,12 @@ class RunOutcome:
     preflight_cli: str | None = None
     preflight_cost_usd: float | None = None  # None = cost unmeasured
     reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
+    # Every reviewer invocation this run, including failures (#1388). Unlike
+    # ``reviewers`` (which is survivorship-biased — only reviewers that returned a
+    # parseable verdict appear), this list carries an entry for each attempt so the
+    # derived completion rate is complete over attempts. Folded into the review
+    # section's ``_attempted_count`` / ``_completed_count`` / ``completion_rate``.
+    reviewer_attempts: list[ReviewerAttempt] = field(default_factory=list)
     # Domain tags for this run (issue #155), from the fixed taxonomy recorded by
     # preflight. The dev outcome is folded into a per-domain slice for each tag so
     # per-domain success rate can be aggregated deterministically. Empty = the run
@@ -641,6 +677,40 @@ def _update_review(
     _fold_cost(rev, cost_usd, unknown_count=cycles)
 
 
+def _update_review_completion(entry: dict, completed: bool, tainted: bool = False) -> None:
+    """Fold one reviewer attempt-completion outcome into the review section (#1388).
+
+    Records ``_attempted_count`` (every invocation) and ``_completed_count``
+    (invocations that returned a parseable verdict) as running totals so
+    ``completion_rate`` is always recomputable from the two authoritative
+    counters. A bounded ``_completion_recent`` ring of ``0/1`` outcomes feeds the
+    shared recency-weighting mechanism (#1392) at read time, mirroring the dev
+    bucket's ``_recent`` ring. This is a separate fold from :func:`_update_review`
+    (findings/cost) because it must record *failed* attempts too — a reviewer that
+    timed out or emitted unparseable output never reaches the findings/cost path.
+
+    Taint gate (ADR-0006 clause 4): a tainted run "doesn't teach", so its reviewer
+    attempts are kept out of the completion aggregate and tallied under
+    ``tainted_runs`` instead — never deleted, so the exclusion stays visible.
+    """
+    rev = entry.setdefault("review", {})
+    if tainted:
+        rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + 1
+        return
+    attempted = int(rev.get("_attempted_count", 0)) + 1
+    completed_count = int(rev.get("_completed_count", 0)) + (1 if completed else 0)
+    rev["_attempted_count"] = attempted
+    rev["_completed_count"] = completed_count
+    rev["completion_rate"] = round(completed_count / attempted, 4) if attempted > 0 else 0.0
+    ring = rev.setdefault("_completion_recent", [])
+    if not isinstance(ring, list):
+        ring = []
+        rev["_completion_recent"] = ring
+    ring.append(1 if completed else 0)
+    if len(ring) > CAPABILITY_RECENCY_WINDOW:
+        del ring[:-CAPABILITY_RECENCY_WINDOW]
+
+
 def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
     pf = entry.setdefault("preflight", {})
     # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the
@@ -691,6 +761,10 @@ def _zero_review_section(section: dict) -> None:
     section["_cost_unknown_runs"] = 0
     section["avg_findings"] = 0.0
     section["avg_cost_usd"] = 0.0
+    section["_attempted_count"] = 0
+    section["_completed_count"] = 0
+    section["completion_rate"] = 0.0
+    section["_completion_recent"] = []
 
 
 def _zero_preflight_section(section: dict) -> None:
@@ -807,9 +881,26 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             cli=outcome.preflight_cli,
         )
         _update_preflight(pf_entry, outcome.preflight_cost_usd, tainted=outcome.dev_tainted)
+    # Reviewer identity from the attempt records (#1388) lets findings/cost and
+    # completion telemetry fold under the SAME canonical model ID the router looks
+    # a reviewer up by — otherwise findings would key by bare profile name while
+    # completion keys by canonical ID, splitting one reviewer across two entries.
+    _rev_identity = {
+        att.name: (att.actual_model, att.provider, att.cli) for att in outcome.reviewer_attempts
+    }
     for name, (cycles, findings, cost) in outcome.reviewers.items():
-        rev_entry = _ensure_model(data, name)
+        _am, _pv, _cl = _rev_identity.get(name, (None, None, None))
+        rev_entry = _ensure_model(data, name, actual_model=_am, provider=_pv, cli=_cl)
         _update_review(rev_entry, cycles, findings, cost, tainted=outcome.dev_tainted)
+    # Attempt-completion telemetry (#1388): one fold per reviewer invocation,
+    # including failures, so the completion rate is complete over attempts.
+    for att in outcome.reviewer_attempts:
+        rev_entry = _ensure_model(
+            data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
+        )
+        _update_review_completion(
+            rev_entry, att.completed_parseable_verdict, tainted=outcome.dev_tainted
+        )
     return data
 
 
@@ -1085,6 +1176,81 @@ def get_dev_success_rate(
         cli=cli,
         recency=recency,
     )["rate"]
+
+
+def get_review_signal(
+    profiles: dict,
+    model: str,
+    min_runs: int = 5,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+    recency: Any | None = None,
+) -> dict:
+    """Return a structured reviewer *completion* routing signal (#1388).
+
+    The reviewer analog of :func:`get_dev_signal`, over the ``review`` section's
+    attempt-completion counters rather than dev success. Reads only the in-memory
+    ``profiles`` dict (no disk, no LLM); the authoritative evidence is the native
+    reviewer-attempt telemetry these counters are folded from (ADR-0002).
+
+    - ``rate``: the ``min_runs``-gated **recency-weighted** completion rate;
+      ``None`` below the sample floor so a cold-start reviewer falls through to the
+      existing tier/budget/cross-provider ordering instead of being penalized.
+    - ``raw``: the ungated lifetime ``_completed_count / _attempted_count`` ratio
+      (``None`` when no attempts exist), kept for raw-vs-weighted audit drift.
+    - ``weighted``: the recency-weighted value over the ``_completion_recent``
+      ring (:func:`_weighted_rate`); falls back to ``raw`` until the ring holds at
+      least ``min_runs`` outcomes. ``rate`` is this value gated by the floor.
+    - ``attempted`` / ``completed``: the running totals consulted (tainted runs
+      already excluded upstream), so the rate is recomputable from the audit.
+    - ``floor``: ``"pass"`` when ``attempted >= min_runs`` (and ``> 0``), else
+      ``"fail"``.
+    - ``weighting``: the recency parameters actually applied.
+    """
+    mode, half_life, window = _recency_params(recency)
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    attempted = 0
+    completed = 0
+    tainted = 0
+    recent: list[int] = []
+    for _, entry in matching:
+        rev = entry.get("review")
+        if not isinstance(rev, dict):
+            continue
+        tainted += int(rev.get("tainted_runs", 0))
+        attempted += int(rev.get("_attempted_count", 0))
+        completed += int(rev.get("_completed_count", 0))
+        ring = rev.get("_completion_recent")
+        if isinstance(ring, list):
+            recent.extend(int(v) for v in ring)
+    raw = round(completed / attempted, 4) if attempted > 0 else None
+    weighted = _weighted_rate(
+        recent,
+        fallback=raw,
+        mode=mode,
+        half_life_runs=half_life,
+        window=window,
+        min_samples=min_runs,
+    )
+    floor_ok = attempted >= min_runs and attempted > 0
+    return {
+        "raw": raw,
+        "weighted": weighted,
+        "attempted": attempted,
+        "completed": completed,
+        "tainted_runs": tainted,
+        "floor": "pass" if floor_ok else "fail",
+        "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
+        "rate": weighted if floor_ok else None,
+    }
 
 
 def get_dev_domain_signal(
@@ -1777,6 +1943,8 @@ def _bucket_summary(entry: dict) -> dict[str, float | int]:
     successes = 0.0
     cost = 0.0
     iterations = 0.0
+    review_attempted = 0
+    review_completed = 0
     for role in ("dev", "review", "preflight"):
         sec = entry.get(role)
         if not isinstance(sec, dict):
@@ -1791,6 +1959,11 @@ def _bucket_summary(entry: dict) -> dict[str, float | int]:
             )
         elif role == "review":
             cost += float(sec.get("_cost_sum", float(sec.get("avg_cost_usd", 0.0)) * sec_runs))
+            # Reviewer attempt-completion telemetry (#1388) — a new dimension that
+            # starts empty for already-migrated installs without native attempt
+            # records, so the migration report can note it explicitly.
+            review_attempted += int(sec.get("_attempted_count", 0))
+            review_completed += int(sec.get("_completed_count", 0))
         elif role == "preflight":
             cost += float(sec.get("_cost_sum", float(sec.get("avg_cost_usd", 0.0)) * sec_runs))
     return {
@@ -1798,6 +1971,8 @@ def _bucket_summary(entry: dict) -> dict[str, float | int]:
         "successes": successes,
         "cost_usd": round(cost, 6),
         "iterations": round(iterations, 4),
+        "review_attempted": review_attempted,
+        "review_completed": review_completed,
     }
 
 
@@ -2091,6 +2266,23 @@ def _merge_review(target: dict, src: dict) -> None:
         target["avg_findings"] = round(find_sum / runs, 4)
         measured = runs - cost_unknown
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+    # Attempt-completion counters (#1388): sum the two running totals, recompute
+    # the rate, and concatenate the recency rings (oldest first is preserved
+    # across both sources; the tail cap keeps the ring bounded).
+    attempted = int(target.get("_attempted_count", 0)) + int(src.get("_attempted_count", 0))
+    completed = int(target.get("_completed_count", 0)) + int(src.get("_completed_count", 0))
+    if attempted > 0:
+        target["_attempted_count"] = attempted
+        target["_completed_count"] = completed
+        target["completion_rate"] = round(completed / attempted, 4)
+        t_ring = target.get("_completion_recent")
+        s_ring = src.get("_completion_recent")
+        merged_ring = [int(v) for v in (t_ring if isinstance(t_ring, list) else [])] + [
+            int(v) for v in (s_ring if isinstance(s_ring, list) else [])
+        ]
+        if len(merged_ring) > CAPABILITY_RECENCY_WINDOW:
+            merged_ring = merged_ring[-CAPABILITY_RECENCY_WINDOW:]
+        target["_completion_recent"] = merged_ring
     _merge_tainted_runs(target, src)
 
 

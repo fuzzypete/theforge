@@ -80,6 +80,15 @@ class AssignmentConfig:
     adaptive_enabled: bool = True
     recency: RecencyConfig = field(default_factory=RecencyConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
+    # Reviewer attempt-completion routing (#1388). A reviewer whose recency-weighted
+    # completion rate (did it return a parseable verdict at all?) falls below
+    # ``reviewer_completion_threshold`` is sorted *after* higher-completion
+    # candidates within the existing reviewer pool — but only once it has
+    # accumulated ``reviewer_completion_min_runs`` attempts, so cold-start
+    # reviewers are never locked out. This is a sort-after, not a filter-out: a
+    # low-completion reviewer is still selected when no better candidate exists.
+    reviewer_completion_threshold: float = 0.5
+    reviewer_completion_min_runs: int = 5
 
 
 @dataclass(frozen=True)

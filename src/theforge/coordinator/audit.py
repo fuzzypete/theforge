@@ -657,6 +657,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             for i, finding_ids in enumerate(state.dev_prompt_injected_finding_ids)
         ],
         "reviews": reviews,
+        # Reviewer attempt-completion telemetry (#1388): every reviewer invocation
+        # this run, including transport failures / timeouts / parse failures /
+        # crashes. This is the authoritative native per-run record the derived
+        # reviewer completion-rate profile is folded from (ADR-0002).
+        "reviewer_attempts": list(state.reviewer_attempts or []),
         "human_review": (
             {
                 "mode": state.human_review_mode or "interactive",

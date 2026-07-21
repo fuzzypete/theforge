@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.model_profiles import RunOutcome, update_from_run
+from theforge.model_profiles import ReviewerAttempt, RunOutcome, update_from_run
 
 from .state import CoordinatorState
 from .trust_status import derive_trust_status, is_tainted
@@ -42,6 +42,33 @@ def _extract_reviewers(
             prev = out.get(name, (0, 0, 0.0))
             out[name] = (prev[0] + 1, prev[1] + findings, prev[2] + per_head_cost)
     return out
+
+
+def _extract_reviewer_attempts(state: CoordinatorState) -> list[ReviewerAttempt]:
+    """Convert the native per-run attempt dicts into ``ReviewerAttempt`` records.
+
+    ``state.reviewer_attempts`` is the authoritative capture written at the review
+    invocation boundary (#1388); this pure adapter lifts it into the typed carrier
+    the profile aggregator folds. Every attempt — success and failure alike — is
+    carried through, keyed by the reviewer's canonical identity so completion
+    telemetry folds under the same model entry the router looks it up by.
+    """
+    attempts: list[ReviewerAttempt] = []
+    for a in state.reviewer_attempts or []:
+        if not isinstance(a, dict) or not a.get("name"):
+            continue
+        attempts.append(
+            ReviewerAttempt(
+                name=str(a["name"]),
+                completed_parseable_verdict=bool(a.get("completed_parseable_verdict")),
+                outcome=str(a.get("outcome") or "completed"),
+                actual_model=a.get("model"),
+                provider=a.get("provider"),
+                cli=a.get("cli"),
+                failure_reason=a.get("failure_reason"),
+            )
+        )
+    return attempts
 
 
 def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: bool) -> RunOutcome:
@@ -111,6 +138,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         else None,
         preflight_cost_usd=state.total_preflight_cost_measured,
         reviewers=_extract_reviewers(state),
+        reviewer_attempts=_extract_reviewer_attempts(state),
         # Domain tags (#155) recorded by preflight, folded into per-domain dev
         # slices so future routing can prefer models strong in the story's domains.
         domains=list(state.preflight_domains or []),

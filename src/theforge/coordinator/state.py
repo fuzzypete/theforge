@@ -489,6 +489,13 @@ class CoordinatorState:
     gate_debug_telemetry: list[GateDebugTelemetry] = field(default_factory=list)
     gate_diagnostic_telemetry: list[GateDiagnosticTelemetry] = field(default_factory=list)
     review_iteration_telemetry: list[ReviewIterationTelemetry] = field(default_factory=list)
+    # Every reviewer invocation this run, including failures (#1388). Each entry is
+    # a plain dict (name, provider, model, cli, canonical_id, outcome,
+    # completed_parseable_verdict, failure_reason, cycle) recorded at the review
+    # invocation boundary. This is the native per-run capture that (a) is written
+    # into the authoritative audit record and (b) is folded into the derived
+    # reviewer completion-rate profile. Accumulates across every review cycle.
+    reviewer_attempts: list[dict[str, Any]] = field(default_factory=list)
     context_manifests: list[dict] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
     # Each entry is the parsed handoff-file dict, or None if absent/unparseable.

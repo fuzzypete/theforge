@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 8
+CURRENT_RECORD_SCHEMA_VERSION = 9
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -817,6 +817,26 @@ def _migrate_v7_to_v8(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v8_to_v9(record: dict) -> dict:
+    """Add top-level ``reviewer_attempts`` (issue #1388).
+
+    v8 records carried reviewer data only as run-level review *cycles*
+    (verdict/p1/p2) — a survivorship-biased view in which a reviewer that timed
+    out, crashed, or returned unparseable output simply vanished from the record.
+    v9 promotes every reviewer invocation to a structured attempt record with a
+    ``completed_parseable_verdict`` boolean so reviewer completion-rate routing
+    (ADR-0006 clause 2) has complete-over-attempts evidence. Older records ran
+    before any reviewer-attempt telemetry existed and cannot be reconstructed
+    after the fact, so backfill an empty list rather than fabricating attempts —
+    an absent record is "no evidence", not "zero completions". The record itself
+    is never rewritten in the substrate (ADR-0002 refusal-to-forget); this is the
+    reader-side lift applied on load.
+    """
+    if "reviewer_attempts" not in record:
+        return {**record, "reviewer_attempts": []}
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -833,6 +853,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
+    8: _migrate_v8_to_v9,
 }
 
 
