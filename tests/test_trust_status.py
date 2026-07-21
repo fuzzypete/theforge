@@ -106,6 +106,26 @@ def test_tree_currency_pass_when_commits_reconcile(tmp_path: Path) -> None:
     assert check["producer"] == REVIEWER_TREE_CURRENCY_PRODUCER
 
 
+def test_tree_currency_pass_when_handoff_uses_full_sha(tmp_path: Path) -> None:
+    """A full-SHA handoff for the same commit git --oneline abbreviates is clean (#1851)."""
+    full_sha = "abc1234567890abcdef1234567890abcdef123456"
+    handoff = _handoff([{"sha": full_sha, "message": "feat: thing"}])
+    with (
+        patch("theforge.coordinator.review_context._parse_dev_handoff", return_value=handoff),
+        patch(
+            "theforge.coordinator.review_context._cu._run_shell",
+            return_value=(True, "abc1234 feat: thing"),
+        ),
+    ):
+        check = evaluate_reviewer_tree_currency(tmp_path, "main")
+
+    assert check is not None
+    assert check["result"] == CHECK_PASS
+    assert check["evidence"]["missing_from_branch"] == []
+    assert check["evidence"]["omitted_from_handoff"] == []
+    assert derive_trust_status([check]) == TRUST_TRUSTED
+
+
 def test_tree_currency_fail_on_stale_checkout(tmp_path: Path) -> None:
     """A handoff whose commits diverge from git history taints the run (#1534)."""
     handoff = _handoff([{"sha": "deadbee", "message": "feat: imaginary commit"}])
