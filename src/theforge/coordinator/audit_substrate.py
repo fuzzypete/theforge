@@ -1314,6 +1314,43 @@ def count_records(conn: sqlite3.Connection) -> int:
     return int(row[0])
 
 
+def latest_record_for(
+    conn: sqlite3.Connection,
+    *,
+    slug: str | None = None,
+    issue_id: int | None = None,
+    run_id: str | None = None,
+) -> dict | None:
+    """Return the most-recent migrated record matching a story/run identifier.
+
+    Read-only lookup for operator-facing query surfaces (e.g. ``forge explain``).
+    Exactly one of ``slug`` / ``issue_id`` / ``run_id`` selects the record; a
+    ``run_id`` addresses a single run, while ``slug``/``issue_id`` return the
+    newest run for that story (ordered by ``started_at`` DESC). Returns ``None``
+    when nothing matches. Never writes.
+    """
+    if run_id is not None:
+        clause, param = "run_id = ?", run_id
+    elif slug is not None:
+        clause, param = "slug = ?", slug
+    elif issue_id is not None:
+        clause, param = "issue_id = ?", issue_id
+    else:
+        return None
+    row = conn.execute(
+        "SELECT raw_json, record_schema_version FROM audit_records "
+        f"WHERE {clause} ORDER BY COALESCE(started_at, '') DESC LIMIT 1",
+        (param,),
+    ).fetchone()
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        raw, ver = row["raw_json"], row["record_schema_version"]
+    else:
+        raw, ver = row[0], row[1]
+    return _load_migrated(raw, ver)
+
+
 # ── Derived assignment-history view ──────────────────────────────────────
 
 

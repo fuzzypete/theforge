@@ -11,6 +11,7 @@ from theforge.cli import (
     daemon,
     diagnose,
     eval_cmd,
+    explain,
     forge_yaml_guard,
     groom,
     hooks,
@@ -79,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     forge_yaml_guard.register_parser(subparsers)
     audit.register_parser(subparsers)
     audits_cmd.register_parser(subparsers)
+    explain.register_parser(subparsers)
     telemetry.register_parser(subparsers)
     daemon.register_parser(subparsers)
     eval_cmd.register_parser(subparsers)
@@ -120,6 +122,7 @@ def main() -> None:
         "check-story-config": forge_yaml_guard.cmd_check_story_config,
         "audit": audit.cmd_audit,
         "audits": audits_cmd.cmd_audits,
+        "explain": explain.cmd_explain,
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,
         "eval-preflight": eval_cmd.cmd_eval_preflight,

@@ -1,0 +1,350 @@
+"""forge explain subcommand — operator-facing render of routing_decision (#270).
+
+Reads the top-level ``routing_decision`` block that the router records for each
+run (#1391, ADR-0006 clause 7) and renders one coherent per-role assignment
+summary: selected agent, excluded candidates with canonical reasons, the profile
+signals the router weighed, adaptive-mechanism outcomes (distinguishing
+not-checked / checked-did-not-fire / checked-and-fired), exploration state, and
+the final rationale.
+
+This is a read-only convenience over the recorded block — it invokes no agents,
+re-reads no profiles, and never writes. The block is the contract; this view is
+one presentation of it.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from theforge.cli.shared import _find_config
+from theforge.coordinator import audit_substrate
+
+# Roles rendered in routing order (preflight → planner → dev → reviewers).
+_ROLE_ORDER = ("preflight", "planner", "dev", "plan_review", "code_review")
+_ROLE_LABELS = {
+    "preflight": "PREFLIGHT",
+    "planner": "PLANNER",
+    "dev": "DEV",
+    "plan_review": "PLAN REVIEW",
+    "code_review": "CODE REVIEW",
+}
+
+# Human-readable expansion for the canonical exclusion-reason codes so the
+# excluded-candidate line answers "why was model X never a reviewer" directly.
+_REASON_TEXT = {
+    "none": "included",
+    "auth_missing": "excluded — provider credentials missing",
+    "transport_unavailable": "excluded — transport unavailable",
+    "tier_mismatch": "excluded — tier does not match role floor",
+    "anti_self_review": "excluded — anti-self-review (same model as the code under review)",
+    "phase_eligibility": "excluded — not eligible for this phase",
+    "explicit_override_locked": "preserved — locked by explicit forge.yaml override",
+}
+
+# Adaptive-mechanism tri-state glyphs (AC: absence of a mechanism must not be
+# confused with a failed condition).
+_STATE_NOT_CHECKED = ("○", "not checked")
+_STATE_DID_NOT_FIRE = ("◐", "checked, did not fire")
+_STATE_FIRED = ("●", "fired")
+
+
+def _reason_text(reason: str | None, detail: str | None = None) -> str:
+    base = _REASON_TEXT.get(reason or "", f"excluded — {reason}" if reason else "excluded")
+    if detail:
+        return f"{base} ({detail})"
+    return base
+
+
+def _mechanism_state(*, checked: bool, fired: bool) -> tuple[str, str]:
+    """Classify an adaptive mechanism into the tri-state render label."""
+    if not checked:
+        return _STATE_NOT_CHECKED
+    if fired:
+        return _STATE_FIRED
+    return _STATE_DID_NOT_FIRE
+
+
+def _fmt_signal(signal: dict) -> str:
+    """Render a consulted profile signal with raw + weighted + floor status."""
+    raw = signal.get("raw")
+    weighted = signal.get("weighted")
+    runs = signal.get("runs")
+    floor = signal.get("floor")
+    raw_s = f"{raw:.4f}" if isinstance(raw, (int, float)) else "—"
+    weighted_s = f"{weighted:.4f}" if isinstance(weighted, (int, float)) else "—"
+    floor_s = {"pass": "sample-floor pass", "fail": "sample-floor fail"}.get(
+        floor or "", f"sample-floor {floor or '?'}"
+    )
+    runs_s = runs if runs is not None else "?"
+    return f"raw={raw_s} weighted={weighted_s} runs={runs_s} ({floor_s})"
+
+
+def _render_candidate_pool(pool: list[dict], lines: list[str]) -> None:
+    for entry in pool or []:
+        name = entry.get("name", "?")
+        tier = entry.get("tier")
+        included = bool(entry.get("included"))
+        reason = entry.get("reason")
+        detail = entry.get("detail")
+        glyph = "✓" if included else "✗"
+        tier_s = f" [{tier}]" if tier else ""
+        lines.append(f"    {glyph} {name}{tier_s} — {_reason_text(reason, detail)}")
+        signals = entry.get("signals") or {}
+        success_rate = signals.get("success_rate")
+        if isinstance(success_rate, dict):
+            lines.append(f"        success_rate: {_fmt_signal(success_rate)}")
+
+
+def _render_mechanism(label: str, state: tuple[str, str], detail: str, lines: list[str]) -> None:
+    glyph, state_text = state
+    suffix = f" — {detail}" if detail else ""
+    lines.append(f"    {glyph} {label}: {state_text}{suffix}")
+
+
+def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
+    promo = role_block.get("promotion_check") or {}
+    # outcome == "not_checked" is the sentinel for a mechanism that never ran.
+    promo_checked = promo.get("outcome") != "not_checked"
+    promo_fired = bool(promo.get("fired"))
+    detail = (
+        f"{promo.get('outcome', '?')} "
+        f"({promo.get('escalations', 0)}/{promo.get('matching_records', 0)} matching escalations)"
+        if promo_checked
+        else "no promotion signal recorded"
+    )
+    _render_mechanism(
+        "promotion", _mechanism_state(checked=promo_checked, fired=promo_fired), detail, lines
+    )
+
+    demo = role_block.get("demotion_check") or {}
+    # applicable=False → no such mechanism exists in v1 (a complete explanation,
+    # not a gap). Otherwise the recorded fired flag drives the state.
+    demo_applicable = bool(demo.get("applicable", True))
+    _render_mechanism(
+        f"demotion ({demo.get('mechanism', '?')})",
+        _mechanism_state(checked=demo_applicable, fired=bool(demo.get("fired"))),
+        demo.get("reason", ""),
+        lines,
+    )
+
+    checkpoint = role_block.get("post_plan_checkpoint") or {}
+    applied = bool(checkpoint.get("applied"))
+    _render_mechanism(
+        "post-plan checkpoint",
+        _mechanism_state(checked=applied, fired=applied),
+        checkpoint.get("reason", ""),
+        lines,
+    )
+
+
+def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:
+    demo = role_block.get("demotion_check") or {}
+    reason = demo.get("reason", "")
+    # A reviewer demotion is "not checked" only when there were no unhealthy
+    # candidates to weigh; otherwise it was checked and either fired or not.
+    checked = reason != "no_unhealthy_candidates"
+    detail = reason
+    depri = demo.get("deprioritized") or []
+    if depri:
+        detail = f"{reason} — deprioritized: {', '.join(depri)}"
+    _render_mechanism(
+        f"demotion ({demo.get('mechanism', '?')})",
+        _mechanism_state(checked=checked, fired=bool(demo.get("fired"))),
+        detail,
+        lines,
+    )
+
+
+def _render_final(role_block: dict, lines: list[str]) -> None:
+    final = role_block.get("final") or {}
+    if "models" in final:
+        models = final.get("models") or []
+        selected = ", ".join(models) if models else "(none)"
+    else:
+        model = final.get("model")
+        tier = final.get("tier")
+        selected = f"{model} [{tier}]" if tier else str(model)
+    lines.append(f"    selected: {selected}")
+    rationale = (final.get("rationale") or "").strip()
+    if rationale:
+        lines.append(f"    rationale: {rationale}")
+
+
+def render_routing_decision(block: dict) -> list[str]:
+    """Render the routing_decision block to a list of output lines.
+
+    Pure formatting over the recorded block — no I/O, no lookups.
+    """
+    lines: list[str] = []
+    origin = block.get("origin", "?")
+    lines.append(f"Routing decision (origin: {origin})")
+    lines.append("=" * 60)
+    for role in _ROLE_ORDER:
+        role_block = block.get(role)
+        if not isinstance(role_block, dict):
+            continue
+        lines.append("")
+        header = _ROLE_LABELS.get(role, role.upper())
+        if role == "dev":
+            score = role_block.get("score")
+            base = role_block.get("base_tier_from_score")
+            extra = []
+            if score is not None:
+                extra.append(f"score={score}")
+            if base:
+                extra.append(f"base tier={base}")
+            header += f"  ({', '.join(extra)})" if extra else ""
+        lines.append(header)
+        lines.append("-" * 60)
+
+        _render_final(role_block, lines)
+
+        lines.append("  candidate pool:")
+        _render_candidate_pool(role_block.get("candidate_pool") or [], lines)
+
+        exploration = role_block.get("exploration") or {}
+        lines.append(f"  exploration: {exploration.get('mode', '?')}")
+
+        if role == "dev":
+            lines.append("  adaptive mechanisms:")
+            _render_dev_mechanisms(role_block, lines)
+        elif role in ("plan_review", "code_review"):
+            lines.append("  adaptive mechanisms:")
+            _render_reviewer_mechanisms(role_block, lines)
+
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append(
+        "Legend: ✓ included/selected  ✗ excluded   ● fired  ◐ checked, did not fire  ○ not checked"
+    )
+    return lines
+
+
+def _print_block(block: dict, label: str) -> int:
+    print(f"# {label}")
+    for line in render_routing_decision(block):
+        print(line)
+    return 0
+
+
+def _explain_from_record(record: dict, label: str) -> int:
+    """Render the routing_decision from a loaded audit record.
+
+    Distinguishes an absent block (pre-#1391 records, where the reader-side
+    migration backfills ``routing_decision: None``) from a present one so the
+    operator is never shown a misleading empty summary.
+    """
+    if "routing_decision" not in record or record.get("routing_decision") is None:
+        print(
+            f"[forge] {label}: no routing_decision block recorded for this run "
+            "(it predates the #1391 routing-decision record, so the assignment "
+            "rationale cannot be reconstructed).",
+            file=sys.stderr,
+        )
+        return 1
+    block = record["routing_decision"]
+    if not isinstance(block, dict):
+        print(
+            f"[forge] {label}: routing_decision block is malformed ({type(block).__name__}).",
+            file=sys.stderr,
+        )
+        return 1
+    return _print_block(block, label)
+
+
+def cmd_explain(args: object) -> int:
+    """Render the routing_decision block for a story, run, or per-run file."""
+    file_arg = getattr(args, "file", None)
+    if file_arg:
+        path = Path(file_arg).resolve()
+        if not path.exists():
+            print(f"[forge] audit file not found: {path}", file=sys.stderr)
+            return 1
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[forge] could not read audit file {path}: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(record, dict):
+            print(f"[forge] audit file {path} is not a JSON object.", file=sys.stderr)
+            return 1
+        return _explain_from_record(record, path.name)
+
+    config_arg = getattr(args, "config", None)
+    config_path = _find_config(Path(config_arg).resolve() if config_arg else None)
+    if config_path is None:
+        print(
+            "[forge] forge.yaml not found. Run from a forge project root.",
+            file=sys.stderr,
+        )
+        return 1
+    project_root = config_path.parent
+
+    if not audit_substrate.has_audit_inputs(project_root):
+        print(
+            "[forge] no audit records found — nothing to explain.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        conn = audit_substrate.require_substrate(project_root)
+    except audit_substrate.SubstrateError as exc:
+        print(f"[forge] {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        run_id = getattr(args, "run", None)
+        story = getattr(args, "story", None)
+        if run_id:
+            record = audit_substrate.latest_record_for(conn, run_id=run_id)
+            label = f"run {run_id}"
+        else:
+            slug, issue_id = _resolve_story(story)
+            record = audit_substrate.latest_record_for(conn, slug=slug, issue_id=issue_id)
+            label = f"story {story}"
+    finally:
+        conn.close()
+
+    if record is None:
+        print(f"[forge] no audit record found for {label}.", file=sys.stderr)
+        return 1
+    return _explain_from_record(record, label)
+
+
+def _resolve_story(story: str) -> tuple[str | None, int | None]:
+    """Map a --story argument to a (slug, issue_id) lookup pair.
+
+    A bare or ``#``-prefixed integer is treated as a GitHub issue number; any
+    other string is treated as a slug (e.g. ``issue-270``).
+    """
+    stripped = story.lstrip("#").strip()
+    if stripped.isdigit():
+        return None, int(stripped)
+    return story, None
+
+
+def register_parser(subparsers: object) -> None:
+    """Register the 'explain' subcommand parser."""
+    parser = subparsers.add_parser(
+        "explain",
+        help="Render the routing_decision (assignment rationale) for a story or run",
+    )
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
+        "--story",
+        help="Story identifier: GitHub issue number (e.g. 270) or slug (e.g. issue-270)",
+    )
+    target.add_argument(
+        "--run",
+        help="Exact run id to explain",
+    )
+    target.add_argument(
+        "--file",
+        help="Path to a per-run audit JSON file (.forge/audits/runs/<run_id>.json)",
+    )
+    parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
