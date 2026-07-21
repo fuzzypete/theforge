@@ -32,13 +32,12 @@ def _profiles_with(runs: dict[str, list[tuple[bool, float, int]]]) -> dict:
 # ── Routing key ────────────────────────────────────────────────────────
 
 
-def test_routing_key_identity_is_phase_and_band_domains_are_metadata():
+def test_routing_key_identity_is_phase_domain_and_band():
     key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["python", "api"])
     assert key.band == "large"
-    # The cadence/aggregate slot identity is (phase, band) — NOT domain. Domains
-    # ride along as a recorded preference (sorted, deduped) but do not fold into
-    # the key string, so keys differing only in band never collapse.
-    assert key.as_str() == "dev:large"
+    # The slot identity is (phase, domain, band) per the spec contract. Domains
+    # are normalized (sorted, deduped) and folded into the key string.
+    assert key.as_str() == "dev:large:api+python"
     assert key.domains == ("api", "python")
 
 
@@ -52,9 +51,16 @@ def test_routing_keys_differing_only_in_band_are_distinct():
     api_small = exp.RoutingKey.build(phase="dev", complexity="LOW", domains=["api"])
     api_large = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
     # Same domain, different band → distinct slots (the cycle-2 defect guard).
-    assert api_small.as_str() != api_large.as_str()
-    assert api_small.as_str() == "dev:small"
-    assert api_large.as_str() == "dev:large"
+    assert api_small.as_str() == "dev:small:api"
+    assert api_large.as_str() == "dev:large:api"
+
+
+def test_routing_keys_differing_only_in_domain_are_distinct():
+    api = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
+    web = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["web"])
+    # Same band, different domain → distinct slots (the cycle-1/cycle-3 guard).
+    assert api.as_str() == "dev:large:api"
+    assert web.as_str() == "dev:large:web"
 
 
 # ── Aggregation: taint exclusion + recency ─────────────────────────────
@@ -79,56 +85,79 @@ def test_aggregates_exclude_tainted_runs():
     assert agg.success_rate == 1.0  # only the clean successes counted
 
 
-def test_primary_rate_is_band_scoped_domain_is_secondary_signal():
-    """The primary success rate is band-scoped; the domain rate is a side signal.
+def test_aggregate_is_scoped_to_domain_and_band_cross_slice():
+    """The per-key aggregate is the true (domain, band) cross slice — both axes.
 
-    Same band, different domains → identical band-scoped ``success_rate`` (the
-    band is the aggregate identity), but distinct ``domain_success_rate`` so the
-    tie-breaker can still differentiate by domain. This keeps BOTH axes honest:
-    band drives the primary aggregate (no domain-only collapse), domain rides as
-    a preference (no band-only collapse).
+    Same band, different domain → different runs/rate (no domain collapse, the
+    cycle-1/cycle-3 defect); different band, same domain → different runs/rate
+    (no band collapse, the cycle-2 defect). Both must hold simultaneously.
     """
     data: dict = {"models": {}}
+    # (api, large): 4 successes; (web, large): 4 failures; (api, small): 4 fails.
     for _ in range(4):
         apply_run(data, RunOutcome("large", "m1", True, 1, 0.1, domains=["api"]))
     for _ in range(4):
         apply_run(data, RunOutcome("large", "m1", False, 1, 0.1, domains=["web"]))
+    for _ in range(4):
+        apply_run(data, RunOutcome("small", "m1", False, 1, 0.1, domains=["api"]))
 
-    key_api = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
-    key_web = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["web"])
+    def _agg(complexity, domains):
+        key = exp.RoutingKey.build(phase="dev", complexity=complexity, domains=domains)
+        return exp.derive_key_aggregates(data, [_cand("m1")], key, min_sample_size=3)["m1"]
 
-    agg_api = exp.derive_key_aggregates(data, [_cand("m1")], key_api, min_sample_size=3)["m1"]
-    agg_web = exp.derive_key_aggregates(data, [_cand("m1")], key_web, min_sample_size=3)["m1"]
+    api_large = _agg("HIGH", ["api"])
+    web_large = _agg("HIGH", ["web"])
+    api_small = _agg("LOW", ["api"])
 
-    # Primary rate is the band aggregate (pools both domains) → identical.
-    assert agg_api.success_rate == agg_web.success_rate
-    # Domain tie-breaker distinguishes them.
-    assert agg_api.domain_success_rate == 1.0
-    assert agg_web.domain_success_rate == 0.0
+    # Domain axis honored (same band large): api strong, web weak.
+    assert api_large.success_rate == 1.0
+    assert web_large.success_rate == 0.0
+    # Band axis honored (same domain api): large strong, small weak.
+    assert api_small.success_rate == 0.0
+    # Each cross slice counts only its own (domain, band) runs → independent cadence.
+    assert api_large.runs == 4
+    assert web_large.runs == 4
+    assert api_small.runs == 4
 
 
-def test_aggregates_differ_by_band_same_domain():
-    """Same domain, different band → different primary aggregate (cycle-2 guard).
+def test_cadence_counter_is_independent_per_domain_at_same_band():
+    """Same-band api and web stories drive SEPARATE cadence counters.
 
-    The prior fix made a domain key ignore the band entirely; this asserts the
-    band axis is honored, so dev:small:api and dev:large:api never collapse.
+    The cadence "every Nth run per routing key" reads the per-(domain, band)
+    cross-slice run count, so accumulating api-large runs never advances the
+    web-large cadence. Here api-large is at its Nth run (challenger fires) while
+    web-large is not (winner mode) — despite sharing the "large" band.
     """
     data: dict = {"models": {}}
-    for _ in range(4):
-        apply_run(data, RunOutcome("small", "m1", True, 1, 0.1, domains=["api"]))
-    for _ in range(4):
-        apply_run(data, RunOutcome("large", "m1", False, 1, 0.1, domains=["api"]))
+    for _ in range(4):  # api-large: 4 admissible runs → this is the 5th → cadence hit
+        apply_run(data, RunOutcome("large", "winner", True, 1, 0.1, domains=["api"]))
+    for _ in range(5):  # web-large: 5 admissible runs → this is the 6th → NOT a hit
+        apply_run(data, RunOutcome("large", "winner", True, 1, 0.1, domains=["web"]))
+    cands = [_cand("winner"), _cand("rival")]
 
-    key_small = exp.RoutingKey.build(phase="dev", complexity="LOW", domains=["api"])
-    key_large = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
+    def _decide(domains):
+        key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=domains)
+        aggs = exp.derive_key_aggregates(data, cands, key, min_sample_size=3)
+        return exp.decide_exploration(
+            key=key,
+            candidates=cands,
+            aggregates=aggs,
+            winner=exp.select_winner(aggs, 3),
+            explore_every_n=5,
+            min_sample_size=3,
+            sprint_budget_remaining=1,
+            rng=random.Random(0),
+        )
 
-    agg_small = exp.derive_key_aggregates(data, [_cand("m1")], key_small, min_sample_size=3)["m1"]
-    agg_large = exp.derive_key_aggregates(data, [_cand("m1")], key_large, min_sample_size=3)["m1"]
-
-    assert agg_small.success_rate == 1.0  # strong at small band
-    assert agg_large.success_rate == 0.0  # weak at large band
-    assert agg_small.runs == 4
-    assert agg_large.runs == 4
+    api_out = _decide(["api"])
+    web_out = _decide(["web"])
+    assert api_out.routing_key == "dev:large:api"
+    assert web_out.routing_key == "dev:large:web"
+    # Independent cadence: api at its Nth run fires; web (different count) does not.
+    assert api_out.mode == exp.MODE_CHALLENGER
+    assert api_out.reason == exp.REASON_CADENCE
+    assert web_out.mode == exp.MODE_WINNER
+    assert web_out.reason == exp.REASON_CADENCE_MISS
 
 
 def test_aggregate_below_floor_has_no_rate():

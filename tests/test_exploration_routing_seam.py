@@ -347,11 +347,10 @@ def _domain_agents() -> list[AgentDef]:
 
 def _domain_profiles() -> dict:
     data: dict = {"models": {}}
-    # Both specialists share the IDENTICAL band-large temporal sequence
-    # (4 successes then 4 failures), so their recency-weighted band rates are
-    # exactly equal — only the per-domain slice distinguishes them: each is
-    # strong (the successes) in its own domain and weak (the failures) in the
-    # other. This isolates the domain tie-breaker as the deciding signal.
+    # Each specialist is strong in its OWN (domain, large) cross slice and weak in
+    # the other's, at the same band. The per-(domain, band) aggregate therefore
+    # picks a different winner for the api key than the web key — the two slots do
+    # not collapse despite sharing the "large" band.
     for _ in range(4):
         apply_run(data, RunOutcome("large", "api_specialist", True, 1, 0.5, domains=["api"]))
         apply_run(data, RunOutcome("large", "web_specialist", True, 1, 0.5, domains=["web"]))
@@ -383,15 +382,14 @@ def test_domain_routing_selects_domain_specialist(_anthropic_key):
         sprint_exploration_budget=1,
         explore_rng=random.Random(0),
     )
-    # The cadence/aggregate key is (phase, band) for BOTH — domain is recorded as
-    # preference metadata, not folded into the key (so keys differing only in band
-    # stay distinct). Both bands are "large" here.
+    # The routing key is (phase, domain, band): same band, different domain →
+    # DISTINCT keys and distinct cadence slots (the persistent finding's guard).
     api_block = _dev_exploration(api_decision)
     web_block = _dev_exploration(web_decision)
-    assert api_block["routing_key"] == "dev:large"
-    assert web_block["routing_key"] == "dev:large"
+    assert api_block["routing_key"] == "dev:large:api"
+    assert web_block["routing_key"] == "dev:large:web"
     assert api_block["domains"] == ["api"]
     assert web_block["domains"] == ["web"]
-    # Band rates tie (0.5 each); the domain-slice tie-breaker picks the specialist.
+    # The (domain, band) cross-slice aggregate picks the domain specialist.
     assert api_decision.dev.name == "api_specialist"
     assert web_decision.dev.name == "web_specialist"

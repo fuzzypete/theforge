@@ -593,6 +593,25 @@ def _update_dev(
             termination_cause,
             tainted,
         )
+        # Per-(domain, band) cross slice. by_domain and by_complexity are otherwise
+        # independent marginals; the challenger-sampling router (#325) needs a
+        # routing key scoped to BOTH domain and complexity band at once, so fold a
+        # nested band bucket inside the domain slice. Same recency/taint gates as
+        # the flat domain slice — this is the truthful per-(phase, domain, band)
+        # aggregate, not a marginal that collapses one axis.
+        dd_by_complexity = dd.setdefault("by_complexity", {})
+        dd_bc = dd_by_complexity.setdefault(complexity, {})
+        _fold_domain_slice(
+            dd_bc,
+            success,
+            iterations,
+            cost_usd,
+            duration_s,
+            timeout_killed,
+            timeout_limit_s,
+            termination_cause,
+            tainted,
+        )
 
 
 def _update_review(
@@ -1179,6 +1198,81 @@ def get_dev_domain_signal(
         "recency": "windowed",
         "rate": weighted if floor_ok else None,
         "by_domain": per_domain,
+    }
+
+
+def get_dev_domain_complexity_signal(
+    profiles: dict,
+    model: str,
+    domains: list[str] | None,
+    complexity: str | None,
+    min_runs: int = 3,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+) -> dict:
+    """Return the per-(domain, band) dev signal — the true cross aggregate (#325).
+
+    Reads ``dev.by_domain[domain].by_complexity[band]`` — the nested slice folded
+    alongside the flat marginals — for each requested domain tag, summed across
+    matching profile entries. This is the aggregate a challenger-sampling routing
+    key ``(phase, domain, band)`` is scoped to: unlike the flat ``by_domain``
+    slice it does NOT pool across bands, and unlike ``by_complexity`` it does NOT
+    pool across domains, so two keys differing on EITHER axis compute distinct
+    runs / rate / cadence. Recency-weighted (windowed) and taint-excluded, exactly
+    like :func:`get_dev_domain_signal`.
+
+    Returns ``rate=None`` (``floor="fail"``) when ``domains`` is empty or the
+    (domain, band) slice has fewer than ``min_runs`` admissible runs — an explicit
+    cold-start status for that specific routing key.
+    """
+    requested = [d for d in (domains or []) if isinstance(d, str) and d]
+    band = _normalize_band(complexity)
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    total_runs = 0
+    total_successes = 0.0
+    total_tainted = 0
+    recent_all: list[int] = []
+    for domain in requested:
+        for _, entry in matching:
+            dev = entry.get("dev")
+            if not isinstance(dev, dict):
+                continue
+            dd = (dev.get("by_domain") or {}).get(domain)
+            if not isinstance(dd, dict):
+                continue
+            bc = (dd.get("by_complexity") or {}).get(band)
+            if not isinstance(bc, dict):
+                continue
+            total_tainted += int(bc.get("tainted_runs", 0))
+            ring = bc.get("_recent")
+            if isinstance(ring, list):
+                recent_all.extend(int(v) for v in ring)
+            entry_runs = int(bc.get("runs", 0))
+            if entry_runs <= 0:
+                continue
+            total_runs += entry_runs
+            total_successes += _success_count(bc, entry_runs)
+    raw = round(total_successes / total_runs, 4) if total_runs > 0 else None
+    weighted = _windowed_rate(recent_all, fallback=raw)
+    floor_ok = total_runs >= min_runs and total_runs > 0
+    return {
+        "domains": requested,
+        "band": band,
+        "raw": raw,
+        "weighted": weighted,
+        "runs": total_runs,
+        "tainted_runs": total_tainted,
+        "floor": "pass" if floor_ok else "fail",
+        "recency": "windowed",
+        "rate": weighted if floor_ok else None,
     }
 
 

@@ -78,20 +78,19 @@ def normalize_domains(domains: list[str] | None) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class RoutingKey:
-    """The cadence/aggregate slot a challenger race is scoped to: ``(phase, band)``.
+    """The routing slot a challenger race is scoped to: ``(phase, domain, band)``.
 
-    The complexity band is the slot's IDENTITY because the native profile schema
-    aggregates dev capability on independent marginals — ``by_complexity[band]``
-    and ``by_domain[domain]`` are parallel axes, never crossed — so band is the
-    only axis that both scopes the aggregate and drives the cadence counter. The
-    story's ``domains`` ride along as a recorded *preference* (a secondary
-    tie-breaker within the band slot, exactly how the deterministic router treats
-    domain under #155), NOT as part of the slot identity — folding domain into
-    the key would falsely claim a per-(domain,band) aggregate the schema cannot
-    supply (two keys differing only in band would otherwise collapse onto the
-    same flat domain slice, and two differing only in domain onto the same band
-    slice). ``domains`` are still surfaced in the recorded block for
-    reconstruction.
+    Matches the spec's exploration contract exactly — phase, domain, and
+    complexity band all identify the slot. Because the flat profile marginals
+    (``by_complexity[band]`` / ``by_domain[domain]``) each collapse one axis, the
+    aggregate is read from the nested ``by_domain[domain].by_complexity[band]``
+    cross slice (folded in ``model_profiles._update_dev``), so two keys differing
+    on EITHER axis — ``dev:small:api`` vs ``dev:large:api``, or ``dev:large:api``
+    vs ``dev:large:web`` — get distinct aggregates and distinct cadence counters.
+
+    ``domains`` is the normalized (sorted, deduped) tag set; a multi-tag story is
+    its own slot (its cross aggregate sums the tag slices). A story with no
+    domains falls back to the band-only slot ``(phase, band)``.
     """
 
     phase: str
@@ -107,6 +106,8 @@ class RoutingKey:
         )
 
     def as_str(self) -> str:
+        if self.domains:
+            return f"{self.phase}:{self.band}:{'+'.join(self.domains)}"
         return f"{self.phase}:{self.band}"
 
 
@@ -115,13 +116,12 @@ class ModelAggregate:
     """Per-model derived aggregate for one routing key (audit-derived view).
 
     All fields are materialized from the native ``model_profiles`` view, which
-    already excludes tainted runs and applies recency weighting. ``runs``,
-    ``success_rate``, and the cost/iteration/duration averages are scoped to the
-    key's complexity **band** (``by_complexity[band]``) so keys differing in band
-    never share an aggregate. ``domain_success_rate`` is the band-independent
-    domain-slice rate (``by_domain``), carried as a SECONDARY tie-breaker only —
-    it differentiates same-band candidates by domain strength without pretending
-    to be a band-scoped value.
+    already excludes tainted runs and applies recency weighting. ``runs`` and
+    ``success_rate`` are scoped to the FULL routing key — the
+    ``(domain, band)`` cross slice when the key carries domains, else the
+    ``by_complexity[band]`` slice — so keys differing on either axis never share
+    an aggregate or a cadence count. Cost/iteration/duration remain band-level
+    tie-breakers (only consulted when success rates tie).
     """
 
     model_id: str
@@ -131,7 +131,6 @@ class ModelAggregate:
     avg_iterations: float | None
     avg_duration_s: float | None
     tainted_runs: int = 0
-    domain_success_rate: float | None = None
 
     def meets_floor(self, min_sample_size: int) -> bool:
         return self.runs >= min_sample_size and self.success_rate is not None
@@ -170,51 +169,49 @@ def derive_key_aggregates(
     audit records). No ``performance_table.yaml`` is consulted — the cache is
     never authoritative.
 
-    The primary aggregate (``runs``, ``success_rate``, cost/iteration/duration)
-    is scoped to the key's complexity **band** (:func:`model_profiles.get_dev_signal`
-    over ``by_complexity[band]``) — recency-weighted and taint-excluded — so keys
-    that differ in band never share an aggregate or a cadence counter. When the
-    story carries domains, the band-independent domain-slice rate
-    (:func:`model_profiles.get_dev_domain_signal`) is attached as
-    ``domain_success_rate`` and used ONLY as a secondary tie-breaker in winner
-    selection, mirroring the deterministic router's #155 policy (band-rate first,
-    domain-rate to break ties). It is deliberately NOT the primary rate: the flat
-    ``by_domain`` slice pools across every band, so making it primary would let
-    two different-band keys collapse onto the same domain aggregate.
+    The primary aggregate (``runs``, ``success_rate``) is scoped to the FULL
+    routing key. When the key carries domains it is read from the nested
+    ``(domain, band)`` cross slice
+    (:func:`model_profiles.get_dev_domain_complexity_signal`); otherwise from the
+    band slice (:func:`model_profiles.get_dev_signal`). Both are recency-weighted
+    and taint-excluded. Because the cross slice pools across NEITHER axis, keys
+    differing in domain OR band get distinct runs/rate/cadence — so
+    ``dev:large:api``, ``dev:large:web``, and ``dev:small:api`` are three
+    separate slots. Cost/iteration/duration stay band-level (tie-breakers only;
+    the schema keeps no domain-sliced duration).
     """
     from theforge import model_profiles as mp  # noqa: PLC0415
 
     aggregates: dict[str, ModelAggregate] = {}
     profiles = model_profiles or {}
     for cand in candidates:
-        # Primary signal is ALWAYS band-scoped so the band axis of the key is
-        # honored (a per-band cadence slot, per-band winner).
-        signal = mp.get_dev_signal(
-            profiles,
-            cand.id,
-            key.band,
-            min_sample_size,
-            actual_model=cand.model,
-            provider=cand.provider,
-            cli=cand.cli,
-            recency=recency,
-        )
-        runs = int(signal.get("runs", 0))
-        success_rate = signal.get("rate")
-        tainted = int(signal.get("tainted_runs", 0))
-        # Domain preference (#155), secondary tie-breaker only.
-        domain_rate: float | None = None
         if key.domains:
-            dsig = mp.get_dev_domain_signal(
+            # Per-(domain, band) cross slice — the true per-routing-key aggregate.
+            sig = mp.get_dev_domain_complexity_signal(
                 profiles,
                 cand.id,
                 list(key.domains),
+                key.band,
                 min_sample_size,
                 actual_model=cand.model,
                 provider=cand.provider,
                 cli=cand.cli,
             )
-            domain_rate = dsig.get("rate")
+        else:
+            # No domains → the band slot is the whole key.
+            sig = mp.get_dev_signal(
+                profiles,
+                cand.id,
+                key.band,
+                min_sample_size,
+                actual_model=cand.model,
+                provider=cand.provider,
+                cli=cand.cli,
+                recency=recency,
+            )
+        runs = int(sig.get("runs", 0))
+        success_rate = sig.get("rate")
+        tainted = int(sig.get("tainted_runs", 0))
         stats = mp.get_dev_complexity_stats(
             profiles,
             cand.id,
@@ -235,26 +232,25 @@ def derive_key_aggregates(
             avg_iterations=avg_iters,
             avg_duration_s=avg_dur,
             tainted_runs=tainted,
-            domain_success_rate=domain_rate,
         )
     return aggregates
 
 
 def _winner_sort_key(agg: ModelAggregate) -> tuple:
-    """Rank admissible models, mirroring the deterministic router's policy.
+    """Rank admissible models: highest success, then cheaper/fewer-iters/faster.
 
-    Order: band-scoped success (primary), then the domain-slice rate as a
-    secondary tie-breaker (#155 — a domain specialist wins a band-rate tie),
-    then cheaper/fewer-iters/faster. A missing metric sorts last (treated as
-    worst) so it never wins a tie on absent evidence.
+    ``success_rate`` is already scoped to the full ``(phase, domain, band)``
+    routing key (the cross slice), so it captures domain strength directly — no
+    separate domain tie-breaker is needed. Cost/iteration/duration tie-breakers
+    mirror the deterministic router's cost ordering; a missing metric sorts last
+    (treated as worst) so it never wins a tie on absent evidence.
     """
     success = agg.success_rate if agg.success_rate is not None else -1.0
-    domain_rate = agg.domain_success_rate if agg.domain_success_rate is not None else 0.0
     cost = agg.avg_cost_usd if agg.avg_cost_usd is not None else float("inf")
     iters = agg.avg_iterations if agg.avg_iterations is not None else float("inf")
     dur = agg.avg_duration_s if agg.avg_duration_s is not None else float("inf")
-    # Negate rates so higher sorts first under ascending sort.
-    return (-success, -domain_rate, cost, iters, dur, agg.model_id)
+    # Negate success so higher rate sorts first under ascending sort.
+    return (-success, cost, iters, dur, agg.model_id)
 
 
 def select_winner(aggregates: dict[str, ModelAggregate], min_sample_size: int) -> str | None:
