@@ -115,10 +115,14 @@ class RunOutcome:
     domains: list[str] = field(default_factory=list)
     # Taint marker (ADR-0006 clause 4, #1851/#1852 seam). True when the run failed
     # its own trust checks (e.g. a reviewer that reviewed a stale checkout). A
-    # tainted run "doesn't teach": it is excluded from the per-domain routing
-    # aggregate and tallied visibly under ``tainted_runs`` instead. The taint
-    # marker is not yet produced upstream, so this defaults False (default-
-    # admissible per clause 4), but the exclusion path exists and is exercised.
+    # tainted run "doesn't teach": it is excluded from EVERY router-consumed
+    # capability aggregate this run would feed — the top-level dev bucket, the
+    # per-complexity and per-score bands, each per-domain slice, and the review
+    # and preflight sections — and tallied visibly under ``tainted_runs`` in each
+    # instead, never deleted. Derived from the run's ``trust_status`` (a
+    # ``tainted`` status is the only affirmative exclusion; missing/trusted/
+    # unchecked are all admissible), so this defaults False (default-admissible
+    # per clause 4).
     dev_tainted: bool = False
 
 
@@ -383,6 +387,41 @@ def _fold_dev_bucket(
     _fold_duration(bucket, duration_s, timeout_killed, timeout_limit_s)
 
 
+def _fold_dev_capability(
+    bucket: dict,
+    success: bool,
+    iterations: int,
+    cost_usd: float | None,
+    duration_s: float | None,
+    timeout_killed: bool,
+    timeout_limit_s: int | None,
+    termination_cause: str | None,
+    tainted: bool,
+) -> None:
+    """Fold one dev run into a capability bucket, excluding tainted runs.
+
+    Wraps :func:`_fold_dev_bucket` with the ADR-0006 clause-4 taint gate so the
+    top-level dev bucket and the per-complexity / per-score bands exclude runs
+    that failed their own trust checks exactly like the per-domain slice already
+    does. A ``tainted`` run "doesn't teach": it is kept out of the capability
+    accumulators (``runs``/``_successes``/…) and tallied under ``tainted_runs``
+    so the exclusion stays visible in the record, never silently dropped.
+    """
+    if tainted:
+        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + 1
+        return
+    _fold_dev_bucket(
+        bucket,
+        success,
+        iterations,
+        cost_usd,
+        duration_s,
+        timeout_killed,
+        timeout_limit_s,
+        termination_cause,
+    )
+
+
 def _fold_domain_slice(
     bucket: dict,
     success: bool,
@@ -446,7 +485,11 @@ def _update_dev(
     domains: list[str] | None = None,
     tainted: bool = False,
 ) -> None:
-    if cost_usd is None:
+    # A tainted run is excluded from every capability accumulator (ADR-0006
+    # clause 4), so it never records a cost either — suppress the cost-unmeasured
+    # warning that would otherwise fire for a run whose cost is intentionally
+    # not folded.
+    if cost_usd is None and not tainted:
         log.warning(
             "[model_profiles] Dev run recorded cost-unmeasured (NOT $0.00): "
             "model=%s complexity=%s — transport reported no cost.",
@@ -454,7 +497,7 @@ def _update_dev(
             complexity,
         )
     dev = entry.setdefault("dev", {})
-    _fold_dev_bucket(
+    _fold_dev_capability(
         dev,
         success,
         iterations,
@@ -463,11 +506,12 @@ def _update_dev(
         timeout_killed,
         timeout_limit_s,
         termination_cause,
+        tainted,
     )
 
     by = dev.setdefault("by_complexity", {})
     bc = by.setdefault(complexity, {})
-    _fold_dev_bucket(
+    _fold_dev_capability(
         bc,
         success,
         iterations,
@@ -476,13 +520,14 @@ def _update_dev(
         timeout_killed,
         timeout_limit_s,
         termination_cause,
+        tainted,
     )
 
     if complexity_score is not None:
         score_key = str(int(complexity_score))
         by_score = dev.setdefault("by_complexity_score", {})
         sc = by_score.setdefault(score_key, {})
-        _fold_dev_bucket(
+        _fold_dev_capability(
             sc,
             success,
             iterations,
@@ -491,6 +536,7 @@ def _update_dev(
             timeout_killed,
             timeout_limit_s,
             termination_cause,
+            tainted,
         )
 
     # Per-domain slice (issue #155): fold this run into a bucket for each domain
@@ -515,8 +561,17 @@ def _update_dev(
         )
 
 
-def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float | None) -> None:
+def _update_review(
+    entry: dict, cycles: int, findings: int, cost_usd: float | None, tainted: bool = False
+) -> None:
     if cycles <= 0:
+        return
+    rev = entry.setdefault("review", {})
+    # Taint gate (ADR-0006 clause 4): a tainted run "doesn't teach", so its
+    # reviewer cycles are kept out of the completion-rate / findings / cost
+    # aggregates and tallied under ``tainted_runs`` instead.
+    if tainted:
+        rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + cycles
         return
     if cost_usd is None:
         log.warning(
@@ -525,7 +580,6 @@ def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float | No
             _entry_model_label(entry),
             cycles,
         )
-    rev = entry.setdefault("review", {})
     runs = int(rev.get("runs", 0)) + cycles
     find_sum = float(rev.get("_findings_sum", 0.0)) + float(findings)
     rev["runs"] = runs
@@ -534,14 +588,19 @@ def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float | No
     _fold_cost(rev, cost_usd, unknown_count=cycles)
 
 
-def _update_preflight(entry: dict, cost_usd: float | None) -> None:
+def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
+    pf = entry.setdefault("preflight", {})
+    # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the
+    # preflight capability aggregate and tallied under ``tainted_runs`` instead.
+    if tainted:
+        pf["tainted_runs"] = int(pf.get("tainted_runs", 0)) + 1
+        return
     if cost_usd is None:
         log.warning(
             "[model_profiles] Preflight run recorded cost-unmeasured (NOT $0.00): "
             "model=%s — transport reported no cost.",
             _entry_model_label(entry),
         )
-    pf = entry.setdefault("preflight", {})
     runs = int(pf.get("runs", 0)) + 1
     pf["runs"] = runs
     _fold_cost(pf, cost_usd)
@@ -561,6 +620,7 @@ def _zero_dev_bucket(bucket: dict) -> None:
     bucket["avg_duration_s"] = 0.0
     bucket["max_duration_s"] = 0.0
     bucket["max_killed_timeout_s"] = 0.0
+    bucket["tainted_runs"] = 0
     bucket["harness_terminated"] = {
         "runs": 0,
         "by_cause": {},
@@ -601,9 +661,11 @@ def _recompute_dev_section(section: dict) -> None:
     ht_by_cause: dict[str, int] = {}
     ht_cost_sum = 0.0
     ht_cost_unknown = 0
+    tainted_runs = 0
     for band in COMPLEXITY_BANDS:
         bucket = by.setdefault(band, {})
         runs += int(bucket.get("runs", 0))
+        tainted_runs += int(bucket.get("tainted_runs", 0))
         successes += int(bucket.get("_successes", 0))
         iterations += float(bucket.get("_iterations_sum", 0.0))
         cost += float(bucket.get("_cost_sum", 0.0))
@@ -637,6 +699,7 @@ def _recompute_dev_section(section: dict) -> None:
     )
     section["max_duration_s"] = max_duration
     section["max_killed_timeout_s"] = max_killed_timeout
+    section["tainted_runs"] = tainted_runs
     ht_measured = ht_runs - ht_cost_unknown
     section["harness_terminated"] = {
         "runs": ht_runs,
@@ -679,10 +742,10 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             provider=outcome.preflight_provider,
             cli=outcome.preflight_cli,
         )
-        _update_preflight(pf_entry, outcome.preflight_cost_usd)
+        _update_preflight(pf_entry, outcome.preflight_cost_usd, tainted=outcome.dev_tainted)
     for name, (cycles, findings, cost) in outcome.reviewers.items():
         rev_entry = _ensure_model(data, name)
-        _update_review(rev_entry, cycles, findings, cost)
+        _update_review(rev_entry, cycles, findings, cost, tainted=outcome.dev_tainted)
     return data
 
 
@@ -710,6 +773,8 @@ def backfill_from_history(history_path: Path) -> dict:
     records = raw.get("escalations") or []
     if not isinstance(records, list):
         return data
+    from theforge.coordinator.trust_status import is_tainted  # noqa: PLC0415
+
     for r in records:
         if not isinstance(r, dict):
             continue
@@ -719,8 +784,13 @@ def backfill_from_history(history_path: Path) -> dict:
         band = _normalize_band(str(r.get("complexity") or ""))
         outcome = str(r.get("outcome") or "").strip().upper()
         success = outcome == "DONE"
+        # Taint gate (ADR-0006 clause 4): a run marked tainted "doesn't teach", so
+        # it is excluded from the seeded aggregates and tallied under
+        # ``tainted_runs`` instead. Legacy history rows carry no ``trust_status``
+        # and read as admissible (taint requires an affirmative failed check).
+        tainted = is_tainted(r.get("trust_status"))
         entry = _ensure_model(data, model)
-        _update_dev(entry, band, success, iterations=0, cost_usd=0.0)
+        _update_dev(entry, band, success, iterations=0, cost_usd=0.0, tainted=tainted)
     return data
 
 
@@ -1521,6 +1591,17 @@ def _merge_harness_terminated(target: dict, src: dict) -> None:
     tgt_ht["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
 
 
+def _merge_tainted_runs(target: dict, src: dict) -> None:
+    """Sum the visible ``tainted_runs`` counter of two buckets.
+
+    A no-op when neither side carries the counter (legacy buckets predating the
+    ADR-0006 clause-4 taint gate), so a merge never fabricates a zero key.
+    """
+    src_tainted = int(src.get("tainted_runs", 0))
+    if src_tainted or "tainted_runs" in target:
+        target["tainted_runs"] = int(target.get("tainted_runs", 0)) + src_tainted
+
+
 def _merge_dev(target: dict, src: dict) -> None:
     runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
     successes = int(target.get("_successes", 0)) + int(src.get("_successes", 0))
@@ -1563,6 +1644,7 @@ def _merge_dev(target: dict, src: dict) -> None:
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
     _merge_duration(target, src)
     _merge_harness_terminated(target, src)
+    _merge_tainted_runs(target, src)
 
     src_by = src.get("by_complexity") or {}
     if src_by:
@@ -1607,6 +1689,7 @@ def _merge_dev(target: dict, src: dict) -> None:
                 )
             _merge_duration(bc_target, bc_src)
             _merge_harness_terminated(bc_target, bc_src)
+            _merge_tainted_runs(bc_target, bc_src)
 
     src_by_score = src.get("by_complexity_score") or {}
     if src_by_score:
@@ -1651,6 +1734,7 @@ def _merge_dev(target: dict, src: dict) -> None:
                 )
             _merge_duration(sc_target, sc_src)
             _merge_harness_terminated(sc_target, sc_src)
+            _merge_tainted_runs(sc_target, sc_src)
 
     src_by_domain = src.get("by_domain") or {}
     if src_by_domain:
@@ -1724,6 +1808,7 @@ def _merge_review(target: dict, src: dict) -> None:
         target["avg_findings"] = round(find_sum / runs, 4)
         measured = runs - cost_unknown
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+    _merge_tainted_runs(target, src)
 
 
 def _merge_preflight(target: dict, src: dict) -> None:
@@ -1738,6 +1823,7 @@ def _merge_preflight(target: dict, src: dict) -> None:
     if runs > 0:
         measured = runs - cost_unknown
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+    _merge_tainted_runs(target, src)
 
 
 def _merge_entry(target: dict, src: dict) -> None:

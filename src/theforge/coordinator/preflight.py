@@ -1093,10 +1093,13 @@ def _apply_preflight_config(
         DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
     )
     from theforge.coordinator.escalation_history import (  # noqa: PLC0415
-        load_escalation_history_from_substrate as _load_esc_history_substrate,
+        load_escalation_history_with_taint_stats as _load_esc_history_substrate,
     )
 
-    _esc_history = _load_esc_history_substrate(config.project_root)
+    # Escalation history plus the count of runs the centralized taint gate set
+    # aside (ADR-0006 clause 4). The count is surfaced in the routing_decision
+    # block (clause 7) so operators see how much history was discounted.
+    _esc_history, _excluded_for_taint = _load_esc_history_substrate(config.project_root)
 
     from theforge.model_profiles import load_profiles as _load_profiles  # noqa: PLC0415
 
@@ -1166,6 +1169,7 @@ def _apply_preflight_config(
         model_profiles=_model_profiles,
         unhealthy_models=_unhealthy if _unhealthy else None,
         domains=list(state.preflight_domains or []),
+        excluded_for_taint=_excluded_for_taint,
     )
 
     # Splice the full explicit pools back into the decision so audit and
