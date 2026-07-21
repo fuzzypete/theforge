@@ -831,5 +831,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "symptom_test_escalations": state.symptom_test_escalations
         if state.symptom_test_escalations
         else None,
+        # Per-role routing explainability block (#1391). A genuine top-level key
+        # in the authoritative native per-run record (ADR-0002 clauses 1-2), NOT
+        # nested under preflight.complexity_routing — it is the load-bearing
+        # observability contract every v0.13 routing mechanism writes into
+        # (ADR-0006 clause 7). Additive: existing fields are unchanged.
+        "routing_decision": state.routing_decision,
         **_build_phases_block(state, config),
     }

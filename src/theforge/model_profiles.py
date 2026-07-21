@@ -647,6 +647,79 @@ def update_from_run(
 # ── Reader API for assignment ─────────────────────────────────────────────
 
 
+def get_dev_signal(
+    profiles: dict,
+    model: str,
+    complexity: str | None = None,
+    min_runs: int = 3,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+) -> dict:
+    """Return a structured dev routing signal for explainability + ranking.
+
+    Reads only the in-memory ``profiles`` dict (no disk access, no LLM call).
+    One lookup surfaces everything the router weighs for a dev candidate, so a
+    caller can both rank and explain from a single read:
+
+    - ``rate``: the ``min_runs``-gated success rate (byte-identical to
+      :func:`get_dev_success_rate`); ``None`` below the sample floor. This is
+      the value the router ranks on.
+    - ``raw``: the ungated success ratio (``None`` when no runs exist).
+    - ``weighted``: the recency-weighted value. Recency weighting (#1392) has
+      not landed, so v1 mirrors ``raw`` — the key exists so the audit contract
+      stays stable once weighting arrives.
+    - ``runs``: sample count consulted.
+    - ``floor``: ``"pass"`` when ``runs >= min_runs`` (and ``runs > 0``), else
+      ``"fail"``.
+    """
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    runs = 0
+    successes = 0.0
+    if matching:
+        if complexity is None:
+            for _, entry in matching:
+                dev = entry.get("dev")
+                if not isinstance(dev, dict):
+                    continue
+                entry_runs = int(dev.get("runs", 0))
+                if entry_runs <= 0:
+                    continue
+                runs += entry_runs
+                successes += _success_count(dev, entry_runs)
+        else:
+            band = _normalize_band(complexity)
+            for _, entry in matching:
+                dev = entry.get("dev")
+                if not isinstance(dev, dict):
+                    continue
+                bc = (dev.get("by_complexity") or {}).get(band)
+                if not isinstance(bc, dict):
+                    continue
+                entry_runs = int(bc.get("runs", 0))
+                if entry_runs <= 0:
+                    continue
+                runs += entry_runs
+                successes += _success_count(bc, entry_runs)
+    raw = round(successes / runs, 4) if runs > 0 else None
+    floor_ok = runs >= min_runs and runs > 0
+    return {
+        "raw": raw,
+        # v1: no recency weighting (#1392) — weighted mirrors raw until it lands.
+        "weighted": raw,
+        "runs": runs,
+        "floor": "pass" if floor_ok else "fail",
+        "rate": raw if floor_ok else None,
+    }
+
+
 def get_dev_success_rate(
     profiles: dict,
     model: str,
@@ -657,45 +730,20 @@ def get_dev_success_rate(
     provider: str | None = None,
     cli: str | None = None,
 ) -> float | None:
-    """Return dev success rate for (model, complexity) or None under min_runs."""
-    matching = _matching_profile_entries(
+    """Return dev success rate for (model, complexity) or None under min_runs.
+
+    Thin wrapper over :func:`get_dev_signal` so ranking and explainability
+    share one aggregation path and can never diverge on the ranked value.
+    """
+    return get_dev_signal(
         profiles,
         model,
+        complexity,
+        min_runs,
         actual_model=actual_model,
         provider=provider,
         cli=cli,
-    )
-    if not matching:
-        return None
-    if complexity is None:
-        runs = 0
-        successes = 0.0
-        for _, entry in matching:
-            dev = entry.get("dev")
-            if not isinstance(dev, dict):
-                continue
-            entry_runs = int(dev.get("runs", 0))
-            if entry_runs <= 0:
-                continue
-            runs += entry_runs
-            successes += _success_count(dev, entry_runs)
-        return round(successes / runs, 4) if runs >= min_runs and runs > 0 else None
-    band = _normalize_band(complexity)
-    runs = 0
-    successes = 0.0
-    for _, entry in matching:
-        dev = entry.get("dev")
-        if not isinstance(dev, dict):
-            continue
-        bc = (dev.get("by_complexity") or {}).get(band)
-        if not isinstance(bc, dict):
-            continue
-        entry_runs = int(bc.get("runs", 0))
-        if entry_runs <= 0:
-            continue
-        runs += entry_runs
-        successes += _success_count(bc, entry_runs)
-    return round(successes / runs, 4) if runs >= min_runs and runs > 0 else None
+    )["rate"]
 
 
 def get_dev_complexity_stats(

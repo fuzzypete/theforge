@@ -1197,6 +1197,15 @@ def _apply_preflight_config(
 
     state._adaptive_decision = _decision
     state._explicit_roles = _explicit_roles
+    # Carry the structured routing explainability block (#1391) into run state
+    # so it persists as a top-level routing_decision key in the native per-run
+    # audit record. Origin is labeled "preflight" in each final rationale so a
+    # future post-assignment checkpoint (#1387) writing the same block stays
+    # distinguishable. Kept separate from complexity_routing_audit (which retains
+    # its existing outcome-only shape) per ADR-0006 clause 7.
+    _routing_block = getattr(_decision, "routing_decision", None)
+    if _routing_block:
+        state.routing_decision = _routing_block
     _existing_routing_audit = dict(state.complexity_routing_audit or {})
     _adaptive_enabled = config.assignment.adaptive_enabled
     _cap_audit = dict(_decision.budget_audit)
