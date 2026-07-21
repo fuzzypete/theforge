@@ -202,6 +202,50 @@ def _classify_reviewer_attempt(
     return False, "crash", code or f"exit={getattr(result, 'exit_code', None)}"
 
 
+def _append_reviewer_attempt(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    profile: Any,
+    result: Any,
+    *,
+    parseable: bool,
+    cycle_num: int,
+    outcome_override: str | None = None,
+    reason_override: str | None = None,
+) -> None:
+    """Append a single reviewer-attempt record for one invocation (#1388).
+
+    One invocation → one record. Used both for the final per-reviewer result and
+    for superseded transient-failure invocations that a later retry replaced — a
+    failed invocation is still an invocation and must not evaporate from the audit
+    / completion-rate evidence.
+    """
+    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+
+    completed, outcome, reason = _classify_reviewer_attempt(result, parseable, config)
+    if outcome_override is not None:
+        outcome = outcome_override
+    if reason_override is not None:
+        reason = reason_override
+    state.reviewer_attempts.append(
+        {
+            "name": profile.name,
+            "provider": getattr(profile, "provider", None),
+            "model": getattr(profile, "model", None),
+            "cli": getattr(profile, "cli", None),
+            "canonical_id": canonical_id_from_identity(
+                actual_model=getattr(profile, "model", None),
+                provider=getattr(profile, "provider", None),
+                cli=getattr(profile, "cli", None),
+            ),
+            "completed_parseable_verdict": bool(completed),
+            "outcome": outcome,
+            "failure_reason": reason,
+            "cycle": int(cycle_num),
+        }
+    )
+
+
 def _record_reviewer_attempts(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -212,7 +256,7 @@ def _record_reviewer_attempts(
     parsed_by_name: dict[str, bool] | None = None,
     budget_excluded: set[str] | None = None,
 ) -> None:
-    """Append one authoritative attempt record per invoked reviewer (#1388).
+    """Append the final attempt record per invoked reviewer (#1388).
 
     Writes into ``state.reviewer_attempts`` — the native per-run capture that is
     both persisted into the audit record and folded into the derived
@@ -222,9 +266,12 @@ def _record_reviewer_attempts(
     from the profile. ``parsed_by_name`` maps reviewer name → whether its final
     (post parse-retry) output was a parseable verdict; when absent (an early
     escalation return before parsing), transport success is used as the proxy.
-    """
-    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
 
+    This records the FINAL result per reviewer. Superseded transient-failure
+    invocations (a fail that a later retry replaced) are recorded separately, as
+    they happen, inside :func:`_retry_transient_review_failures` — so a
+    fail→retry→success reviewer contributes both a failed and a completed attempt.
+    """
     budget_excluded = budget_excluded or set()
     by_name: dict[str, Any] = {}
     for r in results:
@@ -237,27 +284,21 @@ def _record_reviewer_attempts(
             parseable = bool(result.success)
         else:
             parseable = parsed_by_name.get(profile.name, bool(result.success))
-        completed, outcome, reason = _classify_reviewer_attempt(result, parseable, config)
         if profile.name in budget_excluded:
-            outcome = "budget_excluded"
-            reason = "excluded from cycle: over per-reviewer budget"
-        state.reviewer_attempts.append(
-            {
-                "name": profile.name,
-                "provider": getattr(profile, "provider", None),
-                "model": getattr(profile, "model", None),
-                "cli": getattr(profile, "cli", None),
-                "canonical_id": canonical_id_from_identity(
-                    actual_model=getattr(profile, "model", None),
-                    provider=getattr(profile, "provider", None),
-                    cli=getattr(profile, "cli", None),
-                ),
-                "completed_parseable_verdict": bool(completed),
-                "outcome": outcome,
-                "failure_reason": reason,
-                "cycle": int(cycle_num),
-            }
-        )
+            _append_reviewer_attempt(
+                state,
+                config,
+                profile,
+                result,
+                parseable=parseable,
+                cycle_num=cycle_num,
+                outcome_override="budget_excluded",
+                reason_override="excluded from cycle: over per-reviewer budget",
+            )
+        else:
+            _append_reviewer_attempt(
+                state, config, profile, result, parseable=parseable, cycle_num=cycle_num
+            )
 
 
 def _resolve_prompt_for_reviewer(review_prompts: str | list[str], index: int) -> str:
@@ -345,6 +386,15 @@ def _retry_transient_review_failures(
                 state.log_dir,
                 f"review-cycle-{cycle_num}/{profile.name}-transport-retry{retry_count}.yaml",
                 retried.output or "",
+            )
+            # ``current`` is being superseded by ``retried`` — it was a distinct
+            # (failed) reviewer invocation and must be recorded before it is
+            # discarded (#1388). The FINAL surviving result is recorded by
+            # _record_reviewer_attempts; here we capture only the ones a retry
+            # replaced (the original transient failure and any intermediate
+            # retries), all of which are failures.
+            _append_reviewer_attempt(
+                state, config, profile, current, parseable=False, cycle_num=cycle_num
             )
             current = retried
 
