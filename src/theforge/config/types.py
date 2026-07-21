@@ -37,6 +37,37 @@ class RecencyConfig:
 
 
 @dataclass(frozen=True)
+class ExplorationConfig:
+    """Challenger-sampling exploration parameters (#325, ADR-0006 clause 8).
+
+    Governs the single sanctioned deviation from deterministic routing: every
+    Nth run for a routing key (phase + domain + complexity band) the router may
+    run a *challenger* model instead of the cached winner and learn from the
+    race (the MongoDB query-planner analogy). All fields are bounded at the
+    config boundary — exploration that consumes cross-run evidence must stay
+    labeled, bounded, and reconstructable.
+
+    - ``explore_every_n``: per-routing-key challenger cadence. Every Nth run for
+      a key is a challenger race (subject to the per-sprint cap). Must be >= 1.
+    - ``min_sample_size``: sample floor. A winner is declared for a key only
+      after this many *admissible* (non-tainted) runs; below it the slot stays
+      in cold-start/exploring mode routed via the static tier table. Must be
+      >= 1.
+    - ``per_sprint_cap``: at most this many exploration runs *per sprint* across
+      ALL routing keys (not one-per-key unbounded). Must be >= 0; 0 disables
+      exploration entirely.
+    - ``performance_cache_path``: a rebuildable, gitignored **derived view** of
+      the per-key aggregates for operator inspection only. Never read as
+      authoritative — the router always consults the native audit substrate.
+    """
+
+    explore_every_n: int = 5
+    min_sample_size: int = 3
+    per_sprint_cap: int = 1
+    performance_cache_path: str = ".forge/performance_table.yaml"
+
+
+@dataclass(frozen=True)
 class AssignmentConfig:
     """Configuration for adaptive model assignment."""
 
@@ -48,6 +79,7 @@ class AssignmentConfig:
     escalation_memory: bool = True
     adaptive_enabled: bool = True
     recency: RecencyConfig = field(default_factory=RecencyConfig)
+    exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
 
 
 @dataclass(frozen=True)

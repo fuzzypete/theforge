@@ -8,6 +8,7 @@ which are called only by the coordinator.
 from __future__ import annotations
 
 import logging
+import random
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1100,6 +1101,7 @@ def _build_routing_decision(
     dev_domain_signals: dict[str, dict] | None = None,
     dev_domain_match: dict[str, object] | None = None,
     excluded_for_taint: int = 0,
+    dev_exploration: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
@@ -1237,7 +1239,11 @@ def _build_routing_decision(
                 "applied": False,
                 "reason": "checkpoint_not_implemented_v1",
             },
-            "exploration": dict(exploration),
+            # Challenger-sampling exploration (#325): the labeled, reconstructable
+            # decision for the dev slot (mode + routing_key + pool + selection).
+            # Falls back to the on-policy winner marker when the router did not
+            # produce an exploration decision (static/explicit dev).
+            "exploration": dev_exploration if dev_exploration is not None else dict(exploration),
             "final": {
                 "model": decision.dev.model,
                 "tier": _selected_tier(agents, decision.dev.name, dev_effective_tier),
@@ -1334,6 +1340,107 @@ def reconcile_explicit_reviewer_pools(
     return routing_decision
 
 
+# ── Challenger-sampling exploration integration (#325) ─────────────────
+
+
+@dataclass
+class _DevExplorationResult:
+    """Outcome of the dev-role exploration decision within :func:`assign_models`.
+
+    ``block`` is the recorded exploration block (labeled, reconstructable) that
+    is threaded into the routing_decision. ``challenger_agent`` is non-None only
+    when a steady-state challenger actually replaces the incumbent — cold-start
+    exploring runs keep the deterministic static-tier pick and set this to None.
+    """
+
+    block: dict[str, object]
+    challenger_agent: AgentDef | None
+    winner_name: str | None
+    routing_key: str
+
+
+def _apply_dev_exploration(
+    *,
+    agents: list[AgentDef],
+    incumbent: AgentDef,
+    norm_complexity: str,
+    domains: list[str] | None,
+    model_profiles: dict | None,
+    recency: object | None,
+    exploration_cfg: object,
+    sprint_exploration_budget: int | None,
+    secrets: dict[str, str] | None,
+    rng: random.Random | None,
+) -> _DevExplorationResult:
+    """Compute the dev-role challenger-sampling decision (ADR-0006 clause 8).
+
+    Pure except for the injected RNG's stochastic challenger draw. Delegates the
+    policy (sample floor, cadence, cold start, sprint cap, recording) to
+    :mod:`theforge.exploration`; this function only builds the candidate pool
+    from the agent registry and resolves a selected challenger id back to its
+    :class:`AgentDef`. The exploration block is ALWAYS produced so the dev
+    routing decision stays labeled even in on-policy winner mode.
+    """
+    from theforge import exploration as _exp  # noqa: PLC0415
+
+    key = _exp.RoutingKey.build(phase="dev", complexity=norm_complexity, domains=domains)
+    # Eligible challenger pool: every authed agent (dev role has no tier lock for
+    # exploration — downward exploration to a cheaper tier is in scope, #170).
+    eligible = [a for a in agents if _has_auth(a, secrets)]
+    if incumbent not in eligible:
+        eligible = [incumbent, *eligible]
+    candidates = [
+        _exp.Candidate(id=a.name, model=a.model, provider=a.provider, cli=a.cli, tier=a.tier)
+        for a in eligible
+    ]
+    pool_ids = [c.id for c in candidates]
+
+    cap = int(getattr(exploration_cfg, "per_sprint_cap", 0) or 0)
+    # Exploration is only ACTIVE when the coordinator wired a sprint budget and
+    # the cap is positive. Absent that (single-run/tests/no cap), the block is
+    # recorded in on-policy winner mode — no challenger fires, so deterministic
+    # routing is byte-for-byte unchanged.
+    if sprint_exploration_budget is None or cap <= 0:
+        block = _exp.ExplorationOutcome(
+            mode=_exp.MODE_WINNER,
+            routing_key=key.as_str(),
+            pool=pool_ids,
+            selected=incumbent.name,
+            winner=incumbent.name,
+            reason=_exp.REASON_ON_POLICY,
+        ).to_block()
+        return _DevExplorationResult(block, None, incumbent.name, key.as_str())
+
+    aggregates = _exp.derive_key_aggregates(
+        model_profiles,
+        candidates,
+        key,
+        min_sample_size=int(getattr(exploration_cfg, "min_sample_size", 3)),
+        recency=recency,
+    )
+    winner_present = (
+        _exp.select_winner(aggregates, int(getattr(exploration_cfg, "min_sample_size", 3)))
+        is not None
+    )
+    incumbent_name = incumbent.name if winner_present else None
+    outcome = _exp.decide_exploration(
+        key=key,
+        candidates=candidates,
+        aggregates=aggregates,
+        winner=incumbent_name,
+        explore_every_n=int(getattr(exploration_cfg, "explore_every_n", 5)),
+        min_sample_size=int(getattr(exploration_cfg, "min_sample_size", 3)),
+        sprint_budget_remaining=sprint_exploration_budget,
+        rng=rng or random.Random(),
+    )
+    challenger_agent: AgentDef | None = None
+    if outcome.mode == _exp.MODE_CHALLENGER and outcome.selected is not None:
+        challenger_agent = next((a for a in eligible if a.name == outcome.selected), None)
+    return _DevExplorationResult(
+        outcome.to_block(), challenger_agent, incumbent.name, key.as_str()
+    )
+
+
 # ── Main public function ───────────────────────────────────────────────
 
 
@@ -1351,6 +1458,8 @@ def assign_models(
     routing_origin: str = "preflight",
     domains: list[str] | None = None,
     excluded_for_taint: int = 0,
+    sprint_exploration_budget: int | None = None,
+    explore_rng: random.Random | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -1383,6 +1492,13 @@ def assign_models(
     _dev_domain_match: dict[str, object] = {}
     _preflight_tier: str | None = None
     _dev_effective_tier: str = "cheap"
+    # Challenger-sampling exploration block for the dev role (#325). None until
+    # the dev pick is finalized; then set to the recorded exploration decision
+    # (labeled winner/challenger with routing_key + pool). ``_dev_budget_floor``
+    # holds the tier the budget enforcer must respect — the challenger's tier in
+    # challenger mode so the run spends from the challenger's envelope (clause 8).
+    _dev_exploration: dict[str, object] | None = None
+    _dev_budget_floor: str | None = None
     _promotion_block: dict[str, object] = {
         "fired": False,
         "matching_records": 0,
@@ -1562,6 +1678,36 @@ def assign_models(
                     rationale["dev"] += " (fallback: cheapest, no auth checked)"
         dev_selected_tier = dev_agent.tier
         dev_profile = _agent_to_profile(dev_agent, role="dev")
+
+        # ── Challenger-sampling exploration (#325, ADR-0006 clause 8) ──────
+        # The single sanctioned deviation from deterministic routing. Only
+        # under adaptive routing; the block is always recorded (labeled) so the
+        # decision is reconstructable even in on-policy winner mode.
+        if adaptive_enabled:
+            _exp = _apply_dev_exploration(
+                agents=agents,
+                incumbent=dev_agent,
+                norm_complexity=norm_complexity,
+                domains=effective_domains,
+                model_profiles=effective_profiles,
+                recency=effective_recency,
+                exploration_cfg=assignment_config.exploration,
+                sprint_exploration_budget=sprint_exploration_budget,
+                secrets=secrets,
+                rng=explore_rng,
+            )
+            _dev_exploration = _exp.block
+            if _exp.challenger_agent is not None:
+                dev_agent = _exp.challenger_agent
+                dev_selected_tier = dev_agent.tier
+                dev_profile = _agent_to_profile(dev_agent, role="dev")
+                _dev_budget_floor = dev_agent.tier
+                _dev_effective_tier = dev_agent.tier
+                rationale["dev"] += (
+                    f"; EXPLORATION challenger {dev_agent.model} "
+                    f"(tier {dev_agent.tier}) replaces winner {_exp.winner_name} "
+                    f"for key {_exp.routing_key}"
+                )
 
     # ── Preflight ──────────────────────────────────────────────────────
     if "preflight" in explicit_profiles:
@@ -1744,6 +1890,7 @@ def assign_models(
             dev_domain_signals=_dev_domain_signals,
             dev_domain_match=_dev_domain_match,
             excluded_for_taint=excluded_for_taint,
+            dev_exploration=_dev_exploration,
         )
         return _dc_replace(dec, routing_decision=block)
 
@@ -1784,11 +1931,16 @@ def assign_models(
         and "planner" not in explicit_profiles
     ):
         planner_floor_tier = "strong"
+    # Challenger-tier budget envelope (#325 clause 8): when a challenger fires,
+    # budget eligibility is evaluated against the challenger's tier — the run
+    # spends from the challenger's envelope, not the incumbent winner's — so the
+    # enforcer must not downgrade below the challenger's tier.
+    _dev_floor = _dev_budget_floor or dev_base_tier
     decision = _enforce_budget(
         decision,
         agents,
         cap,
-        dev_floor_tier=dev_base_tier,
+        dev_floor_tier=_dev_floor,
         planner_floor_tier=planner_floor_tier,
         locked_roles=locked_roles,
     )

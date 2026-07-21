@@ -256,6 +256,71 @@ def _cancelled_result(task: TaskStory, state: CoordinatorState) -> CoordinatorRe
     )
 
 
+def _maybe_recover_failed_challenger(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    log_fn: "Callable[[str], None]",
+    logger: StructuredLogger | None,
+) -> ForgeConfig | None:
+    """Recover a failed exploration challenger by retrying through the winner.
+
+    Returns a config whose dev profile is swapped back to the current winner
+    when a challenger attempt just failed, else ``None`` (no recovery — the
+    caller returns the escalation as-is). Fires at most once per story; the
+    failure is recorded as an *exploration* failure in the routing_decision
+    block so it never counts as the story's final routing outcome (ADR-0006
+    clause 8 "recoverable").
+    """
+    import dataclasses  # noqa: PLC0415
+
+    from theforge import exploration as _exp  # noqa: PLC0415
+
+    challenger = state.exploration_challenger
+    winner_profile = state.exploration_winner_dev_profile
+    if not challenger or state.exploration_recovered or winner_profile is None:
+        return None
+
+    outcome = _exp.ExplorationOutcome(
+        mode=_exp.MODE_CHALLENGER,
+        routing_key=challenger.get("routing_key", ""),
+        pool=list(challenger.get("pool") or []),
+        selected=challenger.get("challenger"),
+        winner=challenger.get("winner"),
+        reason="challenger_attempt_failed",
+    )
+    recovery = _exp.recover_from_failed_challenger(outcome)
+    if recovery is None:  # pragma: no cover - guarded above
+        return None
+
+    # Record the failure in the audit substrate view so the exploration outcome
+    # stays reconstructable (the challenger failed; the story ran on the winner).
+    if isinstance(state.routing_decision, dict):
+        _dev_block = state.routing_decision.get("dev")
+        if isinstance(_dev_block, dict) and isinstance(_dev_block.get("exploration"), dict):
+            _dev_block["exploration"]["challenger_failed"] = True
+            _dev_block["exploration"]["recovery"] = recovery.failure_record
+
+    state.exploration_recovered = True
+    # Retry through the winner: fresh dev attempt, clear the challenger's failed
+    # transport/escalation state so the winner starts clean.
+    state.retry_reason = None
+    state.dev_escalated = False
+    state.pending_dev_transport_retry_count = 0
+    state.pending_dev_transport_retry_events = []
+    log_fn(
+        f"  Exploration recovery: challenger {challenger.get('challenger')} failed → "
+        f"retrying through winner {getattr(winner_profile, 'model', challenger.get('winner'))}"
+    )
+    if logger:
+        logger._safe_emit(
+            "exploration_recovery",
+            challenger=challenger.get("challenger"),
+            winner=challenger.get("winner"),
+            routing_key=challenger.get("routing_key"),
+        )
+    return dataclasses.replace(config, dev_profile=winner_profile)
+
+
 def _coordinator_loop(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -422,6 +487,15 @@ def _coordinator_loop(
                 stop_event=stop_event,
             )
             if escalation is not None:
+                # ── Failed-challenger recovery (#325, ADR-0006 clause 8) ──────
+                # If this dev slot ran an exploration challenger and it failed,
+                # the failure must NOT be the story's final routing outcome:
+                # record it as an exploration failure, swap to the current
+                # winner, and retry — once.
+                _recovered_config = _maybe_recover_failed_challenger(state, config, _log, logger)
+                if _recovered_config is not None:
+                    config = _recovered_config
+                    continue
                 return escalation
 
             if state.dev_escalated and state_update_fn is not None:

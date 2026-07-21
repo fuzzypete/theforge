@@ -563,6 +563,15 @@ class CoordinatorState:
     sprint_promotions: dict[str, str] = field(default_factory=dict)
     # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
     # Sticky within a sprint (single forge process lifetime); resets on process exit.
+    # Challenger-sampling exploration (#325, ADR-0006 clause 8). When the router
+    # ran a challenger instead of the winner for this story's dev slot, this
+    # holds the decision (routing_key/challenger/winner) so the coordinator can
+    # RECOVER if the challenger attempt fails: the story is retried through the
+    # winner (below) and the challenger failure is recorded as an *exploration*
+    # failure, not the story's final routing outcome.
+    exploration_challenger: dict | None = None
+    exploration_winner_dev_profile: object | None = None  # ModelProfile to retry through
+    exploration_recovered: bool = False
     start_phase: Phase | None = None  # --from <phase>: skip phases before this
     stop_phase: Phase | None = None  # --until <phase>: stop after this phase
     _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
