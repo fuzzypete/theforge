@@ -173,6 +173,163 @@ def _is_non_verdict_completion(result: Any) -> bool:
     return code in _NON_VERDICT_FAILURE_CODES
 
 
+def _result_is_parseable(result: Any) -> bool:
+    """Return True iff a successful result's output parses to a valid verdict (#1388).
+
+    Parsing review output is a pure function (no LLM, no I/O), so parseability can
+    always be *established* directly rather than *proxied* from transport success.
+    This is the single source of truth for ``completed_parseable_verdict`` wherever
+    the normal parse step has not already determined it — budget-excluded reviewers
+    and early escalation returns never reach that step, and transport success alone
+    must NEVER be counted as a parseable verdict (the recurring corruption this
+    guards against). A failed-transport result is never parseable.
+    """
+    if not result.success:
+        return False
+    if getattr(result, "structured_data", None):
+        parsed = parse_review_json(result.structured_data, result.profile_name)
+    else:
+        parsed = parse_review_output(result.output or "", result.profile_name)
+    return not parsed.parse_errors
+
+
+def _classify_reviewer_attempt(
+    result: Any, parseable: bool, config: ForgeConfig
+) -> tuple[bool, str, str | None]:
+    """Classify one reviewer invocation into (completed, outcome, failure_reason).
+
+    ``completed`` is the single load-bearing signal (#1388): did the reviewer
+    return a schema-valid verdict the coordinator can act on? Every non-success
+    transport/timeout/crash and every transport-success-but-unparseable result
+    records ``completed=False``. ``outcome`` is a coarse audit category; only
+    ``completed`` carries routing weight. Runner exceptions are already normalized
+    into failed ``AgentResult``s upstream (``runners/cli.py``), so every attempt is
+    observable here as a result object, never a raised exception.
+    """
+    if result.success and parseable:
+        return True, "completed", None
+    if result.success and not parseable:
+        return False, "parse_failure", "returned output but no parseable verdict"
+    code = (getattr(result, "failure_code", None) or "").lower()
+    if code == "timeout":
+        return False, "timeout", "runner timeout"
+    if code in _NON_VERDICT_FAILURE_CODES:
+        return False, "non_verdict", "completed turn without submitting a verdict"
+    if getattr(result, "startup_failure", False):
+        return False, "transport_failure", "runner startup failure"
+    if _is_transient_review_failure(result, config):
+        return False, "transport_failure", code or "transient transport failure"
+    return False, "crash", code or f"exit={getattr(result, 'exit_code', None)}"
+
+
+def _append_reviewer_attempt(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    profile: Any,
+    result: Any,
+    *,
+    parseable: bool,
+    cycle_num: int,
+    outcome_override: str | None = None,
+    reason_override: str | None = None,
+) -> None:
+    """Append a single reviewer-attempt record for one invocation (#1388).
+
+    One invocation → one record. Used both for the final per-reviewer result and
+    for superseded transient-failure invocations that a later retry replaced — a
+    failed invocation is still an invocation and must not evaporate from the audit
+    / completion-rate evidence.
+    """
+    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+
+    completed, outcome, reason = _classify_reviewer_attempt(result, parseable, config)
+    if outcome_override is not None:
+        outcome = outcome_override
+    if reason_override is not None:
+        reason = reason_override
+    state.reviewer_attempts.append(
+        {
+            "name": profile.name,
+            "provider": getattr(profile, "provider", None),
+            "model": getattr(profile, "model", None),
+            "cli": getattr(profile, "cli", None),
+            "canonical_id": canonical_id_from_identity(
+                actual_model=getattr(profile, "model", None),
+                provider=getattr(profile, "provider", None),
+                cli=getattr(profile, "cli", None),
+            ),
+            "completed_parseable_verdict": bool(completed),
+            "outcome": outcome,
+            "failure_reason": reason,
+            "cycle": int(cycle_num),
+        }
+    )
+
+
+def _record_reviewer_attempts(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    pool: list,
+    results: list,
+    *,
+    cycle_num: int,
+    parsed_by_name: dict[str, bool] | None = None,
+    budget_excluded: set[str] | None = None,
+) -> None:
+    """Append the final attempt record per invoked reviewer (#1388).
+
+    Writes into ``state.reviewer_attempts`` — the native per-run capture that is
+    both persisted into the audit record and folded into the derived
+    completion-rate profile. Every reviewer that produced a result this cycle gets
+    a record regardless of outcome, closing the survivorship-bias gap where a
+    reviewer that timed out / crashed / returned unparseable output evaporated
+    from the profile. ``parsed_by_name`` maps reviewer name → whether its initial
+    output was a parseable verdict (from the parse step). When a reviewer is absent
+    from that map — a budget-excluded reviewer or an early escalation return that
+    never reached the parse step — parseability is established by parsing the
+    output directly (:func:`_result_is_parseable`), NEVER proxied from transport
+    success. Counting transport success as a parseable verdict is the recurring
+    corruption this guards against.
+
+    This records the FINAL result per reviewer. Superseded transient-failure
+    invocations (a fail that a later retry replaced) are recorded separately, as
+    they happen, inside :func:`_retry_transient_review_failures` — so a
+    fail→retry→success reviewer contributes both a failed and a completed attempt.
+    """
+    budget_excluded = budget_excluded or set()
+    by_name: dict[str, Any] = {}
+    for r in results:
+        by_name.setdefault(r.profile_name, r)
+    for profile in pool:
+        result = by_name.get(profile.name)
+        if result is None:
+            continue  # not invoked this cycle (e.g. demoted before running)
+        # Parseability is established, never proxied from transport success. Use
+        # the explicit parse result from the parse step when we have it; otherwise
+        # parse the output here (a pure function) — a budget-excluded or
+        # escalation-path reviewer that returned unparseable output must record
+        # completed=False even though its transport succeeded (#1388).
+        if parsed_by_name is not None and profile.name in parsed_by_name:
+            parseable = parsed_by_name[profile.name]
+        else:
+            parseable = _result_is_parseable(result)
+        if profile.name in budget_excluded:
+            _append_reviewer_attempt(
+                state,
+                config,
+                profile,
+                result,
+                parseable=parseable,
+                cycle_num=cycle_num,
+                outcome_override="budget_excluded",
+                reason_override="excluded from cycle: over per-reviewer budget",
+            )
+        else:
+            _append_reviewer_attempt(
+                state, config, profile, result, parseable=parseable, cycle_num=cycle_num
+            )
+
+
 def _resolve_prompt_for_reviewer(review_prompts: str | list[str], index: int) -> str:
     """Return the per-reviewer prompt. Shared string fans out to every reviewer."""
     if isinstance(review_prompts, list):
@@ -258,6 +415,15 @@ def _retry_transient_review_failures(
                 state.log_dir,
                 f"review-cycle-{cycle_num}/{profile.name}-transport-retry{retry_count}.yaml",
                 retried.output or "",
+            )
+            # ``current`` is being superseded by ``retried`` — it was a distinct
+            # (failed) reviewer invocation and must be recorded before it is
+            # discarded (#1388). The FINAL surviving result is recorded by
+            # _record_reviewer_attempts; here we capture only the ones a retry
+            # replaced (the original transient failure and any intermediate
+            # retries), all of which are failures.
+            _append_reviewer_attempt(
+                state, config, profile, current, parseable=False, cycle_num=cycle_num
             )
             current = retried
 
@@ -634,6 +800,10 @@ def _run_review_pool(
         stop_event=stop_event,
         progress_channel=progress_channel,
     )
+    # Snapshot every reviewer's transport-level result BEFORE budget filtering so
+    # attempt telemetry (#1388) covers every invocation this cycle, including
+    # reviewers later dropped for going over budget.
+    _all_pool_results = list(pool_results)
 
     # Per-profile budget enforcement BEFORE synthesis — exclude over-budget
     # reviewers from this cycle's results rather than killing the whole run.
@@ -656,7 +826,16 @@ def _run_review_pool(
     if _budget_excluded:
         pool_results = [r for r in pool_results if r.profile_name not in _budget_excluded]
         if not pool_results:
-            # All reviewers excluded — escalate
+            # All reviewers excluded — escalate. Still record the attempts: every
+            # reviewer was invoked (#1388), the budget cap is a spend decision.
+            _record_reviewer_attempts(
+                state,
+                config,
+                pool,
+                _all_pool_results,
+                cycle_num=_cycle_num,
+                budget_excluded=_budget_excluded,
+            )
             state.phase = Phase.ESCALATE
             _excluded = ", ".join(sorted(_budget_excluded))
             state.error = f"All reviewers over budget ({_excluded}) — no reviews to synthesize"
@@ -722,6 +901,17 @@ def _run_review_pool(
                     warning=warning,
                 )
         else:
+            # Quorum collapse — escalate. Record every reviewer attempt (#1388)
+            # before returning: the failures are exactly the survivorship-biased
+            # signal this story is closing over.
+            _record_reviewer_attempts(
+                state,
+                config,
+                pool,
+                _all_pool_results,
+                cycle_num=_cycle_num,
+                budget_excluded=_budget_excluded,
+            )
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Quorum unmet: {len(successful)}/{pool_size} succeeded "
@@ -747,6 +937,18 @@ def _run_review_pool(
         else:
             parsed_results.append(parse_review_output(r.output, r.profile_name))
     names = [r.profile_name for r in successful]
+
+    # Attempt-completion invariant (#1388): every reviewer invocation is recorded
+    # exactly once, classified on ITS OWN outcome — never on a later retry's. The
+    # initial (pool / transient-final) invocation is recorded by the main
+    # _record_reviewer_attempts call below using this snapshot of its FIRST parse
+    # result; each parse-retry invocation is a distinct invocation recorded as it
+    # happens inside the loop. Snapshot here, before the loop mutates
+    # ``parsed_results``, so a retry that later parses cannot rewrite the initial
+    # invocation's failed outcome into a spurious completion.
+    _initial_parseable = {
+        name: (not parsed.parse_errors) for name, parsed in zip(names, parsed_results)
+    }
 
     # ── Per-reviewer parse retry (all modes) ─────────────────────────
     # For each reviewer whose initial output has parse errors, send a corrective
@@ -793,6 +995,12 @@ def _run_review_pool(
                 _log_verbose(
                     f"  {name} retry {_retry_num} agent failed (exit={_retry_result.exit_code})"
                 )
+                # A parse-retry that fails transport is still a distinct reviewer
+                # invocation (#1388) — record it (classified transport/crash) so it
+                # does not vanish from the completion evidence.
+                _append_reviewer_attempt(
+                    state, config, _prof, _retry_result, parseable=False, cycle_num=_cycle_num
+                )
                 break
             _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data, name)
             write_trace(
@@ -803,6 +1011,10 @@ def _run_review_pool(
             )
             if _retried is not None:
                 _log(f"  ✓ {name} retry {_retry_num} succeeded")
+                # The retry produced a parseable verdict — a completed invocation.
+                _append_reviewer_attempt(
+                    state, config, _prof, _retry_result, parseable=True, cycle_num=_cycle_num
+                )
                 parsed_results[i] = _retried
                 state.review_agent_results.append(_retry_result)
                 break
@@ -811,6 +1023,11 @@ def _run_review_pool(
                 _log_verbose(
                     f"  {name} retry {_retry_num} still rejected: "
                     f"{[str(e) for e in _retry_errors]}"
+                )
+                # Transport succeeded but the output is still unparseable — a failed
+                # invocation. Record it before the next retry supersedes it.
+                _append_reviewer_attempt(
+                    state, config, _prof, _retry_result, parseable=False, cycle_num=_cycle_num
                 )
                 parsed = ReviewResult(
                     verdict="REQUEST_CHANGES",
@@ -842,6 +1059,22 @@ def _run_review_pool(
     # data was extracted; callers that use this for PR review attribution will
     # post a COMMENT with potentially empty findings/summary for those reviewers.
     named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
+
+    # Attempt-completion telemetry (#1388): record the INITIAL (pool /
+    # transient-final) invocation for every reviewer, classified on its own first
+    # parse result (``_initial_parseable``) — NOT the post-retry state, which would
+    # collapse a failed initial parse and its successful retry into a single
+    # completion. Parse-retry invocations were already recorded, per invocation,
+    # inside the loop above. Together this gives one record per invocation.
+    _record_reviewer_attempts(
+        state,
+        config,
+        pool,
+        _all_pool_results,
+        cycle_num=_cycle_num,
+        parsed_by_name=_initial_parseable,
+        budget_excluded=_budget_excluded,
+    )
 
     # ── Merge ─────────────────────────────────────────────────────────
     if len(successful) == 1:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import patch
 
 from coord_test_helpers import (
@@ -18,6 +19,312 @@ from theforge.coordinator.state import CoordinatorState, Phase, ReviewCycleMetad
 
 def _meta() -> ReviewCycleMetadata:
     return ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+
+
+class TestTransientRetryAttemptTelemetry:
+    """A recovered transient failure must leave BOTH invocations in the record.
+
+    #1388: a reviewer that times out / has a transport failure and then succeeds
+    on retry is two distinct invocations. The failed one must not evaporate from
+    reviewer_attempts just because a later retry replaced its result.
+    """
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_recovered_transient_failure_records_both_invocations(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r = _make_review_profile("r")
+        config = _make_pool_config(tmp_path, [r], r)
+        config = dataclasses.replace(
+            config,
+            retry=dataclasses.replace(
+                config.retry,
+                demotion_threshold=0,
+                max_review_transport_retries=2,
+                review_transport_retry_backoff_seconds=0.0,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Initial pool invocation times out (transient); the retry then succeeds
+        # with a parseable APPROVE.
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="r", failure_code="timeout")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="r"
+        )
+
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is not None
+        attempts = [a for a in state.reviewer_attempts if a["name"] == "r"]
+        assert len(attempts) == 2
+        assert sorted(a["completed_parseable_verdict"] for a in attempts) == [False, True]
+        failed_attempt = next(a for a in attempts if not a["completed_parseable_verdict"])
+        assert failed_attempt["outcome"] == "timeout"
+        assert mock_run_agent.call_count == 1
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_exhausted_transient_retries_record_every_invocation(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r = _make_review_profile("r")
+        config = _make_pool_config(tmp_path, [r], r)
+        config = dataclasses.replace(
+            config,
+            retry=dataclasses.replace(
+                config.retry,
+                demotion_threshold=0,
+                max_review_transport_retries=2,
+                review_transport_retry_backoff_seconds=0.0,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Every invocation (initial + 2 retries) is a transient failure.
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="", profile_name="r", failure_code="timeout")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=False, output="", profile_name="r", failure_code="timeout"
+        )
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        # 1 initial + 2 retries = 3 invocations, all recorded as failed.
+        attempts = [a for a in state.reviewer_attempts if a["name"] == "r"]
+        assert len(attempts) == 3
+        assert all(not a["completed_parseable_verdict"] for a in attempts)
+
+
+class TestParseRetryAttemptTelemetry:
+    """A recovered parse failure must leave BOTH invocations in the record.
+
+    #1388: a reviewer whose initial output is unparseable and whose parse retry
+    then produces a valid verdict is two distinct invocations. The failed initial
+    parse must not collapse into a single completed attempt just because a later
+    retry parsed.
+    """
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_recovered_parse_failure_records_both_invocations(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r = _make_review_profile("r")
+        config = _make_pool_config(tmp_path, [r], r)
+        config = dataclasses.replace(
+            config, retry=dataclasses.replace(config.retry, demotion_threshold=0)
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Initial transport succeeds but output is unparseable; the parse retry
+        # returns a valid APPROVE verdict.
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="r"
+        )
+
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=2,
+        )
+
+        assert merged is not None
+        attempts = [a for a in state.reviewer_attempts if a["name"] == "r"]
+        assert len(attempts) == 2
+        assert sorted(a["completed_parseable_verdict"] for a in attempts) == [False, True]
+        failed_attempt = next(a for a in attempts if not a["completed_parseable_verdict"])
+        assert failed_attempt["outcome"] == "parse_failure"
+        assert mock_run_agent.call_count == 1
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_exhausted_parse_retries_record_every_invocation(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r = _make_review_profile("r")
+        config = _make_pool_config(tmp_path, [r], r)
+        config = dataclasses.replace(
+            config, retry=dataclasses.replace(config.retry, demotion_threshold=0)
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Every invocation (initial + 2 parse retries) stays unparseable.
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=PARSE_ERROR_OUTPUT, profile_name="r"
+        )
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=2,
+        )
+
+        # 1 initial + 2 parse retries = 3 invocations, all failed (parse_failure).
+        attempts = [a for a in state.reviewer_attempts if a["name"] == "r"]
+        assert len(attempts) == 3
+        assert all(not a["completed_parseable_verdict"] for a in attempts)
+        assert all(a["outcome"] == "parse_failure" for a in attempts)
+
+
+class TestBudgetExcludedAttemptTelemetry:
+    """A budget-excluded reviewer's completion must reflect its ACTUAL output.
+
+    #1388: budget exclusion happens before the parse step, so completion cannot be
+    proxied from transport success. An excluded reviewer with unparseable output is
+    NOT a completed verdict; one with a valid verdict IS (the exclusion is a spend
+    decision, not a completion failure). Parseability is established by parsing,
+    never assumed from transport success.
+    """
+
+    def _config(self, tmp_path, over, keep):
+        config = _make_pool_config(tmp_path, [over, keep], keep)
+        return dataclasses.replace(
+            config,
+            retry=dataclasses.replace(
+                config.retry, demotion_threshold=0, review_quorum_threshold=1
+            ),
+        )
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_budget_excluded_unparseable_records_not_completed(
+        self, mock_pool, _mock_log, tmp_path
+    ):
+        over = _make_review_profile("over")
+        keep = _make_review_profile("keep")
+        config = self._config(tmp_path, over, keep)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # `over` returns UNPARSEABLE output and is over budget (cost 5.0 > 1.0),
+        # so it is excluded before parsing. It must NOT record as completed.
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=PARSE_ERROR_OUTPUT, profile_name="over", cost_usd=5.0
+            ),
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="keep", cost_usd=0.1
+            ),
+        ]
+
+        _successful, _failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=True,
+        )
+
+        assert merged is not None
+        by_name = {a["name"]: a for a in state.reviewer_attempts}
+        assert by_name["over"]["completed_parseable_verdict"] is False
+        assert by_name["over"]["outcome"] == "budget_excluded"
+        assert by_name["keep"]["completed_parseable_verdict"] is True
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_budget_excluded_parseable_records_completed(self, mock_pool, _mock_log, tmp_path):
+        over = _make_review_profile("over")
+        keep = _make_review_profile("keep")
+        config = self._config(tmp_path, over, keep)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # `over` returns a VALID verdict but is over budget: it DID complete a
+        # parseable verdict; the exclusion is a spend decision, so completed=True.
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="over", cost_usd=5.0
+            ),
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="keep", cost_usd=0.1
+            ),
+        ]
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=True,
+        )
+
+        by_name = {a["name"]: a for a in state.reviewer_attempts}
+        assert by_name["over"]["completed_parseable_verdict"] is True
+        assert by_name["over"]["outcome"] == "budget_excluded"
 
 
 class TestReviewerDemotion:

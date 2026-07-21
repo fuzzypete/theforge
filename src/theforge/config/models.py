@@ -829,4 +829,8 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
         adaptive_enabled=bool(assignment_raw.get("adaptive_enabled", True)),
         recency=_parse_recency(assignment_raw.get("recency")),
         exploration=_parse_exploration(assignment_raw.get("exploration")),
+        reviewer_completion_threshold=float(
+            assignment_raw.get("reviewer_completion_threshold", 0.5)
+        ),
+        reviewer_completion_min_runs=int(assignment_raw.get("reviewer_completion_min_runs", 5)),
     )

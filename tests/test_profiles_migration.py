@@ -31,6 +31,49 @@ from theforge.model_profiles import (
     migrate_profiles_data,
 )
 
+# ── reviewer completion-rate migration reporting (#1388) ────────────────
+
+
+def test_migrate_report_notes_reviewer_completion_dimension_when_empty(capsys):
+    from theforge.cli.migrate_profiles import _print_profile_report
+
+    # Already-canonical install with no legacy aliases: the report must still note
+    # that reviewer completion-rate is a new telemetry-derived dimension.
+    _print_profile_report([])
+    out = capsys.readouterr().out
+    assert "reviewer completion-rate is a new telemetry-derived dimension" in out
+
+
+def test_migrate_report_surfaces_reviewer_completion_counts(capsys):
+    from theforge.cli.migrate_profiles import _print_profile_report
+
+    report = [
+        {
+            "canonical_id": "openai/gpt/api",
+            "merged_from": [
+                {
+                    "key": "gpt",
+                    "runs": 0,
+                    "successes": 0.0,
+                    "cost_usd": 0.0,
+                    "review_attempted": 10,
+                    "review_completed": 4,
+                }
+            ],
+            "combined": {
+                "runs": 0,
+                "successes": 0.0,
+                "cost_usd": 0.0,
+                "review_attempted": 10,
+                "review_completed": 4,
+            },
+        }
+    ]
+    _print_profile_report(report)
+    out = capsys.readouterr().out
+    assert "review completion 4/10" in out
+
+
 # ── canonical_id_from_identity ──────────────────────────────────────────
 
 

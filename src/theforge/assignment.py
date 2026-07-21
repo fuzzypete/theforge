@@ -478,6 +478,69 @@ def _reviewer_health_rationale(
     return f" [{'; '.join(parts)}]"
 
 
+def _rerank_reviewers_by_completion(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    *,
+    threshold: float,
+    min_runs: int,
+    recency: object | None = None,
+    signals_out: dict[str, dict] | None = None,
+    audit: dict[str, object] | None = None,
+) -> list[AgentDef]:
+    """Stable sort-after reviewers below the completion-rate floor (#1388).
+
+    The reviewer analog of :func:`_rerank_by_profiles`. A reviewer whose
+    recency-weighted completion rate is below ``threshold`` — *and only once it
+    has accumulated ``min_runs`` attempts* — is sorted **after** every
+    higher-completion candidate. This is a sort-after, not a filter-out: a
+    low-completion reviewer stays in the pool and is still selected when no
+    better candidate is available (mirroring the dev-side fallback), so it is
+    never permanently locked out.
+
+    Below ``min_runs`` a reviewer's signal floor is ``"fail"`` (cold start), so it
+    is not deprioritized and ordering falls through to the incoming tier/budget/
+    cross-provider order. The sort is stable on the original index, so ties (and
+    every non-deprioritized reviewer) keep the existing ordering exactly.
+    """
+    if not model_profiles or not candidates:
+        return candidates
+    from theforge.model_profiles import get_review_signal  # noqa: PLC0415
+
+    rows: list[tuple[int, int, AgentDef]] = []
+    deprioritized: list[str] = []
+    for idx, agent in enumerate(candidates):
+        signal = get_review_signal(
+            model_profiles,
+            agent.name,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+            recency=recency,
+        )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        rate = signal["rate"]
+        is_low = signal["floor"] == "pass" and rate is not None and rate < threshold
+        if is_low:
+            deprioritized.append(agent.name)
+        rows.append((1 if is_low else 0, idx, agent))
+
+    reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
+    if audit is not None:
+        original_order = [a.name for a in candidates]
+        final_order = [a.name for a in reranked]
+        audit["mechanism"] = "reviewer_completion_rate"
+        audit["threshold"] = threshold
+        audit["min_runs"] = min_runs
+        audit["applied"] = original_order != final_order
+        audit["deprioritized"] = deprioritized
+        audit["original_order"] = original_order
+        audit["final_order"] = final_order
+    return reranked
+
+
 def _select_reviewers(
     agents: list[AgentDef],
     tier: str,
@@ -486,6 +549,13 @@ def _select_reviewers(
     exclude_model: str | None = None,
     secrets: dict[str, str] | None = None,
     unhealthy_models: set[str] | None = None,
+    *,
+    model_profiles: dict | None = None,
+    completion_threshold: float = 0.5,
+    completion_min_runs: int = 5,
+    recency: object | None = None,
+    completion_signals_out: dict[str, dict] | None = None,
+    completion_audit: dict[str, object] | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -500,6 +570,11 @@ def _select_reviewers(
     keeps the router from re-picking a model that has just returned a
     provider-shape failure (capacity, rate-limit, 5xx) within the recent
     health window.
+    When ``model_profiles`` is provided, reviewers whose recency-weighted
+    completion rate is below ``completion_threshold`` (after ``completion_min_runs``
+    attempts) are sorted *after* higher-completion candidates within this pool —
+    a sort-after that runs on top of the existing tier/exclude/health selection,
+    never as a replacement for it (#1388).
     """
     # Build candidate list spanning the full tier ladder (strong → mid → cheap).
     # Stronger reviewers are always preferred (listed first), but the pool descends
@@ -552,6 +627,20 @@ def _select_reviewers(
         healthy = [a for a in candidates if a.name not in unhealthy_models]
         if healthy:
             candidates = healthy
+
+    # Completion-rate rerank (#1388): sort low-completion reviewers after
+    # higher-completion candidates within the pool built above (tier / self-
+    # exclusion / health all already applied). Sort-after, not filter-out — the
+    # pool membership is unchanged, only its order.
+    candidates = _rerank_reviewers_by_completion(
+        candidates,
+        model_profiles,
+        threshold=completion_threshold,
+        min_runs=completion_min_runs,
+        recency=recency,
+        signals_out=completion_signals_out,
+        audit=completion_audit,
+    )
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -1080,6 +1169,49 @@ def _reviewer_demotion_check(
     }
 
 
+def _reviewer_completion_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+    selected_names: set[str],
+) -> dict[str, object]:
+    """Build the per-reviewer-role completion_check block (#1388, ADR-0006 c7).
+
+    Records the reviewer completion-rate rerank so the routing_decision explains
+    when (and how) attempt-completion history shaped the reviewer ordering. Only
+    surfaces the mechanism when it *fired* (changed the order) per AC — but keeps
+    the consulted per-candidate signal (attempted/completed counts, rate,
+    sample-floor status, threshold result) for the reviewers it weighed so the
+    decision stays reconstructable. Returns an empty dict when no reviewer profile
+    was consulted (e.g. static routing / no profiles), which the caller omits.
+    """
+    if not signals and not audit:
+        return {}
+    fired = bool(audit and audit.get("applied"))
+    per_candidate: dict[str, object] = {}
+    for name, sig in (signals or {}).items():
+        per_candidate[name] = {
+            "attempted": sig.get("attempted"),
+            "completed": sig.get("completed"),
+            "raw": sig.get("raw"),
+            "weighted": sig.get("weighted"),
+            "rate": sig.get("rate"),
+            "floor": sig.get("floor"),
+            "selected": name in selected_names,
+        }
+    block: dict[str, object] = {
+        "mechanism": "reviewer_completion_rate",
+        "fired": fired,
+        "threshold": audit.get("threshold") if audit else None,
+        "min_runs": audit.get("min_runs") if audit else None,
+        "deprioritized": (audit.get("deprioritized") if audit else None) or [],
+        "signals": per_candidate,
+    }
+    if fired and audit:
+        block["original_order"] = audit.get("original_order")
+        block["final_order"] = audit.get("final_order")
+    return block
+
+
 def _build_routing_decision(
     decision: AssignmentDecision,
     agents: list[AgentDef],
@@ -1102,6 +1234,10 @@ def _build_routing_decision(
     dev_domain_match: dict[str, object] | None = None,
     excluded_for_taint: int = 0,
     dev_exploration: dict[str, object] | None = None,
+    pr_completion_signals: dict[str, dict] | None = None,
+    pr_completion_audit: dict[str, object] | None = None,
+    cr_completion_signals: dict[str, dict] | None = None,
+    cr_completion_audit: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
@@ -1171,6 +1307,14 @@ def _build_routing_decision(
     cr_exclude = None if "code_review" in explicit_roles else dev_model
     cr_fired, cr_depri, cr_fellback = _reviewer_health_context(
         agents, cr_selected, cr_exclude, "code_review" in explicit_roles, unhealthy_models, secrets
+    )
+
+    # Reviewer completion-rate rerank (#1388) explanation per reviewer role.
+    pr_completion_block = _reviewer_completion_check(
+        pr_completion_signals, pr_completion_audit, pr_selected
+    )
+    cr_completion_block = _reviewer_completion_check(
+        cr_completion_signals, cr_completion_audit, cr_selected
     )
 
     return {
@@ -1262,6 +1406,7 @@ def _build_routing_decision(
             "demotion_check": _reviewer_demotion_check(
                 pr_fired, pr_depri, pr_fellback, unhealthy_models
             ),
+            **({"completion_check": pr_completion_block} if pr_completion_block else {}),
             "exploration": dict(exploration),
             "final": {
                 "models": [p.model for p in decision.plan_reviewers],
@@ -1280,6 +1425,7 @@ def _build_routing_decision(
             "demotion_check": _reviewer_demotion_check(
                 cr_fired, cr_depri, cr_fellback, unhealthy_models
             ),
+            **({"completion_check": cr_completion_block} if cr_completion_block else {}),
             "exploration": dict(exploration),
             "final": {
                 "models": [p.model for p in decision.code_reviewers],
@@ -1514,6 +1660,14 @@ def assign_models(
     # the decision influential or explicitly non-influential.
     _dev_domain_signals: dict[str, dict] = {}
     _dev_domain_match: dict[str, object] = {}
+    # Reviewer completion-rate rerank accumulators (#1388), per reviewer role.
+    # Populated by _select_reviewers and consumed by _build_routing_decision so
+    # the routing_decision block records the consulted signal and ranking effect
+    # only when reviewer completion actually shaped selection.
+    _pr_completion_signals: dict[str, dict] = {}
+    _pr_completion_audit: dict[str, object] = {}
+    _cr_completion_signals: dict[str, dict] = {}
+    _cr_completion_audit: dict[str, object] = {}
     _preflight_tier: str | None = None
     _dev_effective_tier: str = "cheap"
     # Challenger-sampling exploration block for the dev role (#325). None until
@@ -1823,6 +1977,12 @@ def assign_models(
             exclude_model=planner_model,
             secrets=secrets,
             unhealthy_models=unhealthy_models,
+            model_profiles=effective_profiles,
+            completion_threshold=assignment_config.reviewer_completion_threshold,
+            completion_min_runs=assignment_config.reviewer_completion_min_runs,
+            recency=effective_recency,
+            completion_signals_out=_pr_completion_signals,
+            completion_audit=_pr_completion_audit,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -1874,6 +2034,12 @@ def assign_models(
             exclude_model=dev_model,
             secrets=secrets,
             unhealthy_models=unhealthy_models,
+            model_profiles=effective_profiles,
+            completion_threshold=assignment_config.reviewer_completion_threshold,
+            completion_min_runs=assignment_config.reviewer_completion_min_runs,
+            recency=effective_recency,
+            completion_signals_out=_cr_completion_signals,
+            completion_audit=_cr_completion_audit,
         )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -1930,6 +2096,10 @@ def assign_models(
             dev_domain_match=_dev_domain_match,
             excluded_for_taint=excluded_for_taint,
             dev_exploration=_dev_exploration,
+            pr_completion_signals=_pr_completion_signals,
+            pr_completion_audit=_pr_completion_audit,
+            cr_completion_signals=_cr_completion_signals,
+            cr_completion_audit=_cr_completion_audit,
         )
         return _dc_replace(dec, routing_decision=block)
 
