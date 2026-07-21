@@ -20,12 +20,14 @@ from theforge.model_profiles import (
 )
 
 
-def _fold(data: dict, model: str, success: bool, *, tainted: bool = False) -> None:
-    """Fold one genuine dev run for ``model`` at medium complexity."""
+def _fold(
+    data: dict, model: str, success: bool, *, tainted: bool = False, complexity: str = "medium"
+) -> None:
+    """Fold one genuine dev run for ``model`` at the given complexity band."""
     apply_run(
         data,
         RunOutcome(
-            complexity="medium",
+            complexity=complexity,
             dev_model=model,
             dev_success=success,
             dev_iterations=1,
@@ -75,6 +77,59 @@ def test_strong_history_survives_one_recent_escalation():
     assert sig["raw"] == round(40 / 41, 4)
     # Weighted stays high — the lone recent failure barely dents 40 clean runs.
     assert sig["weighted"] > 0.9
+
+
+def _legacy_bucket_profile() -> dict:
+    """A legacy/migrated bucket: cumulative counts, no ``_recent`` ring.
+
+    Mirrors a profile written before #1392 (or produced by migrating cumulative
+    history) — 40 admissible successes recorded only as accumulators, with no
+    per-run outcome ring to weight.
+    """
+    return {
+        "models": {
+            "legacy": {
+                "dev": {
+                    "runs": 40,
+                    "_successes": 40,
+                    "success_rate": 1.0,
+                    "by_complexity": {
+                        "large": {"runs": 40, "_successes": 40, "success_rate": 1.0}
+                    },
+                }
+            }
+        }
+    }
+
+
+def test_legacy_bucket_not_swung_to_zero_by_single_new_run():
+    """A legacy bucket that passes the lifetime floor on 40 cumulative successes
+    must not collapse to weighted 0.0 when a single new failure is folded — the
+    one new outcome would otherwise be the entire weighted ring (#1392 review)."""
+    data = _legacy_bucket_profile()
+    _fold(data, "legacy", False, complexity="large")  # first ring outcome = [0]
+
+    sig = get_dev_signal(data, "legacy", "large")
+    assert sig["raw"] == round(40 / 41, 4)  # 41 lifetime runs, 40 successes
+    # Ring holds a single outcome (< min_runs) → weighted falls back to raw, so
+    # the strong long-term history still drives routing.
+    assert sig["weighted"] == sig["raw"]
+    assert sig["rate"] == sig["raw"]
+
+
+def test_legacy_bucket_weighted_takes_over_once_ring_reaches_floor():
+    """The fallback is bounded: once the ring itself reaches min_runs outcomes,
+    recency legitimately drives the weighted value (the floor governs the ring
+    exactly as it governs the lifetime rate)."""
+    data = _legacy_bucket_profile()
+    for _ in range(3):  # ring grows to [0, 0, 0] == min_runs
+        _fold(data, "legacy", False, complexity="large")
+
+    sig = get_dev_signal(data, "legacy", "large", 3)
+    assert sig["raw"] == round(40 / 43, 4)
+    # Three recent failures now constitute a full-floor ring → recency drives.
+    assert sig["weighted"] == 0.0
+    assert sig["rate"] == 0.0
 
 
 def test_below_min_runs_returns_none_regardless_of_weighting():

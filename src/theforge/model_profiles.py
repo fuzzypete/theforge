@@ -882,6 +882,7 @@ def _weighted_rate(
     mode: str = DEFAULT_RECENCY_MODE,
     half_life_runs: float = DEFAULT_RECENCY_HALF_LIFE_RUNS,
     window: int = DEFAULT_RECENCY_WINDOW,
+    min_samples: int = 0,
 ) -> float | None:
     """Recency-weight a bounded ring of ``0/1`` dev outcomes (ADR-0006 clause 2.4).
 
@@ -901,14 +902,22 @@ def _weighted_rate(
       rate), an operator kill-switch.
 
     Falls back to ``fallback`` when no windowed data exists (e.g. a legacy bucket
-    predating the ring), so the value is never silently zeroed.
+    predating the ring), so the value is never silently zeroed. ``min_samples``
+    extends that guard to a sample floor on the *ring itself*: until the ring has
+    accumulated at least ``min_samples`` outcomes, the weighted value falls back
+    to ``fallback`` (the lifetime raw rate). This is what keeps recency weighting
+    composing cleanly with the sample floor for a legacy/migrated bucket whose
+    lifetime ``runs`` already passes ``min_runs`` but whose ring holds only a
+    handful of freshly-folded outcomes — one new failure must not be allowed to
+    become the entire weighted sample and swing a model with strong long-term
+    history to 0.0.
     """
     if mode == "off":
         return fallback
     if not recent:
         return fallback
     capped = recent[-window:] if window and window > 0 else list(recent)
-    if not capped:
+    if not capped or len(capped) < min_samples:
         return fallback
     if mode == "window" or not half_life_runs or half_life_runs <= 0:
         return round(sum(capped) / len(capped), 4)
@@ -946,8 +955,10 @@ def get_dev_signal(
     - ``raw``: the ungated lifetime cumulative success ratio (``None`` when no
       admissible runs exist), kept so the audit can show raw-vs-weighted drift.
     - ``weighted``: the recency-weighted value over the bucket's ``_recent`` ring
-      (:func:`_weighted_rate`); falls back to ``raw`` for legacy buckets with no
-      ring. ``rate`` is this value gated by the sample floor.
+      (:func:`_weighted_rate`); falls back to ``raw`` until the ring itself holds
+      at least ``min_runs`` outcomes, so a legacy/migrated bucket that passes the
+      floor on cumulative history but has a nearly-empty ring is not driven by a
+      single freshly-folded run. ``rate`` is this value gated by the sample floor.
     - ``runs``: admissible sample count consulted (tainted / harness-terminated
       runs already excluded upstream).
     - ``tainted_runs``: how many runs were excluded from this bucket for taint
@@ -1003,8 +1014,18 @@ def get_dev_signal(
                 runs += entry_runs
                 successes += _success_count(bc, entry_runs)
     raw = round(successes / runs, 4) if runs > 0 else None
+    # The weighted value is gated on the *ring* reaching the same sample floor,
+    # not just lifetime ``runs``: a legacy/migrated bucket can pass ``min_runs``
+    # on cumulative history while its ring holds only a few freshly-folded
+    # outcomes. Below that ring floor the weighted value falls back to raw so a
+    # single new run cannot become the entire weighted sample (#1392 review).
     weighted = _weighted_rate(
-        recent, fallback=raw, mode=mode, half_life_runs=half_life, window=window
+        recent,
+        fallback=raw,
+        mode=mode,
+        half_life_runs=half_life,
+        window=window,
+        min_samples=min_runs,
     )
     floor_ok = runs >= min_runs and runs > 0
     return {
