@@ -545,7 +545,9 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
 # ── Profile selection ─────────────────────────────────────────────────
 
 
-def _build_diagnose_profile(config: ForgeConfig) -> ModelProfile:
+def _build_diagnose_profile(
+    config: ForgeConfig, *, timeout_seconds: float | None = None
+) -> ModelProfile:
     """Derive the investigative-agent profile from existing config.
 
     Reuses ``preflight_profile`` as the base — it's already an
@@ -553,13 +555,18 @@ def _build_diagnose_profile(config: ForgeConfig) -> ModelProfile:
     and overlays the diagnose-specific budget and timeout from
     ``config.diagnose``.  This avoids inventing a parallel profile-loading
     path while still giving the diagnose flow its own resource envelope.
+
+    ``timeout_seconds``, if given, overrides ``config.diagnose.timeout_seconds``
+    for this invocation only (e.g. ``forge diagnose --timeout``).
     """
     base = config.preflight_profile
     return dataclasses.replace(
         base,
         name="diagnose",
         budget_usd=config.diagnose.budget_usd,
-        timeout_seconds=config.diagnose.timeout_seconds,
+        timeout_seconds=(
+            timeout_seconds if timeout_seconds is not None else config.diagnose.timeout_seconds
+        ),
         phase="diagnose",
     )
 
@@ -719,6 +726,7 @@ def run_diagnose_flow(
     output_destination: str | None = None,
     dry_run: bool = False,
     confirm_landing: "callable | None" = None,
+    timeout_seconds: float | None = None,
 ) -> DiagnoseResult:
     """Run the diagnose flow for a single issue.
 
@@ -729,10 +737,12 @@ def run_diagnose_flow(
     can drive interactive mode without TTY.
 
     Budget and timeout enforcement: the agent profile carries
-    ``timeout_seconds`` and ``budget_usd`` from ``config.diagnose``.  The
-    runner enforces wall-clock timeout; this function additionally treats
-    a failed agent run as a partial-result outcome rather than a hard
-    failure, returning whatever YAML the agent emitted before exit.
+    ``timeout_seconds`` and ``budget_usd`` from ``config.diagnose``.  Pass
+    ``timeout_seconds`` to override the configured value for this run only
+    (e.g. ``forge diagnose --timeout``).  The runner enforces wall-clock
+    timeout; this function additionally treats a failed agent run as a
+    partial-result outcome rather than a hard failure, returning whatever
+    YAML the agent emitted before exit.
     """
     _ensure_runner()
     state = DiagnoseState(
@@ -797,6 +807,7 @@ def run_diagnose_flow(
             output_destination=output_destination,
             dry_run=dry_run,
             confirm_landing=confirm_landing,
+            timeout_seconds=timeout_seconds,
             emit=_emit,
             emit_phase=_emit_phase,
         )
@@ -823,6 +834,7 @@ def _run_diagnose_flow_body(
     output_destination: str | None,
     dry_run: bool,
     confirm_landing: "callable | None",
+    timeout_seconds: float | None = None,
     emit: "callable",
     emit_phase: "callable",
 ) -> DiagnoseResult:
@@ -921,7 +933,7 @@ def _run_diagnose_flow_body(
 
     # ── INVESTIGATE ───────────────────────────────────────────────────
     emit_phase(DiagnosePhase.INVESTIGATE)
-    profile = _build_diagnose_profile(config)
+    profile = _build_diagnose_profile(config, timeout_seconds=timeout_seconds)
     mode = "interactive" if interactive else "autonomous"
     prompt = build_diagnose_prompt(
         issue_number=issue_number,
