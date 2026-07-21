@@ -1,6 +1,8 @@
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
+from theforge.domains import taxonomy_prompt_lines
+
 from .context_assembler import ContextPack
 from .conventions import render_conventions_block
 from .plan_parser import PlanData
@@ -34,6 +36,8 @@ def build_preflight_prompt(
 
             {assembled_context.content}
         """)
+
+    domain_taxonomy = taxonomy_prompt_lines()
 
     return dedent(f"""\
         You are a bounded forensic classifier for **{task.name}**.
@@ -177,6 +181,22 @@ def build_preflight_prompt(
 
         When verdict is ALREADY_DONE or BLOCKED, set work_type to "feature" as a placeholder.
 
+        ## Domain Classification
+
+        When verdict is PROCEED, also tag the story with zero or more **domains**
+        describing the *kind* of work it involves (what area of the codebase it
+        stresses), distinct from work_type (which describes the shape of the
+        change). Select tags ONLY from this fixed taxonomy — do not invent new
+        tags; any tag outside this set is dropped:
+
+{domain_taxonomy}
+
+        Emit `domains: []` when no taxonomy tag clearly applies. Prefer a small,
+        precise set (usually 1–3 tags) over speculative breadth — a tag should
+        reflect a domain the story genuinely exercises, not one it merely
+        mentions in passing. When verdict is ALREADY_DONE or BLOCKED, emit
+        `domains: []`.
+
         ## Spec Sufficiency Classification
 
         When verdict is PROCEED, also assess whether this spec is
@@ -244,6 +264,7 @@ def build_preflight_prompt(
         complexity_score: <integer 1-10>
         complexity: small | medium | large
         work_type: feature | refactor | mechanical | bug
+        domains: []  # or a list of tags from the fixed domain taxonomy
         contract_change: true | false
         reason: "<1-2 sentence explanation of your classification>"
         sufficiency: implementation_ready | needs_planning

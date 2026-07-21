@@ -103,6 +103,9 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         else None,
         preflight_cost_usd=state.total_preflight_cost_measured,
         reviewers=_extract_reviewers(state),
+        # Domain tags (#155) recorded by preflight, folded into per-domain dev
+        # slices so future routing can prefer models strong in the story's domains.
+        domains=list(state.preflight_domains or []),
     )
 
 

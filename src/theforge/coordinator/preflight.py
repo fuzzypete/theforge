@@ -429,6 +429,38 @@ def _parse_preflight_work_type(output: str) -> str:
     return "feature"
 
 
+def _parse_preflight_domains(output: str) -> list[str]:
+    """Extract the ``domains`` list from preflight agent output.
+
+    Returns a clean, ordered, de-duplicated list of canonical taxonomy tags
+    (see :mod:`theforge.domains`). Tags outside the fixed taxonomy are dropped,
+    mirroring how ``_parse_preflight_work_type`` rejects values outside its enum
+    — unknown tags are never carried into routing. A missing field, a non-list
+    value, or malformed YAML all yield ``[]`` (an explicit "no domains" fact,
+    routing-safe as a current-run signal under ADR-0006 bucket A).
+    """
+    from theforge.domains import validate_domains  # noqa: PLC0415
+
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            return validate_domains(parsed.get("domains"))
+    except yaml.YAMLError:
+        pass
+
+    return []
+
+
 def _parse_preflight_warnings(output: str) -> list[str]:
     """Extract warnings list from preflight agent output. Returns [] if absent."""
     yaml_text = output
@@ -1133,6 +1165,7 @@ def _apply_preflight_config(
         secrets=config.secrets,
         model_profiles=_model_profiles,
         unhealthy_models=_unhealthy if _unhealthy else None,
+        domains=list(state.preflight_domains or []),
     )
 
     # Splice the full explicit pools back into the decision so audit and

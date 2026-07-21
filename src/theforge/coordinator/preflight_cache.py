@@ -118,6 +118,7 @@ def apply_cached_preflight_state(
     state.preflight_complexity_evidence = list(cached_state.preflight_complexity_evidence or [])
     state.preflight_sufficiency = cached_state.preflight_sufficiency
     state.preflight_work_type = cached_state.preflight_work_type
+    state.preflight_domains = list(cached_state.preflight_domains or [])
     state.preflight_contract_change = cached_state.preflight_contract_change
     state.preflight_bundle_candidate = cached_state.preflight_bundle_candidate
     state.preflight_warnings = list(cached_state.preflight_warnings or [])
