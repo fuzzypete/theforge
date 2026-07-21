@@ -17,11 +17,6 @@ from pathlib import Path
 from theforge.assignment import AssignmentConfig, assign_models
 from theforge.config import AgentDef
 from theforge.coordinator.preflight import _parse_preflight_domains
-from theforge.domains import (
-    DOMAIN_TAXONOMY,
-    normalize_domain,
-    validate_domains,
-)
 from theforge.model_profiles import (
     RunOutcome,
     apply_run,
@@ -29,32 +24,8 @@ from theforge.model_profiles import (
 )
 from theforge.task import TaskStory, build_preflight_prompt
 
-# ── Taxonomy ───────────────────────────────────────────────────────────
-
-
-class TestTaxonomy:
-    def test_known_tags_pass(self):
-        for tag in ("react", "css", "api", "database", "cli", "config"):
-            assert tag in DOMAIN_TAXONOMY
-            assert normalize_domain(tag) == tag
-
-    def test_normalization_folds_case_and_separators(self):
-        assert normalize_domain("React") == "react"
-        assert normalize_domain(" data_processing ") == "data-processing"
-        assert normalize_domain("Data Processing") == "data-processing"
-
-    def test_unknown_tag_dropped(self):
-        assert normalize_domain("blockchain") is None
-        assert normalize_domain(123) is None
-
-    def test_validate_domains_dedups_and_drops_unknown(self):
-        assert validate_domains(["react", "css", "bogus", "React"]) == ["react", "css"]
-
-    def test_validate_domains_non_list_is_empty(self):
-        assert validate_domains(None) == []
-        assert validate_domains("react") == []
-        assert validate_domains({"react": 1}) == []
-
+# Taxonomy-module unit coverage lives in tests/test_domains.py (the source
+# mirror); this file covers the preflight→aggregation→routing seam.
 
 # ── Preflight parsing + prompt surface ─────────────────────────────────
 
