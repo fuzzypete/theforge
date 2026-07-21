@@ -59,6 +59,12 @@ from theforge.sprint.status_reader import (
 # dependency-blocked skips, and launch-guard collisions. These route to the
 # SKIPPED / INTAKE section rather than getting their own FAILED heading, because
 # the operator's recovery action is reshaping/scheduling, not failure triage.
+#
+# ``sprint_state_stranded`` is deliberately NOT in this set: a worktree stranded
+# by a prior generation is a recoverable failure whose recovery is
+# resume/reconcile (not reshaping/scheduling), so it must render under its own
+# FAILED heading via ``_print_failed_by_class`` — the generic recovery path for
+# any primary class not routed to SKIPPED / INTAKE.
 _SKIPPED_INTAKE_CLASSES = frozenset(
     {
         "intake_shape",

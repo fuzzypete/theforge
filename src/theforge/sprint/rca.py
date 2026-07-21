@@ -51,6 +51,14 @@ DONE_OUTCOMES = frozenset({"DONE", "ALREADY_DONE"})
 # Residual class assigned when no mechanical primary rule matches a story.
 UNKNOWN_CLASS = "unknown_needs_rca"
 
+# Drop reason string a re-exec launch guard records for a worktree that belongs
+# to a prior generation's *unfinished* story (stranded sprint state) rather than
+# a genuine fresh collision. Matched as a literal here — the engine is a pure
+# function over on-disk artifacts and deliberately avoids importing the
+# collision/launch-guard modules (which pull in subprocess/lock machinery). Keep
+# this in sync with ``launch_guard.REASON_STRANDED_WORKTREE``.
+_STRANDED_WORKTREE_REASON = "stranded-prior-generation-worktree"
+
 _EXCERPT_MAX_LEN = 240
 # Cap per-file text reads so a runaway log cannot blow up classification.
 _MAX_FILE_BYTES = 512 * 1024
@@ -196,6 +204,15 @@ RULES: tuple[RcaRule, ...] = (
         description="Deliverable is a human action no dev agent can perform.",
     ),
     RcaRule(
+        rule_id="sprint_state_stranded",
+        failure_class="sprint_state_stranded",
+        role="primary",
+        description=(
+            "Worktree belongs to a prior generation's unfinished story — "
+            "recoverable stranded sprint state, not a fresh launch collision."
+        ),
+    ),
+    RcaRule(
         rule_id="launch_guard_dropped",
         failure_class="launch_collision",
         role="primary",
@@ -261,6 +278,7 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     "merge_arming_failed",
     "review_rejected",
     "operator_action",
+    "sprint_state_stranded",
     "launch_collision",
     "dependency_skip",
     "iteration_exhaustion",
@@ -675,8 +693,19 @@ def _signal_rule_hits(
         hits.append(("merge_arming_failed", summary_source, _outcome_excerpt()))
     if outcome == "OPERATOR_ACTION":
         hits.append(("operator_action_required", summary_source, _outcome_excerpt()))
-    if outcome in {"DROPPED", "PRESERVED"} or _nonempty(story.get("drop_reason")):
-        drop = _nonempty(story.get("drop_reason")) or error or "launch-guard drop"
+    drop_reason = _nonempty(story.get("drop_reason"))
+    if drop_reason == _STRANDED_WORKTREE_REASON:
+        # A prior-generation worktree left unfinished sprint state — a distinct,
+        # recoverable class that must not be flattened into a fresh collision.
+        hits.append(
+            (
+                "sprint_state_stranded",
+                summary_source,
+                _truncate(f"outcome={outcome}; stranded prior-generation sprint state"),
+            )
+        )
+    elif outcome in {"DROPPED", "PRESERVED"} or drop_reason:
+        drop = drop_reason or error or "launch-guard drop"
         hits.append(
             ("launch_guard_dropped", summary_source, _truncate(f"outcome={outcome}; {drop}"))
         )
@@ -800,6 +829,11 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
         ),
         "operator_action": f"perform the operator action described in {ref} (no dev agent can)",
         "launch_collision": (f"clear the active worktree/lock blocking {ref}, then re-sprint it"),
+        "sprint_state_stranded": (
+            f"re-resume/reconcile the sprint so {ref}'s prior-generation state is "
+            "recovered — do NOT clear the worktree and re-sprint fresh, which would "
+            "discard partial work"
+        ),
         "dependency_skip": _dependency_action(story, ref),
         "iteration_exhaustion": (
             f"raise the iteration budget for {ref} or narrow its scope, then re-run"

@@ -23,6 +23,19 @@ from theforge.sprint.preflight import (
 REASON_PRESERVED_ESCALATED = "preserved-escalated"
 REASON_ACTIVE_WORKTREE = "active-worktree-collision"
 REASON_LOCK_HELD = "story-lock-held-by-other-process"
+# Re-exec drop reasons that distinguish a prior-generation worktree from a
+# genuine fresh collision. When a parallel sprint re-execs, a worktree left on
+# disk may correspond to a story the *prior generation* already finished (DONE)
+# or left partially complete (stranded). Classifying those against the prior
+# generation's recorded outcomes prevents a completed story from being reported
+# as a fresh ``active-worktree-collision`` and re-consumed.
+REASON_RECONCILE_PRIOR_DONE = "reconciled-prior-generation-done"
+REASON_STRANDED_WORKTREE = "stranded-prior-generation-worktree"
+
+# Prior-generation outcome strings (upper-cased) that mean the story succeeded
+# and its worktree should be reconciled/preserved rather than treated as a fresh
+# collision.
+_PRIOR_SUCCEEDED_OUTCOMES = frozenset({"DONE", "ALREADY_DONE"})
 
 
 def acquire_launch_story_locks(
@@ -32,6 +45,7 @@ def acquire_launch_story_locks(
     resume: bool,
     allow_drop: bool = False,
     force: bool = False,
+    prior_outcomes: dict[str, str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     """Acquire launch-time story locks after checking for active worktrees.
 
@@ -121,23 +135,60 @@ def acquire_launch_story_locks(
         return locked_fds, None, dropped
 
     # ── Re-exec path: convert every collision into a per-story drop ─────
+    #
+    # A worktree with commits ahead of base is not necessarily a fresh
+    # collision after a re-exec: the *prior generation* may have already
+    # finished this story (DONE) or left it partially complete (stranded).
+    # Classify each active worktree against the prior generation's recorded
+    # outcomes (``prior_outcomes``, slug -> upper-cased outcome) so a completed
+    # story is reconciled instead of being flattened into a launch collision.
+    prior_outcomes = prior_outcomes or {}
     active_worktrees = check_active_worktrees(
         schedulable,
         config.workspace.path_pattern,
         config.workspace.base_branch,
         config.project_root,
     )
+    reconciled_slugs: list[str] = []
+    stranded_slugs: list[str] = []
+    collision_slugs: list[str] = []
     for slug in active_worktrees:
-        dropped[slug] = REASON_ACTIVE_WORKTREE
+        prior_outcome = prior_outcomes.get(slug)
+        if prior_outcome in _PRIOR_SUCCEEDED_OUTCOMES:
+            dropped[slug] = REASON_RECONCILE_PRIOR_DONE
+            reconciled_slugs.append(slug)
+        elif prior_outcome:
+            # A prior-generation record exists but the story did not succeed —
+            # recoverable stranded sprint state, not a fresh collision.
+            dropped[slug] = REASON_STRANDED_WORKTREE
+            stranded_slugs.append(slug)
+        else:
+            dropped[slug] = REASON_ACTIVE_WORKTREE
+            collision_slugs.append(slug)
     remaining = [s for s in schedulable if s not in dropped]
-    if active_worktrees:
+    if reconciled_slugs:
         print(
-            f"[forge] DROPPED {', '.join(active_worktrees)}: active worktree "
+            f"[forge] RECONCILED {', '.join(reconciled_slugs)}: prior generation "
+            "already completed these stories; preserving their outcome instead of "
+            "re-running.",
+            file=sys.stderr,
+            flush=True,
+        )
+    if stranded_slugs:
+        print(
+            f"[forge] STRANDED {', '.join(stranded_slugs)}: prior generation left "
+            "unfinished sprint state; reporting as recoverable stranded work.",
+            file=sys.stderr,
+            flush=True,
+        )
+    if collision_slugs:
+        print(
+            f"[forge] DROPPED {', '.join(collision_slugs)}: active worktree "
             "collision after re-exec; continuing with remaining stories.",
             file=sys.stderr,
             flush=True,
         )
-        abort_for_active_worktrees(active_worktrees)
+        abort_for_active_worktrees(collision_slugs)
 
     # Acquire locks for everything that survived worktree checks.  On a lock
     # conflict, acquire_story_locks releases the partial set it was holding —

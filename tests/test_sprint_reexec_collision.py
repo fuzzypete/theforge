@@ -272,6 +272,89 @@ class TestGenuineCollisionDuringReexec:
         assert dropped == {}
 
 
+class TestReexecPriorOutcomeClassification:
+    """Issue #1838: an active worktree after re-exec is classified against the
+    prior generation's recorded outcomes — a 3-way split so a completed story is
+    reconciled, an unfinished prior story is reported as stranded, and only a
+    worktree with no prior record remains a genuine fresh collision."""
+
+    def _drop_for(
+        self, tmp_path: Path, capsys, prior_outcomes: dict[str, str]
+    ) -> tuple[dict[str, str], str]:
+        _make_worktree_with_audit(tmp_path, "issue-829", final_phase=None)
+        config = _mock_config(tmp_path)
+        completed = MagicMock(returncode=0, stdout="3\n")
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["issue-829", "issue-267"],
+                config=config,
+                resume=False,
+                allow_drop=True,
+                prior_outcomes=prior_outcomes,
+            )
+        from theforge.sprint.lock import release_story_locks
+
+        release_story_locks(locked_fds)
+        assert launch_error is None
+        return dropped, capsys.readouterr().err
+
+    def test_prior_done_worktree_is_reconciled_not_collision(self, tmp_path, capsys) -> None:
+        from theforge.sprint.launch_guard import (
+            REASON_ACTIVE_WORKTREE,
+            REASON_RECONCILE_PRIOR_DONE,
+        )
+
+        dropped, err = self._drop_for(tmp_path, capsys, {"issue-829": "DONE"})
+        assert dropped["issue-829"] == REASON_RECONCILE_PRIOR_DONE
+        assert dropped["issue-829"] != REASON_ACTIVE_WORKTREE
+        assert "issue-267" not in dropped
+        assert "RECONCILED" in err
+
+    def test_prior_already_done_worktree_is_reconciled(self, tmp_path, capsys) -> None:
+        from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
+
+        dropped, _err = self._drop_for(tmp_path, capsys, {"issue-829": "ALREADY_DONE"})
+        assert dropped["issue-829"] == REASON_RECONCILE_PRIOR_DONE
+
+    def test_prior_unfinished_worktree_is_stranded(self, tmp_path, capsys) -> None:
+        from theforge.sprint.launch_guard import (
+            REASON_ACTIVE_WORKTREE,
+            REASON_STRANDED_WORKTREE,
+        )
+
+        dropped, err = self._drop_for(tmp_path, capsys, {"issue-829": "FAILED"})
+        assert dropped["issue-829"] == REASON_STRANDED_WORKTREE
+        assert dropped["issue-829"] != REASON_ACTIVE_WORKTREE
+        assert "STRANDED" in err
+
+    def test_no_prior_record_is_unchanged_active_collision(self, tmp_path, capsys) -> None:
+        from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
+
+        dropped, err = self._drop_for(tmp_path, capsys, {})
+        assert dropped["issue-829"] == REASON_ACTIVE_WORKTREE
+        assert "DROPPED" in err
+
+    def test_prior_outcomes_none_degrades_to_active_collision(self, tmp_path) -> None:
+        """Passing no prior_outcomes (today's default) keeps the collision path."""
+        _make_worktree_with_audit(tmp_path, "issue-829", final_phase=None)
+        config = _mock_config(tmp_path)
+        completed = MagicMock(returncode=0, stdout="3\n")
+        from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
+
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["issue-829"],
+                config=config,
+                resume=False,
+                allow_drop=True,
+            )
+        from theforge.sprint.lock import release_story_locks
+
+        release_story_locks(locked_fds)
+        assert launch_error is None
+        assert dropped == {"issue-829": REASON_ACTIVE_WORKTREE}
+
+
 class TestAuditVisibilityForDroppedStories:
     def test_sprint_audit_records_dropped_and_preserved(self, tmp_path: Path) -> None:
         """_write_sprint_audit emits distinct DROPPED / PRESERVED outcomes with reasons."""
