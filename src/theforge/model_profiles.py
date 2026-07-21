@@ -56,10 +56,33 @@ COMPLEXITY_BANDS = ("small", "medium", "large")
 # non-harness-terminated) results so the routing-admissible rate consults a
 # *windowed* view of history rather than a lifetime cumulative average — the
 # exact shape clause 2.4 forbids from carrying routing weight. This is a local,
-# deterministic windowing mechanism; when the shared decay mechanism (#1392)
-# lands it supersedes this without changing the read contract (raw + weighted
-# both recorded).
+# deterministic windowing mechanism; the shared decay mechanism (#1392) reuses
+# the same ring shape (:func:`_weighted_rate`) without changing the read contract
+# (raw + weighted both recorded).
 DOMAIN_RECENCY_WINDOW = 20
+
+# Shared recency-weighting defaults (#1392, ADR-0006 clause 2.4). Every dev
+# capability bucket (top-level, per-complexity, per-score) keeps a bounded ring
+# of its most recent genuine outcomes — ``_recent`` — capped at
+# :data:`CAPABILITY_RECENCY_WINDOW` on disk. The routing-admissible ``weighted``
+# rate is computed from that ring by :func:`_weighted_rate` using the parameters
+# below; operators override them via the ``assignment.recency`` config section.
+#
+# The mechanism is a run-position exponential decay rather than a wall-clock one:
+# profiles store an ordered outcome ring, not per-run timestamps, so "age" is
+# counted in runs (a story completed N runs ago), keeping the aggregation pure
+# (no clock dependency) and deterministically recomputable from stored admissible
+# data after any parameter change. ``half_life_runs`` is the number of runs after
+# which a run's weight halves; the default (~50 runs) means the most recent
+# handful of stories dominate while a large stale slice decays out of relevance
+# instead of permanently anchoring a lifetime average (the #1392 Sonnet case).
+DEFAULT_RECENCY_MODE = "exponential"
+DEFAULT_RECENCY_HALF_LIFE_RUNS = 50.0
+DEFAULT_RECENCY_WINDOW = 200
+# Maximum outcomes retained per capability ring on disk. Bounds profile growth
+# while leaving headroom to tune ``window`` upward without losing history; a
+# configured ``window`` beyond this simply consults everything stored.
+CAPABILITY_RECENCY_WINDOW = 200
 
 
 # ── Data carrier ──────────────────────────────────────────────────────────
@@ -420,6 +443,17 @@ def _fold_dev_capability(
         timeout_limit_s,
         termination_cause,
     )
+    # Recency ring (#1392, ADR-0006 clause 2.4): every genuine completed run
+    # appends its outcome to a bounded ``_recent`` ring so the routing-admissible
+    # ``weighted`` rate can decay stale history out of relevance instead of
+    # anchoring a lifetime cumulative average. Harness-terminated runs never
+    # contribute capability data — mirror that here so the ring population matches
+    # the runs/_successes population exactly.
+    if termination_cause is None:
+        recent = bucket.setdefault("_recent", [])
+        recent.append(1 if success else 0)
+        if len(recent) > CAPABILITY_RECENCY_WINDOW:
+            del recent[: len(recent) - CAPABILITY_RECENCY_WINDOW]
 
 
 def _fold_domain_slice(
@@ -621,6 +655,7 @@ def _zero_dev_bucket(bucket: dict) -> None:
     bucket["max_duration_s"] = 0.0
     bucket["max_killed_timeout_s"] = 0.0
     bucket["tainted_runs"] = 0
+    bucket["_recent"] = []
     bucket["harness_terminated"] = {
         "runs": 0,
         "by_cause": {},
@@ -662,10 +697,14 @@ def _recompute_dev_section(section: dict) -> None:
     ht_cost_sum = 0.0
     ht_cost_unknown = 0
     tainted_runs = 0
+    recent: list[int] = []
     for band in COMPLEXITY_BANDS:
         bucket = by.setdefault(band, {})
         runs += int(bucket.get("runs", 0))
         tainted_runs += int(bucket.get("tainted_runs", 0))
+        band_recent = bucket.get("_recent")
+        if isinstance(band_recent, list):
+            recent.extend(int(v) for v in band_recent)
         successes += int(bucket.get("_successes", 0))
         iterations += float(bucket.get("_iterations_sum", 0.0))
         cost += float(bucket.get("_cost_sum", 0.0))
@@ -700,6 +739,12 @@ def _recompute_dev_section(section: dict) -> None:
     section["max_duration_s"] = max_duration
     section["max_killed_timeout_s"] = max_killed_timeout
     section["tainted_runs"] = tainted_runs
+    # Rebuild the top-level recency ring from the surviving band rings. Cross-band
+    # chronology is lost (bands are concatenated in fixed order), but this only
+    # runs on an operator reset — a deliberate discard of history — so a best-
+    # effort windowed view is acceptable there; live folding keeps the top-level
+    # ring chronological.
+    section["_recent"] = recent[-CAPABILITY_RECENCY_WINDOW:] if recent else []
     ht_measured = ht_runs - ht_cost_unknown
     section["harness_terminated"] = {
         "runs": ht_runs,
@@ -815,6 +860,78 @@ def update_from_run(
 # ── Reader API for assignment ─────────────────────────────────────────────
 
 
+def _recency_params(recency: Any | None) -> tuple[str, float, int]:
+    """Resolve (mode, half_life_runs, window) from a config object or defaults.
+
+    ``recency`` is any object exposing ``mode`` / ``half_life_runs`` / ``window``
+    (the config's ``assignment.recency`` block); ``None`` selects the module
+    defaults. Kept duck-typed so this pure module never imports the config layer.
+    """
+    if recency is None:
+        return DEFAULT_RECENCY_MODE, DEFAULT_RECENCY_HALF_LIFE_RUNS, DEFAULT_RECENCY_WINDOW
+    mode = str(getattr(recency, "mode", DEFAULT_RECENCY_MODE) or DEFAULT_RECENCY_MODE)
+    half_life = float(getattr(recency, "half_life_runs", DEFAULT_RECENCY_HALF_LIFE_RUNS))
+    window = int(getattr(recency, "window", DEFAULT_RECENCY_WINDOW))
+    return mode, half_life, window
+
+
+def _weighted_rate(
+    recent: list[int],
+    *,
+    fallback: float | None,
+    mode: str = DEFAULT_RECENCY_MODE,
+    half_life_runs: float = DEFAULT_RECENCY_HALF_LIFE_RUNS,
+    window: int = DEFAULT_RECENCY_WINDOW,
+    min_samples: int = 0,
+) -> float | None:
+    """Recency-weight a bounded ring of ``0/1`` dev outcomes (ADR-0006 clause 2.4).
+
+    This is the single weighting path every profile-derived rate flows through
+    (#1392): the per-complexity dev signal, the per-domain dev signal (via
+    :func:`_windowed_rate`), and any future reviewer completion-rate signal.
+    ``recent`` is an ordered outcome ring (oldest first, newest last), already
+    bounded per bucket. Modes:
+
+    - ``"exponential"`` (default): weight run at age ``a`` (0 = newest) by
+      ``0.5 ** (a / half_life_runs)``, so a run decays to half its weight every
+      ``half_life_runs`` runs. Recomputable from the stored ring after a
+      parameter change; deterministic (no wall-clock).
+    - ``"window"``: unweighted mean over the last ``window`` outcomes (the legacy
+      per-domain behavior, preserved so both signals share this function).
+    - ``"off"``: no recency weighting — returns ``fallback`` (the lifetime raw
+      rate), an operator kill-switch.
+
+    Falls back to ``fallback`` when no windowed data exists (e.g. a legacy bucket
+    predating the ring), so the value is never silently zeroed. ``min_samples``
+    extends that guard to a sample floor on the *ring itself*: until the ring has
+    accumulated at least ``min_samples`` outcomes, the weighted value falls back
+    to ``fallback`` (the lifetime raw rate). This is what keeps recency weighting
+    composing cleanly with the sample floor for a legacy/migrated bucket whose
+    lifetime ``runs`` already passes ``min_runs`` but whose ring holds only a
+    handful of freshly-folded outcomes — one new failure must not be allowed to
+    become the entire weighted sample and swing a model with strong long-term
+    history to 0.0.
+    """
+    if mode == "off":
+        return fallback
+    if not recent:
+        return fallback
+    capped = recent[-window:] if window and window > 0 else list(recent)
+    if not capped or len(capped) < min_samples:
+        return fallback
+    if mode == "window" or not half_life_runs or half_life_runs <= 0:
+        return round(sum(capped) / len(capped), 4)
+    decay = 0.5 ** (1.0 / half_life_runs)
+    n = len(capped)
+    num = 0.0
+    den = 0.0
+    for i, outcome in enumerate(capped):
+        weight = decay ** (n - 1 - i)  # newest outcome → age 0 → weight 1.0
+        num += weight * int(outcome)
+        den += weight
+    return round(num / den, 4) if den > 0 else fallback
+
+
 def get_dev_signal(
     profiles: dict,
     model: str,
@@ -824,6 +941,7 @@ def get_dev_signal(
     actual_model: str | None = None,
     provider: str | None = None,
     cli: str | None = None,
+    recency: Any | None = None,
 ) -> dict:
     """Return a structured dev routing signal for explainability + ranking.
 
@@ -831,17 +949,26 @@ def get_dev_signal(
     One lookup surfaces everything the router weighs for a dev candidate, so a
     caller can both rank and explain from a single read:
 
-    - ``rate``: the ``min_runs``-gated success rate (byte-identical to
-      :func:`get_dev_success_rate`); ``None`` below the sample floor. This is
-      the value the router ranks on.
-    - ``raw``: the ungated success ratio (``None`` when no runs exist).
-    - ``weighted``: the recency-weighted value. Recency weighting (#1392) has
-      not landed, so v1 mirrors ``raw`` — the key exists so the audit contract
-      stays stable once weighting arrives.
-    - ``runs``: sample count consulted.
+    - ``rate``: the ``min_runs``-gated **recency-weighted** success rate; ``None``
+      below the sample floor. This is the value the router ranks on (#1392 —
+      routing consults the decayed view, not the lifetime cumulative average).
+    - ``raw``: the ungated lifetime cumulative success ratio (``None`` when no
+      admissible runs exist), kept so the audit can show raw-vs-weighted drift.
+    - ``weighted``: the recency-weighted value over the bucket's ``_recent`` ring
+      (:func:`_weighted_rate`); falls back to ``raw`` until the ring itself holds
+      at least ``min_runs`` outcomes, so a legacy/migrated bucket that passes the
+      floor on cumulative history but has a nearly-empty ring is not driven by a
+      single freshly-folded run. ``rate`` is this value gated by the sample floor.
+    - ``runs``: admissible sample count consulted (tainted / harness-terminated
+      runs already excluded upstream).
+    - ``tainted_runs``: how many runs were excluded from this bucket for taint
+      (ADR-0006 clause 4), surfaced so the exclusion stays visible in the audit.
     - ``floor``: ``"pass"`` when ``runs >= min_runs`` (and ``runs > 0``), else
       ``"fail"``.
+    - ``weighting``: the recency parameters actually applied (mode / half-life /
+      window) so an operator can reproduce ``weighted`` from ``raw`` history.
     """
+    mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
         profiles,
         model,
@@ -851,12 +978,18 @@ def get_dev_signal(
     )
     runs = 0
     successes = 0.0
+    tainted = 0
+    recent: list[int] = []
     if matching:
         if complexity is None:
             for _, entry in matching:
                 dev = entry.get("dev")
                 if not isinstance(dev, dict):
                     continue
+                tainted += int(dev.get("tainted_runs", 0))
+                ring = dev.get("_recent")
+                if isinstance(ring, list):
+                    recent.extend(int(v) for v in ring)
                 entry_runs = int(dev.get("runs", 0))
                 if entry_runs <= 0:
                     continue
@@ -871,20 +1004,38 @@ def get_dev_signal(
                 bc = (dev.get("by_complexity") or {}).get(band)
                 if not isinstance(bc, dict):
                     continue
+                tainted += int(bc.get("tainted_runs", 0))
+                ring = bc.get("_recent")
+                if isinstance(ring, list):
+                    recent.extend(int(v) for v in ring)
                 entry_runs = int(bc.get("runs", 0))
                 if entry_runs <= 0:
                     continue
                 runs += entry_runs
                 successes += _success_count(bc, entry_runs)
     raw = round(successes / runs, 4) if runs > 0 else None
+    # The weighted value is gated on the *ring* reaching the same sample floor,
+    # not just lifetime ``runs``: a legacy/migrated bucket can pass ``min_runs``
+    # on cumulative history while its ring holds only a few freshly-folded
+    # outcomes. Below that ring floor the weighted value falls back to raw so a
+    # single new run cannot become the entire weighted sample (#1392 review).
+    weighted = _weighted_rate(
+        recent,
+        fallback=raw,
+        mode=mode,
+        half_life_runs=half_life,
+        window=window,
+        min_samples=min_runs,
+    )
     floor_ok = runs >= min_runs and runs > 0
     return {
         "raw": raw,
-        # v1: no recency weighting (#1392) — weighted mirrors raw until it lands.
-        "weighted": raw,
+        "weighted": weighted,
         "runs": runs,
+        "tainted_runs": tainted,
         "floor": "pass" if floor_ok else "fail",
-        "rate": raw if floor_ok else None,
+        "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
+        "rate": weighted if floor_ok else None,
     }
 
 
@@ -897,11 +1048,13 @@ def get_dev_success_rate(
     actual_model: str | None = None,
     provider: str | None = None,
     cli: str | None = None,
+    recency: Any | None = None,
 ) -> float | None:
     """Return dev success rate for (model, complexity) or None under min_runs.
 
     Thin wrapper over :func:`get_dev_signal` so ranking and explainability
-    share one aggregation path and can never diverge on the ranked value.
+    share one aggregation path and can never diverge on the ranked value. The
+    returned rate is the recency-weighted value (#1392), gated by ``min_runs``.
     """
     return get_dev_signal(
         profiles,
@@ -911,6 +1064,7 @@ def get_dev_success_rate(
         actual_model=actual_model,
         provider=provider,
         cli=cli,
+        recency=recency,
     )["rate"]
 
 
@@ -1029,18 +1183,18 @@ def get_dev_domain_signal(
 
 
 def _windowed_rate(recent: list[int], *, fallback: float | None) -> float | None:
-    """Return the recency-weighted rate over a bounded recent-outcome window.
+    """Return the recency-weighted rate over a bounded per-domain outcome window.
 
     ``recent`` is the concatenation of the ``_recent`` rings clause 2.4 maintains
-    per domain slice (each already capped to :data:`DOMAIN_RECENCY_WINDOW`). The
-    mean over that window is the windowed view of history. Falls back to
-    ``fallback`` (the lifetime raw rate) only when no windowed data exists — e.g.
-    a legacy bucket predating the window — so the value is never silently zeroed.
+    per domain slice (each already capped to :data:`DOMAIN_RECENCY_WINDOW`). Kept
+    as a thin wrapper over the shared :func:`_weighted_rate` (#1392) in ``window``
+    mode so the per-domain signal uses the same weighting function as the
+    per-complexity signal — an unweighted mean over the last
+    :data:`DOMAIN_RECENCY_WINDOW` outcomes — rather than a bespoke per-call-site
+    computation. Falls back to ``fallback`` (the lifetime raw rate) when no
+    windowed data exists so the value is never silently zeroed.
     """
-    if recent:
-        capped = recent[-DOMAIN_RECENCY_WINDOW:]
-        return round(sum(capped) / len(capped), 4)
-    return fallback
+    return _weighted_rate(recent, fallback=fallback, mode="window", window=DOMAIN_RECENCY_WINDOW)
 
 
 def get_dev_complexity_stats(
@@ -1602,6 +1756,21 @@ def _merge_tainted_runs(target: dict, src: dict) -> None:
         target["tainted_runs"] = int(target.get("tainted_runs", 0)) + src_tainted
 
 
+def _merge_recent(target: dict, src: dict, cap: int) -> None:
+    """Concatenate the ``_recent`` outcome rings of two buckets and re-cap.
+
+    Cross-source chronology is approximate (target's ring precedes src's), but a
+    merge only runs during canonical-ID consolidation of alias entries, so a
+    best-effort windowed view is acceptable. A no-op when neither side carries a
+    ring (legacy buckets predating #1392), so a merge never fabricates the key.
+    """
+    merged = [int(v) for v in (target.get("_recent") or [])] + [
+        int(v) for v in (src.get("_recent") or [])
+    ]
+    if merged:
+        target["_recent"] = merged[-cap:]
+
+
 def _merge_dev(target: dict, src: dict) -> None:
     runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
     successes = int(target.get("_successes", 0)) + int(src.get("_successes", 0))
@@ -1645,6 +1814,7 @@ def _merge_dev(target: dict, src: dict) -> None:
     _merge_duration(target, src)
     _merge_harness_terminated(target, src)
     _merge_tainted_runs(target, src)
+    _merge_recent(target, src, CAPABILITY_RECENCY_WINDOW)
 
     src_by = src.get("by_complexity") or {}
     if src_by:
@@ -1690,6 +1860,7 @@ def _merge_dev(target: dict, src: dict) -> None:
             _merge_duration(bc_target, bc_src)
             _merge_harness_terminated(bc_target, bc_src)
             _merge_tainted_runs(bc_target, bc_src)
+            _merge_recent(bc_target, bc_src, CAPABILITY_RECENCY_WINDOW)
 
     src_by_score = src.get("by_complexity_score") or {}
     if src_by_score:
@@ -1735,6 +1906,7 @@ def _merge_dev(target: dict, src: dict) -> None:
             _merge_duration(sc_target, sc_src)
             _merge_harness_terminated(sc_target, sc_src)
             _merge_tainted_runs(sc_target, sc_src)
+            _merge_recent(sc_target, sc_src, CAPABILITY_RECENCY_WINDOW)
 
     src_by_domain = src.get("by_domain") or {}
     if src_by_domain:

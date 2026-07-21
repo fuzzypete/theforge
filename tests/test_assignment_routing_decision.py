@@ -162,11 +162,26 @@ def test_profile_signal_entries_have_raw_weighted_runs_floor(monkeypatch):
     )
     dev_pool = {e["name"]: e for e in decision.routing_decision["dev"]["candidate_pool"]}
     opus_sig = dev_pool["opus"]["signals"]["success_rate"]
-    assert set(opus_sig) == {"raw", "weighted", "runs", "floor", "rate"}
+    # Audit contract (#1392 / #1391): raw + weighted rate, admissible sample count
+    # (runs), taint-excluded count, sample-floor result, and the weighting params
+    # actually applied are all recorded so operators can see raw/weighted drift.
+    assert set(opus_sig) == {
+        "raw",
+        "weighted",
+        "runs",
+        "tainted_runs",
+        "floor",
+        "weighting",
+        "rate",
+    }
     assert opus_sig["raw"] == 0.75
-    assert opus_sig["weighted"] == 0.75  # v1: weighting not yet applied
+    # This hand-built profile carries no `_recent` ring, so the weighted rate
+    # falls back to raw — the recency mechanism never fabricates history.
+    assert opus_sig["weighted"] == 0.75
     assert opus_sig["runs"] == 12
+    assert opus_sig["tainted_runs"] == 0
     assert opus_sig["floor"] == "pass"
+    assert opus_sig["weighting"]["mode"] == "exponential"
 
     gpt_sig = dev_pool["gpt"]["signals"]["success_rate"]
     assert gpt_sig["runs"] == 1

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from theforge.config.types import RecencyConfig
 from theforge.coordinator import audit_substrate as sub
 from theforge.coordinator.trust_status import (
     TRUST_TAINTED,
@@ -88,8 +89,12 @@ def test_dev_success_rate_includes_trusted_and_unchecked() -> None:
     for _ in range(2):
         apply_run(data, _dev_outcome(success=True, tainted=False))
     apply_run(data, _dev_outcome(success=False, tainted=False))
-    # 2 of 3 admissible runs succeeded.
-    assert get_dev_success_rate(data, "sonnet", "medium", min_runs=1) == round(2 / 3, 4)
+    # 2 of 3 admissible runs succeeded. Pinned to recency mode="off" so this
+    # taint-admissibility test asserts the cumulative rate directly, decoupled
+    # from the recency-weighting curve (#1392) exercised elsewhere.
+    assert get_dev_success_rate(
+        data, "sonnet", "medium", min_runs=1, recency=RecencyConfig(mode="off")
+    ) == round(2 / 3, 4)
 
 
 def test_dev_success_rate_excludes_tainted() -> None:

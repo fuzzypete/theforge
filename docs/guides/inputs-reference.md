@@ -117,6 +117,39 @@ estimate baseline and, for reviewers, still acts as an explicit operator-set
 per-reviewer ceiling. It is not the story-level governance surface — that is the
 sprint `budget_usd` above.
 
+### Recency weighting (`assignment.recency`)
+
+The adaptive router ranks dev models on their historical success rate. By default
+that history is **recency-weighted** so a model's *recent* behavior drives routing
+rather than a lifetime cumulative average — old failures decay out of relevance on
+their own timeline instead of permanently penalizing a model whose current behavior
+is fine (ADR-0006 clause 2.4). This composes cleanly with the sample floor: below
+`min_runs` admissible runs a model is still cold-start (no ranked rate), and
+affirmatively tainted runs are excluded from the weighted aggregate entirely.
+
+The defaults need no tuning for ordinary use. To adjust:
+
+```yaml
+assignment:
+  recency:
+    mode: exponential     # exponential | window | off
+    half_life_runs: 50    # (exponential) a run's weight halves every N runs
+    window: 200           # max recent outcomes consulted (also caps `window` mode)
+```
+
+- `exponential` (default): a run's weight decays by half every `half_life_runs`
+  runs of newer history. Deterministic and recomputable from stored admissible
+  outcomes after any parameter change (run position, not wall-clock, is the age
+  axis — profiles store an ordered outcome ring, not timestamps).
+- `window`: an unweighted mean over the last `window` runs (a fixed-window cutoff).
+- `off`: no recency weighting — routing falls back to the lifetime cumulative rate.
+
+Invalid values (unknown `mode`, non-positive `half_life_runs`/`window`) are rejected
+at config load rather than silently defaulted. The raw cumulative rate, the weighted
+rate actually used, the admissible sample count, the sample-floor result, and any
+taint-excluded count are all recorded per candidate in the `routing_decision` audit
+block so raw-vs-weighted divergence is visible.
+
 ### Story bundling (relational, scheduler-decided)
 
 When a sprint contains two or more eligible stories, the sprint scheduler may

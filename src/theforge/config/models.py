@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
-from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile, PlanConfig
+from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile, PlanConfig, RecencyConfig
 
 _ProfileT = TypeVar("_ProfileT", ModelProfile, PlanConfig)
 
@@ -701,6 +701,46 @@ def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
     return candidate_models
 
 
+def _parse_recency(recency_raw: Any) -> RecencyConfig:
+    """Parse and validate the ``assignment.recency`` block (#1392).
+
+    Config loading is an integrity boundary: reject invalid values with a clear
+    error rather than silently falling back to a default that hides bad config.
+    """
+    if recency_raw is None:
+        return RecencyConfig()
+    if not isinstance(recency_raw, dict):
+        raise ValueError(f"assignment.recency must be a mapping, got {type(recency_raw).__name__}")
+    defaults = RecencyConfig()
+    mode = str(recency_raw.get("mode", defaults.mode)).strip().lower()
+    if mode not in ("exponential", "window", "off"):
+        raise ValueError(
+            "assignment.recency.mode must be one of 'exponential', 'window', 'off', "
+            f"got {recency_raw.get('mode')!r}"
+        )
+    try:
+        half_life_runs = float(recency_raw.get("half_life_runs", defaults.half_life_runs))
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"assignment.recency.half_life_runs must be a number, "
+            f"got {recency_raw.get('half_life_runs')!r}"
+        ) from None
+    if mode == "exponential" and half_life_runs <= 0:
+        raise ValueError(
+            "assignment.recency.half_life_runs must be > 0 for exponential mode, "
+            f"got {half_life_runs}"
+        )
+    try:
+        window = int(recency_raw.get("window", defaults.window))
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"assignment.recency.window must be an integer, got {recency_raw.get('window')!r}"
+        ) from None
+    if window <= 0:
+        raise ValueError(f"assignment.recency.window must be > 0, got {window}")
+    return RecencyConfig(mode=mode, half_life_runs=half_life_runs, window=window)
+
+
 def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
     """Parse assignment config from raw YAML dict."""
     return AssignmentConfig(
@@ -715,4 +755,5 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
         ),
         escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
         adaptive_enabled=bool(assignment_raw.get("adaptive_enabled", True)),
+        recency=_parse_recency(assignment_raw.get("recency")),
     )
