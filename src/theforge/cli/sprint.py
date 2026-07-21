@@ -213,8 +213,26 @@ def cmd_sprint(args: object) -> int:
     slugs = parse_manifest_slugs(config, manifest_path)
     # ``reexec`` was captured at the top of cmd_sprint, before setup_detached_child
     # popped FORGE_PREV_RUN_ID — do not recompute it here (the env signal is gone).
+    # On the re-exec path, resolve the prior generation's recorded outcomes so the
+    # launch guard can distinguish an already-completed worktree from a fresh
+    # collision. Mirror the runner's sprint-name resolution (manifest ``name``).
+    prior_outcomes: dict[str, str] | None = None
+    if reexec:
+        try:
+            from theforge.sprint.manifest import load_sprint_manifest  # noqa: PLC0415
+
+            prior_outcomes = _resolve_prior_outcomes(
+                config, load_sprint_manifest(manifest_path).name
+            )
+        except Exception:
+            prior_outcomes = None
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
-        slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
+        slugs=slugs,
+        config=config,
+        resume=resume,
+        allow_drop=reexec,
+        force=force,
+        prior_outcomes=prior_outcomes,
     )
     if launch_error is not None:
         return launch_error
@@ -310,6 +328,7 @@ def _acquire_launch_locks(
     *,
     allow_drop: bool = False,
     force: bool = False,
+    prior_outcomes: dict[str, str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
         slugs=slugs,
@@ -317,7 +336,35 @@ def _acquire_launch_locks(
         resume=resume,
         allow_drop=allow_drop,
         force=force,
+        prior_outcomes=prior_outcomes,
     )
+
+
+def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, str]:
+    """Best-effort map of slug -> prior-generation outcome for the re-exec guard.
+
+    Resolves the logical sprint id the same way the runner does (from the
+    manifest ``name``) and reads the prior generation's accumulated story
+    outcomes from ``.forge/sprints/<id>/state.yaml``. Returns an empty map on any
+    failure so a lookup miss degrades to today's collision behavior — this must
+    never fail the launch.
+    """
+    try:
+        from theforge.sprint.audit import (  # noqa: PLC0415
+            _get_or_create_sprint_id,
+            _load_accumulated_stories,
+        )
+
+        sprint_id = _get_or_create_sprint_id(sprint_name, config.project_root)
+        outcomes: dict[str, str] = {}
+        for story in _load_accumulated_stories(sprint_id, config.project_root):
+            slug = story.get("slug")
+            if not slug:
+                continue
+            outcomes[slug] = str(story.get("outcome") or "").upper()
+        return outcomes
+    except Exception:
+        return {}
 
 
 def _resolve_base_branch_sha(config: object) -> str | None:
@@ -1005,8 +1052,18 @@ def _run_query_mode(
     # ``reexec`` is threaded in from cmd_sprint (captured before the detach
     # handoff popped FORGE_PREV_RUN_ID) — do not recompute it here.
     slugs = [task.slug for task, _src, _ref in resolved.stories]
+    # On the re-exec path, resolve the prior generation's recorded outcomes so
+    # the launch guard can reconcile already-completed worktrees instead of
+    # flattening them into fresh collisions. Best-effort — a miss degrades to
+    # today's behavior.
+    prior_outcomes = _resolve_prior_outcomes(config, resolved.name) if reexec else None
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
-        slugs=slugs, config=config, resume=resume, allow_drop=reexec, force=force
+        slugs=slugs,
+        config=config,
+        resume=resume,
+        allow_drop=reexec,
+        force=force,
+        prior_outcomes=prior_outcomes,
     )
     if launch_error is not None:
         return launch_error

@@ -67,6 +67,10 @@ from .dag import (
 )
 from .display import _print_worker_status, _story_header
 from .gate_timeout_resolver import resolve_effective_gate_timeout
+from .launch_guard import (
+    REASON_RECONCILE_PRIOR_DONE,
+    REASON_STRANDED_WORKTREE,
+)
 from .lock import integration_lock
 from .manifest import (
     ResolvedSprint,
@@ -2044,7 +2048,15 @@ def run_sprint(
     # the batch preflight, where a re-exec'd merged story would be re-dispatched
     # into its stale round-1 worktree. When ``reconcile`` is False, skip_slugs is
     # empty and this is a no-op (no behavior change for plain fresh runs).
-    dispatch_tasks = [t for t in normalized.tasks if t.slug not in skip_slugs]
+    #
+    # Pre-launch drops (re-exec worktree collisions, reconciled prior-generation
+    # completions, stranded prior-generation state, preserved-escalated, lock
+    # conflicts) are handled by the dropped-slug loop further below and must
+    # never consume preflight or worker budget in this generation. Exclude them
+    # from every spend/dispatch path here alongside reconcile-skipped stories.
+    _dropped_exclusion = {s for s in (dropped_slugs or {}) if s in slug_to_context}
+    _no_dispatch_slugs = skip_slugs | _dropped_exclusion
+    dispatch_tasks = [t for t in normalized.tasks if t.slug not in _no_dispatch_slugs]
 
     intake_outcomes = _run_intake_remediation_pass(
         config=config,
@@ -2165,9 +2177,12 @@ def run_sprint(
         _update_state_phase(run_id, config.project_root, "preflight")
 
     # Re-derive the filter here: ``normalized`` may have been re-bound by the
-    # intake drop above, and reconcile-skipped merged stories must never enter
-    # the preflight batch (WORKSPACE re-entry against their stale worktree).
-    preflight_tasks = [t for t in normalized.tasks if t.slug not in skip_slugs]
+    # intake drop above, and reconcile-skipped merged stories (plus pre-launch
+    # dropped stories) must never enter the preflight batch (WORKSPACE re-entry
+    # against their stale worktree, or spending budget on an already-dropped
+    # story).
+    _no_dispatch_slugs = skip_slugs | {s for s in (dropped_slugs or {}) if s in slug_to_context}
+    preflight_tasks = [t for t in normalized.tasks if t.slug not in _no_dispatch_slugs]
     preflight_states = run_batch_preflight(
         preflight_tasks,
         config,
@@ -2299,6 +2314,36 @@ def run_sprint(
             dag.mark_skipped(slug)
             _set_outcome(slug, StoryOutcome.PRESERVED, reason=reason)
             _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")
+        elif reason == REASON_RECONCILE_PRIOR_DONE:
+            # The prior generation already completed this story; its worktree
+            # collision is a reconcilable success, not a fresh drop. Mark it
+            # ALREADY_DONE so it counts as succeeded and is preserved durably.
+            _log(f"ALREADY_DONE {slug} (reconciled from prior generation)")
+            dag.mark_skipped(slug)
+            _set_outcome(slug, StoryOutcome.ALREADY_DONE, reason=reason)
+            _record_current_story_entry(
+                slug,
+                "ALREADY_DONE",
+                extras={
+                    "drop_reason": reason,
+                    "outcome_source": "reexec_reconcile",
+                },
+            )
+        elif reason == REASON_STRANDED_WORKTREE:
+            # A prior-generation worktree exists but the story did not succeed:
+            # recoverable stranded sprint state. Keep it DROPPED but retain the
+            # distinct reason so RCA/audit can tell it apart from a fresh
+            # collision (do NOT clear the worktree and re-sprint fresh).
+            _log(f"DROPPED {slug} (stranded prior-generation sprint state)")
+            dag.mark_skipped(slug)
+            _set_outcome(slug, StoryOutcome.DROPPED, reason=reason)
+            _record_current_story_entry(
+                slug,
+                "DROPPED",
+                error=reason,
+                error_type="dropped",
+                extras={"drop_reason": reason},
+            )
         else:
             _log(f"DROPPED {slug} (reason: {reason})")
             dag.mark_skipped(slug)
@@ -2406,6 +2451,21 @@ def run_sprint(
                 _status = "preserved"
                 _blocked_by = [f"preserved: {_drop_reason}"]
                 _detail = {"final_outcome": "ESCALATE"}
+            elif _drop_reason == REASON_RECONCILE_PRIOR_DONE:
+                # Prior generation already completed this story — surface it as
+                # done, reconciled, not a fresh drop.
+                _status = "done"
+                _blocked_by = []
+                _detail = {
+                    "final_outcome": "ALREADY_DONE",
+                    "outcome_source": "reexec_reconcile",
+                }
+            elif _drop_reason == REASON_STRANDED_WORKTREE:
+                # Recoverable stranded prior-generation sprint state — name it
+                # distinctly rather than as a generic drop.
+                _status = "failed"
+                _blocked_by = [f"stranded prior-generation sprint state: {_drop_reason}"]
+                _detail = {"final_outcome": "DROPPED", "drop_reason": _drop_reason}
             elif _drop_reason:
                 _status = "failed"
                 _blocked_by = [f"dropped: {_drop_reason}"]

@@ -569,6 +569,36 @@ def test_launch_collision_signal(tmp_path: Path) -> None:
     assert any("worktree" in a or "lock" in a for a in entry["recommended_next_actions"])
 
 
+def test_stranded_prior_generation_worktree_is_distinct_from_launch_collision(
+    tmp_path: Path,
+) -> None:
+    """Issue #1838: a worktree stranded by a prior generation classifies as
+    ``sprint_state_stranded`` (priority over ``launch_collision``) with a
+    reconcile-oriented action — not flattened into a fresh collision."""
+    from theforge.sprint.launch_guard import REASON_STRANDED_WORKTREE
+
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-1823",
+                    "outcome": "DROPPED",
+                    "drop_reason": REASON_STRANDED_WORKTREE,
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-1823"]
+    assert entry["primary_failure_class"] == "sprint_state_stranded"
+    actions = " ".join(entry["recommended_next_actions"]).lower()
+    assert "reconcile" in actions or "resume" in actions
+    # The reconcile action must warn against clearing the worktree and
+    # re-sprinting fresh (which would discard partial work).
+    assert "do not" in actions or "not clear" in actions or "discard" in actions
+
+
 # ── Rule set discoverability ──────────────────────────────────────────────────
 
 

@@ -11,6 +11,7 @@ import yaml
 from ..advisory_conventions import noteworthy_advisory_entries
 from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
+from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
 
@@ -511,6 +512,10 @@ def _write_sprint_audit(
             triage_action = triage_actions_by_ref.get(canonical_ref)
             if drop_reason == "preserved-escalated":
                 drop_outcome = "PRESERVED"
+            elif drop_reason == REASON_RECONCILE_PRIOR_DONE:
+                drop_outcome = "ALREADY_DONE"
+            elif drop_reason == REASON_STRANDED_WORKTREE:
+                drop_outcome = "DROPPED"
             elif drop_reason is not None:
                 drop_outcome = "DROPPED"
             elif triage_action == "skip_merged":
@@ -836,6 +841,10 @@ def _write_sprint_summary(
             triage_action = triage_actions_by_ref.get(canonical_ref)
             if drop_reason == "preserved-escalated":
                 drop_outcome = "PRESERVED"
+            elif drop_reason == REASON_RECONCILE_PRIOR_DONE:
+                drop_outcome = "ALREADY_DONE"
+            elif drop_reason == REASON_STRANDED_WORKTREE:
+                drop_outcome = "DROPPED"
             elif drop_reason is not None:
                 drop_outcome = "DROPPED"
             elif triage_action == "skip_merged":
