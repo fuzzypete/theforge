@@ -1157,20 +1157,78 @@ def _apply_preflight_config(
         _explicit_plan_review_pool = list(config.plan_agent_review.profiles)
         _explicit["plan_review"] = _explicit_plan_review_pool[0]
 
-    _decision = _assign_models(
-        config.agents,
-        config.assignment,
-        complexity,
-        complexity_score=complexity_score,
-        escalation_history=_esc_history,
-        explicit_profiles=_explicit if _explicit else None,
-        sprint_promotions=state.sprint_promotions,
-        secrets=config.secrets,
-        model_profiles=_model_profiles,
-        unhealthy_models=_unhealthy if _unhealthy else None,
-        domains=list(state.preflight_domains or []),
-        excluded_for_taint=_excluded_for_taint,
+    # Challenger-sampling exploration budget (#325, ADR-0006 clause 8 "bounded"):
+    # at most per_sprint_cap exploration runs across the whole sprint. The
+    # advisory remaining count avoids deciding a challenger when the cap is
+    # already spent; the AUTHORITATIVE, race-free consume is reserve_slot() below.
+    from theforge.coordinator import exploration_budget as _explore_budget  # noqa: PLC0415
+
+    _explore_cap = int(getattr(config.assignment.exploration, "per_sprint_cap", 0) or 0)
+
+    def _assign(explore_budget: int | None):
+        return _assign_models(
+            config.agents,
+            config.assignment,
+            complexity,
+            complexity_score=complexity_score,
+            escalation_history=_esc_history,
+            explicit_profiles=_explicit if _explicit else None,
+            sprint_promotions=state.sprint_promotions,
+            secrets=config.secrets,
+            model_profiles=_model_profiles,
+            unhealthy_models=_unhealthy if _unhealthy else None,
+            domains=list(state.preflight_domains or []),
+            excluded_for_taint=_excluded_for_taint,
+            sprint_exploration_budget=explore_budget,
+        )
+
+    _explore_remaining = _explore_budget.remaining_budget(
+        config.project_root, state.sprint_name, _explore_cap
     )
+    _decision = _assign(_explore_remaining)
+
+    # If a challenger fired, ATOMICALLY claim a sprint slot before honoring it.
+    # Two parallel workers can both see one free slot in the advisory read; only
+    # one wins the O_EXCL claim in reserve_slot(), so the per-sprint cap holds
+    # exactly. The loser re-derives its decision in winner mode.
+    _explore_block = getattr(_decision, "routing_decision", None)
+    if isinstance(_explore_block, dict):
+        _dev_explore = (_explore_block.get("dev") or {}).get("exploration") or {}
+        if _dev_explore.get("mode") == "challenger":
+            _claimed = _explore_budget.reserve_slot(
+                config.project_root,
+                state.sprint_name,
+                _explore_cap,
+                {
+                    "story": task_slug,
+                    "routing_key": _dev_explore.get("routing_key"),
+                    "challenger": _dev_explore.get("selected"),
+                    "winner": _dev_explore.get("winner"),
+                    "reason": _dev_explore.get("reason"),
+                },
+            )
+            if not _claimed:
+                # Lost the race / cap already reached — re-route on-policy so the
+                # sprint-wide bound is never exceeded.
+                _decision = _assign(0)
+                _explore_block = getattr(_decision, "routing_decision", None)
+                _dev_explore = ((_explore_block or {}).get("dev") or {}).get("exploration") or {}
+            elif _dev_explore.get("selected"):
+                # A steady-state challenger actually REPLACED the winner for the
+                # dev slot. Stash the recovery target: re-derive the winner-mode
+                # decision so its dev profile is available if the challenger
+                # attempt fails (clause-8 recoverable). Use budget 0 (cap reached
+                # → winner mode) NOT None (disabled → deterministic), so recovery
+                # routes through the SAME audit-derived empirical winner the block
+                # records — not the stale static-tier incumbent.
+                _winner_decision = _assign(0)
+                state.exploration_challenger = {
+                    "routing_key": _dev_explore.get("routing_key"),
+                    "challenger": _dev_explore.get("selected"),
+                    "winner": _dev_explore.get("winner"),
+                    "pool": list(_dev_explore.get("pool") or []),
+                }
+                state.exploration_winner_dev_profile = _winner_decision.dev
 
     # Splice the full explicit pools back into the decision so audit and
     # downstream consumers see the models that actually run, then recompute

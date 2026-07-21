@@ -12,7 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
-from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile, PlanConfig, RecencyConfig
+from .types import (
+    ApiFallbackConfig,
+    AssignmentConfig,
+    ExplorationConfig,
+    ModelProfile,
+    PlanConfig,
+    RecencyConfig,
+)
 
 _ProfileT = TypeVar("_ProfileT", ModelProfile, PlanConfig)
 
@@ -741,6 +748,71 @@ def _parse_recency(recency_raw: Any) -> RecencyConfig:
     return RecencyConfig(mode=mode, half_life_runs=half_life_runs, window=window)
 
 
+def _parse_positive_int(value: Any, *, key: str, minimum: int, default: int) -> int:
+    """Coerce/validate a bounded integer at the config integrity boundary.
+
+    ``bool`` is rejected explicitly (a YAML ``true`` is an ``int`` subtype but a
+    nonsense cadence), and values below ``minimum`` are a hard error rather than
+    a silent clamp that would hide bad config.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer, got {value!r}")
+    if value < minimum:
+        raise ValueError(f"{key} must be >= {minimum}, got {value}")
+    return value
+
+
+def _parse_exploration(exploration_raw: Any) -> ExplorationConfig:
+    """Parse and validate the ``assignment.exploration`` block (#325).
+
+    Config loading is an integrity boundary (ADR-0006 clause 8: exploration must
+    stay bounded); reject invalid cadence/floor/cap values with a clear error.
+    """
+    if exploration_raw is None:
+        return ExplorationConfig()
+    if not isinstance(exploration_raw, dict):
+        raise ValueError(
+            f"assignment.exploration must be a mapping, got {type(exploration_raw).__name__}"
+        )
+    defaults = ExplorationConfig()
+    explore_every_n = _parse_positive_int(
+        exploration_raw.get("explore_every_n"),
+        key="assignment.exploration.explore_every_n",
+        minimum=1,
+        default=defaults.explore_every_n,
+    )
+    min_sample_size = _parse_positive_int(
+        exploration_raw.get("min_sample_size"),
+        key="assignment.exploration.min_sample_size",
+        minimum=1,
+        default=defaults.min_sample_size,
+    )
+    per_sprint_cap = _parse_positive_int(
+        exploration_raw.get("per_sprint_cap"),
+        key="assignment.exploration.per_sprint_cap",
+        minimum=0,
+        default=defaults.per_sprint_cap,
+    )
+    cache_path_raw = exploration_raw.get("performance_cache_path")
+    if cache_path_raw is None:
+        performance_cache_path = defaults.performance_cache_path
+    elif isinstance(cache_path_raw, str) and cache_path_raw.strip():
+        performance_cache_path = cache_path_raw.strip()
+    else:
+        raise ValueError(
+            "assignment.exploration.performance_cache_path must be a non-empty string, "
+            f"got {cache_path_raw!r}"
+        )
+    return ExplorationConfig(
+        explore_every_n=explore_every_n,
+        min_sample_size=min_sample_size,
+        per_sprint_cap=per_sprint_cap,
+        performance_cache_path=performance_cache_path,
+    )
+
+
 def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
     """Parse assignment config from raw YAML dict."""
     return AssignmentConfig(
@@ -756,4 +828,5 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
         escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
         adaptive_enabled=bool(assignment_raw.get("adaptive_enabled", True)),
         recency=_parse_recency(assignment_raw.get("recency")),
+        exploration=_parse_exploration(assignment_raw.get("exploration")),
     )
