@@ -15,6 +15,7 @@ from theforge.config import ForgeConfig
 from theforge.model_profiles import RunOutcome, update_from_run
 
 from .state import CoordinatorState
+from .trust_status import derive_trust_status, is_tainted
 
 
 def _extract_reviewers(
@@ -73,6 +74,13 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         if state.dev_process_timeout_killed
         else ("stuck_pattern" if state.dev_process_stuck_terminated else None)
     )
+    # Taint marker (ADR-0006 clause 4, #1852): derive the run's aggregate
+    # trust_status from its mechanically-computed trust checks — the same
+    # derivation the audit writer records — and exclude a tainted run from every
+    # router-consumed capability aggregate. A run with no implemented check stays
+    # "unchecked" (admissible); only an affirmative failed check taints it.
+    trust_status = derive_trust_status(state.trust_checks.values())
+    run_tainted = is_tainted(trust_status)
     return RunOutcome(
         complexity=complexity,
         complexity_score=state.preflight_complexity_score,
@@ -106,6 +114,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         # Domain tags (#155) recorded by preflight, folded into per-domain dev
         # slices so future routing can prefer models strong in the story's domains.
         domains=list(state.preflight_domains or []),
+        dev_tainted=run_tainted,
     )
 
 

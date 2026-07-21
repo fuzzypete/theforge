@@ -184,6 +184,12 @@ def render_routing_decision(block: dict) -> list[str]:
     origin = block.get("origin", "?")
     lines.append(f"Routing decision (origin: {origin})")
     lines.append("=" * 60)
+    # Excluded-for-taint (ADR-0006 clause 4/7, #1852): how much router-consumed
+    # history was set aside because it failed its own trust checks. Only shown
+    # when present and non-zero so legacy blocks (no field) render unchanged.
+    excluded_for_taint = block.get("excluded_for_taint")
+    if isinstance(excluded_for_taint, int) and excluded_for_taint > 0:
+        lines.append(f"excluded for taint: {excluded_for_taint} run(s) set aside (not deleted)")
     for role in _ROLE_ORDER:
         role_block = block.get(role)
         if not isinstance(role_block, dict):

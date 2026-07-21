@@ -1420,7 +1420,11 @@ def _coerce_complexity_score(value: object) -> int | None:
     return None
 
 
-def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
+def derive_assignment_history(
+    conn: sqlite3.Connection,
+    *,
+    stats: dict | None = None,
+) -> list[dict]:
     """Return assignment-history records derived from per-run audit records.
 
     Replaces the YAML snapshot at ``.forge/assignment_history.yaml`` as the
@@ -1433,13 +1437,28 @@ def derive_assignment_history(conn: sqlite3.Connection) -> list[dict]:
     reconstruct an :class:`EscalationRecord` are skipped — they predate
     adaptive routing and were never represented in the legacy YAML either.
 
+    Runs marked ``tainted`` by the trust-status marker (ADR-0006 clause 4) are
+    excluded before any projection: a run that failed its own trust checks
+    "doesn't teach", so it must not carry routing weight. Filtering routes
+    through the centralized :func:`trust_status.filter_tainted_records` gate so
+    the rule stays identical across every consumer. The tainted rows remain in
+    the substrate untouched (ADR-0002 refusal-to-forget); this is a read-time
+    gate. When ``stats`` is provided, its ``"excluded_for_taint"`` key is
+    incremented by the number of records set aside so callers (preflight) can
+    surface the count in ``routing_decision``.
+
     This is the CLI/export view (mapped complexity bands, derives dev model
     from preflight routing assignments). Adaptive routing uses the more
     runtime-faithful :func:`iter_escalation_records` instead, which derives
     dev model from ``cost.agents`` (the model that actually ran).
     """
+    from .trust_status import filter_tainted_records  # noqa: PLC0415
+
+    admissible, excluded = filter_tainted_records(iter_records(conn, order_by_started=True))
+    if stats is not None:
+        stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
     out: list[dict] = []
-    for record in iter_records(conn, order_by_started=True):
+    for record in admissible:
         slug = (record.get("task") or {}).get("slug")
         if not slug:
             continue
@@ -1516,7 +1535,14 @@ def iter_escalation_records(conn: sqlite3.Connection) -> Iterable[dict]:
     model from ``cost.agents`` — the model that actually ran). The CLI/export
     view :func:`derive_assignment_history` uses preflight assignments
     instead, which is the *intended* dev model rather than the executed one.
+
+    Runs marked ``tainted`` by the trust-status marker (ADR-0006 clause 4) are
+    dropped before ``_derive_escalation`` so a run that failed its own trust
+    checks never carries routing weight. The exclusion routes through the same
+    centralized :func:`trust_status.is_tainted` gate every other consumer uses.
     """
+    from .trust_status import is_tainted  # noqa: PLC0415
+
     rows = conn.execute(
         "SELECT raw_json, record_schema_version FROM audit_records "
         "ORDER BY COALESCE(started_at, '') ASC"
@@ -1528,6 +1554,8 @@ def iter_escalation_records(conn: sqlite3.Connection) -> Iterable[dict]:
             raw, ver = row[0], row[1]
         record = _load_migrated(raw, ver)
         if record is None:
+            continue
+        if is_tainted(record.get("trust_status")):
             continue
         derived = _derive_escalation(record)
         if derived is not None:

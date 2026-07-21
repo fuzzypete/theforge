@@ -19,12 +19,29 @@ from theforge.coordinator import audit_substrate
 def load_escalation_history_from_substrate(project_root: Path) -> list[EscalationRecord]:
     """Return escalation records derived from substrate audit rows.
 
+    Thin wrapper over :func:`load_escalation_history_with_taint_stats` that
+    discards the taint count for callers that only need the history list. See
+    that function for the full behavior contract.
+    """
+    records, _excluded = load_escalation_history_with_taint_stats(project_root)
+    return records
+
+
+def load_escalation_history_with_taint_stats(
+    project_root: Path,
+) -> tuple[list[EscalationRecord], int]:
+    """Return ``(escalation records, excluded-for-taint count)`` from substrate.
+
     Behavior:
       - Truly fresh repo (no substrate file *and* no legacy/per-run audit
-        inputs) → return ``[]``. Adaptive routing has no history to consume
+        inputs) → return ``([], 0)``. Adaptive routing has no history to consume
         and proceeds with its tier-only defaults.
       - Substrate present and valid → project escalation rows from the
-        audit table.
+        audit table. Runs marked ``tainted`` by the trust-status marker
+        (ADR-0006 clause 4) are excluded by
+        :func:`audit_substrate.derive_assignment_history`; the number set aside
+        is returned as the second element so preflight can surface it in the
+        ``routing_decision`` block (ADR-0006 clause 7).
       - Substrate missing or corrupt while audit inputs exist → propagate
         ``SubstrateMissingError`` / ``SubstrateCorruptError``. The spec
         requires a clear operator-facing error, not silent no-history
@@ -39,11 +56,12 @@ def load_escalation_history_from_substrate(project_root: Path) -> list[Escalatio
     """
     sub_path = audit_substrate.substrate_path(project_root)
     if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
-        return []
+        return [], 0
     conn = audit_substrate.require_substrate(project_root)
     try:
+        stats: dict = {}
         out: list[EscalationRecord] = []
-        for entry in audit_substrate.derive_assignment_history(conn):
+        for entry in audit_substrate.derive_assignment_history(conn, stats=stats):
             out.append(
                 EscalationRecord(
                     story=str(entry.get("story") or ""),
@@ -55,6 +73,6 @@ def load_escalation_history_from_substrate(project_root: Path) -> list[Escalatio
                     complexity_score=entry.get("complexity_score"),
                 )
             )
-        return out
+        return out, int(stats.get("excluded_for_taint", 0))
     finally:
         conn.close()

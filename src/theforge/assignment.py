@@ -1095,6 +1095,7 @@ def _build_routing_decision(
     domains: list[str] | None = None,
     dev_domain_signals: dict[str, dict] | None = None,
     dev_domain_match: dict[str, object] | None = None,
+    excluded_for_taint: int = 0,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
@@ -1168,6 +1169,13 @@ def _build_routing_decision(
 
     return {
         "origin": origin,
+        # Excluded-for-taint count (ADR-0006 clause 4 + clause 7, #1852). How many
+        # historical runs the centralized taint gate set aside from the router-
+        # consumed escalation history because they failed their own trust checks.
+        # Surfaced at the top level so operators see how much history was
+        # discounted for taint before any per-role explanation. The runs remain in
+        # the substrate (ADR-0002 refusal-to-forget); this is a read-time count.
+        "excluded_for_taint": int(excluded_for_taint),
         "preflight": {
             "candidate_pool": _single_model_pool(
                 agents,
@@ -1338,6 +1346,7 @@ def assign_models(
     unhealthy_models: set[str] | None = None,
     routing_origin: str = "preflight",
     domains: list[str] | None = None,
+    excluded_for_taint: int = 0,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -1723,6 +1732,7 @@ def assign_models(
             domains=effective_domains,
             dev_domain_signals=_dev_domain_signals,
             dev_domain_match=_dev_domain_match,
+            excluded_for_taint=excluded_for_taint,
         )
         return _dc_replace(dec, routing_decision=block)
 
