@@ -22,16 +22,8 @@ venv/
 .coverage
 htmlcov/
 
-# TheForge runtime (worktrees, logs, audits all live here)
-.forge/
-# But hooks are project config — track them
-!.forge/hooks/
-!.forge/hooks/**
-!.forge/.env.example
-# Legacy root-level artifacts (ignore if leftover)
-forge_ideation_audit.yaml
-sprint-audit.yaml
-campaign-audit.yaml
+# Test artifacts (MagicMock path materialization when log_file is a MagicMock)
+MagicMock/
 
 # Claude Code — theforge builds itself, local IDE config is not project config
 .claude/
@@ -39,13 +31,39 @@ campaign-audit.yaml
 # Local preview artifacts
 .preview/
 
-# Test artifacts (MagicMock path materialization when log_file is a MagicMock)
-MagicMock/
-
-# Handoff files — per-run artifacts, never committed
-handoff.yaml
-
 # OS
 .DS_Store
-.forge/.env
-forge_audit.yaml
+
+# ── TheForge ──────────────────────────────────────────────────────────
+# TheForge writes everything under .forge/. We deny the whole directory
+# by default and explicitly re-include the paths that are project memory
+# (tracked, travel with the repo) and config (tracked, travel with the
+# repo). Everything else — secrets, runtime state, derived views — stays
+# local to your machine.
+#
+# To opt out of shared memory entirely (public repo, stricter data
+# boundary), run `forge init --local-memory` or delete the project-memory
+# re-includes below (the `audits/` and `knowledge/summaries/` lines —
+# keep the hooks and .env.example re-includes, those are config).
+#
+# See: docs/plans/forge-storage-layout.md
+
+# Deny everything under .forge/ by default
+.forge/**
+
+# Re-include project memory (canonical per-run records)
+!.forge/audits/
+!.forge/audits/runs/
+!.forge/audits/runs/**
+!.forge/knowledge/
+!.forge/knowledge/summaries/
+!.forge/knowledge/summaries/**
+
+# Re-include config
+!.forge/hooks/
+!.forge/hooks/**
+!.forge/.env.example
+
+# Root-level runtime state — always ignored
+handoff.yaml
+# ──────────────────────────────────────────────────────────────────────
