@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 7
+CURRENT_RECORD_SCHEMA_VERSION = 8
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -793,6 +793,30 @@ def _migrate_v6_to_v7(record: dict) -> dict:
     return {**record, "routing_decision": None}
 
 
+def _migrate_v7_to_v8(record: dict) -> dict:
+    """Add top-level ``trust_status``/``trust_checks`` (issue #1851).
+
+    v7 records carried no machine-readable marker for whether a run failed its
+    own trust checks — the reviewer tree-currency / certainty verification
+    (#1826) existed only as prose in review output. v8 promotes it to structured
+    telemetry so v0.13 routing can exclude tainted runs from aggregates
+    (ADR-0006 clause 4). Older records ran before any trust check existed and
+    cannot be reconstructed after the fact, so backfill the "unchecked" default
+    (empty ``trust_checks``) rather than fabricating a verdict — taint requires
+    an affirmative failed check, not the absence of one. The record itself is
+    never rewritten in the substrate (ADR-0002 refusal-to-forget); this is the
+    reader-side lift applied on load.
+    """
+    from .trust_status import TRUST_UNCHECKED  # noqa: PLC0415
+
+    migrated = record
+    if "trust_status" not in migrated:
+        migrated = {**migrated, "trust_status": TRUST_UNCHECKED}
+    if "trust_checks" not in migrated:
+        migrated = {**migrated, "trust_checks": []}
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -808,6 +832,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
+    7: _migrate_v7_to_v8,
 }
 
 

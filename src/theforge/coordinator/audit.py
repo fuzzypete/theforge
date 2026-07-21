@@ -15,6 +15,7 @@ from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
 from .landing_record import build_landing_record
 from .state import CoordinatorResult, CoordinatorState
+from .trust_status import derive_trust_status
 
 # Per-run audit-record schema version and the reader-side migration registry
 # are owned by audit_substrate (the reader). They are re-exported here so
@@ -837,5 +838,24 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # observability contract every v0.13 routing mechanism writes into
         # (ADR-0006 clause 7). Additive: existing fields are unchanged.
         "routing_decision": state.routing_decision,
+        # Structured trust marker (#1851, ADR-0006 clause 4). trust_checks holds
+        # the coordinator-computed pass/fail entries (check name, result, observed
+        # evidence, producer); trust_status is derived mechanically from them —
+        # any failed check taints the run, an applicable pass trusts it, and a run
+        # with no implemented check stays "unchecked" (admissible for routing).
+        # Never set from LLM prose. Additive: existing readers are unaffected, and
+        # older records migrate to "unchecked" on read (audit_substrate v7→v8).
+        "trust_checks": _build_trust_checks(state),
+        "trust_status": derive_trust_status(_build_trust_checks(state)),
         **_build_phases_block(state, config),
     }
+
+
+def _build_trust_checks(state: CoordinatorState) -> list[dict]:
+    """Return the run's structured trust-check entries as an ordered list.
+
+    ``state.trust_checks`` is keyed by check name so a re-run review cycle
+    replaces (rather than duplicates) a check's result; the record serializes
+    them as a stable, name-sorted list.
+    """
+    return [state.trust_checks[name] for name in sorted(state.trust_checks)]

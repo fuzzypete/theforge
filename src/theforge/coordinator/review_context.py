@@ -134,6 +134,55 @@ def _handoff_commit_lines(handoff: DevHandoff | None) -> list[str] | None:
     return lines
 
 
+def _split_commit_line(line: str) -> tuple[str, str]:
+    """Split a ``"<sha> <message>"`` commit line into ``(lowercased sha, message)``."""
+    parts = line.split(maxsplit=1)
+    if not parts:
+        return "", ""
+    sha = parts[0].strip().lower()
+    message = parts[1].strip() if len(parts) > 1 else ""
+    return sha, message
+
+
+def _commits_match(a: str, b: str) -> bool:
+    """Return True when two commit lines refer to the same commit.
+
+    Messages must be identical; the SHAs match when one is a prefix of the
+    other. ``git log --oneline`` abbreviates SHAs while a dev handoff may cite
+    the full 40-char SHA (or vice-versa), so an exact string compare would flag
+    a legitimately clean run as a mismatch (issue #1851). Prefix matching
+    reconciles the two forms without loosening the message check.
+    """
+    sha_a, msg_a = _split_commit_line(a)
+    sha_b, msg_b = _split_commit_line(b)
+    if msg_a != msg_b or not sha_a or not sha_b:
+        return False
+    return sha_a.startswith(sha_b) or sha_b.startswith(sha_a)
+
+
+def _reconcile_handoff_commits(
+    handoff_lines: list[str], actual_lines: list[str]
+) -> tuple[list[str], list[str]]:
+    """Return ``(missing_from_branch, omitted_from_handoff)`` tolerant of SHA abbreviation.
+
+    A handoff commit is "missing" only when no git commit matches it by message
+    and prefix-compatible SHA; symmetrically for commits omitted from the
+    handoff. Shared by the prose mismatch warning and the structured
+    tree-currency trust check so both stop false-tainting full-SHA handoffs.
+    """
+    missing_from_branch = [
+        line
+        for line in handoff_lines
+        if not any(_commits_match(line, actual) for actual in actual_lines)
+    ]
+    omitted_from_handoff = [
+        line
+        for line in actual_lines
+        if not any(_commits_match(line, handoff) for handoff in handoff_lines)
+    ]
+    return missing_from_branch, omitted_from_handoff
+
+
 def _get_handoff_commit_mismatch(
     workspace_path: Path,
     base_branch: str,
@@ -146,11 +195,9 @@ def _get_handoff_commit_mismatch(
         return None
 
     actual_lines = _get_raw_commit_lines(workspace_path, base_branch)
-    actual_set = set(actual_lines)
-    handoff_set = set(handoff_lines)
-
-    missing_from_branch = [line for line in handoff_lines if line not in actual_set]
-    omitted_from_handoff = [line for line in actual_lines if line not in handoff_set]
+    missing_from_branch, omitted_from_handoff = _reconcile_handoff_commits(
+        handoff_lines, actual_lines
+    )
 
     if not missing_from_branch and not omitted_from_handoff:
         return None
@@ -179,6 +226,62 @@ def _get_handoff_commit_warning(
     if mismatch is None:
         return None
     return f"⚠ WARNING: {mismatch}"
+
+
+REVIEWER_TREE_CURRENCY_CHECK = "reviewer_tree_currency"
+REVIEWER_TREE_CURRENCY_PRODUCER = "coordinator.review_context.reviewer_tree_currency"
+
+
+def evaluate_reviewer_tree_currency(
+    workspace_path: Path,
+    base_branch: str,
+    forge_handoff_path: Path | None = None,
+) -> dict | None:
+    """Return a structured reviewer tree-currency trust-check entry, or None.
+
+    Promotes the coordinator-computed handoff-vs-git commit reconciliation (the
+    landed #1826 tree-currency mechanism) from prose-only review context into a
+    machine-readable pass/fail trust-check entry (issue #1851). This is the
+    first mechanical producer of the trust-status marker: the same evidence that
+    drives the reviewer's prose warning also decides whether the run is trusted.
+
+    Applicability: the check only applies when the dev handoff exists and parses
+    with a usable commit list. When there is no parseable handoff there is
+    nothing to reconcile against, so return None (not-applicable → no entry →
+    the run stays ``unchecked``; absence of a proof is not taint, ADR-0006
+    clause 4).
+
+    Result: FAIL when the handoff's self-reported commits diverge from verified
+    git history (a stale-checkout / wrong-tree signal, #1534), PASS when they
+    reconcile exactly. Evidence carries the expected (handoff) and actual (git)
+    commit lists plus the specific divergences so the taint is auditable.
+    """
+    from .trust_status import CHECK_FAIL, CHECK_PASS, make_trust_check  # noqa: PLC0415
+
+    handoff = _parse_dev_handoff(forge_handoff_path=forge_handoff_path)
+    handoff_lines = _handoff_commit_lines(handoff)
+    if handoff_lines is None:
+        return None
+
+    actual_lines = _get_raw_commit_lines(workspace_path, base_branch)
+    missing_from_branch, omitted_from_handoff = _reconcile_handoff_commits(
+        handoff_lines, actual_lines
+    )
+
+    reconciled = not missing_from_branch and not omitted_from_handoff
+    evidence = {
+        "base_branch": base_branch,
+        "expected_commits": handoff_lines,
+        "actual_commits": actual_lines,
+        "missing_from_branch": missing_from_branch,
+        "omitted_from_handoff": omitted_from_handoff,
+    }
+    return make_trust_check(
+        check=REVIEWER_TREE_CURRENCY_CHECK,
+        result=CHECK_PASS if reconciled else CHECK_FAIL,
+        producer=REVIEWER_TREE_CURRENCY_PRODUCER,
+        evidence=evidence,
+    )
 
 
 def _get_handoff_content(

@@ -623,6 +623,14 @@ class CoordinatorState:
     # path. Each dict carries review_cycle, file, line, reporter, description, and
     # original/effective severity so the rule's hit-rate becomes queryable.
     symptom_test_escalations: list[dict] = field(default_factory=list)
+    # ── Trust checks (#1851) ──────────────────────────────────────────────────
+    # Structured pass/fail results of coordinator-computed trust checks, keyed by
+    # check name (e.g. "reviewer_tree_currency"). Populated mechanically during
+    # REVIEW (never from LLM prose). The aggregate trust_status on the native
+    # per-run record is derived from these entries by trust_status.derive_trust_status
+    # — any failed check taints the run (ADR-0006 clause 4); a run type with no
+    # implemented check contributes no entry and stays "unchecked" (admissible).
+    trust_checks: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.
