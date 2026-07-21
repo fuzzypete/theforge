@@ -375,6 +375,34 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_readonly(project_root: Path) -> sqlite3.Connection:
+    """Open the substrate strictly read-only — never create, migrate, or rebuild.
+
+    For operator-facing query surfaces (e.g. ``forge explain``) that must not
+    mutate the substrate as a side effect of reading it. Unlike
+    :func:`require_substrate` (which rebuilds stale/missing indexes) and
+    :func:`create_or_open` (which bootstraps a fresh DB and applies schema),
+    this opens the existing file with SQLite ``mode=ro`` so no write — not even
+    a schema migration — is possible. Raises :class:`SubstrateMissingError`
+    when the index file is absent, pointing the operator at
+    ``forge audits rebuild`` rather than silently regenerating it.
+    """
+    path = substrate_path(project_root)
+    if not path.exists():
+        raise SubstrateMissingError(
+            f"audit substrate not found at {path}. Run `forge audits rebuild` to create it."
+        )
+    try:
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.DatabaseError as exc:
+        raise SubstrateCorruptError(
+            f"audit substrate at {path} could not be opened read-only: {exc}. "
+            "Run `forge audits rebuild [--include-legacy-history]` to recover."
+        ) from exc
+    return conn
+
+
 def _open_validated(path: Path) -> sqlite3.Connection:
     """Connect, run integrity_check, apply schema (idempotent)."""
     try:

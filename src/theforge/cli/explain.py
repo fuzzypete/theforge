@@ -142,9 +142,12 @@ def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
 def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:
     demo = role_block.get("demotion_check") or {}
     reason = demo.get("reason", "")
-    # A reviewer demotion is "not checked" only when there were no unhealthy
-    # candidates to weigh; otherwise it was checked and either fired or not.
-    checked = reason != "no_unhealthy_candidates"
+    # Reviewer provider-health demotion is a LIVE mechanism the router always
+    # runs, so whenever the demotion_check block is present it WAS checked —
+    # `fired` alone distinguishes fired vs did-not-fire. A no-op outcome
+    # (e.g. reason "no_unhealthy_candidates") is "checked, did not fire", not
+    # "not checked". Only a wholly-absent block reads as not checked.
+    checked = bool(demo)
     detail = reason
     depri = demo.get("deprioritized") or []
     if depri:
@@ -288,8 +291,12 @@ def cmd_explain(args: object) -> int:
             file=sys.stderr,
         )
         return 1
+    # Strictly read-only: open_readonly never creates, migrates, or rebuilds the
+    # substrate (unlike require_substrate), so `forge explain` cannot mutate the
+    # index as a side effect. A missing/stale index fails with an explicit
+    # rebuild instruction rather than being silently regenerated.
     try:
-        conn = audit_substrate.require_substrate(project_root)
+        conn = audit_substrate.open_readonly(project_root)
     except audit_substrate.SubstrateError as exc:
         print(f"[forge] {exc}", file=sys.stderr)
         return 1

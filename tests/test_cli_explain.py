@@ -161,6 +161,26 @@ def test_tri_state_distinguishes_not_checked_from_did_not_fire() -> None:
     assert "demotion (provider_health): fired" in fired_text
 
 
+def test_reviewer_health_no_op_renders_checked_did_not_fire() -> None:
+    """A reviewer provider-health block that ran but found nothing to demote is a
+    LIVE, checked mechanism (fired=False) — it must render as "checked, did not
+    fire", never "not checked" (a present block is always a checked mechanism)."""
+    text = "\n".join(explain.render_routing_decision(_routing_block()))
+    # plan_review uses reason "no_unhealthy_candidates" with fired=False; that is
+    # a no-op outcome of a mechanism that DID run.
+    assert "demotion (provider_health): checked, did not fire" in text
+    assert "demotion (provider_health): not checked" not in text
+
+
+def test_reviewer_missing_block_renders_not_checked() -> None:
+    """Only a wholly-absent reviewer demotion_check reads as "not checked"."""
+    block = _routing_block()
+    block["plan_review"].pop("demotion_check")
+    lines = []
+    explain._render_reviewer_mechanisms(block["plan_review"], lines)
+    assert any("not checked" in line for line in lines)
+
+
 def test_explicit_override_locked_reason_renders() -> None:
     text = "\n".join(explain.render_routing_decision(_routing_block(dev_override=True)))
     assert "locked by explicit forge.yaml override" in text
@@ -301,6 +321,60 @@ def test_explain_story_not_found(tmp_path: Path, capsys) -> None:
 
     assert explain.cmd_explain(_Args()) == 1
     assert "no audit record found for story issue-999" in capsys.readouterr().err
+
+
+def test_explain_story_does_not_rebuild_missing_substrate(tmp_path: Path, capsys) -> None:
+    """Read-only guard: with per-run JSON present but the substrate absent,
+    `forge explain --story` must NOT create/rebuild the index — it fails with an
+    explicit rebuild instruction and leaves the filesystem unchanged."""
+    (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
+    runs = sub.runs_dir(tmp_path)
+    runs.mkdir(parents=True, exist_ok=True)
+    rec = _story_record("run-270", "issue-270", 270, "2026-07-20T10:00:00+00:00")
+    (runs / "run-270.json").write_text(json.dumps(rec), encoding="utf-8")
+    # Substrate deliberately not built.
+    sub_path = sub.substrate_path(tmp_path)
+    assert not sub_path.exists()
+
+    class _Args:
+        file = None
+        story = "issue-270"
+        run = None
+        config = str(tmp_path / "forge.yaml")
+
+    assert explain.cmd_explain(_Args()) == 1
+    err = capsys.readouterr().err
+    assert "forge audits rebuild" in err
+    # The command must not have written the index as a side effect.
+    assert not sub_path.exists(), "explain must not rebuild the substrate"
+
+
+def test_explain_run_leaves_stale_substrate_unchanged(tmp_path: Path, capsys) -> None:
+    """Read-only guard: even when the substrate is stale (a per-run file changed
+    after the index was built), `forge explain --run` reads the existing index
+    without rewriting it — the file's mtime is unchanged."""
+    _write_run_and_substrate(
+        tmp_path, _story_record("run-270", "issue-270", 270, "2026-07-20T10:00:00+00:00")
+    )
+    sub_path = sub.substrate_path(tmp_path)
+    # Make the substrate stale relative to the source per-run file.
+    import os
+    import time
+
+    time.sleep(0.01)
+    newer = _story_record("run-270", "issue-270", 270, "2026-07-21T10:00:00+00:00")
+    (sub.runs_dir(tmp_path) / "run-270.json").write_text(json.dumps(newer), encoding="utf-8")
+    before = os.stat(sub_path).st_mtime_ns
+
+    class _Args:
+        file = None
+        story = None
+        run = "run-270"
+        config = str(tmp_path / "forge.yaml")
+
+    assert explain.cmd_explain(_Args()) == 0
+    after = os.stat(sub_path).st_mtime_ns
+    assert before == after, "explain must not rewrite/rebuild the substrate index"
 
 
 def test_explain_no_audit_inputs(tmp_path: Path, capsys) -> None:
