@@ -266,6 +266,7 @@ def _rerank_by_profiles(
     domains: list[str] | None = None,
     domain_signals_out: dict[str, dict] | None = None,
     rerank_audit: dict[str, object] | None = None,
+    recency: object | None = None,
 ) -> list[AgentDef]:
     """Stable-sort candidates: high-success-rate first when enough data exists.
 
@@ -305,6 +306,7 @@ def _rerank_by_profiles(
             actual_model=agent.model,
             provider=agent.provider,
             cli=agent.cli,
+            recency=recency,
         )
         if signals_out is not None:
             signals_out[agent.name] = signal
@@ -370,6 +372,7 @@ def _pick_agent(
     domains: list[str] | None = None,
     domain_signals_out: dict[str, dict] | None = None,
     rerank_audit: dict[str, object] | None = None,
+    recency: object | None = None,
 ) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
@@ -394,6 +397,7 @@ def _pick_agent(
         domains=domains,
         domain_signals_out=domain_signals_out,
         rerank_audit=rerank_audit,
+        recency=recency,
     )
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
@@ -1392,6 +1396,10 @@ def assign_models(
     effective_history = history if adaptive_enabled else []
     effective_promotions = sprint_promotions if adaptive_enabled else None
     effective_profiles = model_profiles if adaptive_enabled else None
+    # Recency-weighting params (#1392): the dev signal ranks on the decayed view
+    # of admissible history. Only consulted under adaptive routing (static mode
+    # ignores profile learning entirely).
+    effective_recency = assignment_config.recency if adaptive_enabled else None
     # Domain preference only applies under adaptive routing; in static mode the
     # horizontal axis is ignored like the numeric score and profile learning.
     effective_domains = domains if adaptive_enabled else None
@@ -1420,6 +1428,7 @@ def assign_models(
             model_profiles=effective_profiles,
             role="dev",
             complexity=norm_complexity,
+            recency=effective_recency,
         )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
         dev_canonical = _agent_canonical_id(dev_agent_for_check) if dev_agent_for_check else None
@@ -1484,6 +1493,7 @@ def assign_models(
             domains=effective_domains,
             domain_signals_out=_dev_domain_signals,
             rerank_audit=_dev_domain_match,
+            recency=effective_recency,
         )
         if dev_agent is not None and effective_profiles:
             from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
@@ -1495,6 +1505,7 @@ def assign_models(
                 actual_model=dev_agent.model,
                 provider=dev_agent.provider,
                 cli=dev_agent.cli,
+                recency=effective_recency,
             )
             if _rate is not None:
                 rationale["dev"] += f" (profile success_rate={_rate:.2f} @ {norm_complexity})"

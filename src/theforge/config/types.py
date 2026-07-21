@@ -13,6 +13,30 @@ SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
 
 
 @dataclass(frozen=True)
+class RecencyConfig:
+    """Recency-weighting parameters for profile-derived routing rates (#1392).
+
+    Governs how the adaptive router weights historical dev (and, once landed,
+    reviewer) run outcomes when ranking models: newer runs count for more than
+    stale ones so a model's *current* behavior drives routing, not a lifetime
+    cumulative average (ADR-0006 clause 2.4). Consumed by
+    :func:`theforge.model_profiles.get_dev_signal` via a duck-typed read of these
+    fields; defaults mirror the module defaults there.
+
+    - ``mode``: ``"exponential"`` (run-position decay), ``"window"`` (unweighted
+      mean over the last ``window`` runs), or ``"off"`` (no recency weighting —
+      routing falls back to the lifetime cumulative rate).
+    - ``half_life_runs``: runs after which a run's weight halves (``exponential``
+      mode only). Larger = longer memory.
+    - ``window``: max recent outcomes consulted; also caps the ``window`` mode.
+    """
+
+    mode: str = "exponential"
+    half_life_runs: float = 50.0
+    window: int = 200
+
+
+@dataclass(frozen=True)
 class AssignmentConfig:
     """Configuration for adaptive model assignment."""
 
@@ -23,6 +47,7 @@ class AssignmentConfig:
     max_cost_per_story_usd: float | None = None
     escalation_memory: bool = True
     adaptive_enabled: bool = True
+    recency: RecencyConfig = field(default_factory=RecencyConfig)
 
 
 @dataclass(frozen=True)
