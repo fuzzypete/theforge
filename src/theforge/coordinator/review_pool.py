@@ -909,6 +909,18 @@ def _run_review_pool(
             parsed_results.append(parse_review_output(r.output, r.profile_name))
     names = [r.profile_name for r in successful]
 
+    # Attempt-completion invariant (#1388): every reviewer invocation is recorded
+    # exactly once, classified on ITS OWN outcome — never on a later retry's. The
+    # initial (pool / transient-final) invocation is recorded by the main
+    # _record_reviewer_attempts call below using this snapshot of its FIRST parse
+    # result; each parse-retry invocation is a distinct invocation recorded as it
+    # happens inside the loop. Snapshot here, before the loop mutates
+    # ``parsed_results``, so a retry that later parses cannot rewrite the initial
+    # invocation's failed outcome into a spurious completion.
+    _initial_parseable = {
+        name: (not parsed.parse_errors) for name, parsed in zip(names, parsed_results)
+    }
+
     # ── Per-reviewer parse retry (all modes) ─────────────────────────
     # For each reviewer whose initial output has parse errors, send a corrective
     # prompt via run_agent up to max_review_parse_retries times.
@@ -954,6 +966,12 @@ def _run_review_pool(
                 _log_verbose(
                     f"  {name} retry {_retry_num} agent failed (exit={_retry_result.exit_code})"
                 )
+                # A parse-retry that fails transport is still a distinct reviewer
+                # invocation (#1388) — record it (classified transport/crash) so it
+                # does not vanish from the completion evidence.
+                _append_reviewer_attempt(
+                    state, config, _prof, _retry_result, parseable=False, cycle_num=_cycle_num
+                )
                 break
             _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data, name)
             write_trace(
@@ -964,6 +982,10 @@ def _run_review_pool(
             )
             if _retried is not None:
                 _log(f"  ✓ {name} retry {_retry_num} succeeded")
+                # The retry produced a parseable verdict — a completed invocation.
+                _append_reviewer_attempt(
+                    state, config, _prof, _retry_result, parseable=True, cycle_num=_cycle_num
+                )
                 parsed_results[i] = _retried
                 state.review_agent_results.append(_retry_result)
                 break
@@ -972,6 +994,11 @@ def _run_review_pool(
                 _log_verbose(
                     f"  {name} retry {_retry_num} still rejected: "
                     f"{[str(e) for e in _retry_errors]}"
+                )
+                # Transport succeeded but the output is still unparseable — a failed
+                # invocation. Record it before the next retry supersedes it.
+                _append_reviewer_attempt(
+                    state, config, _prof, _retry_result, parseable=False, cycle_num=_cycle_num
                 )
                 parsed = ReviewResult(
                     verdict="REQUEST_CHANGES",
@@ -1004,17 +1031,19 @@ def _run_review_pool(
     # post a COMMENT with potentially empty findings/summary for those reviewers.
     named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
 
-    # Attempt-completion telemetry (#1388): a reviewer "completed" iff its final
-    # (post parse-retry) output is a parseable verdict — transport success alone
-    # is not enough. Records every reviewer invoked this cycle, including failures.
-    _parsed_by_name = {name: (not parsed.parse_errors) for name, parsed in named_parsed}
+    # Attempt-completion telemetry (#1388): record the INITIAL (pool /
+    # transient-final) invocation for every reviewer, classified on its own first
+    # parse result (``_initial_parseable``) — NOT the post-retry state, which would
+    # collapse a failed initial parse and its successful retry into a single
+    # completion. Parse-retry invocations were already recorded, per invocation,
+    # inside the loop above. Together this gives one record per invocation.
     _record_reviewer_attempts(
         state,
         config,
         pool,
         _all_pool_results,
         cycle_num=_cycle_num,
-        parsed_by_name=_parsed_by_name,
+        parsed_by_name=_initial_parseable,
         budget_excluded=_budget_excluded,
     )
 

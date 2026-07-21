@@ -128,6 +128,105 @@ class TestTransientRetryAttemptTelemetry:
         assert all(not a["completed_parseable_verdict"] for a in attempts)
 
 
+class TestParseRetryAttemptTelemetry:
+    """A recovered parse failure must leave BOTH invocations in the record.
+
+    #1388: a reviewer whose initial output is unparseable and whose parse retry
+    then produces a valid verdict is two distinct invocations. The failed initial
+    parse must not collapse into a single completed attempt just because a later
+    retry parsed.
+    """
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_recovered_parse_failure_records_both_invocations(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r = _make_review_profile("r")
+        config = _make_pool_config(tmp_path, [r], r)
+        config = dataclasses.replace(
+            config, retry=dataclasses.replace(config.retry, demotion_threshold=0)
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Initial transport succeeds but output is unparseable; the parse retry
+        # returns a valid APPROVE verdict.
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="r"
+        )
+
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=2,
+        )
+
+        assert merged is not None
+        attempts = [a for a in state.reviewer_attempts if a["name"] == "r"]
+        assert len(attempts) == 2
+        assert sorted(a["completed_parseable_verdict"] for a in attempts) == [False, True]
+        failed_attempt = next(a for a in attempts if not a["completed_parseable_verdict"])
+        assert failed_attempt["outcome"] == "parse_failure"
+        assert mock_run_agent.call_count == 1
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_exhausted_parse_retries_record_every_invocation(
+        self, mock_pool, mock_run_agent, _mock_log, tmp_path
+    ):
+        r = _make_review_profile("r")
+        config = _make_pool_config(tmp_path, [r], r)
+        config = dataclasses.replace(
+            config, retry=dataclasses.replace(config.retry, demotion_threshold=0)
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        # Every invocation (initial + 2 parse retries) stays unparseable.
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r")
+        ]
+        mock_run_agent.return_value = _make_agent_result(
+            success=True, output=PARSE_ERROR_OUTPUT, profile_name="r"
+        )
+
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=2,
+        )
+
+        # 1 initial + 2 parse retries = 3 invocations, all failed (parse_failure).
+        attempts = [a for a in state.reviewer_attempts if a["name"] == "r"]
+        assert len(attempts) == 3
+        assert all(not a["completed_parseable_verdict"] for a in attempts)
+        assert all(a["outcome"] == "parse_failure" for a in attempts)
+
+
 class TestReviewerDemotion:
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
