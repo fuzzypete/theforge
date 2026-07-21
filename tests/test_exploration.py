@@ -66,6 +66,34 @@ def test_aggregates_exclude_tainted_runs():
     assert agg.success_rate == 1.0  # only the clean successes counted
 
 
+def test_domain_scoped_aggregates_differ_by_domain():
+    """A domain-keyed aggregate reads the story's domain slice, not the pooled band.
+
+    Two stories at the same complexity band but different domains must NOT race
+    against an identical pooled aggregate (the routing key records the domain, so
+    the aggregation must honor it).
+    """
+    data: dict = {"models": {}}
+    for _ in range(4):
+        apply_run(data, RunOutcome("large", "m1", True, 1, 0.1, domains=["api"]))
+    for _ in range(4):
+        apply_run(data, RunOutcome("large", "m1", False, 1, 0.1, domains=["web"]))
+
+    key_api = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["api"])
+    key_web = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=["web"])
+    key_band = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+
+    agg_api = exp.derive_key_aggregates(data, [_cand("m1")], key_api, min_sample_size=3)["m1"]
+    agg_web = exp.derive_key_aggregates(data, [_cand("m1")], key_web, min_sample_size=3)["m1"]
+    agg_band = exp.derive_key_aggregates(data, [_cand("m1")], key_band, min_sample_size=3)["m1"]
+
+    assert agg_api.success_rate == 1.0  # strong in api
+    assert agg_web.success_rate == 0.0  # weak in web
+    # Band pools both domains → lands strictly between the two domain slices
+    # (recency-weighted, so ~0.5 rather than exactly 0.5).
+    assert agg_web.success_rate < agg_band.success_rate < agg_api.success_rate
+
+
 def test_aggregate_below_floor_has_no_rate():
     data = _profiles_with({"m1": [(True, 0.1, 1), (True, 0.1, 1)]})  # 2 < floor 3
     aggs = exp.derive_key_aggregates(

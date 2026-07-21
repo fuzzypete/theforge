@@ -153,27 +153,54 @@ def derive_key_aggregates(
     """Materialize per-candidate aggregates for ``key`` from the audit-derived view.
 
     Reads ONLY the in-memory ``model_profiles`` dict (which is built from native
-    audit records). Success rate is the recency-weighted, taint-excluded value
-    the deterministic router already ranks on (:func:`model_profiles.get_dev_signal`);
-    cost/iteration/duration averages come from the per-band stats reader. No
-    ``performance_table.yaml`` is consulted — the cache is never authoritative.
+    audit records). No ``performance_table.yaml`` is consulted — the cache is
+    never authoritative.
+
+    The aggregate is genuinely scoped to the whole routing key, not just its
+    complexity band: when the key carries a domain (#155) the success-rate the
+    winner is ranked on comes from the **domain-scoped** slice
+    (:func:`model_profiles.get_dev_domain_signal`) — recency-weighted and
+    taint-excluded — so two stories in different domains at the same band race
+    against different aggregates rather than an identical pooled one. Without a
+    domain the band-level signal (:func:`model_profiles.get_dev_signal`) is used.
+    Cost/iteration/duration remain band-level tie-breakers (only consulted when
+    success rates tie); the profile schema keeps no domain-sliced duration.
     """
     from theforge import model_profiles as mp  # noqa: PLC0415
 
     aggregates: dict[str, ModelAggregate] = {}
     profiles = model_profiles or {}
     for cand in candidates:
-        signal = mp.get_dev_signal(
-            profiles,
-            cand.id,
-            key.band,
-            min_sample_size,
-            actual_model=cand.model,
-            provider=cand.provider,
-            cli=cand.cli,
-            recency=recency,
-        )
-        runs = int(signal.get("runs", 0))
+        if key.domain:
+            # Domain-scoped ranking signal (#155): runs / weighted rate / taint
+            # come from the story's domain slice, so the routing key's recorded
+            # domain is actually honored by the aggregation it labels.
+            dsig = mp.get_dev_domain_signal(
+                profiles,
+                cand.id,
+                [key.domain],
+                min_sample_size,
+                actual_model=cand.model,
+                provider=cand.provider,
+                cli=cand.cli,
+            )
+            runs = int(dsig.get("runs", 0))
+            success_rate = dsig.get("rate")
+            tainted = int(dsig.get("tainted_runs", 0))
+        else:
+            signal = mp.get_dev_signal(
+                profiles,
+                cand.id,
+                key.band,
+                min_sample_size,
+                actual_model=cand.model,
+                provider=cand.provider,
+                cli=cand.cli,
+                recency=recency,
+            )
+            runs = int(signal.get("runs", 0))
+            success_rate = signal.get("rate")
+            tainted = int(signal.get("tainted_runs", 0))
         stats = mp.get_dev_complexity_stats(
             profiles,
             cand.id,
@@ -189,11 +216,11 @@ def derive_key_aggregates(
         aggregates[cand.id] = ModelAggregate(
             model_id=cand.id,
             runs=runs,
-            success_rate=signal.get("rate"),
+            success_rate=success_rate,
             avg_cost_usd=avg_cost,
             avg_iterations=avg_iters,
             avg_duration_s=avg_dur,
-            tainted_runs=int(signal.get("tainted_runs", 0)),
+            tainted_runs=tainted,
         )
     return aggregates
 
