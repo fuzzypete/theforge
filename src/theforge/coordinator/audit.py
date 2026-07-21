@@ -611,6 +611,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "complexity_projection": state.preflight_complexity_projection,
                 "complexity_evidence": list(state.preflight_complexity_evidence or []),
                 "work_type": state.preflight_work_type,
+                "domains": list(state.preflight_domains or []),
                 "contract_change": state.preflight_contract_change,
                 "bundle_candidate": state.preflight_bundle_candidate,
                 "cost_usd": state.preflight_result.cost_usd if state.preflight_result else 0.0,

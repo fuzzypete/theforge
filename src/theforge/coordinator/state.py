@@ -393,6 +393,10 @@ class CoordinatorState:
     preflight_complexity_evidence: list[dict] = field(default_factory=list)
     preflight_sufficiency: str | None = None  # "implementation_ready" | "needs_planning"
     preflight_work_type: str | None = None  # "feature" | "refactor" | "mechanical" | "bug"
+    # Domain tags from the fixed taxonomy (theforge.domains) describing the KIND
+    # of work — the horizontal routing axis (issue #155). Empty list = "no domains"
+    # (an explicit current-run fact, routing-safe under ADR-0006 bucket A).
+    preflight_domains: list[str] = field(default_factory=list)
     preflight_contract_change: bool = False  # story intentionally alters a tested contract
     preflight_bundle_candidate: bool = False
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories

@@ -16,6 +16,8 @@ Schema on disk::
           runs, success_rate, avg_iterations, avg_cost_usd
           by_complexity:
             small|medium|large: {runs, success_rate, avg_iterations, avg_cost_usd}
+          by_domain:
+            <tag>: {runs, success_rate, avg_iterations, avg_cost_usd}
         review:
           runs, avg_findings, avg_cost_usd
         preflight:
@@ -48,6 +50,16 @@ log = logging.getLogger(__name__)
 
 ROLES = ("dev", "review", "preflight")
 COMPLEXITY_BANDS = ("small", "medium", "large")
+
+# Per-domain recency window (issue #155 / ADR-0006 clause 2.4). Per-domain dev
+# outcomes maintain a bounded ring of their most recent genuine (non-tainted,
+# non-harness-terminated) results so the routing-admissible rate consults a
+# *windowed* view of history rather than a lifetime cumulative average — the
+# exact shape clause 2.4 forbids from carrying routing weight. This is a local,
+# deterministic windowing mechanism; when the shared decay mechanism (#1392)
+# lands it supersedes this without changing the read contract (raw + weighted
+# both recorded).
+DOMAIN_RECENCY_WINDOW = 20
 
 
 # ── Data carrier ──────────────────────────────────────────────────────────
@@ -96,6 +108,18 @@ class RunOutcome:
     preflight_cli: str | None = None
     preflight_cost_usd: float | None = None  # None = cost unmeasured
     reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
+    # Domain tags for this run (issue #155), from the fixed taxonomy recorded by
+    # preflight. The dev outcome is folded into a per-domain slice for each tag so
+    # per-domain success rate can be aggregated deterministically. Empty = the run
+    # had no domain tags and contributes to no domain slice.
+    domains: list[str] = field(default_factory=list)
+    # Taint marker (ADR-0006 clause 4, #1851/#1852 seam). True when the run failed
+    # its own trust checks (e.g. a reviewer that reviewed a stale checkout). A
+    # tainted run "doesn't teach": it is excluded from the per-domain routing
+    # aggregate and tallied visibly under ``tainted_runs`` instead. The taint
+    # marker is not yet produced upstream, so this defaults False (default-
+    # admissible per clause 4), but the exclusion path exists and is exercised.
+    dev_tainted: bool = False
 
 
 # ── I/O ───────────────────────────────────────────────────────────────────
@@ -359,6 +383,55 @@ def _fold_dev_bucket(
     _fold_duration(bucket, duration_s, timeout_killed, timeout_limit_s)
 
 
+def _fold_domain_slice(
+    bucket: dict,
+    success: bool,
+    iterations: int,
+    cost_usd: float | None,
+    duration_s: float | None,
+    timeout_killed: bool,
+    timeout_limit_s: int | None,
+    termination_cause: str | None,
+    tainted: bool,
+) -> None:
+    """Fold one dev run into a per-domain slice with recency + taint handling.
+
+    Extends :func:`_fold_dev_bucket` with the two gates ADR-0006 requires before
+    a per-domain rate may carry routing weight (issue #155):
+
+    - **Taint exclusion (clause 4):** a ``tainted`` run "doesn't teach" — it is
+      kept out of the capability accumulators entirely and tallied under
+      ``tainted_runs`` so the exclusion is visible in the record, never silently
+      dropped.
+    - **Recency window (clause 2.4):** every genuine completed run (not tainted,
+      not harness-terminated) appends its outcome to a bounded ``_recent`` ring
+      (:data:`DOMAIN_RECENCY_WINDOW`). The routing-admissible rate is computed
+      from this window, so stale history decays out of relevance instead of
+      permanently weighting a lifetime cumulative average.
+    """
+    if tainted:
+        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + 1
+        return
+    _fold_dev_bucket(
+        bucket,
+        success,
+        iterations,
+        cost_usd,
+        duration_s,
+        timeout_killed,
+        timeout_limit_s,
+        termination_cause,
+    )
+    # Only genuine completed runs enter the recency window. Harness-terminated
+    # runs (termination_cause set) never contribute capability data — mirror that
+    # here so the windowed rate matches the runs/_successes population exactly.
+    if termination_cause is None:
+        recent = bucket.setdefault("_recent", [])
+        recent.append(1 if success else 0)
+        if len(recent) > DOMAIN_RECENCY_WINDOW:
+            del recent[: len(recent) - DOMAIN_RECENCY_WINDOW]
+
+
 def _update_dev(
     entry: dict,
     complexity: str,
@@ -370,6 +443,8 @@ def _update_dev(
     timeout_killed: bool = False,
     timeout_limit_s: int | None = None,
     termination_cause: str | None = None,
+    domains: list[str] | None = None,
+    tainted: bool = False,
 ) -> None:
     if cost_usd is None:
         log.warning(
@@ -416,6 +491,27 @@ def _update_dev(
             timeout_killed,
             timeout_limit_s,
             termination_cause,
+        )
+
+    # Per-domain slice (issue #155): fold this run into a bucket for each domain
+    # tag it carried. A run tagged [api, database] folds identically into both
+    # the "api" and "database" buckets, so per-domain success rate is a real
+    # aggregation over authoritative run telemetry (ADR-0006 clause B), not a
+    # summary or profile-only derivation. The slice fold applies the recency
+    # window and taint exclusion the domain routing signal reads through.
+    for domain in domains or []:
+        by_domain = dev.setdefault("by_domain", {})
+        dd = by_domain.setdefault(domain, {})
+        _fold_domain_slice(
+            dd,
+            success,
+            iterations,
+            cost_usd,
+            duration_s,
+            timeout_killed,
+            timeout_limit_s,
+            termination_cause,
+            tainted,
         )
 
 
@@ -572,6 +668,8 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         timeout_killed=outcome.dev_timeout_killed,
         timeout_limit_s=outcome.dev_timeout_limit_s,
         termination_cause=outcome.dev_termination_cause,
+        domains=outcome.domains,
+        tainted=outcome.dev_tainted,
     )
     if outcome.preflight_model:
         pf_entry = _ensure_model(
@@ -744,6 +842,135 @@ def get_dev_success_rate(
         provider=provider,
         cli=cli,
     )["rate"]
+
+
+def get_dev_domain_signal(
+    profiles: dict,
+    model: str,
+    domains: list[str] | None,
+    min_runs: int = 3,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+) -> dict:
+    """Return a per-domain dev routing signal for the story's domain tags (#155).
+
+    Aggregates the ``dev.by_domain`` slices for each requested tag across every
+    matching profile entry, then clears the full ADR-0006 clause-2 admissibility
+    set so a domain rate can only ever be a *preference within the eligible
+    pool*, never eligibility itself. The value the router ranks on (``rate``) is
+    the **recency-weighted** rate, not the lifetime cumulative ``raw``:
+
+    - **Mechanical provenance / completeness (2.1–2.2):** the slice is folded by
+      :func:`_fold_domain_slice`, which segregates harness-terminated runs out of
+      the capability counts — the same complete recording path the complexity
+      slice uses. No summary prose feeds this.
+    - **Sample floor (2.3):** ``rate`` is ``None`` until ``runs >= min_runs``;
+      below the floor the caller falls through to static tier/budget routing
+      (cold start is a static-routing condition, not a low-confidence one).
+    - **Recency weighting (2.4):** ``weighted`` is computed from a bounded recent
+      window (:data:`DOMAIN_RECENCY_WINDOW`), a windowed view of history rather
+      than the lifetime cumulative aggregate clause 2.4 forbids. ``rate`` returns
+      the **weighted** value, so stale buckets decay out of routing weight; both
+      ``raw`` and ``weighted`` are recorded (clause 7). When the shared decay
+      mechanism (#1392) lands it supersedes this window without changing the read
+      contract.
+    - **Taint exclusion (clause 4):** tainted runs are never folded into the
+      capability counts or the window; they are tallied under ``tainted_runs``
+      (returned per-domain and in total) so the exclusion is visible and a
+      tainted bucket cannot carry routing weight.
+    - **Role specificity (per-role):** this reads only ``dev`` slices; it says
+      nothing about review reliability.
+    - **Schema stability (2.5):** legacy profiles simply lack ``by_domain`` and
+      read as no-data (cold start), never as a penalty.
+
+    A run tagged with several of the requested domains contributes to each of
+    those domain buckets, so the aggregate double-counts across overlap — this is
+    intentional: it rewards a model with broad demonstrated strength across the
+    story's domains. The per-domain breakdown is returned in ``by_domain`` so the
+    routing_decision block can show the matching profile slice per tag.
+
+    Returns ``rate=None`` with ``floor="fail"`` when ``domains`` is empty or no
+    admissible domain data exists — an explicit no-signal status, never a
+    negative score.
+    """
+    requested = [d for d in (domains or []) if isinstance(d, str) and d]
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    per_domain: dict[str, dict] = {}
+    total_runs = 0
+    total_successes = 0.0
+    total_tainted = 0
+    recent_all: list[int] = []
+    for domain in requested:
+        d_runs = 0
+        d_successes = 0.0
+        d_tainted = 0
+        d_recent: list[int] = []
+        for _, entry in matching:
+            dev = entry.get("dev")
+            if not isinstance(dev, dict):
+                continue
+            dd = (dev.get("by_domain") or {}).get(domain)
+            if not isinstance(dd, dict):
+                continue
+            d_tainted += int(dd.get("tainted_runs", 0))
+            entry_runs = int(dd.get("runs", 0))
+            if entry_runs <= 0:
+                continue
+            d_runs += entry_runs
+            d_successes += _success_count(dd, entry_runs)
+            recent = dd.get("_recent")
+            if isinstance(recent, list):
+                d_recent.extend(int(v) for v in recent)
+        d_raw = round(d_successes / d_runs, 4) if d_runs > 0 else None
+        d_weighted = _windowed_rate(d_recent, fallback=d_raw)
+        per_domain[domain] = {
+            "runs": d_runs,
+            "raw": d_raw,
+            "weighted": d_weighted,
+            "tainted_runs": d_tainted,
+        }
+        total_runs += d_runs
+        total_successes += d_successes
+        total_tainted += d_tainted
+        recent_all.extend(d_recent)
+    raw = round(total_successes / total_runs, 4) if total_runs > 0 else None
+    weighted = _windowed_rate(recent_all, fallback=raw)
+    floor_ok = total_runs >= min_runs and total_runs > 0
+    return {
+        "domains": requested,
+        "raw": raw,
+        # Admissible ranked value is the recency-weighted window, not lifetime raw.
+        "weighted": weighted,
+        "runs": total_runs,
+        "tainted_runs": total_tainted,
+        "floor": "pass" if floor_ok else "fail",
+        "recency": "windowed",
+        "rate": weighted if floor_ok else None,
+        "by_domain": per_domain,
+    }
+
+
+def _windowed_rate(recent: list[int], *, fallback: float | None) -> float | None:
+    """Return the recency-weighted rate over a bounded recent-outcome window.
+
+    ``recent`` is the concatenation of the ``_recent`` rings clause 2.4 maintains
+    per domain slice (each already capped to :data:`DOMAIN_RECENCY_WINDOW`). The
+    mean over that window is the windowed view of history. Falls back to
+    ``fallback`` (the lifetime raw rate) only when no windowed data exists — e.g.
+    a legacy bucket predating the window — so the value is never silently zeroed.
+    """
+    if recent:
+        capped = recent[-DOMAIN_RECENCY_WINDOW:]
+        return round(sum(capped) / len(capped), 4)
+    return fallback
 
 
 def get_dev_complexity_stats(
@@ -1424,6 +1651,60 @@ def _merge_dev(target: dict, src: dict) -> None:
                 )
             _merge_duration(sc_target, sc_src)
             _merge_harness_terminated(sc_target, sc_src)
+
+    src_by_domain = src.get("by_domain") or {}
+    if src_by_domain:
+        target_by_domain = target.setdefault("by_domain", {})
+        for domain, dd_src in src_by_domain.items():
+            if not isinstance(dd_src, dict):
+                continue
+            dd_target = target_by_domain.setdefault(domain, {})
+            dd_runs = int(dd_target.get("runs", 0)) + int(dd_src.get("runs", 0))
+            dd_succ = int(dd_target.get("_successes", 0)) + int(
+                dd_src.get(
+                    "_successes",
+                    round(float(dd_src.get("success_rate", 0.0)) * int(dd_src.get("runs", 0))),
+                )
+            )
+            dd_iter = float(dd_target.get("_iterations_sum", 0.0)) + float(
+                dd_src.get(
+                    "_iterations_sum",
+                    float(dd_src.get("avg_iterations", 0.0)) * int(dd_src.get("runs", 0)),
+                )
+            )
+            dd_cost = float(dd_target.get("_cost_sum", 0.0)) + float(
+                dd_src.get(
+                    "_cost_sum",
+                    float(dd_src.get("avg_cost_usd", 0.0)) * int(dd_src.get("runs", 0)),
+                )
+            )
+            dd_unknown = int(dd_target.get("_cost_unknown_runs", 0)) + int(
+                dd_src.get("_cost_unknown_runs", 0)
+            )
+            dd_target["runs"] = dd_runs
+            dd_target["_successes"] = dd_succ
+            dd_target["_iterations_sum"] = dd_iter
+            dd_target["_cost_sum"] = dd_cost
+            dd_target["_cost_unknown_runs"] = dd_unknown
+            if dd_runs > 0:
+                dd_target["success_rate"] = round(dd_succ / dd_runs, 4)
+                dd_target["avg_iterations"] = round(dd_iter / dd_runs, 4)
+                dd_measured = dd_runs - dd_unknown
+                dd_target["avg_cost_usd"] = (
+                    round(dd_cost / dd_measured, 6) if dd_measured > 0 else 0.0
+                )
+            _merge_duration(dd_target, dd_src)
+            _merge_harness_terminated(dd_target, dd_src)
+            # Recency window (#155): concatenate the recent rings and re-cap so the
+            # merged slice keeps a bounded windowed view. Tainted tallies sum.
+            merged_recent = [int(v) for v in (dd_target.get("_recent") or [])] + [
+                int(v) for v in (dd_src.get("_recent") or [])
+            ]
+            if merged_recent:
+                dd_target["_recent"] = merged_recent[-DOMAIN_RECENCY_WINDOW:]
+            dd_target["tainted_runs"] = int(dd_target.get("tainted_runs", 0)) + int(
+                dd_src.get("tainted_runs", 0)
+            )
 
 
 def _merge_review(target: dict, src: dict) -> None:

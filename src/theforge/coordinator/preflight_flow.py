@@ -43,6 +43,7 @@ from .preflight import (
     _parse_preflight_complexity_score,
     _parse_preflight_contract_change,
     _parse_preflight_criteria_checked,
+    _parse_preflight_domains,
     _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
     _parse_preflight_symptom_verification,
@@ -225,6 +226,7 @@ def _preflight_phase_end_fields(state: CoordinatorState) -> dict[str, object]:
         "validation_complexity_score": state.preflight_validation_complexity_score,
         "complexity_projection": state.preflight_complexity_projection,
         "complexity_routing": routing,
+        "domains": list(state.preflight_domains or []),
     }
 
 
@@ -494,6 +496,10 @@ def _run_preflight_phase(
             if work_type not in {"refactor", "mechanical"}:
                 work_type = "feature"
         state.preflight_work_type = work_type
+        # Domain tags (issue #155): the horizontal routing axis. Recorded as
+        # native structured telemetry so it is routing-safe as a current-run fact
+        # (ADR-0006 bucket A), consumed as an admissible preference in assignment.
+        state.preflight_domains = _parse_preflight_domains(preflight_result.output)
         contract_change = _parse_preflight_contract_change(preflight_result.output)
         state.preflight_contract_change = contract_change
         # preflight_bundle_candidate is no longer sourced from the preflight LLM —
@@ -854,6 +860,7 @@ def _run_preflight_phase(
         "complexity_evidence": list(state.preflight_complexity_evidence or []),
         "sufficiency": state.preflight_sufficiency,
         "contract_change": state.preflight_contract_change,
+        "domains": list(state.preflight_domains or []),
         "cost_usd": preflight_result.cost_usd,
         "duration_s": round(_preflight_elapsed, 2),
         "likely_files": state.preflight_likely_files,
