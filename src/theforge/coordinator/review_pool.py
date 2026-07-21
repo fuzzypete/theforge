@@ -44,6 +44,7 @@ from .review_context import (
     _get_handoff_content,
     _latest_forge_handoff_path,
     _parse_dev_handoff,
+    evaluate_reviewer_tree_currency,
     hard_convention_review_kwargs,
 )
 from .reviewer_progress import ReviewerProgressChannel
@@ -437,6 +438,23 @@ def _run_review_pool(
             return [], [], None, [], []
 
     pool_size = len(pool)
+
+    # ── Reviewer tree-currency trust check (#1851) ────────────────────────────
+    # Promote the coordinator-computed handoff-vs-git reconciliation (#1826) into
+    # a structured pass/fail trust-check entry BEFORE the reviewers run, so the
+    # native per-run record carries a machine-readable trust_status regardless of
+    # what the reviewers assert in prose (ADR-0006 clause 4). Runs from every
+    # review entry point (normal pool + review-only) flow through here. A run
+    # with no parseable handoff yields no entry — the run stays "unchecked".
+    _tc = evaluate_reviewer_tree_currency(
+        workspace_path,
+        config.workspace.base_branch,
+        forge_handoff_path=_latest_forge_handoff_path(state),
+    )
+    if _tc is not None:
+        state.trust_checks[_tc["check"]] = _tc
+        if logger is not None:
+            logger._safe_emit("trust_check", **_tc)
 
     if review_prompts is None:
         commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)

@@ -181,6 +181,63 @@ def _get_handoff_commit_warning(
     return f"⚠ WARNING: {mismatch}"
 
 
+REVIEWER_TREE_CURRENCY_CHECK = "reviewer_tree_currency"
+REVIEWER_TREE_CURRENCY_PRODUCER = "coordinator.review_context.reviewer_tree_currency"
+
+
+def evaluate_reviewer_tree_currency(
+    workspace_path: Path,
+    base_branch: str,
+    forge_handoff_path: Path | None = None,
+) -> dict | None:
+    """Return a structured reviewer tree-currency trust-check entry, or None.
+
+    Promotes the coordinator-computed handoff-vs-git commit reconciliation (the
+    landed #1826 tree-currency mechanism) from prose-only review context into a
+    machine-readable pass/fail trust-check entry (issue #1851). This is the
+    first mechanical producer of the trust-status marker: the same evidence that
+    drives the reviewer's prose warning also decides whether the run is trusted.
+
+    Applicability: the check only applies when the dev handoff exists and parses
+    with a usable commit list. When there is no parseable handoff there is
+    nothing to reconcile against, so return None (not-applicable → no entry →
+    the run stays ``unchecked``; absence of a proof is not taint, ADR-0006
+    clause 4).
+
+    Result: FAIL when the handoff's self-reported commits diverge from verified
+    git history (a stale-checkout / wrong-tree signal, #1534), PASS when they
+    reconcile exactly. Evidence carries the expected (handoff) and actual (git)
+    commit lists plus the specific divergences so the taint is auditable.
+    """
+    from .trust_status import CHECK_FAIL, CHECK_PASS, make_trust_check  # noqa: PLC0415
+
+    handoff = _parse_dev_handoff(forge_handoff_path=forge_handoff_path)
+    handoff_lines = _handoff_commit_lines(handoff)
+    if handoff_lines is None:
+        return None
+
+    actual_lines = _get_raw_commit_lines(workspace_path, base_branch)
+    actual_set = set(actual_lines)
+    handoff_set = set(handoff_lines)
+    missing_from_branch = [line for line in handoff_lines if line not in actual_set]
+    omitted_from_handoff = [line for line in actual_lines if line not in handoff_set]
+
+    reconciled = not missing_from_branch and not omitted_from_handoff
+    evidence = {
+        "base_branch": base_branch,
+        "expected_commits": handoff_lines,
+        "actual_commits": actual_lines,
+        "missing_from_branch": missing_from_branch,
+        "omitted_from_handoff": omitted_from_handoff,
+    }
+    return make_trust_check(
+        check=REVIEWER_TREE_CURRENCY_CHECK,
+        result=CHECK_PASS if reconciled else CHECK_FAIL,
+        producer=REVIEWER_TREE_CURRENCY_PRODUCER,
+        evidence=evidence,
+    )
+
+
 def _get_handoff_content(
     forge_handoff_path: Path | None = None,
 ) -> str:
