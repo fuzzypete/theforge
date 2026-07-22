@@ -297,6 +297,46 @@ retry:
 
 ---
 
+## Epic
+
+### Purpose
+
+A roadmap container that groups a body of related work into a single
+trackable parent — never a sprintable unit itself. The sprint-entry
+validator refuses epics outright (`epic_or_tracking`); their job is to
+organize slices, not to run.
+
+### Required shape
+
+- **Title** — `Epic: <theme>`, or the `epic` label applied. Either marker is
+  sufficient to trip `epic_or_tracking`; use both for clarity.
+- **Slices via native GitHub sub-issues** — every runnable piece of the
+  epic's work is linked as a GitHub sub-issue, not just referenced by number
+  in prose. "The epic's issues" must be answerable by reading the sub-issue
+  list, not by re-reading the body for `#refs`.
+- **Bounded body** — the epic describes a finite scope that is done when its
+  sub-issues are done. Do not write "post-MVP enhancements tracked here" or
+  "tracking issue, add more as they come up" — framing that keeps the epic
+  open forever. Genuinely new work that surfaces later is a *new* issue
+  (optionally linked as a sub-issue if it belongs to the same scope), not an
+  addition to a container that never closes.
+- **No work milestone** — an epic is never assigned to a work milestone.
+  Milestones hold sprintable slices; an epic's slices carry the milestone
+  individually. Use a label or a project view to see epics by roadmap
+  horizon instead. If you find an epic on a work milestone, remove the
+  milestone — that is always the fix, never re-target it to a different
+  milestone.
+
+### What to leave out
+
+- A milestone field. If `forge groom` or manual editing sets one on an
+  epic, clear it.
+- Perpetual-tracker language ("tracked here forever," "future work goes
+  here"). If the epic's current slices are all closed, the epic is done —
+  close it, and file whatever comes next as its own issue.
+
+---
+
 ## Rollup
 
 ### Purpose
@@ -307,8 +347,8 @@ its own issue and the pieces share context.
 
 A rollup is **not** an epic. Epics are tracking-only and are blocked by the
 sprint-entry validator. If your work decomposes into independent stories that
-need their own review cycles, file them separately and link them in a
-milestone or label, not in a rollup.
+need their own review cycles, file them separately and link them as GitHub
+sub-issues of an epic, or share a milestone/label — not in a rollup.
 
 ### Required sections
 

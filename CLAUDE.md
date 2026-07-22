@@ -10,3 +10,9 @@ Directory-level `CONVENTIONS.md` files under `src/theforge/` provide subsystem-l
 
 - No Claude-specific guidance currently differs from the shared project conventions.
 - Do not modify `CLAUDE.md` or `AGENTS.md` unless the story explicitly requires it.
+- The `# ── TheForge ──` marker block in this repo's `.gitignore`/`.gitattributes`
+  is the canonical template emitted by `forge init` — the single source of truth
+  is `src/theforge/cli/init_commands.py` (`_gitignore_block` /
+  `_gitattributes_block`). Do not hand-edit the marker block; change the template
+  builders and re-sync. See `CONTRIBUTING.md` → "Git Policy" and
+  `docs/plans/forge-storage-layout.md`.

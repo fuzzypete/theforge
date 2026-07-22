@@ -1402,6 +1402,23 @@ class TestParseRelatedFindings:
         assert artifact.related_findings[0].summary == "dup"
 
 
+class TestBuildDiagnoseProfile:
+    def test_default_uses_config_timeout(self, tmp_path):
+        from theforge.coordinator import diagnose_flow
+
+        config = _make_config(tmp_path)
+        profile = diagnose_flow._build_diagnose_profile(config)
+        assert profile.timeout_seconds == config.diagnose.timeout_seconds
+
+    def test_override_replaces_config_timeout(self, tmp_path):
+        from theforge.coordinator import diagnose_flow
+
+        config = _make_config(tmp_path)
+        profile = diagnose_flow._build_diagnose_profile(config, timeout_seconds=42.0)
+        assert profile.timeout_seconds == 42.0
+        assert profile.timeout_seconds != config.diagnose.timeout_seconds
+
+
 class TestDiagnoseHeartbeat:
     """The investigative agent runs for up to the diagnose timeout; the flow must
     emit periodic progress so a live run is distinguishable from a hang."""
