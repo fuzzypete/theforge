@@ -29,7 +29,9 @@ from theforge.assignment import AssignmentConfig, assign_models
 from theforge.cli import explain
 from theforge.config import AgentDef
 
-_SAMPLE_PATH = Path(__file__).resolve().parents[1] / "docs" / "assets" / "sample-routing-decision-run.json"
+_SAMPLE_PATH = (
+    Path(__file__).resolve().parents[1] / "docs" / "assets" / "sample-routing-decision-run.json"
+)
 
 
 @pytest.fixture()
@@ -44,10 +46,38 @@ def _controlled_keys(monkeypatch):
 
 def _agents() -> list[AgentDef]:
     return [
-        AgentDef(name="sonnet", provider="anthropic", model="sonnet", budget_usd=3.0, timeout_seconds=600, tier="mid"),
-        AgentDef(name="opus", provider="anthropic", model="opus", budget_usd=5.0, timeout_seconds=900, tier="strong"),
-        AgentDef(name="gpt", provider="openai", model="gpt-5.4", budget_usd=8.0, timeout_seconds=900, tier="strong"),
-        AgentDef(name="deepseek", provider="deepseek", model="deepseek-reasoner", budget_usd=1.0, timeout_seconds=600, tier="strong"),
+        AgentDef(
+            name="sonnet",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=3.0,
+            timeout_seconds=600,
+            tier="mid",
+        ),
+        AgentDef(
+            name="opus",
+            provider="anthropic",
+            model="opus",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="strong",
+        ),
+        AgentDef(
+            name="gpt",
+            provider="openai",
+            model="gpt-5.4",
+            budget_usd=8.0,
+            timeout_seconds=900,
+            tier="strong",
+        ),
+        AgentDef(
+            name="deepseek",
+            provider="deepseek",
+            model="deepseek-reasoner",
+            budget_usd=1.0,
+            timeout_seconds=600,
+            tier="strong",
+        ),
     ]
 
 
@@ -65,7 +95,9 @@ def _profiles() -> dict:
                     "runs": 60,
                     "success_rate": 0.30,
                     "_recent": recent,
-                    "by_complexity": {"large": {"runs": 60, "success_rate": 0.30, "_recent": recent}},
+                    "by_complexity": {
+                        "large": {"runs": 60, "success_rate": 0.30, "_recent": recent}
+                    },
                 }
             },
         }
@@ -97,7 +129,9 @@ def _committed_record() -> dict:
 def test_sample_record_exists_and_is_a_routing_decision(_controlled_keys):
     assert _SAMPLE_PATH.exists(), f"missing committed sample record: {_SAMPLE_PATH}"
     record = _committed_record()
-    assert isinstance(record.get("routing_decision"), dict), "sample must carry a routing_decision block"
+    assert isinstance(record.get("routing_decision"), dict), (
+        "sample must carry a routing_decision block"
+    )
 
 
 def test_committed_sample_matches_live_router_on_reconstruction_fields(_controlled_keys):
