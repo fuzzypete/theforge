@@ -86,6 +86,11 @@ def build_fix_prompt(
         else (
             f"- Do NOT re-run the gate (`{gate_command}`). "
             "The coordinator runs it automatically after you complete.\n        "
+            "- Gate execution is delegated to the coordinator this iteration. "
+            "Add `gate_delegated: true` to your `<forge_handoff>` block so the "
+            "handoff records that the gate is coordinator-owned. Leave "
+            "`gate_result` unset (or `BLOCKED`) — do NOT self-report "
+            "`gate_result: PASS` for a gate you did not run.\n        "
         )
     )
 

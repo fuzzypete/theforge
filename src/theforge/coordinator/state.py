@@ -479,6 +479,15 @@ class CoordinatorState:
     plan_escalated: bool = False  # True once plan model escalation has occurred this run
     plan_escalation_note: str | None = None  # escalation context injected into regen prompt
     retry_reason: RetryReason | None = None  # see RetryReason enum for valid values
+    # True when the DEV prompt built for the current iteration delegated gate
+    # execution to the coordinator (a review-fix / P2-cleanup pass whose prompt
+    # tells the agent NOT to re-run the gate — see task.fix_prompts.build_fix_prompt).
+    # Authoritatively set by the coordinator at prompt-routing time, so the
+    # unproven-completion guard can distinguish a legitimately gate-delegated
+    # handoff from an ordinary handoff that merely omits gate evidence. Reset
+    # every DEV iteration; not agent-attested, so an ordinary iteration cannot
+    # spoof delegation by setting a handoff flag.
+    gate_delegated_this_iteration: bool = False
     last_cycle_reviewer_results: list[tuple[str, ReviewResult]] = field(
         default_factory=list
     )  # (profile_name, ReviewResult) pairs from the most recent pool run

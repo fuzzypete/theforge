@@ -285,16 +285,31 @@ VALID_AC_STATUSES = ("MET", "PARTIAL", "NOT_MET")
 VALID_GATE_RESULTS = ("PASS", "FAIL", "BLOCKED")
 
 
-def dev_handoff_claims_unproven_completion(data: dict) -> bool:
+def dev_handoff_claims_unproven_completion(
+    data: dict, *, honor_gate_delegation: bool = True
+) -> bool:
     """Return True when a dev handoff claims completion without gate evidence.
 
     A completion claim is any acceptance_criteria entry marked ``status: MET``.
-    Such a claim is only proven when ``gate_result`` is exactly ``"PASS"``. A
-    missing gate_result, ``"FAIL"``, or ``"BLOCKED"`` all leave the completion
-    unproven — the gate was never shown to pass, so the claim lacks evidence.
+    Such a claim is normally only proven when ``gate_result`` is exactly
+    ``"PASS"``. A missing gate_result, ``"FAIL"``, or ``"BLOCKED"`` all leave the
+    completion unproven — the gate was never shown to pass, so the claim lacks
+    evidence.
 
     Handoffs that make no completion claim (all criteria PARTIAL/NOT_MET) never
     trip this check: gate_result stays optional for them.
+
+    Gate delegation exception: a review-fix iteration delegates gate execution to
+    the coordinator (see ``task.fix_prompts.build_fix_prompt``), which runs the
+    authoritative gate itself after the dev completes. Such a handoff legitimately
+    lacks a self-reported PASS. When ``honor_gate_delegation`` is set and the
+    handoff explicitly marks ``gate_delegated: true`` (strictly boolean ``True`` —
+    a missing, string, or otherwise malformed value is NOT delegation), the
+    completion claim is not treated as unproven. Callers that own authoritative
+    knowledge of whether the gate was actually delegated (e.g. the coordinator
+    dev-phase guard) pass ``honor_gate_delegation=False`` and gate on that
+    knowledge instead, so an ordinary iteration cannot bypass the check by
+    self-reporting the flag.
     """
     if not isinstance(data, dict):
         return False
@@ -304,7 +319,11 @@ def dev_handoff_claims_unproven_completion(data: dict) -> bool:
     claims_met = any(isinstance(ac, dict) and ac.get("status") == "MET" for ac in criteria)
     if not claims_met:
         return False
-    return data.get("gate_result") != "PASS"
+    if data.get("gate_result") == "PASS":
+        return False
+    if honor_gate_delegation and data.get("gate_delegated") is True:
+        return False
+    return True
 
 
 def validate_dev_handoff(data: Any) -> list[str]:
