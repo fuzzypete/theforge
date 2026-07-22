@@ -283,7 +283,10 @@ decision that cannot be reconstructed from the audit record alone is a
 defect in the router, not a gap in logging.** This is test-enforced as part
 of #1391's acceptance criteria, not left to review discretion.
 Operator-facing query surfaces (`forge explain`, `--dry-run` forms) are
-conveniences built on this block; the block is the contract.
+conveniences built on this block; the block is the contract. The operator-facing
+enable/disable/rollback procedure, the first-dogfood feature posture, and a
+worked `forge explain` example live in the dogfood readiness checklist
+(`docs/v0.13-dogfood-readiness.md`, #1869) rather than here.
 
 ### 8. Determinism, and exploration as the one sanctioned exception
 
@@ -433,3 +436,6 @@ re-deriving scope:
 - #1534 — v0.12 capture; the Gemini wrong-tree incident grounding clause 4
 - #1387 — post-plan checkpoint; first concrete demotion path and the source
   of the 91%-vs-37% over-allocation data
+- `docs/v0.13-dogfood-readiness.md` (#1869) — the operator-facing switch-readiness
+  checklist: blocker disposition, enable/disable/rollback procedure,
+  first-dogfood feature posture, and a worked `forge explain` example
