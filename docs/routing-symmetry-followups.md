@@ -12,16 +12,15 @@ resolve**. Each is its own follow-up story; #1389 is the framework that requires
 them to exist (and be either landed or catalogued here) before further promotion
 mechanisms land.
 
-> **Operator note (doc-vs-issue substitution).** Acceptance criterion 3 of #1389
-> asks for these to be filed as tracked issues, each linking back to #1389. The
-> dev sprint that implemented #1389 records them here as a repo-visible catalogue
-> rather than creating GitHub issues autonomously. Please file the still-open
-> entries below as real issues (labels + `#1389` back-link) so the tracker and
-> this catalogue agree. When an issue is filed, note its number next to the entry.
+> **Tracked issues.** Acceptance criterion 3 of #1389 asks for these to be filed
+> as tracked issues, each linking back to #1389. Both open asymmetries below have
+> been filed as GitHub issues (numbers noted per entry); this catalogue and the
+> tracker agree. Keep them in sync: when an entry's inverse lands, close its issue
+> and move the entry to "Resolved / not open".
 
 ## Open asymmetries
 
-### 1. Escalation-history decay for dev-tier promotion
+### 1. Escalation-history decay for dev-tier promotion — #1879
 
 - **Promotion path:** `assignment.py:_check_promotion` — 2+ `ESCALATE` outcomes in
   the last 10 matching records bump a story's dev tier upward.
@@ -31,9 +30,9 @@ mechanisms land.
   cleanly.
 - **Proposed inverse:** exclude escalation records older than N records or M days
   from `_check_promotion` matching, so stale escalations stop holding the tier up.
-- **Back-link:** #1389.
+- **Tracked issue:** #1879 (back-links #1389; companion to #1387).
 
-### 2. Reviewer re-inclusion path (inverse of #1388 completion-rate deprioritization)
+### 2. Reviewer re-inclusion path (inverse of #1388 completion-rate deprioritization) — #1880
 
 - **Deprioritization path:** `assignment.py:_reviewer_completion_check` (#1388) —
   a reviewer with a poor attempt-completion history is reranked down.
@@ -44,7 +43,7 @@ mechanisms land.
   clean attempts, with audit attribution and tests for both directions.
 - **Registry marker:** `open_followup="reviewer-reinclusion"` on the reviewer pair
   in `ROUTING_SYMMETRY_REGISTRY`.
-- **Back-link:** #1389 (companion to #1388).
+- **Tracked issue:** #1880 (back-links #1389; companion to #1388).
 
 ## Resolved / not open
 
