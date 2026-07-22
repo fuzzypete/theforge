@@ -56,6 +56,153 @@ EXCLUSION_REASONS: frozenset[str] = frozenset(
 )
 
 
+# ── Routing-symmetry invariant (#1389) ─────────────────────────────────
+#
+# Every adaptive, history-driven routing mechanism that ratchets a story's dev
+# tier (or a reviewer's priority) in ONE direction — promote, escalate,
+# deprioritize, exclude — must define a corresponding mechanism that ratchets
+# the OPPOSITE way under stated conditions, with audit attribution and tests for
+# both directions. Static score-band routing (PHASE_TIER) and hard tier floors
+# are exempt: they re-derive from the current story, not from accumulated
+# history, so they are not one-way ratchets.
+#
+# This registry is the machine-readable form of that invariant. The enforcement
+# test (tests/test_routing_symmetry_invariant.py) walks it and fails when a
+# promotion path has no landed+tested inverse AND no catalogued follow-up. The
+# routing_rationale audit field (see _dev_routing_rationale) reports which of
+# these paths actually moved the tier on a given story.
+#
+# The three states the dev routing_rationale can report, kept as a closed set so
+# the audit stays machine-queryable (mirrors EXCLUSION_REASONS).
+ROUTING_RATIONALE_STAYED = "stayed_at_preflight_tier"
+ROUTING_RATIONALE_PROMOTED = "promoted_by"
+ROUTING_RATIONALE_DEMOTED = "demoted_by"
+ROUTING_RATIONALE_STATES: frozenset[str] = frozenset(
+    {ROUTING_RATIONALE_STAYED, ROUTING_RATIONALE_PROMOTED, ROUTING_RATIONALE_DEMOTED}
+)
+
+# Stable mechanism names shared by the audit rationale and the symmetry registry
+# so the two never drift. Referenced by _dev_routing_rationale and
+# apply_post_plan_checkpoint.
+MECHANISM_DEV_PROMOTION = "_check_promotion"
+MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
+MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
+
+
+@dataclass(frozen=True)
+class RoutingMechanism:
+    """A single named adaptive routing mechanism.
+
+    ``name`` is the stable identifier used in the audit rationale; ``symbol`` is
+    the fully-qualified code symbol implementing it (so the enforcement test can
+    import-resolve it and prove it is reachable); ``audit_label`` is the
+    routing_rationale / demotion_check label the mechanism emits.
+    """
+
+    name: str
+    symbol: str
+    audit_label: str
+
+
+@dataclass(frozen=True)
+class RoutingSymmetryPair:
+    """A promotion/ratchet mechanism paired with its inverse.
+
+    ``demotion`` is the landed inverse mechanism when one exists; otherwise it is
+    ``None`` and ``open_followup`` names the tracked catalogue entry for the
+    not-yet-landed inverse (kept explicit so an asymmetry is *catalogued*, never
+    silently missing). ``promotion_tests`` / ``demotion_tests`` name the test
+    modules that exercise each direction so the invariant can require both.
+
+    ``*_test_token`` is the stable string the enforcement test greps for in those
+    modules to confirm the direction is exercised. It defaults to the symbol's
+    short name, but a mechanism exercised *through* a higher-level entry point
+    (e.g. reviewer reranking driven via ``assign_models``, not by calling the
+    audit-block builder directly) overrides it with a token that reliably appears
+    — keeping the check registry-driven rather than fragile source-scanning.
+    """
+
+    promotion: RoutingMechanism
+    demotion: RoutingMechanism | None
+    promotion_tests: tuple[str, ...]
+    demotion_tests: tuple[str, ...] = ()
+    open_followup: str | None = None
+    promotion_test_token: str | None = None
+    demotion_test_token: str | None = None
+
+
+# The current catalogue of adaptive promotion/deprioritization paths and their
+# inverses. Adding a new promotion mechanism WITHOUT either a landed+tested
+# demotion or a catalogued open_followup fails the enforcement test — that is the
+# architectural backstop this story lands (#1389).
+ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
+    # Dev-tier promotion (2+ recent ESCALATE outcomes bump the tier up) is paired
+    # with the post-plan checkpoint demotion (clean plan-review on a medium story
+    # steps the tier back down) — the first concrete inverse (#1387).
+    RoutingSymmetryPair(
+        promotion=RoutingMechanism(
+            name=MECHANISM_DEV_PROMOTION,
+            symbol="theforge.assignment._check_promotion",
+            audit_label=ROUTING_RATIONALE_PROMOTED,
+        ),
+        demotion=RoutingMechanism(
+            name=MECHANISM_POST_PLAN_DEMOTION,
+            symbol="theforge.assignment.apply_post_plan_checkpoint",
+            audit_label=ROUTING_RATIONALE_DEMOTED,
+        ),
+        promotion_tests=("tests/test_assignment.py",),
+        demotion_tests=("tests/test_post_plan_checkpoint.py",),
+    ),
+    # Reviewer completion-rate deprioritization (#1388): a reviewer with a poor
+    # attempt-completion history is reranked down. The inverse — re-inclusion once
+    # subsequent attempts complete cleanly — is NOT yet landed; catalogued as an
+    # open follow-up (see docs/routing-symmetry-followups.md).
+    RoutingSymmetryPair(
+        promotion=RoutingMechanism(
+            name=MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE,
+            symbol="theforge.assignment._reviewer_completion_check",
+            audit_label="completion_check",
+        ),
+        demotion=None,
+        promotion_tests=("tests/test_assignment_reviewer_completion.py",),
+        # Exercised via assign_models/_select_reviewers, not by calling the
+        # audit-block builder directly, so grep for the mechanism token.
+        promotion_test_token="completion",
+        open_followup="reviewer-reinclusion",
+    ),
+)
+
+
+def _dev_routing_rationale(
+    promotion_block: dict[str, object],
+    base_tier: str,
+    effective_tier: str,
+) -> dict[str, object]:
+    """Unified dev routing-rationale field (#1389, AC clause 4).
+
+    Collapses the separate promotion_check / demotion_check / post_plan_checkpoint
+    blocks into ONE operator-facing label naming which symmetric path moved the
+    dev tier: it stayed at the preflight tier, was promoted by a named mechanism,
+    or was demoted by a named mechanism. Derived purely from the deterministic
+    checks already recorded — no new routing logic and no behavior change. The
+    post-plan checkpoint overwrites this to ``demoted_by`` when its demotion fires
+    (see :func:`apply_post_plan_checkpoint`).
+    """
+    if promotion_block.get("fired"):
+        return {
+            "state": ROUTING_RATIONALE_PROMOTED,
+            "mechanism": MECHANISM_DEV_PROMOTION,
+            "from_tier": base_tier,
+            "to_tier": effective_tier,
+        }
+    return {
+        "state": ROUTING_RATIONALE_STAYED,
+        "mechanism": None,
+        "from_tier": effective_tier,
+        "to_tier": effective_tier,
+    }
+
+
 def _agent_canonical_id(agent: AgentDef) -> str | None:
     """Derive the canonical model ID (provider/model/transport) for an agent."""
     from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
@@ -1366,6 +1513,15 @@ def _build_routing_decision(
             # story carried no domain tags.
             **({"domain_match": domain_block} if domain_block is not None else {}),
             "promotion_check": promotion_block,
+            # Unified routing rationale (#1389, AC clause 4): the single field an
+            # operator reads to see which symmetric path moved the dev tier —
+            # stayed_at_preflight_tier, promoted_by <mechanism>, or (after the
+            # post-plan checkpoint runs) demoted_by <mechanism>. Derived from the
+            # deterministic checks below; apply_post_plan_checkpoint overwrites it
+            # to demoted_by when its demotion fires.
+            "routing_rationale": _dev_routing_rationale(
+                promotion_block, dev_base_tier, dev_effective_tier
+            ),
             # Dev-tier demotion/recovery (ADR-0006 clause 5 tier-demotion) is a
             # future enforcement (#1389) — no dev-tier demotion runs in v1, so this
             # records "no such mechanism ran" (a complete explanation, not a gap).
@@ -1692,6 +1848,17 @@ def apply_post_plan_checkpoint(
     )
     new_dev = _agent_to_profile(target_agent, role="dev")
     if dev_block is not None:
+        # Overwrite the unified routing rationale (#1389): the post-plan
+        # checkpoint is the concrete demotion that fired on this story, so the
+        # operator sees demoted_by rather than the preflight-time stayed/promoted
+        # verdict. baseline_tier is the preflight-assigned (possibly promoted)
+        # tier, so from_tier→to_tier reads as the net path.
+        dev_block["routing_rationale"] = {
+            "state": ROUTING_RATIONALE_DEMOTED,
+            "mechanism": MECHANISM_POST_PLAN_DEMOTION,
+            "from_tier": baseline_tier,
+            "to_tier": target_tier,
+        }
         final = dev_block.get("final")
         if isinstance(final, dict):
             final["model"] = new_dev.model
