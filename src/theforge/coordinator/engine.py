@@ -469,7 +469,13 @@ def _coordinator_loop(
                         "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,
+                            "review_max_cycles": (
+                                state.adaptive_review_max or config.retry.max_review_cycles
+                            ),
                             "dev_iteration": state.dev_iteration,
+                            "dev_max_iterations": (
+                                state.adaptive_dev_max or config.retry.max_dev_iterations
+                            ),
                         },
                     }
                 )
@@ -509,7 +515,13 @@ def _coordinator_loop(
                         "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,
+                            "review_max_cycles": (
+                                state.adaptive_review_max or config.retry.max_review_cycles
+                            ),
                             "dev_iteration": state.dev_iteration,
+                            "dev_max_iterations": (
+                                state.adaptive_dev_max or config.retry.max_dev_iterations
+                            ),
                         },
                     }
                 )

@@ -247,9 +247,10 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     }
 
     # Column header
+    stage_width = 20
     header = (
-        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'MODEL':<24}  {'STAGE':<16}  "
-        f"{'COMPLEXITY':<10}  {'COST':>7}  {'ELAPSED':>7}  DETAIL"
+        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'MODEL':<24}  "
+        f"{'STAGE':<{stage_width}}  {'COMPLEXITY':<10}  {'COST':>7}  {'ELAPSED':>7}  DETAIL"
     )
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -386,7 +387,8 @@ def _print_story_line(
     path_lines = _wrap_cell(story_cell, 28)
     phase_lines = _wrap_cell(phase_str, 12)
     model_lines = _wrap_cell(model_str, 24)
-    stage_lines = _wrap_cell(stage_str, 16)
+    stage_width = 20
+    stage_lines = _wrap_cell(stage_str, stage_width)
     detail_lines = _wrap_cell(detail if detail else "—", detail_width)
 
     line_count = max(
@@ -407,7 +409,7 @@ def _print_story_line(
             f"{status_cell:<8}  "
             f"{phase_lines[index] if index < len(phase_lines) else '':<12}  "
             f"{model_lines[index] if index < len(model_lines) else '':<24}  "
-            f"{stage_lines[index] if index < len(stage_lines) else '':<16}  "
+            f"{stage_lines[index] if index < len(stage_lines) else '':<{stage_width}}  "
             f"{complexity_cell:<10}  {cost_cell:>7}  {elapsed_cell:>7}  "
             f"{detail_lines[index] if index < len(detail_lines) else ''}"
         )
@@ -429,7 +431,27 @@ def _format_story_elapsed(elapsed_s: float | None) -> str:
 def _detail_column_width(indent: int) -> int:
     """Return an adaptive width for DETAIL so values wrap instead of truncating."""
     terminal_width = shutil.get_terminal_size((140, 20)).columns
-    fixed_width = indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 24 + 2 + 16 + 2 + 10 + 2 + 7 + 2 + 7 + 2
+    stage_width = 20
+    fixed_width = (
+        indent
+        + 2
+        + 28
+        + 2
+        + 8
+        + 2
+        + 12
+        + 2
+        + 24
+        + 2
+        + stage_width
+        + 2
+        + 10
+        + 2
+        + 7
+        + 2
+        + 7
+        + 2
+    )
     return max(20, terminal_width - fixed_width)
 
 

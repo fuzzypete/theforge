@@ -119,6 +119,72 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
     assert e2.detail == "waiting"
 
 
+def test_live_dev_stage_shows_review_cycle_and_dev_iteration(tmp_path: Path) -> None:
+    """DEV rows include the outer review-cycle position, not only the dev attempt.
+
+    In live coordinator state, ``review_cycle`` is the story's position in the
+    full dev->review feedback loop and ``dev_iteration`` is the current dev
+    attempt inside that cycle.
+    """
+    from theforge.sprint.status_reader import read_live_status
+
+    _make_state_file(
+        tmp_path,
+        "run-cycle",
+        "cycle-sprint",
+        [
+            {
+                "slug": "issue-130",
+                "path": "Issue #130",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 15.82,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "detail": {
+                    "review_cycle": 0,
+                    "review_max_cycles": 3,
+                    "dev_iteration": 0,
+                    "dev_max_iterations": 3,
+                },
+            },
+        ],
+    )
+
+    entry = read_live_status("run-cycle", tmp_path)[0]
+    assert entry.stage == "cycle=0/3 iter=0/3"
+
+
+def test_live_dev_stage_later_cycle_remains_global_context(tmp_path: Path) -> None:
+    """A DEV retry after review feedback must not collapse back to bare iter=N."""
+    from theforge.sprint.status_reader import read_live_status
+
+    _make_state_file(
+        tmp_path,
+        "run-cycle-2",
+        "cycle-sprint",
+        [
+            {
+                "slug": "issue-131",
+                "path": "Issue #131",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 2.00,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "detail": {
+                    "review_cycle": 2,
+                    "dev_iteration": 1,
+                    "dev_max_iterations": 3,
+                },
+            },
+        ],
+    )
+
+    entry = read_live_status("run-cycle-2", tmp_path)[0]
+    assert entry.stage == "cycle=2 iter=1/3"
+
+
 def test_read_live_status_blocked_story(tmp_path: Path) -> None:
     from theforge.sprint.status_reader import read_live_status
 
