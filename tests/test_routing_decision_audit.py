@@ -210,7 +210,10 @@ def test_full_reconstruction_from_block_alone(tmp_path, _keys_except_deepseek):
     # COMPLETE explanation, not a gap.
     assert dev["demotion_check"]["applicable"] is False
     assert dev["demotion_check"]["reason"]
-    assert dev["post_plan_checkpoint"]["applied"] is False
+    # Post-plan checkpoint (#1387) runs AFTER plan-review; preflight-time
+    # assignment records the not-yet-run sentinel.
+    assert dev["post_plan_checkpoint"]["fired"] is False
+    assert dev["post_plan_checkpoint"]["decision"] == "pending"
     assert dev["post_plan_checkpoint"]["reason"]
     assert dev["base_tier_from_score"] in ("cheap", "mid", "strong")
 

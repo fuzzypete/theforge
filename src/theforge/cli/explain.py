@@ -130,13 +130,37 @@ def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
     )
 
     checkpoint = role_block.get("post_plan_checkpoint") or {}
-    applied = bool(checkpoint.get("applied"))
-    _render_mechanism(
-        "post-plan checkpoint",
-        _mechanism_state(checked=applied, fired=applied),
-        checkpoint.get("reason", ""),
-        lines,
-    )
+    # New shape (#1387): fired/decision/baseline_tier/final_tier/rationale. The
+    # checkpoint only runs after plan-review, so a "pending" decision (or a legacy
+    # applied/reason block) means it never ran for this story.
+    if "decision" in checkpoint or "rationale" in checkpoint:
+        decision = checkpoint.get("decision", "pending")
+        fired = bool(checkpoint.get("fired"))
+        checked = decision not in ("pending", "not_run")
+        rationale = checkpoint.get("rationale") or checkpoint.get("reason", "")
+        baseline = checkpoint.get("baseline_tier")
+        final_tier = checkpoint.get("final_tier")
+        if checked and baseline is not None and final_tier is not None:
+            detail = f"{decision} ({baseline} → {final_tier}) — {rationale}".rstrip(" —")
+        elif checked:
+            detail = f"{decision} — {rationale}".rstrip(" —")
+        else:
+            detail = rationale
+        _render_mechanism(
+            "post-plan checkpoint",
+            _mechanism_state(checked=checked, fired=fired),
+            detail,
+            lines,
+        )
+    else:
+        # Legacy applied/reason placeholder — tolerate defensively.
+        applied = bool(checkpoint.get("applied"))
+        _render_mechanism(
+            "post-plan checkpoint",
+            _mechanism_state(checked=applied, fired=applied),
+            checkpoint.get("reason", ""),
+            lines,
+        )
 
 
 def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:

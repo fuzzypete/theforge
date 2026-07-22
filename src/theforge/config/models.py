@@ -833,4 +833,5 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
             assignment_raw.get("reviewer_completion_threshold", 0.5)
         ),
         reviewer_completion_min_runs=int(assignment_raw.get("reviewer_completion_min_runs", 5)),
+        plan_tier_reduction=bool(assignment_raw.get("plan_tier_reduction", True)),
     )

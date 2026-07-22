@@ -1042,6 +1042,27 @@ def run_task(
         if _plan_result is not None:
             return _plan_result
 
+        # ── Post-plan dev-tier checkpoint apply (#1387) ───────────────
+        # plan_flow re-evaluated ONLY the dev tier after a clean plan-review and
+        # stored the (possibly demoted) decision on state. When the checkpoint
+        # actually changed dev, swap config.dev_profile before DEV runs; every
+        # other role (preflight, planner, plan_review, code_review) is untouched.
+        _checkpoint_decision = getattr(state, "_adaptive_decision", None)
+        _cp_block = (
+            (state.routing_decision or {}).get("dev", {}).get("post_plan_checkpoint", {})
+            if state.routing_decision
+            else {}
+        )
+        if _checkpoint_decision is not None and _cp_block.get("fired"):
+            import dataclasses  # noqa: PLC0415
+
+            config = dataclasses.replace(config, dev_profile=_checkpoint_decision.dev)
+            _log_verbose(
+                f"  [adaptive] post-plan checkpoint applied: dev → "
+                f"{_checkpoint_decision.dev.model} "
+                f"({_cp_block.get('baseline_tier')} → {_cp_block.get('final_tier')})"
+            )
+
         # ── stop_phase gate: stop before entering DEV ─────────────────
         if stop_phase is not None and stop_phase.value <= Phase.PLAN_REVIEW.value:
             return CoordinatorResult(
