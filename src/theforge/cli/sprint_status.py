@@ -120,6 +120,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     entries = None
     sprint_name = ""
     unexpected_end = False
+    terminal_outcome: str | None = None
     total_cost_usd: float | None = None
     duration_seconds: float | None = None
     sprint_phase: str | None = None
@@ -151,10 +152,17 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         except Exception:
             pass
     else:
-        # PID file gone — check if state file still exists (unexpected exit).
+        # PID file gone. A leftover .state file means the run did not tear down
+        # its live state — but that is a *crash* only when no terminal outcome
+        # marker was written. A run that wrote <run_id>.ended terminated
+        # deliberately (completed/stopped/orphaned); its lingering .state must
+        # not be reported as an unexpected end.
         state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
         if state_path.exists():
-            unexpected_end = True
+            from theforge import detach as _detach
+
+            terminal_outcome = _detach.read_run_ended(run_id, project_root)
+            unexpected_end = terminal_outcome is None
             entries = read_live_status(run_id, project_root)
             if entries is not None:
                 sprint_name = _read_sprint_name_from_state(state_path)
@@ -162,7 +170,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     # For crashed sprints with an unreadable state file, show the banner with
     # an empty story list rather than falling through to sprint-summary (which
     # won't exist for crashed sprints).
-    if entries is None and unexpected_end:
+    if entries is None and (unexpected_end or terminal_outcome):
         entries = []
 
     # Fall back to completed sprint-summary.yaml
@@ -196,6 +204,10 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         state_label = "live"
     elif unexpected_end:
         state_label = "crashed"
+    elif terminal_outcome:
+        # A terminal marker survived alongside .state: report the recorded
+        # outcome (completed/stopped/orphaned) rather than crash wording.
+        state_label = terminal_outcome
     else:
         state_label = "completed"
 
