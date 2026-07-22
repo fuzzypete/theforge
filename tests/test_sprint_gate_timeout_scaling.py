@@ -211,3 +211,24 @@ def test_sprint_emits_overcommit_warning(tmp_path: Path, capsys) -> None:
     assert "overcommit" in err.lower() or "consider lowering --parallel" in err
     # And the resolution reasoning line:
     assert "gate_timeout: baseline=45s" in err
+
+
+def test_sprint_invalid_gate_timeout_scale_fails_fast(tmp_path: Path) -> None:
+    """A malformed gate_timeout_scale must raise, not silently disable scaling.
+
+    theforge.config.load rejects this at config-load time, but run_sprint
+    itself must also fail fast rather than swallow the error — the coordinator
+    control-flow boundary must not be the only guard.
+    """
+    _make_spec_file(tmp_path, "story-a")
+    manifest_path = _make_manifest(tmp_path, ["story-a"], max_parallel=3)
+    config = _make_config(
+        tmp_path, gate_timeout=45, gate_cpu_cores=7, mode="gate_timeout_scale: typo"
+    )
+
+    with (
+        patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
+        patch("os.cpu_count", return_value=10),
+    ):
+        with pytest.raises(ValueError, match="gate_timeout_scale must be 'adaptive' or 'fixed'"):
+            run_sprint(config, manifest_path)

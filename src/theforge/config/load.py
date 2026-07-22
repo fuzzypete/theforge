@@ -481,6 +481,46 @@ def _validated_failed_test_pattern(raw: Any) -> str | None:
     return raw
 
 
+def _validated_gate_timeout(raw: Any) -> int | None:
+    """Validate ``validation.gate_timeout``.
+
+    Returns ``None`` when unset (the adaptive resolver applies its own
+    default). A non-numeric or non-positive value is a config error the
+    operator must fix, so it fails loudly at load time rather than silently
+    disabling adaptive gate-timeout scaling at sprint-run time.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            f"forge.yaml validation.gate_timeout must be an integer number of "
+            f"seconds, got {raw!r} ({type(raw).__name__})."
+        )
+    if raw <= 0:
+        raise ValueError(f"forge.yaml validation.gate_timeout must be positive, got {raw!r}.")
+    return raw
+
+
+def _validated_gate_cpu_cores(raw: Any) -> int | None:
+    """Validate ``validation.gate_cpu_cores``.
+
+    Returns ``None`` when unset (the adaptive resolver falls back to host
+    core count). A non-numeric or non-positive value is a config error the
+    operator must fix, so it fails loudly at load time rather than silently
+    disabling adaptive gate-timeout scaling at sprint-run time.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            f"forge.yaml validation.gate_cpu_cores must be an integer core count, "
+            f"got {raw!r} ({type(raw).__name__})."
+        )
+    if raw <= 0:
+        raise ValueError(f"forge.yaml validation.gate_cpu_cores must be positive, got {raw!r}.")
+    return raw
+
+
 def _validated_gate_timeout_scale(raw: Any) -> str:
     """Validate ``validation.gate_timeout_scale`` against supported modes."""
     if raw is None:
@@ -578,7 +618,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
     validation = ValidationConfig(
         gate_command=val_data.get("gate_command", DEFAULT_VALIDATION.gate_command),
-        gate_timeout=val_data.get("gate_timeout"),
+        gate_timeout=_validated_gate_timeout(val_data.get("gate_timeout")),
         gate_output_tail_chars=int(
             val_data.get("gate_output_tail_chars", DEFAULT_VALIDATION.gate_output_tail_chars)
         ),
@@ -600,7 +640,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         test_command=val_data.get("test_command"),
         pre_validate_command=val_data.get("pre_validate_command"),
         failed_test_pattern=_validated_failed_test_pattern(val_data.get("failed_test_pattern")),
-        gate_cpu_cores=val_data.get("gate_cpu_cores"),
+        gate_cpu_cores=_validated_gate_cpu_cores(val_data.get("gate_cpu_cores")),
         gate_timeout_scale=_validated_gate_timeout_scale(val_data.get("gate_timeout_scale")),
         default_test_target=str(
             val_data.get("default_test_target", DEFAULT_VALIDATION.default_test_target)
