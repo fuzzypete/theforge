@@ -477,13 +477,17 @@ def _maybe_escalate_decompose(
 def _apply_post_plan_dev_checkpoint(
     state: CoordinatorState,
     config: "ForgeConfig",
+    plan_review_decision: str = "APPROVE",
 ) -> None:
-    """Re-evaluate ONLY the dev tier after a clean plan-review APPROVE (#1387).
+    """Re-evaluate ONLY the dev tier after a plan-review that proceeds to DEV (#1387).
 
     Shared by every plan-review path that continues to DEV — the agent
-    plan-review APPROVE branch and the human/pending-file/remote APPROVE branch —
-    so a clean medium plan-review always runs and records the post-plan
-    checkpoint regardless of reviewer type. All gate conditions are enforced
+    plan-review APPROVE branch, the human/pending-file/remote APPROVE branch, and
+    the refactor advisory branch (which proceeds regardless of verdict) — so the
+    post-plan checkpoint is always recorded. ``plan_review_decision`` carries the
+    real merged verdict so a non-APPROVE advisory continuation records
+    ``preserve``/``plan_review_not_approve`` rather than leaving the pending
+    sentinel. All gate conditions (including verdict == APPROVE) are enforced
     inside :func:`apply_post_plan_checkpoint`; even a non-firing decision records
     the audit block. Must be called AFTER ``record_plan_attempt()`` so the latest
     per-attempt p1/p2 counts are available.
@@ -513,7 +517,7 @@ def _apply_post_plan_dev_checkpoint(
         config.agents,
         config.assignment,
         state.preflight_complexity or "medium",
-        plan_review_decision="APPROVE",
+        plan_review_decision=plan_review_decision,
         plan_review_cycles=state.plan_regen_count + 1,
         p1_count=int(_latest_meta.get("p1_count", 0)),
         p2_count=int(_latest_meta.get("p2_count", 0)),
@@ -1218,6 +1222,12 @@ def _run_plan_agent_review(
 
         # Advisory mode (refactor work type): log findings but never reject
         if advisory:
+            # This branch proceeds to DEV regardless of verdict, so record the
+            # post-plan checkpoint with the ACTUAL merged verdict (#1387). A
+            # non-APPROVE advisory continuation lands preserve/plan_review_not_
+            # approve rather than leaving the pending sentinel; an APPROVE advisory
+            # is gated identically to the regular APPROVE path.
+            _apply_post_plan_dev_checkpoint(state, config, merged_pr.verdict)
             findings_text = plan_review_findings_to_text(merged_pr)
             state.plan_agent_review_findings = findings_text
             _log(

@@ -44,6 +44,30 @@ findings: []
 ```
 """
 
+PLAN_AGENT_REJECT_P0 = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P0
+    description: "Plan is architecturally broken — wrong module entirely"
+    suggestion: "Rethink the approach"
+```
+"""
+
+# Medium story that preflight classifies as refactor work → advisory plan review.
+PREFLIGHT_PROCEED_MEDIUM_REFACTOR = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+work_type: refactor
+reason: "Refactor of an existing module."
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "Not found in codebase"
+```
+"""
+
 
 def _agents() -> list[AgentDef]:
     return [
@@ -282,3 +306,68 @@ def test_human_plan_review_approve_also_runs_checkpoint(tmp_path, monkeypatch):
     assert cp["final_tier"] == "cheap"
     assert cp["rationale"] == "plan_review_clean_medium"
     assert dev_models == ["haiku"]
+
+
+def test_advisory_reject_records_preserve_and_keeps_dev_tier(tmp_path, monkeypatch):
+    """A refactor advisory plan-review REJECT proceeds to DEV but records the
+    checkpoint as preserve/plan_review_not_approve — never the pending sentinel.
+
+    Regression guard for the iter-1 P1: the advisory continue-to-DEV branch left
+    routing_decision.dev.post_plan_checkpoint at the pending sentinel.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    dev_models: list = []
+
+    def _capture_dev(*args, **kwargs):
+        dev_models.append(kwargs["profile"].model)
+        return _make_agent_result(success=True, output="Implemented.")
+
+    with (
+        patch("theforge.coordinator.review_pool.run_agent_pool") as mock_code_pool,
+        patch(
+            "theforge.coordinator.review_phase._human_review",
+            return_value=("approve", None),
+        ),
+        patch("theforge.coordinator.plan_flow.run_agent_pool") as mock_plan_pool,
+        patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+        patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        patch("theforge.coordinator.dev_phase.run_agent", side_effect=_capture_dev),
+        patch_gate_shell() as mock_shell,
+    ):
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM_REFACTOR, cost_usd=0.05
+        )
+        mock_plan_agent.return_value = _make_agent_result(
+            success=True, output="# Plan\n\nRefactor plan.", cost_usd=0.10
+        )
+        # Advisory mode: a REJECT (P0) verdict is logged but does NOT block; the
+        # run proceeds to DEV via the advisory continue-to-DEV branch.
+        mock_plan_pool.return_value = [
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_REJECT_P0,
+                cost_usd=0.08,
+                profile_name="plan-review",
+            )
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        result = run_task(config, task, interactive=True)
+
+    assert result.success is True
+    assert result.state.preflight_work_type == "refactor"
+    cp = result.state.routing_decision["dev"]["post_plan_checkpoint"]
+    assert cp["fired"] is False
+    assert cp["decision"] == "preserve"
+    assert cp["baseline_tier"] == "mid"
+    assert cp["final_tier"] == "mid"
+    assert cp["rationale"] == "plan_review_not_approve"
+    # Dev ran on the untouched preflight-assigned mid tier.
+    assert dev_models == ["sonnet"]
