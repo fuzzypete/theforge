@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 from theforge.config import (
@@ -79,12 +80,11 @@ class TestResolveEffectiveGateTimeout:
         assert r.factor == 2.0
         assert r.effective_timeout == 60
 
-    def test_unknown_mode_defaults_to_adaptive(self) -> None:
-        r = resolve_effective_gate_timeout(
-            baseline=10, max_parallel=2, host_cores=2, gate_cpu_cores=2, mode="bogus"
-        )
-        assert r.mode == "adaptive"
-        assert r.effective_timeout == 20
+    def test_unknown_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="gate_timeout_scale must be 'adaptive' or 'fixed'"):
+            resolve_effective_gate_timeout(
+                baseline=10, max_parallel=2, host_cores=2, gate_cpu_cores=2, mode="bogus"
+            )
 
 
 # ── Seam-level integration: runner → coordinator config propagation ──────────

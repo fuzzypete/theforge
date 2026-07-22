@@ -481,6 +481,23 @@ def _validated_failed_test_pattern(raw: Any) -> str | None:
     return raw
 
 
+def _validated_gate_timeout_scale(raw: Any) -> str:
+    """Validate ``validation.gate_timeout_scale`` against supported modes."""
+    if raw is None:
+        return "adaptive"
+    if not isinstance(raw, str):
+        raise ValueError(
+            "forge.yaml validation.gate_timeout_scale must be a string "
+            "('adaptive' or 'fixed'), "
+            f"got {type(raw).__name__}."
+        )
+    if raw not in {"adaptive", "fixed"}:
+        raise ValueError(
+            f"forge.yaml validation.gate_timeout_scale must be 'adaptive' or 'fixed', got {raw!r}."
+        )
+    return raw
+
+
 def _resolve_project_root(config_path: Path) -> Path:
     """Resolve the project root for a given forge.yaml path.
 
@@ -584,7 +601,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         pre_validate_command=val_data.get("pre_validate_command"),
         failed_test_pattern=_validated_failed_test_pattern(val_data.get("failed_test_pattern")),
         gate_cpu_cores=val_data.get("gate_cpu_cores"),
-        gate_timeout_scale=str(val_data.get("gate_timeout_scale", "adaptive")),
+        gate_timeout_scale=_validated_gate_timeout_scale(val_data.get("gate_timeout_scale")),
         default_test_target=str(
             val_data.get("default_test_target", DEFAULT_VALIDATION.default_test_target)
         ),

@@ -96,6 +96,24 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="failed_test_pattern is not a valid regex"):
             load_config(config_path)
 
+    def test_gate_timeout_scale_default_is_adaptive(self, tmp_path):
+        config_path = _write_config({"project": "p"}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.gate_timeout_scale == "adaptive"
+
+    def test_gate_timeout_scale_valid_mode_loads(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_timeout_scale": "fixed"}}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.gate_timeout_scale == "fixed"
+
+    def test_gate_timeout_scale_invalid_mode_raises(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_timeout_scale": "adaptvie"}}, tmp_path)
+        with pytest.raises(
+            ValueError,
+            match="validation.gate_timeout_scale must be 'adaptive' or 'fixed'",
+        ):
+            load_config(config_path)
+
     def test_custom_workspace(self, tmp_path):
         config_path = _write_config(
             {

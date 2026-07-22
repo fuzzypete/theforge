@@ -1699,17 +1699,24 @@ def run_sprint(
         _host_cores = os.cpu_count() or 1
         _gate_cpu_raw = config.validation.gate_cpu_cores
         _gate_cpu_cores = int(_gate_cpu_raw) if _gate_cpu_raw else None
-        _mode = str(config.validation.gate_timeout_scale or "adaptive")
-        _gate_timeout_resolution = resolve_effective_gate_timeout(
-            baseline=_baseline_gate_timeout,
-            max_parallel=max_parallel,
-            host_cores=_host_cores,
-            gate_cpu_cores=_gate_cpu_cores,
-            mode=_mode,
-        )
     except (TypeError, ValueError):
         # Mock or partial config in tests; skip adaptive scaling silently.
         _gate_timeout_resolution = None
+    else:
+        _mode_raw = config.validation.gate_timeout_scale
+        if _mode_raw is None:
+            _mode = "adaptive"
+        elif not isinstance(_mode_raw, str):
+            # Mock or partial config in tests; skip adaptive scaling silently.
+            _gate_timeout_resolution = None
+        else:
+            _gate_timeout_resolution = resolve_effective_gate_timeout(
+                baseline=_baseline_gate_timeout,
+                max_parallel=max_parallel,
+                host_cores=_host_cores,
+                gate_cpu_cores=_gate_cpu_cores,
+                mode=_mode_raw,
+            )
     if _gate_timeout_resolution is not None:
         print(
             f"[sprint] gate_timeout: {_gate_timeout_resolution.reason}",

@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+VALID_GATE_TIMEOUT_SCALES = frozenset({"adaptive", "fixed"})
+
 
 @dataclass(frozen=True)
 class GateTimeoutResolution:
@@ -47,7 +49,11 @@ def resolve_effective_gate_timeout(
     gate_demand_cores = gate_cpu_cores if gate_cpu_cores and gate_cpu_cores > 0 else safe_host
     demand = gate_demand_cores * safe_parallel
     factor = max(1.0, demand / safe_host)
-    normalized_mode = mode if mode in ("adaptive", "fixed") else "adaptive"
+    normalized_mode = str(mode)
+    if normalized_mode not in VALID_GATE_TIMEOUT_SCALES:
+        raise ValueError(
+            f"gate_timeout_scale must be 'adaptive' or 'fixed', got {normalized_mode!r}"
+        )
     if normalized_mode == "fixed":
         effective = int(baseline)
     else:
