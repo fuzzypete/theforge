@@ -114,6 +114,52 @@ class TestLoadConfig:
         ):
             load_config(config_path)
 
+    def test_gate_timeout_default_is_none(self, tmp_path):
+        config_path = _write_config({"project": "p"}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.gate_timeout is None
+
+    def test_gate_timeout_valid_int_loads(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_timeout": 900}}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.gate_timeout == 900
+
+    def test_gate_timeout_non_numeric_raises(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_timeout": "typo"}}, tmp_path)
+        with pytest.raises(
+            ValueError,
+            match="validation.gate_timeout must be an integer number of seconds",
+        ):
+            load_config(config_path)
+
+    def test_gate_timeout_non_positive_raises(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_timeout": 0}}, tmp_path)
+        with pytest.raises(ValueError, match="validation.gate_timeout must be positive"):
+            load_config(config_path)
+
+    def test_gate_cpu_cores_default_is_none(self, tmp_path):
+        config_path = _write_config({"project": "p"}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.gate_cpu_cores is None
+
+    def test_gate_cpu_cores_valid_int_loads(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_cpu_cores": 4}}, tmp_path)
+        config = load_config(config_path)
+        assert config.validation.gate_cpu_cores == 4
+
+    def test_gate_cpu_cores_non_numeric_raises(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_cpu_cores": "typo"}}, tmp_path)
+        with pytest.raises(
+            ValueError,
+            match="validation.gate_cpu_cores must be an integer core count",
+        ):
+            load_config(config_path)
+
+    def test_gate_cpu_cores_non_positive_raises(self, tmp_path):
+        config_path = _write_config({"validation": {"gate_cpu_cores": -1}}, tmp_path)
+        with pytest.raises(ValueError, match="validation.gate_cpu_cores must be positive"):
+            load_config(config_path)
+
     def test_custom_workspace(self, tmp_path):
         config_path = _write_config(
             {
