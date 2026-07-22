@@ -474,6 +474,66 @@ def _maybe_escalate_decompose(
     )
 
 
+def _apply_post_plan_dev_checkpoint(
+    state: CoordinatorState,
+    config: "ForgeConfig",
+) -> None:
+    """Re-evaluate ONLY the dev tier after a clean plan-review APPROVE (#1387).
+
+    Shared by every plan-review path that continues to DEV — the agent
+    plan-review APPROVE branch and the human/pending-file/remote APPROVE branch —
+    so a clean medium plan-review always runs and records the post-plan
+    checkpoint regardless of reviewer type. All gate conditions are enforced
+    inside :func:`apply_post_plan_checkpoint`; even a non-firing decision records
+    the audit block. Must be called AFTER ``record_plan_attempt()`` so the latest
+    per-attempt p1/p2 counts are available.
+    """
+    _adaptive = getattr(state, "_adaptive_decision", None)
+    if _adaptive is None:
+        return
+    from theforge.assignment import apply_post_plan_checkpoint  # noqa: PLC0415
+
+    # Rerank the demoted-tier pick on the same recency-weighted success-rate and
+    # domain signals the preflight dev assignment used — only under adaptive
+    # routing, mirroring assign_models (static mode ignores profile learning).
+    _adaptive_enabled = config.assignment.adaptive_enabled
+    _model_profiles = None
+    _recency = None
+    _domains = None
+    if _adaptive_enabled:
+        from theforge.model_profiles import load_profiles  # noqa: PLC0415
+
+        _model_profiles = load_profiles(config.project_root / ".forge" / "model_profiles.yaml")
+        _recency = config.assignment.recency
+        _domains = list(state.preflight_domains or [])
+
+    _latest_meta = state.plan_attempt_metadata[-1] if state.plan_attempt_metadata else {}
+    _updated = apply_post_plan_checkpoint(
+        _adaptive,
+        config.agents,
+        config.assignment,
+        state.preflight_complexity or "medium",
+        plan_review_decision="APPROVE",
+        plan_review_cycles=state.plan_regen_count + 1,
+        p1_count=int(_latest_meta.get("p1_count", 0)),
+        p2_count=int(_latest_meta.get("p2_count", 0)),
+        explicit_roles=getattr(state, "_explicit_roles", set()),
+        secrets=config.secrets,
+        model_profiles=_model_profiles,
+        domains=_domains,
+        recency=_recency,
+    )
+    state._adaptive_decision = _updated
+    if _updated.routing_decision:
+        state.routing_decision = _updated.routing_decision
+    _cp = (_updated.routing_decision.get("dev") or {}).get("post_plan_checkpoint") or {}
+    if _cp.get("fired"):
+        _log(
+            f"  ↳ post-plan checkpoint: dev {_cp.get('baseline_tier')} → "
+            f"{_cp.get('final_tier')} ({_updated.dev.model}) — {_cp.get('rationale')}"
+        )
+
+
 def _run_plan_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -1112,46 +1172,10 @@ def _run_plan_agent_review(
         if merged_pr.verdict == "APPROVE":
             state.plan_review_decision = "approve"
             # ── Post-plan dev-tier checkpoint (#1387) ──────────────────
-            # A clean plan-review resolves the uncertainty that may have
-            # promoted the dev tier at preflight. Re-evaluate ONLY the dev tier
-            # (max one step down) using the plan-review outcome as signal; every
-            # gate condition is enforced inside apply_post_plan_checkpoint. The
-            # updated decision (and its recorded post_plan_checkpoint block) is
-            # stored back on state so engine.py can swap config.dev_profile
-            # before entering DEV.
-            _adaptive = getattr(state, "_adaptive_decision", None)
-            if _adaptive is not None:
-                from theforge.assignment import (  # noqa: PLC0415
-                    apply_post_plan_checkpoint,
-                )
-
-                _latest_meta = (
-                    state.plan_attempt_metadata[-1] if state.plan_attempt_metadata else {}
-                )
-                _updated = apply_post_plan_checkpoint(
-                    _adaptive,
-                    config.agents,
-                    config.assignment,
-                    state.preflight_complexity or "medium",
-                    plan_review_decision="APPROVE",
-                    plan_review_cycles=state.plan_regen_count + 1,
-                    p1_count=int(_latest_meta.get("p1_count", 0)),
-                    p2_count=int(_latest_meta.get("p2_count", 0)),
-                    explicit_roles=getattr(state, "_explicit_roles", set()),
-                    secrets=config.secrets,
-                )
-                state._adaptive_decision = _updated
-                if _updated.routing_decision:
-                    state.routing_decision = _updated.routing_decision
-                _cp = (_updated.routing_decision.get("dev") or {}).get(
-                    "post_plan_checkpoint"
-                ) or {}
-                if _cp.get("fired"):
-                    _log(
-                        f"  ↳ post-plan checkpoint: dev {_cp.get('baseline_tier')} → "
-                        f"{_cp.get('final_tier')} ({_updated.dev.model}) — "
-                        f"{_cp.get('rationale')}"
-                    )
+            # A clean plan-review resolves the uncertainty that may have promoted
+            # the dev tier at preflight. Re-evaluate ONLY the dev tier (max one
+            # step down); engine.py swaps config.dev_profile before DEV.
+            _apply_post_plan_dev_checkpoint(state, config)
             if merged_pr.findings:
                 findings_text = plan_review_findings_to_text(merged_pr)
                 state.plan_agent_review_findings = findings_text
@@ -1531,6 +1555,13 @@ def _run_human_plan_review(
             state.plan_structured = parse_plan_output(updated)
             plan_text = updated
             record_plan_attempt(state, [])
+            # ── Post-plan dev-tier checkpoint (#1387) ──────────────────
+            # Same demotion signal as the agent-review APPROVE path: a clean
+            # human/pending-file/remote approval on a medium story de-risks the
+            # dev tier too. A human approval carries no structured findings, so
+            # record_plan_attempt(state, []) yields p1=0/p2=0 — the checkpoint
+            # gates still enforce complexity/cycle-count before firing.
+            _apply_post_plan_dev_checkpoint(state, config)
             write_trace(
                 workspace_path
                 / ".forge/traces"

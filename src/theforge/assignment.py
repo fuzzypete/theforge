@@ -1531,6 +1531,9 @@ def apply_post_plan_checkpoint(
     p2_count: int,
     explicit_roles: set[str] | None = None,
     secrets: dict[str, str] | None = None,
+    model_profiles: dict | None = None,
+    domains: list[str] | None = None,
+    recency: object | None = None,
 ) -> AssignmentDecision:
     """Re-evaluate ONLY the dev tier after plan-review completes (#1387).
 
@@ -1553,6 +1556,11 @@ def apply_post_plan_checkpoint(
     recorded in ``decision.routing_decision['dev']['final']['tier']`` — the one
     baseline, so the reduction can never double-count the promotion ratchet.
     Every other role (preflight, planner, plan_review, code_review) is untouched.
+
+    ``model_profiles``/``domains``/``recency`` are threaded into the demoted-tier
+    agent pick so the cheaper tier is reranked by the same recency-weighted
+    success rate and domain tiebreak as the original dev assignment (they are
+    optional; omitting them falls back to the deterministic budget/price order).
 
     Records the outcome into ``routing_decision['dev']['post_plan_checkpoint']``
     with fired/decision/baseline_tier/final_tier/plan_present/rationale, and
@@ -1648,8 +1656,25 @@ def apply_post_plan_checkpoint(
         return decision
 
     # ── All gates passed — attempt the one-step demotion ───────────────
+    # Select the demoted-tier agent with the SAME recency-weighted success-rate
+    # reranking and domain tiebreak the original dev assignment used, so the
+    # cheaper tier still routes to its best-performing model rather than the raw
+    # budget-ordered default (#1387 review P2).
     target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
-    target_agent = _pick_agent(agents, target_tier, secrets) if target_tier is not None else None
+    target_agent = (
+        _pick_agent(
+            agents,
+            target_tier,
+            secrets,
+            model_profiles=model_profiles,
+            role="dev",
+            complexity=norm_complexity,
+            domains=domains,
+            recency=recency,
+        )
+        if target_tier is not None
+        else None
+    )
     if target_tier is None or target_agent is None:
         _record(
             fired=False,

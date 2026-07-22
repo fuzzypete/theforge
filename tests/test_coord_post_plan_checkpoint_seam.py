@@ -31,6 +31,7 @@ from theforge.config import (
     LogConfig,
     PlanAgentReviewConfig,
     PlanConfig,
+    PlanReviewConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -187,3 +188,97 @@ def test_disabled_flag_keeps_preflight_dev_tier(tmp_path, monkeypatch):
     assert cp["rationale"] == "plan_tier_reduction_disabled"
     # Dev ran on the preflight-assigned mid tier, untouched.
     assert dev_models == ["sonnet"]
+
+
+def _make_human_config(tmp_path: Path) -> ForgeConfig:
+    """Adaptive config with HUMAN plan-review (blocking) instead of agent review."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        review_pool_is_default=True,
+        synthesis_profile=None,
+        agents=_agents(),
+        secrets={"ANTHROPIC_API_KEY": "k"},
+        assignment=AssignmentConfig(
+            # min/max reviewers = 0 → adaptive assigns no plan reviewers, so
+            # plan_agent_review stays disabled and the human plan-review path is
+            # exercised while _adaptive_decision is still populated. Code review
+            # falls back to the default review_pool (unchanged when 0 reviewers).
+            enabled=True,
+            escalation_memory=False,
+            min_reviewers=0,
+            max_reviewers=0,
+            prefer_cross_provider=False,
+            plan_tier_reduction=True,
+        ),
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=300),
+        log=LogConfig(enabled=False),
+    )
+
+
+def test_human_plan_review_approve_also_runs_checkpoint(tmp_path, monkeypatch):
+    """A clean HUMAN plan-review APPROVE demotes dev too — not just agent review.
+
+    Regression guard for the iter-1 P1: the checkpoint was only wired into the
+    agent-review APPROVE branch, so human/pending-file/remote approvals reached
+    DEV with the preflight dev profile and a ``pending`` audit block.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    config = _make_human_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    dev_models: list = []
+
+    def _capture_dev(*args, **kwargs):
+        dev_models.append(kwargs["profile"].model)
+        return _make_agent_result(success=True, output="Implemented.")
+
+    with (
+        patch("theforge.coordinator.review_pool.run_agent_pool") as mock_code_pool,
+        patch(
+            "theforge.coordinator.review_phase._human_review",
+            return_value=("approve", None),
+        ),
+        patch(
+            "theforge.coordinator.plan_flow._plan_review_interactive",
+            return_value="approve",
+        ),
+        patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+        patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        patch("theforge.coordinator.dev_phase.run_agent", side_effect=_capture_dev),
+        patch_gate_shell() as mock_shell,
+    ):
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_plan_agent.return_value = _make_agent_result(
+            success=True, output="# Plan\n\nGood plan.", cost_usd=0.10
+        )
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        result = run_task(config, task, interactive=True)
+
+    assert result.success is True
+    assert result.state.plan_review_decision == "approve"
+    cp = result.state.routing_decision["dev"]["post_plan_checkpoint"]
+    assert cp["fired"] is True
+    assert cp["decision"] == "downgrade"
+    assert cp["baseline_tier"] == "mid"
+    assert cp["final_tier"] == "cheap"
+    assert cp["rationale"] == "plan_review_clean_medium"
+    assert dev_models == ["haiku"]
