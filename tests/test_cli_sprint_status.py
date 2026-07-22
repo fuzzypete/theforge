@@ -756,6 +756,68 @@ def test_display_sprint_status_crashed_sprint(tmp_path: Path) -> None:
     assert "unexpectedly" in output
 
 
+def test_display_sprint_status_terminal_marker_not_crashed(tmp_path: Path) -> None:
+    """A run with a .ended marker (no PID) is not crashed even if .state lingers.
+
+    Reproduces issue-1872: a sprint that wrote <run_id>.ended (e.g. an early
+    bootstrap error caught by cli/sprint.py) but left a bootstrap .state file
+    behind must report the recorded terminal outcome, not the crash banner.
+    """
+    _make_state_file(
+        tmp_path,
+        "ended-run",
+        "ended-sprint",
+        [
+            {
+                "slug": "issue-41",
+                "path": "Issue #41",
+                "status": "waiting",
+                "phase": None,
+                "cost_usd": 0.0,
+                "bundle_candidate": False,
+                "blocked_by": [],
+            }
+        ],
+    )
+    # Terminal outcome marker written by the clean-exit path.
+    (tmp_path / ".forge" / "runs" / "ended-run.ended").write_text("completed")
+
+    code, output = _run_sprint_status(tmp_path, "ended-run")
+
+    assert code == 0
+    assert "crashed" not in output
+    assert "unexpectedly" not in output
+    assert "[completed]" in output
+
+
+def test_display_sprint_status_stopped_marker_reports_outcome(tmp_path: Path) -> None:
+    """A stopped run's recorded outcome is surfaced instead of crash wording."""
+    _make_state_file(
+        tmp_path,
+        "stopped-run",
+        "stopped-sprint",
+        [
+            {
+                "slug": "issue-42",
+                "path": "Issue #42",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 0.05,
+                "bundle_candidate": False,
+                "blocked_by": [],
+            }
+        ],
+    )
+    (tmp_path / ".forge" / "runs" / "stopped-run.ended").write_text("stopped")
+
+    code, output = _run_sprint_status(tmp_path, "stopped-run")
+
+    assert code == 0
+    assert "crashed" not in output
+    assert "unexpectedly" not in output
+    assert "[stopped]" in output
+
+
 def test_display_sprint_status_column_header_present(tmp_path: Path) -> None:
     """Sprint display includes a column header row."""
     stories = [
