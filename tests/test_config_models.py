@@ -864,3 +864,27 @@ class TestSprintConfig:
         )
         with pytest.raises(ValueError, match="max_parallel"):
             load_config(config_path)
+
+
+class TestAssignmentPlanTierReduction:
+    """assignment.plan_tier_reduction (#1387) parsing — default true, explicit false."""
+
+    def test_omitted_defaults_true(self):
+        from theforge.config.models import _parse_assignment
+
+        cfg = _parse_assignment({"enabled": True})
+        assert cfg.plan_tier_reduction is True
+
+    def test_explicit_false_disables(self):
+        from theforge.config.models import _parse_assignment
+
+        cfg = _parse_assignment({"enabled": True, "plan_tier_reduction": False})
+        assert cfg.plan_tier_reduction is False
+
+    def test_load_config_threads_flag(self, tmp_path):
+        config_path = _write_config(
+            {"project": "test", "assignment": {"enabled": True, "plan_tier_reduction": False}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.assignment.plan_tier_reduction is False

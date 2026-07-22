@@ -89,6 +89,14 @@ class AssignmentConfig:
     # low-completion reviewer is still selected when no better candidate exists.
     reviewer_completion_threshold: float = 0.5
     reviewer_completion_min_runs: int = 5
+    # Post-plan dev-tier checkpoint (#1387, absorbs #1109). When True (default), a
+    # clean plan-review on a medium-complexity story may step the preflight-assigned
+    # dev tier down by exactly one level (strong→mid, mid→cheap), counteracting
+    # promotion creep once the plan phase has resolved the uncertainty that drove
+    # the promotion. Set False for conservative routing that always honors the
+    # preflight-assigned dev tier. Only the dev role is re-evaluated; explicit dev
+    # overrides and locked roles always bypass the checkpoint.
+    plan_tier_reduction: bool = True
 
 
 @dataclass(frozen=True)

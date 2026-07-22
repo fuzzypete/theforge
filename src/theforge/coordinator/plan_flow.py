@@ -1111,6 +1111,47 @@ def _run_plan_agent_review(
 
         if merged_pr.verdict == "APPROVE":
             state.plan_review_decision = "approve"
+            # ── Post-plan dev-tier checkpoint (#1387) ──────────────────
+            # A clean plan-review resolves the uncertainty that may have
+            # promoted the dev tier at preflight. Re-evaluate ONLY the dev tier
+            # (max one step down) using the plan-review outcome as signal; every
+            # gate condition is enforced inside apply_post_plan_checkpoint. The
+            # updated decision (and its recorded post_plan_checkpoint block) is
+            # stored back on state so engine.py can swap config.dev_profile
+            # before entering DEV.
+            _adaptive = getattr(state, "_adaptive_decision", None)
+            if _adaptive is not None:
+                from theforge.assignment import (  # noqa: PLC0415
+                    apply_post_plan_checkpoint,
+                )
+
+                _latest_meta = (
+                    state.plan_attempt_metadata[-1] if state.plan_attempt_metadata else {}
+                )
+                _updated = apply_post_plan_checkpoint(
+                    _adaptive,
+                    config.agents,
+                    config.assignment,
+                    state.preflight_complexity or "medium",
+                    plan_review_decision="APPROVE",
+                    plan_review_cycles=state.plan_regen_count + 1,
+                    p1_count=int(_latest_meta.get("p1_count", 0)),
+                    p2_count=int(_latest_meta.get("p2_count", 0)),
+                    explicit_roles=getattr(state, "_explicit_roles", set()),
+                    secrets=config.secrets,
+                )
+                state._adaptive_decision = _updated
+                if _updated.routing_decision:
+                    state.routing_decision = _updated.routing_decision
+                _cp = (_updated.routing_decision.get("dev") or {}).get(
+                    "post_plan_checkpoint"
+                ) or {}
+                if _cp.get("fired"):
+                    _log(
+                        f"  ↳ post-plan checkpoint: dev {_cp.get('baseline_tier')} → "
+                        f"{_cp.get('final_tier')} ({_updated.dev.model}) — "
+                        f"{_cp.get('rationale')}"
+                    )
             if merged_pr.findings:
                 findings_text = plan_review_findings_to_text(merged_pr)
                 state.plan_agent_review_findings = findings_text

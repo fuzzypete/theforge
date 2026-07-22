@@ -1378,10 +1378,13 @@ def _build_routing_decision(
                 "checked": None,
                 "reason": "no_dev_tier_demotion_mechanism_v1",
             },
-            # Post-plan checkpoint (#1387) writes here once landed; absent in v1.
+            # Post-plan dev-tier checkpoint (#1387). Preflight records the
+            # not-yet-run sentinel; apply_post_plan_checkpoint() overwrites this
+            # block with the real decision after plan-review completes.
             "post_plan_checkpoint": {
-                "applied": False,
-                "reason": "checkpoint_not_implemented_v1",
+                "fired": False,
+                "decision": "pending",
+                "reason": "checkpoint_runs_after_plan_review",
             },
             # Challenger-sampling exploration (#325): the labeled, reconstructable
             # decision for the dev slot (mode + routing_key + pool + selection).
@@ -1484,6 +1487,196 @@ def reconcile_explicit_reviewer_pools(
     if code_reviewers:
         _rebuild("code_review", code_reviewers)
     return routing_decision
+
+
+# ── Post-plan dev-tier checkpoint (#1387, absorbs #1109) ───────────────
+
+# Enumerable rationale tokens for the post-plan checkpoint. Exhaustive so both
+# over- and under-correction are observable from routing_decision history
+# (ADR-0006 clause 7). ``plan_review_clean_medium`` is the only token that fires
+# a downgrade; every other token records why the original tier was preserved
+# (or the checkpoint skipped entirely).
+POST_PLAN_CHECKPOINT_RATIONALES: frozenset[str] = frozenset(
+    {
+        "plan_review_clean_medium",
+        "plan_tier_reduction_disabled",
+        "explicit_dev_override",
+        "complexity_not_medium",
+        "plan_review_not_approve",
+        "plan_review_cycles_exceeded",
+        "plan_review_p1_present",
+        "plan_review_p2_exceeded",
+        "no_reduced_tier_candidate",
+    }
+)
+
+
+def _reduced_tier(tier: str) -> str | None:
+    """Return the tier exactly one step below ``tier`` (never two); None at floor."""
+    idx = _TIER_ORDER.index(tier) if tier in _TIER_ORDER else None
+    if idx is None or idx == 0:
+        return None
+    return _TIER_ORDER[idx - 1]
+
+
+def apply_post_plan_checkpoint(
+    decision: AssignmentDecision,
+    agents: list[AgentDef],
+    assignment_config: AssignmentConfig,
+    complexity: str,
+    *,
+    plan_review_decision: str,
+    plan_review_cycles: int,
+    p1_count: int,
+    p2_count: int,
+    explicit_roles: set[str] | None = None,
+    secrets: dict[str, str] | None = None,
+) -> AssignmentDecision:
+    """Re-evaluate ONLY the dev tier after plan-review completes (#1387).
+
+    Pure deterministic function — no LLM, no I/O. This is the single post-plan
+    dev-tier demotion mechanism (ADR-0006 clause 5 recovery side): a clean
+    plan-review on a medium-band story permits stepping the preflight-assigned
+    (effective) dev tier down by exactly one level (``strong→mid``, ``mid→cheap``,
+    never two). Every gate condition below must hold, otherwise the original dev
+    tier is preserved unchanged:
+
+    * ``assignment.plan_tier_reduction`` is enabled
+    * dev is not an explicit override / locked role
+    * complexity is MEDIUM
+    * plan-review verdict is APPROVE
+    * plan-review cycle count is exactly 1
+    * plan-review P1 == 0
+    * plan-review P2 <= 1
+
+    The demotion baseline is the preflight-assigned effective dev tier already
+    recorded in ``decision.routing_decision['dev']['final']['tier']`` — the one
+    baseline, so the reduction can never double-count the promotion ratchet.
+    Every other role (preflight, planner, plan_review, code_review) is untouched.
+
+    Records the outcome into ``routing_decision['dev']['post_plan_checkpoint']``
+    with fired/decision/baseline_tier/final_tier/plan_present/rationale, and
+    updates ``routing_decision['dev']['final']`` when the tier actually changed so
+    the recorded final reflects the model that will run. Returns the (possibly
+    dev-updated) AssignmentDecision; the routing_decision dict is mutated in place
+    so callers sharing the reference observe the recorded decision.
+    """
+    from dataclasses import replace as _dc_replace  # noqa: PLC0415
+
+    explicit_roles = explicit_roles or set()
+    dev_block = (decision.routing_decision or {}).get("dev")
+    dev_block = dev_block if isinstance(dev_block, dict) else None
+
+    # Baseline = preflight-assigned effective dev tier. Prefer the recorded
+    # final.tier; fall back to the selected dev agent's registry tier.
+    baseline_tier: str | None = None
+    if dev_block is not None:
+        baseline_tier = (dev_block.get("final") or {}).get("tier")
+    baseline_tier = _selected_tier(agents, decision.dev.name, baseline_tier)
+
+    def _record(*, fired: bool, dec: str, rationale: str, final_tier: str | None) -> None:
+        block = {
+            "fired": fired,
+            "decision": dec,
+            "baseline_tier": baseline_tier,
+            "final_tier": final_tier if final_tier is not None else baseline_tier,
+            "plan_present": True,
+            "rationale": rationale,
+        }
+        if dev_block is not None:
+            dev_block["post_plan_checkpoint"] = block
+
+    # ── Bypass paths (skipped) — operator intent / conservative config ──
+    if not assignment_config.plan_tier_reduction:
+        _record(
+            fired=False,
+            dec="skipped",
+            rationale="plan_tier_reduction_disabled",
+            final_tier=baseline_tier,
+        )
+        return decision
+    if "dev" in explicit_roles:
+        _record(
+            fired=False,
+            dec="skipped",
+            rationale="explicit_dev_override",
+            final_tier=baseline_tier,
+        )
+        return decision
+
+    # ── Evidence gates (preserve on any failure) ───────────────────────
+    norm_complexity = _normalize_complexity(complexity)
+    if norm_complexity != "MEDIUM":
+        _record(
+            fired=False,
+            dec="preserve",
+            rationale="complexity_not_medium",
+            final_tier=baseline_tier,
+        )
+        return decision
+    if str(plan_review_decision).upper() != "APPROVE":
+        _record(
+            fired=False,
+            dec="preserve",
+            rationale="plan_review_not_approve",
+            final_tier=baseline_tier,
+        )
+        return decision
+    if plan_review_cycles != 1:
+        _record(
+            fired=False,
+            dec="preserve",
+            rationale="plan_review_cycles_exceeded",
+            final_tier=baseline_tier,
+        )
+        return decision
+    if p1_count != 0:
+        _record(
+            fired=False,
+            dec="preserve",
+            rationale="plan_review_p1_present",
+            final_tier=baseline_tier,
+        )
+        return decision
+    if p2_count > 1:
+        _record(
+            fired=False,
+            dec="preserve",
+            rationale="plan_review_p2_exceeded",
+            final_tier=baseline_tier,
+        )
+        return decision
+
+    # ── All gates passed — attempt the one-step demotion ───────────────
+    target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
+    target_agent = _pick_agent(agents, target_tier, secrets) if target_tier is not None else None
+    if target_tier is None or target_agent is None:
+        _record(
+            fired=False,
+            dec="preserve",
+            rationale="no_reduced_tier_candidate",
+            final_tier=baseline_tier,
+        )
+        return decision
+
+    _record(
+        fired=True,
+        dec="downgrade",
+        rationale="plan_review_clean_medium",
+        final_tier=target_tier,
+    )
+    new_dev = _agent_to_profile(target_agent, role="dev")
+    if dev_block is not None:
+        final = dev_block.get("final")
+        if isinstance(final, dict):
+            final["model"] = new_dev.model
+            final["tier"] = target_tier
+            _base_rat = final.get("rationale", "")
+            final["rationale"] = (
+                f"{_base_rat}; post-plan checkpoint demotion {baseline_tier} → "
+                f"{target_tier} (clean plan-review on medium)"
+            ).lstrip("; ")
+    return _dc_replace(decision, dev=new_dev)
 
 
 # ── Challenger-sampling exploration integration (#325) ─────────────────
