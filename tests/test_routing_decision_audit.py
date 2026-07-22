@@ -217,6 +217,14 @@ def test_full_reconstruction_from_block_alone(tmp_path, _keys_except_deepseek):
     assert dev["post_plan_checkpoint"]["reason"]
     assert dev["base_tier_from_score"] in ("cheap", "mid", "strong")
 
+    # Unified routing rationale (#1389, AC clause 4) survives the audit seam and
+    # reports which symmetric path moved the tier. No ratchet fired here (no
+    # escalation history), so the operator sees "stayed at preflight tier".
+    rationale = dev["routing_rationale"]
+    assert rationale["state"] == "stayed_at_preflight_tier"
+    assert rationale["mechanism"] is None
+    assert rationale["from_tier"] == rationale["to_tier"]
+
     # The signals the router weighed are reconstructable with raw/weighted/runs/floor.
     dev_pool = {e["name"]: e for e in dev["candidate_pool"]}
     opus_sig = dev_pool["opus"]["signals"]["success_rate"]

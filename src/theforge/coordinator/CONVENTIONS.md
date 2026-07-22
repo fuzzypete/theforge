@@ -21,6 +21,39 @@ escalates, or completes.
 - Workspace and gate handling must be conservative: prefer failing closed over
   silently continuing with an invalid repository, branch, or validation result.
 
+## Adaptive routing symmetry invariant
+
+Adaptive routing (`assignment.py`) learns from run history to move a story's dev
+tier and reorder reviewers. Every adaptive mechanism that ratchets in one
+direction — promote, escalate, deprioritize, exclude — **must** have a
+corresponding mechanism that ratchets the opposite way — demote, de-risk,
+reprioritize, re-include — under defined conditions. Each direction needs:
+
+- **Explicit trigger conditions** — a deterministic, documented rule for when it
+  fires (e.g. "2+ ESCALATE outcomes in the last 10 matching records" ↔ "clean
+  plan-review APPROVE on a medium story in one cycle").
+- **Audit attribution** — the routing decision records which symmetric path fired
+  (or was checked and did not) so the operator can trace it in production data,
+  not just in test fixtures. The dev role carries a single `routing_rationale`
+  field reporting `stayed_at_preflight_tier`, `promoted_by <mechanism>`, or
+  `demoted_by <mechanism>`.
+- **Tests for both directions** — a promotion path and its inverse are each
+  exercised by at least one test.
+
+Static score-band routing (the `PHASE_TIER` tier table) and hard tier floors are
+**exempt** — they re-derive from the current story's complexity, not from
+accumulated history, so they are not one-way ratchets.
+
+Enforcement is mechanical, not advisory: `ROUTING_SYMMETRY_REGISTRY` in
+`assignment.py` catalogues each adaptive promotion path and its inverse (or a
+named open follow-up when the inverse has not yet landed), and
+`tests/test_routing_symmetry_invariant.py` fails when a promotion path has
+neither a landed+tested demotion nor a catalogued follow-up. Adding a new
+promotion mechanism therefore requires either landing its inverse or registering
+the asymmetry as a tracked follow-up before the enforcement test passes. See
+`docs/routing-symmetry-followups.md` for the current open asymmetries and
+ADR-0006 for the adaptive-router trust boundary.
+
 ## Context
 
 - `engine.py` is the orchestration center for the run lifecycle and state
