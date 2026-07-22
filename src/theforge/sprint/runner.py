@@ -1692,31 +1692,33 @@ def run_sprint(
     # Resolve adaptive per-gate timeout once, propagate via dataclasses.replace
     # so each per-story coordinator invocation reads the scaled value through
     # the existing config.validation.gate_timeout path.
-    _gate_timeout_resolution = None
-    _baseline_gate_timeout = 600
-    try:
-        _baseline_gate_timeout = int(config.validation.gate_timeout or 600)
-        _host_cores = os.cpu_count() or 1
-        _gate_cpu_raw = config.validation.gate_cpu_cores
-        _gate_cpu_cores = int(_gate_cpu_raw) if _gate_cpu_raw else None
-    except (TypeError, ValueError):
-        # Mock or partial config in tests; skip adaptive scaling silently.
-        _gate_timeout_resolution = None
+    #
+    # gate_timeout, gate_cpu_cores, and gate_timeout_scale are validated at
+    # config-load time (theforge.config.load), so a malformed value here is
+    # not a recoverable "mock or partial config" case — it is a config bug
+    # that must fail fast rather than silently disable adaptive scaling.
+    _baseline_gate_timeout = int(config.validation.gate_timeout or 600)
+    _host_cores = os.cpu_count() or 1
+    _gate_cpu_raw = config.validation.gate_cpu_cores
+    _gate_cpu_cores = int(_gate_cpu_raw) if _gate_cpu_raw else None
+    _mode_raw = config.validation.gate_timeout_scale
+    if _mode_raw is None:
+        _mode = "adaptive"
+    elif isinstance(_mode_raw, str):
+        _mode = _mode_raw
     else:
-        _mode_raw = config.validation.gate_timeout_scale
-        if _mode_raw is None:
-            _mode = "adaptive"
-        elif not isinstance(_mode_raw, str):
-            # Mock or partial config in tests; skip adaptive scaling silently.
-            _gate_timeout_resolution = None
-        else:
-            _gate_timeout_resolution = resolve_effective_gate_timeout(
-                baseline=_baseline_gate_timeout,
-                max_parallel=max_parallel,
-                host_cores=_host_cores,
-                gate_cpu_cores=_gate_cpu_cores,
-                mode=_mode_raw,
-            )
+        # Not a real forge.yaml value (e.g. a test double) — config-load
+        # already rejects malformed strings, so this is test scaffolding,
+        # not an operator misconfiguration. Fall back to the safe default
+        # rather than raising on incidental mock attribute access.
+        _mode = "adaptive"
+    _gate_timeout_resolution = resolve_effective_gate_timeout(
+        baseline=_baseline_gate_timeout,
+        max_parallel=max_parallel,
+        host_cores=_host_cores,
+        gate_cpu_cores=_gate_cpu_cores,
+        mode=_mode,
+    )
     if _gate_timeout_resolution is not None:
         print(
             f"[sprint] gate_timeout: {_gate_timeout_resolution.reason}",
