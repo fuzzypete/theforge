@@ -694,6 +694,11 @@ def _run_dev_phase(
     )
     _test_cmd = config.validation.test_command or _gate_cmd
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
+    # Reset the per-iteration gate-delegation flag. Only a review-fix / P2-cleanup
+    # prompt (build_fix_prompt with a non-skipped gate) delegates gate execution
+    # to the coordinator; every other prompt path leaves it False so the
+    # unproven-completion guard stays strict for ordinary iterations.
+    state.gate_delegated_this_iteration = False
     match state.retry_reason:
         case RetryReason.TIMEOUT_RESUME:
             prompt = (
@@ -725,6 +730,7 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 advisory_p2_only=True,
             )
+            state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
         case RetryReason.REVIEW_CHANGES | RetryReason.EXTEND if state.last_review_findings:
@@ -750,6 +756,7 @@ def _run_dev_phase(
                 surviving_families=state.surviving_families or None,
                 conventions=config.conventions_soft,
             )
+            state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
             injected_finding_ids.extend(
                 r.finding_id for r in current_cycle_p1s if r.finding_id not in injected_finding_ids
@@ -994,7 +1001,26 @@ def _run_dev_phase(
     # than accept an unverified completion and waste a downstream gate run
     # rediscovering the failure. This is the coordinator catching what the dev
     # should have declared as a blocking failure (gate_result: BLOCKED).
-    if dev_result.success and dev_handoff_claims_unproven_completion(dev_result.dev_handoff or {}):
+    #
+    # Exception: a review-fix / P2-cleanup iteration whose prompt delegated gate
+    # execution to the coordinator (state.gate_delegated_this_iteration) is
+    # *expected* to hand off MET-without-PASS — the prompt told the agent not to
+    # re-run the gate. Escalating there would block the coordinator's own
+    # authoritative VALIDATE gate from running on the latest fix commit (see
+    # issue #1871). The delegation flag is set authoritatively by the coordinator
+    # at prompt-routing time, not read from the agent's handoff, so an ordinary
+    # iteration cannot bypass the guard by self-reporting `gate_delegated`
+    # (honor_gate_delegation=False below ignores the handoff-level marker here).
+    _claims_unproven = dev_result.success and dev_handoff_claims_unproven_completion(
+        dev_result.dev_handoff or {}, honor_gate_delegation=False
+    )
+    if _claims_unproven and state.gate_delegated_this_iteration:
+        _log_verbose(
+            "  Dev handoff claims completion without self-reported gate PASS, but "
+            "gate execution was delegated to the coordinator this iteration — "
+            "proceeding to VALIDATE for the authoritative gate result."
+        )
+    elif _claims_unproven:
         state.phase = Phase.ESCALATE
         state.error = (
             "Dev handoff claims completion (acceptance criteria MET) without gate PASS "
