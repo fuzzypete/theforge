@@ -190,6 +190,15 @@ RULES: tuple[RcaRule, ...] = (
         description="Story escalated/failed with a REQUEST_CHANGES review verdict.",
     ),
     RcaRule(
+        rule_id="dev_handoff_no_gate_evidence",
+        failure_class="dev_gate_evidence_missing",
+        role="primary",
+        description=(
+            "Terminal dev iteration handed off a completion claim without gate "
+            "PASS evidence; the latest commit was never reviewed."
+        ),
+    ),
+    RcaRule(
         rule_id="operator_action_required",
         failure_class="operator_action",
         role="primary",
@@ -259,6 +268,10 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     "intake_shape",
     "merge_failed",
     "merge_arming_failed",
+    # A terminal dev-handoff gate-evidence failure supersedes any earlier review
+    # verdict: the latest commit was never reviewed, so it must outrank
+    # review_rejected when both would otherwise fire.
+    "dev_gate_evidence_missing",
     "review_rejected",
     "operator_action",
     "launch_collision",
@@ -693,7 +706,36 @@ def _signal_rule_hits(
 
     # Review verdict — from the per-story audit reviews (or summary verdict).
     verdict = _last_review_verdict(story, audit)
-    if verdict == "REQUEST_CHANGES" and outcome in {"ESCALATE", "ESCALATED", "FAILED"}:
+    # A dev iteration that terminates by handing off a completion claim without
+    # gate PASS evidence (HANDOFF_NO_GATE_EVIDENCE) is the *terminal* failure: it
+    # ran after — and was never re-reviewed by — any earlier review cycle. Do not
+    # let a stale REQUEST_CHANGES from an earlier, now-superseded commit
+    # masquerade as the terminal cause; classify the gate-evidence handoff
+    # instead and make the un-reviewed latest commit explicit.
+    terminal_gate = _terminal_dev_gate_result(audit)
+    unreviewed_handoff = terminal_gate == "HANDOFF_NO_GATE_EVIDENCE" and outcome in {
+        "ESCALATE",
+        "ESCALATED",
+        "FAILED",
+    }
+    if unreviewed_handoff:
+        stale = (
+            " (stale review REQUEST_CHANGES applied to an earlier, now-superseded commit)"
+            if verdict == "REQUEST_CHANGES"
+            else ""
+        )
+        hits.append(
+            (
+                "dev_handoff_no_gate_evidence",
+                audit_source if audit else summary_source,
+                _truncate(
+                    "terminal dev iteration handed off without gate PASS evidence "
+                    "(HANDOFF_NO_GATE_EVIDENCE); latest commit was not reviewed"
+                    f"{stale}; outcome={outcome}"
+                ),
+            )
+        )
+    elif verdict == "REQUEST_CHANGES" and outcome in {"ESCALATE", "ESCALATED", "FAILED"}:
         hits.append(
             (
                 "review_changes_requested",
@@ -797,6 +839,11 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
         ),
         "review_rejected": (
             f"inspect the escalated {ref} worktree and address the review findings, then re-run"
+        ),
+        "dev_gate_evidence_missing": (
+            f"inspect the escalated {ref} worktree: the dev handed off claiming completion "
+            "without gate PASS evidence and the latest commit was never reviewed — re-run the "
+            "gate (or re-sprint) before trusting any earlier review verdict"
         ),
         "operator_action": f"perform the operator action described in {ref} (no dev agent can)",
         "launch_collision": (f"clear the active worktree/lock blocking {ref}, then re-sprint it"),
@@ -996,6 +1043,26 @@ def _hit_limit(usage: object, kind: str) -> bool:
     if isinstance(block, dict):
         return bool(block.get("hit_limit"))
     return False
+
+
+def _terminal_dev_gate_result(audit: dict) -> str | None:
+    """Gate result of the last recorded dev iteration, if any.
+
+    The terminal dev iteration is the most recent thing that happened in the dev
+    loop; its ``gate_result`` is the authoritative terminal outcome regardless of
+    any earlier review verdict. Sourced from the per-story audit's
+    ``iterations.dev_loop`` (coordinator audit), where each entry carries the
+    ``gate_result`` recorded when that iteration finished.
+    """
+    if not isinstance(audit, dict):
+        return None
+    iterations = audit.get("iterations")
+    dev_loop = iterations.get("dev_loop") if isinstance(iterations, dict) else None
+    if isinstance(dev_loop, list) and dev_loop:
+        last = dev_loop[-1]
+        if isinstance(last, dict):
+            return _nonempty(last.get("gate_result"))
+    return None
 
 
 def _last_review_verdict(story: dict, audit: dict) -> str | None:

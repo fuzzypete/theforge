@@ -569,6 +569,191 @@ def test_launch_collision_signal(tmp_path: Path) -> None:
     assert any("worktree" in a or "lock" in a for a in entry["recommended_next_actions"])
 
 
+# ── Engine: stale review vs terminal dev-handoff gate-evidence failure ────────
+
+
+def test_stale_review_after_dev_gate_evidence_failure(tmp_path: Path) -> None:
+    """A later dev iteration that ends at HANDOFF_NO_GATE_EVIDENCE is the terminal
+    cause — a prior REQUEST_CHANGES against a now-superseded commit must not win.
+
+    Mirrors HDP #94/#220: gate PASS, cycle-1 REQUEST_CHANGES, then a review-fix
+    dev iteration that terminates without gate evidence before re-review.
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-94",
+                    "outcome": "ESCALATE",
+                    "verdict": "REQUEST_CHANGES",
+                    "error": (
+                        "Dev handoff claims completion (acceptance criteria MET) without "
+                        "gate PASS evidence"
+                    ),
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-94" / "audit.yaml",
+        {
+            "reviews": [{"cycle": 1, "verdict": "REQUEST_CHANGES"}],
+            "iterations": {
+                "dev_loop": [
+                    {"cycle": 0, "gate_result": "PASS"},
+                    {"cycle": 1, "gate_result": "HANDOFF_NO_GATE_EVIDENCE"},
+                ]
+            },
+        },
+    )
+    entry = _build(d)["stories"]["issue-94"]
+    assert entry["primary_failure_class"] == "dev_gate_evidence_missing"
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "dev_handoff_no_gate_evidence" in rule_ids
+    assert "review_changes_requested" not in rule_ids
+    # Output must make clear the latest commit was not reviewed.
+    excerpt = next(
+        ev["excerpt"]
+        for ev in entry["evidence"]
+        if ev["rule_id"] == "dev_handoff_no_gate_evidence"
+    )
+    assert "not reviewed" in excerpt
+    assert "stale review" in excerpt
+    assert any("latest commit" in a and "reviewed" in a for a in entry["recommended_next_actions"])
+
+
+def test_first_iteration_gate_evidence_failure_without_review(tmp_path: Path) -> None:
+    """A dev-handoff gate-evidence failure with no prior review still classifies as
+    dev_gate_evidence_missing (not UNKNOWN) and omits the stale-review note."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-95", "outcome": "ESCALATE"}]),
+    )
+    _write(
+        d / "issue-95" / "audit.yaml",
+        {"iterations": {"dev_loop": [{"cycle": 0, "gate_result": "HANDOFF_NO_GATE_EVIDENCE"}]}},
+    )
+    entry = _build(d)["stories"]["issue-95"]
+    assert entry["primary_failure_class"] == "dev_gate_evidence_missing"
+    excerpt = next(
+        ev["excerpt"]
+        for ev in entry["evidence"]
+        if ev["rule_id"] == "dev_handoff_no_gate_evidence"
+    )
+    assert "stale review" not in excerpt
+
+
+def test_genuine_terminal_review_rejection_still_classifies(tmp_path: Path) -> None:
+    """A terminal REQUEST_CHANGES with no later un-reviewed dev iteration (the dev
+    passed its gate; review rejected on content) stays classified review_rejected."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-96", "outcome": "ESCALATE", "verdict": "REQUEST_CHANGES"}]),
+    )
+    _write(
+        d / "issue-96" / "audit.yaml",
+        {
+            "reviews": [
+                {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+                {"cycle": 2, "verdict": "REQUEST_CHANGES"},
+            ],
+            "iterations": {
+                "dev_loop": [
+                    {"cycle": 0, "gate_result": "PASS"},
+                    {"cycle": 1, "gate_result": "PASS"},
+                ]
+            },
+        },
+    )
+    entry = _build(d)["stories"]["issue-96"]
+    assert entry["primary_failure_class"] == "review_rejected"
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "review_changes_requested" in rule_ids
+    assert "dev_handoff_no_gate_evidence" not in rule_ids
+
+
+def test_dev_gate_evidence_seam_coordinator_audit_to_rca(tmp_path: Path) -> None:
+    """Seam: drive the real coordinator audit writer (dev telemetry → audit.yaml),
+    then the RCA engine off that audit.
+
+    The gate_result of the terminal dev iteration flows from
+    DevIterationTelemetry through generate_audit_log's ``iterations.dev_loop`` into
+    RCA classification — the exact cross-phase boundary this fix depends on.
+    """
+    from coord_test_helpers import _make_config, _make_task
+
+    from theforge.coordinator.audit import generate_audit_log
+    from theforge.coordinator.state import (
+        CoordinatorResult,
+        CoordinatorState,
+        DevIterationTelemetry,
+        Phase,
+        ReviewCycleMetadata,
+    )
+    from theforge.review import ReviewFinding, ReviewResult
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2, review_cycle=1)
+    state.phase = Phase.ESCALATE
+    state.error = (
+        "Dev handoff claims completion (acceptance criteria MET) without gate PASS evidence"
+    )
+    state.review_cycle_metadata = [
+        ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+    ]
+    state.review_results = [
+        ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="found a real P1",
+            findings=[
+                ReviewFinding(severity="P1", file="f.py", line=1, observed="bug", suggestion=None)
+            ],
+            story_matches=False,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+    ]
+    state.dev_iteration_telemetry = [
+        DevIterationTelemetry(
+            iteration=1,
+            max_iterations=3,
+            cost_usd=1.0,
+            duration_s=5.0,
+            cycle=0,
+            gate_result="PASS",
+        ),
+        DevIterationTelemetry(
+            iteration=2,
+            max_iterations=3,
+            cost_usd=0.5,
+            duration_s=3.0,
+            cycle=1,
+            gate_result="HANDOFF_NO_GATE_EVIDENCE",
+        ),
+    ]
+
+    audit = generate_audit_log(
+        config,
+        task,
+        CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message=state.error),
+    )
+
+    d = _sprint_dir(tmp_path, name="seam-gate-evidence")
+    _write(d / "sprint-summary.yaml", _summary([{"slug": "issue-220", "outcome": "ESCALATE"}]))
+    _write(d / "issue-220" / "audit.yaml", audit)
+
+    entry = _build(d)["stories"]["issue-220"]
+    assert entry["primary_failure_class"] == "dev_gate_evidence_missing"
+
+
 # ── Rule set discoverability ──────────────────────────────────────────────────
 
 
