@@ -325,10 +325,17 @@ def _run_preflight_phase(
             {
                 "profile_name": profile.name,
                 "model": profile.model,
+                "provider": profile.provider,
+                "cli": profile.cli,
                 "cost_usd": result.cost_usd,
                 "duration_s": round(elapsed, 2),
                 "success": result.success,
                 "exit_code": result.exit_code,
+                # Reliability completion (#1489): did this invocation return a
+                # usable, parseable preflight result? A crash or a clean-exit
+                # parse-degraded narration both fail; the fold attributes this to
+                # the model that actually ran the attempt.
+                "completed": not _attempt_failed(result),
             }
         )
 

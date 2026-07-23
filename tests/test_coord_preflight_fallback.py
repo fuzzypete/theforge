@@ -114,10 +114,14 @@ class TestPreflightFallbackRetry:
             {
                 "profile_name": "preflight",
                 "model": config.preflight_profile.model,
+                "provider": config.preflight_profile.provider,
+                "cli": config.preflight_profile.cli,
                 "cost_usd": 0.11,
                 "duration_s": result.state.preflight_result.raw["attempts"][0]["duration_s"],
                 "success": True,
                 "exit_code": 0,
+                # Reliability completion (#1489): a clean primary success is completed.
+                "completed": True,
             }
         ]
 

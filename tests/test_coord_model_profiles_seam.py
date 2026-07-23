@@ -1003,3 +1003,153 @@ def test_seam_harness_kill_does_not_contaminate_capability_stats(tmp_path):
     assert stuck_bc["harness_terminated"]["by_cause"] == {"stuck_pattern": 1}
     assert stuck_bc.get("runs", 0) == 0
     assert stuck_bc.get("max_killed_timeout_s", 0.0) == 0.0
+
+
+def _preflight_result_with_attempts(attempts: list[dict]):
+    """A preflight AgentResult carrying a native raw['attempts'] list."""
+    return replace(_make_agent_result(success=True), raw={"attempts": attempts})
+
+
+def _planner_profile():
+    from theforge.config import ModelProfile
+
+    return ModelProfile(
+        name="pl",
+        cli="claude",
+        provider=None,
+        model="opus",
+        budget_usd=8.0,
+        timeout_seconds=1200,
+        allowed_tools=("Read",),
+    )
+
+
+def test_seam_bridge_derives_preflight_and_planner_reliability(tmp_path):
+    """Seam (state → bridge): build_run_outcome derives one RoleAttempt per native
+    preflight/planner invocation (#1489). A cached preflight and a story that never
+    planned record nothing."""
+    from types import SimpleNamespace
+
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.preflight_result = _preflight_result_with_attempts(
+        [
+            {
+                "profile_name": "preflight",
+                "model": "sonnet",
+                "provider": "anthropic",
+                "cli": None,
+                "cost_usd": 0.01,
+                "success": True,
+                "completed": True,
+            }
+        ]
+    )
+    planner = _planner_profile()
+    state._adaptive_decision = SimpleNamespace(planner=planner)
+    state.plan_results = [_make_agent_result(success=True)]
+
+    outcome = build_run_outcome(config, state, success=True)
+    assert len(outcome.preflight_attempts) == 1
+    assert outcome.preflight_attempts[0].completed is True
+    assert outcome.preflight_attempts[0].name == "preflight"
+    assert outcome.planner_model == "pl"
+    assert [a.completed for a in outcome.planner_attempts] == [True]
+
+    # A cached preflight ran no model this story → no attempt recorded.
+    state.preflight_cached = True
+    assert build_run_outcome(config, state, success=True).preflight_attempts == []
+
+    # No planning attempted → no planner telemetry (identity/cost suppressed too).
+    bare = _dev_state_medium()
+    bare._adaptive_decision = SimpleNamespace(planner=planner)
+    outcome_bare = build_run_outcome(config, bare, success=True)
+    assert outcome_bare.planner_model is None
+    assert outcome_bare.planner_attempts == []
+
+
+def test_seam_preflight_parse_retry_and_fallback_attributed_per_model(tmp_path):
+    """Seam (preflight_flow attempts → bridge → aggregator): a failed primary +
+    successful fallback folds a failure for the primary and a success for the
+    fallback — the #1489 P1 fix, proven end to end."""
+    from types import SimpleNamespace
+
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import apply_run
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.preflight_result = _preflight_result_with_attempts(
+        [
+            # primary parse-degraded, then crashed on retry, then fallback succeeds.
+            {
+                "profile_name": "preflight",
+                "model": "sonnet",
+                "provider": "anthropic",
+                "cli": None,
+                "cost_usd": 0.01,
+                "success": True,
+                "completed": False,
+            },
+            {
+                "profile_name": "preflight",
+                "model": "sonnet",
+                "provider": "anthropic",
+                "cli": None,
+                "cost_usd": 0.01,
+                "success": False,
+                "completed": False,
+            },
+            {
+                "profile_name": "preflight-fallback",
+                "model": "haiku",
+                "provider": "anthropic",
+                "cli": None,
+                "cost_usd": 0.005,
+                "success": True,
+                "completed": True,
+            },
+        ]
+    )
+    state._adaptive_decision = SimpleNamespace(planner=_planner_profile())
+
+    outcome = build_run_outcome(config, state, success=True)
+    assert [a.completed for a in outcome.preflight_attempts] == [False, False, True]
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    primary = data["models"]["anthropic/sonnet/api"]["preflight"]
+    assert primary["_attempted_count"] == 2
+    assert primary["_completed_count"] == 0  # primary never improved by the fallback
+    fallback = data["models"]["anthropic/haiku/api"]["preflight"]
+    assert fallback["_attempted_count"] == 1
+    assert fallback["_completed_count"] == 1
+
+
+def test_seam_planner_transport_retry_folds_failed_attempt(tmp_path):
+    """Seam: a planner transport-retry failure contributes a failed reliability
+    attempt rather than being hidden by the later successful plan output (#1489)."""
+    from types import SimpleNamespace
+
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import apply_run
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state._adaptive_decision = SimpleNamespace(planner=_planner_profile())
+    # One transport retry (failure) then a successful plan generation.
+    state.plan_transport_retries = [{"phase": "PLAN", "attempt": 0, "retry": 1, "error": "5xx"}]
+    state.plan_results = [_make_agent_result(success=True)]
+    state.plan_output = "the plan"
+
+    outcome = build_run_outcome(config, state, success=True)
+    assert [a.completed for a in outcome.planner_attempts] == [False, True]
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    # planner profile uses cli="claude" → canonical transport is "cli".
+    pl = data["models"]["anthropic/opus/cli"]["planner"]
+    assert pl["_attempted_count"] == 2
+    assert pl["_completed_count"] == 1

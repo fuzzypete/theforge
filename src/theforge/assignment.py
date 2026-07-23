@@ -576,6 +576,70 @@ def _rerank_by_profiles(
     return domain_sorted
 
 
+def _rerank_single_by_reliability(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    role: str,
+    *,
+    threshold: float,
+    min_runs: int,
+    recency: object | None = None,
+    signals_out: dict[str, dict] | None = None,
+    audit: dict[str, object] | None = None,
+) -> list[AgentDef]:
+    """Stable sort-after a single-model role's low-reliability candidates (#1489).
+
+    The single-model (preflight / planner) analog of
+    :func:`_rerank_reviewers_by_completion`. A candidate whose recency-weighted
+    role reliability (attempt-completion rate) is below ``threshold`` — *and only
+    once it has accumulated ``min_runs`` admissible attempts* — is sorted **after**
+    every more-reliable candidate. This is a sort-after, not a filter-out: a
+    low-reliability model stays in the pool and is still selected when no better
+    candidate is available, so an operator-enabled agent is never locked out
+    (AC clause 5). Below the sample floor the signal is ``floor="fail"`` (cold
+    start), so ordering falls through to the incoming tier/budget order unchanged
+    (AC: cold-start ⇒ static policy). The sort is stable on the incoming index.
+    """
+    if not model_profiles or not candidates or not role:
+        return candidates
+    from theforge.model_profiles import get_role_reliability_signal  # noqa: PLC0415
+
+    rows: list[tuple[int, int, AgentDef]] = []
+    deprioritized: list[str] = []
+    for idx, agent in enumerate(candidates):
+        signal = get_role_reliability_signal(
+            model_profiles,
+            agent.name,
+            role,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+            recency=recency,
+        )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        rate = signal["rate"]
+        is_low = signal["floor"] == "pass" and rate is not None and rate < threshold
+        if is_low:
+            deprioritized.append(agent.name)
+        rows.append((1 if is_low else 0, idx, agent))
+
+    reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
+    if audit is not None:
+        original_order = [a.name for a in candidates]
+        final_order = [a.name for a in reranked]
+        audit["mechanism"] = "role_reliability"
+        audit["role"] = role
+        audit["threshold"] = threshold
+        audit["min_runs"] = min_runs
+        audit["applied"] = original_order != final_order
+        audit["deprioritized"] = deprioritized
+        audit["original_order"] = original_order
+        audit["final_order"] = final_order
+    return reranked
+
+
 def _pick_agent(
     agents: list[AgentDef],
     tier: str,
@@ -588,6 +652,11 @@ def _pick_agent(
     domain_signals_out: dict[str, dict] | None = None,
     rerank_audit: dict[str, object] | None = None,
     recency: object | None = None,
+    reliability_role: str | None = None,
+    reliability_threshold: float = 0.5,
+    reliability_min_runs: int = 5,
+    reliability_signals_out: dict[str, dict] | None = None,
+    reliability_audit: dict[str, object] | None = None,
 ) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
@@ -601,6 +670,12 @@ def _pick_agent(
     profile signals consulted during reranking are recorded into them (keyed by
     agent name) for the routing explainability block — no extra profile reads
     beyond this pass.
+
+    When ``reliability_role`` is set (a non-dev single-model role: ``"preflight"``
+    / ``"planner"``) and ``model_profiles`` is provided, low-reliability candidates
+    are additionally sorted **after** more-reliable ones (#1489). This runs on top
+    of the budget/tier ordering as a pure sort-after; a cold-start role falls
+    through unchanged.
     """
     candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
     candidates = _rerank_by_profiles(
@@ -614,6 +689,17 @@ def _pick_agent(
         rerank_audit=rerank_audit,
         recency=recency,
     )
+    if reliability_role:
+        candidates = _rerank_single_by_reliability(
+            candidates,
+            model_profiles,
+            reliability_role,
+            threshold=reliability_threshold,
+            min_runs=reliability_min_runs,
+            recency=recency,
+            signals_out=reliability_signals_out,
+            audit=reliability_audit,
+        )
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
@@ -755,6 +841,73 @@ def _rerank_reviewers_by_completion(
     return reranked
 
 
+def _rerank_reviewers_by_value(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    *,
+    uniqueness_threshold: float,
+    min_runs: int,
+    complexity: str | None = None,
+    recency: object | None = None,
+    signals_out: dict[str, dict] | None = None,
+    audit: dict[str, object] | None = None,
+) -> list[AgentDef]:
+    """Stable sort-after plan reviewers below the P1-uniqueness floor (#1443).
+
+    The value analog of :func:`_rerank_reviewers_by_completion`. A plan reviewer
+    whose recency-weighted P1-uniqueness rate at the story's complexity band is
+    below ``uniqueness_threshold`` — *and only once it has accumulated ``min_runs``
+    admissible (non-tainted, P1-bearing) samples* — is sorted **after** every
+    higher-uniqueness candidate. This is a sort-after, not a filter-out: a
+    redundant reviewer stays in the pool and is still selected when no better
+    candidate is available, so it is never permanently locked out.
+
+    Below the sample floor a reviewer's signal is ``floor="fail"`` (cold start), so
+    it is not deprioritized and ordering falls through unchanged. The sort is
+    stable on the incoming index, so every non-deprioritized reviewer keeps the
+    ordering it arrived with (i.e. the completion/tier/health order).
+    """
+    if not model_profiles or not candidates:
+        return candidates
+    from theforge.reviewer_value import get_reviewer_value_signal  # noqa: PLC0415
+
+    rows: list[tuple[int, int, AgentDef]] = []
+    deprioritized: list[str] = []
+    for idx, agent in enumerate(candidates):
+        signal = get_reviewer_value_signal(
+            model_profiles,
+            agent.name,
+            complexity,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+            recency=recency,
+        )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        uniq = signal["uniqueness_rate"]
+        rate = uniq["rate"]
+        is_low = uniq["floor"] == "pass" and rate is not None and rate < uniqueness_threshold
+        if is_low:
+            deprioritized.append(agent.name)
+        rows.append((1 if is_low else 0, idx, agent))
+
+    reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
+    if audit is not None:
+        original_order = [a.name for a in candidates]
+        final_order = [a.name for a in reranked]
+        audit["mechanism"] = "reviewer_value"
+        audit["uniqueness_threshold"] = uniqueness_threshold
+        audit["min_runs"] = min_runs
+        audit["complexity"] = complexity
+        audit["applied"] = original_order != final_order
+        audit["deprioritized"] = deprioritized
+        audit["original_order"] = original_order
+        audit["final_order"] = final_order
+    return reranked
+
+
 def _select_reviewers(
     agents: list[AgentDef],
     tier: str,
@@ -770,6 +923,12 @@ def _select_reviewers(
     recency: object | None = None,
     completion_signals_out: dict[str, dict] | None = None,
     completion_audit: dict[str, object] | None = None,
+    value_enabled: bool = False,
+    value_uniqueness_threshold: float = 0.34,
+    value_min_runs: int = 5,
+    value_complexity: str | None = None,
+    value_signals_out: dict[str, dict] | None = None,
+    value_audit: dict[str, object] | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -855,6 +1014,22 @@ def _select_reviewers(
         signals_out=completion_signals_out,
         audit=completion_audit,
     )
+
+    # Plan-reviewer value rerank (#1443): opt-in, runs on top of the completion
+    # rerank. A reviewer whose admissible P1-uniqueness is below the floor is
+    # sorted after higher-value candidates within the same eligible pool. Only
+    # fires when the operator enabled it; explicit profile pins never reach here.
+    if value_enabled:
+        candidates = _rerank_reviewers_by_value(
+            candidates,
+            model_profiles,
+            uniqueness_threshold=value_uniqueness_threshold,
+            min_runs=value_min_runs,
+            complexity=value_complexity,
+            recency=recency,
+            signals_out=value_signals_out,
+            audit=value_audit,
+        )
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -1586,6 +1761,107 @@ def _reviewer_completion_check(
     return block
 
 
+def _reviewer_value_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+    selected_names: set[str],
+) -> dict[str, object]:
+    """Build the plan-reviewer value_check block (#1443, ADR-0006 clause 7).
+
+    Records the P1-uniqueness rerank so the routing_decision explains when (and
+    how) mechanical reviewer-value history shaped the plan-reviewer ordering. For
+    every reviewer weighed it surfaces the consulted uniqueness rate and
+    latency-per-P1 (raw + recency-weighted), the sample count, the sample-floor
+    status, and the taint-excluded count — enough for an operator to answer "is
+    this reviewer earning its wall-clock cost?" without grepping logs. Returns an
+    empty dict when the mechanism was not consulted (disabled / no profiles), which
+    the caller omits.
+    """
+    if not signals and not audit:
+        return {}
+    fired = bool(audit and audit.get("applied"))
+    per_candidate: dict[str, object] = {}
+    for name, sig in (signals or {}).items():
+        uniq = sig.get("uniqueness_rate") or {}
+        latency = sig.get("latency_per_p1") or {}
+        per_candidate[name] = {
+            "runs": sig.get("runs"),
+            "tainted_runs": sig.get("tainted_runs"),
+            "uniqueness_rate": {
+                "raw": uniq.get("raw"),
+                "weighted": uniq.get("weighted"),
+                "rate": uniq.get("rate"),
+                "floor": uniq.get("floor"),
+            },
+            "latency_per_p1": {
+                "raw": latency.get("raw"),
+                "weighted": latency.get("weighted"),
+                "rate": latency.get("rate"),
+                "floor": latency.get("floor"),
+            },
+            "selected": name in selected_names,
+        }
+    block: dict[str, object] = {
+        "mechanism": "reviewer_value",
+        "fired": fired,
+        "uniqueness_threshold": audit.get("uniqueness_threshold") if audit else None,
+        "min_runs": audit.get("min_runs") if audit else None,
+        "complexity": audit.get("complexity") if audit else None,
+        "deprioritized": (audit.get("deprioritized") if audit else None) or [],
+        "signals": per_candidate,
+    }
+    if fired and audit:
+        block["original_order"] = audit.get("original_order")
+        block["final_order"] = audit.get("final_order")
+    return block
+
+
+def _role_reliability_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+    selected_name: str,
+) -> dict[str, object]:
+    """Build the preflight/planner reliability_check block (#1489, ADR-0006 c7).
+
+    The single-model analog of :func:`_reviewer_completion_check`. Records the role
+    reliability rerank so the routing_decision explains when (and how) a role's
+    attempt-completion history shaped selection. For every candidate weighed it
+    surfaces the consulted attempt/complete counts, raw + recency-weighted rate, the
+    sample-floor status, schema compatibility, and the taint-excluded count — enough
+    for an operator to see why a model was deprioritized (or why the check did not
+    fire). Returns an empty dict when no profile was consulted (static routing / no
+    profiles), which the caller omits.
+    """
+    if not signals and not audit:
+        return {}
+    fired = bool(audit and audit.get("applied"))
+    per_candidate: dict[str, object] = {}
+    for name, sig in (signals or {}).items():
+        per_candidate[name] = {
+            "attempted": sig.get("attempted"),
+            "completed": sig.get("completed"),
+            "raw": sig.get("raw"),
+            "weighted": sig.get("weighted"),
+            "rate": sig.get("rate"),
+            "floor": sig.get("floor"),
+            "schema_ok": sig.get("schema_ok"),
+            "tainted_runs": sig.get("tainted_runs"),
+            "selected": name == selected_name,
+        }
+    block: dict[str, object] = {
+        "mechanism": "role_reliability",
+        "fired": fired,
+        "threshold": audit.get("threshold") if audit else None,
+        "min_runs": audit.get("min_runs") if audit else None,
+        "deprioritized": (audit.get("deprioritized") if audit else None) or [],
+        "signals": per_candidate,
+    }
+    if fired and audit:
+        block["original_order"] = audit.get("original_order")
+        block["final_order"] = audit.get("final_order")
+    return block
+
+
 def _reviewer_count_policy(
     score: int | None, min_r: int, max_r: int, seated: int
 ) -> dict[str, object]:
@@ -1637,6 +1913,12 @@ def _build_routing_decision(
     pr_completion_audit: dict[str, object] | None = None,
     cr_completion_signals: dict[str, dict] | None = None,
     cr_completion_audit: dict[str, object] | None = None,
+    pr_value_signals: dict[str, dict] | None = None,
+    pr_value_audit: dict[str, object] | None = None,
+    preflight_reliability_signals: dict[str, dict] | None = None,
+    preflight_reliability_audit: dict[str, object] | None = None,
+    planner_reliability_signals: dict[str, dict] | None = None,
+    planner_reliability_audit: dict[str, object] | None = None,
     min_reviewers: int = 1,
     max_reviewers: int = 1,
 ) -> dict[str, object]:
@@ -1717,6 +1999,19 @@ def _build_routing_decision(
     cr_completion_block = _reviewer_completion_check(
         cr_completion_signals, cr_completion_audit, cr_selected
     )
+    # Plan-reviewer value rerank (#1443) explanation. Only the plan-review role has
+    # a value signal (this story is plan-review-specific).
+    pr_value_block = _reviewer_value_check(pr_value_signals, pr_value_audit, pr_selected)
+
+    # Non-dev single-model reliability rerank (#1489) explanation for the preflight
+    # and planner roles. Empty (and omitted) when the mechanism was not consulted
+    # (static routing / cold-start with no profile), keeping the block additive.
+    preflight_reliability_block = _role_reliability_check(
+        preflight_reliability_signals, preflight_reliability_audit, decision.preflight.name
+    )
+    planner_reliability_block = _role_reliability_check(
+        planner_reliability_signals, planner_reliability_audit, decision.planner.name
+    )
 
     return {
         "origin": origin,
@@ -1742,6 +2037,11 @@ def _build_routing_decision(
                 secrets,
             ),
             "exploration": dict(exploration),
+            **(
+                {"reliability_check": preflight_reliability_block}
+                if preflight_reliability_block
+                else {}
+            ),
             "final": {
                 "model": decision.preflight.model,
                 "tier": _selected_tier(agents, decision.preflight.name, preflight_tier),
@@ -1759,6 +2059,11 @@ def _build_routing_decision(
                 secrets,
             ),
             "exploration": dict(exploration),
+            **(
+                {"reliability_check": planner_reliability_block}
+                if planner_reliability_block
+                else {}
+            ),
             "final": {
                 "model": decision.planner.model,
                 "tier": _selected_tier(agents, decision.planner.name, planner_tier),
@@ -1836,6 +2141,7 @@ def _build_routing_decision(
                 pr_fired, pr_depri, pr_fellback, unhealthy_models
             ),
             **({"completion_check": pr_completion_block} if pr_completion_block else {}),
+            **({"value_check": pr_value_block} if pr_value_block else {}),
             "exploration": dict(exploration),
             "final": {
                 "models": [p.model for p in decision.plan_reviewers],
@@ -2333,6 +2639,20 @@ def assign_models(
     _pr_completion_audit: dict[str, object] = {}
     _cr_completion_signals: dict[str, dict] = {}
     _cr_completion_audit: dict[str, object] = {}
+    # Plan-reviewer value rerank accumulators (#1443). Populated by
+    # _select_reviewers when reviewer_value_enabled and consumed by
+    # _build_routing_decision so the routing_decision records the consulted
+    # uniqueness / latency-per-P1 signals and the ranking effect.
+    _pr_value_signals: dict[str, dict] = {}
+    _pr_value_audit: dict[str, object] = {}
+    # Non-dev single-model reliability rerank accumulators (#1489), per role.
+    # Populated by _pick_agent when preflight/planner selection consults role
+    # reliability history and consumed by _build_routing_decision so the block
+    # records the consulted signal, sample/floor status, and ranking effect.
+    _preflight_reliability_signals: dict[str, dict] = {}
+    _preflight_reliability_audit: dict[str, object] = {}
+    _planner_reliability_signals: dict[str, dict] = {}
+    _planner_reliability_audit: dict[str, object] = {}
     _preflight_tier: str | None = None
     _dev_effective_tier: str = "cheap"
     # Challenger-sampling exploration block for the dev role (#325). None until
@@ -2575,7 +2895,18 @@ def assign_models(
     else:
         tier = PHASE_TIER["preflight"][norm_complexity]
         _preflight_tier = tier
-        agent = _pick_agent(agents, tier, secrets)
+        agent = _pick_agent(
+            agents,
+            tier,
+            secrets,
+            model_profiles=effective_profiles,
+            recency=effective_recency,
+            reliability_role="preflight",
+            reliability_threshold=assignment_config.reviewer_completion_threshold,
+            reliability_min_runs=assignment_config.reviewer_completion_min_runs,
+            reliability_signals_out=_preflight_reliability_signals,
+            reliability_audit=_preflight_reliability_audit,
+        )
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: a.budget_usd)[0]
@@ -2598,7 +2929,18 @@ def assign_models(
             else PHASE_TIER["plan"][norm_complexity]
         )
         planner_target_tier = tier
-        agent = _pick_agent(agents, tier, secrets)
+        agent = _pick_agent(
+            agents,
+            tier,
+            secrets,
+            model_profiles=effective_profiles,
+            recency=effective_recency,
+            reliability_role="planner",
+            reliability_threshold=assignment_config.reviewer_completion_threshold,
+            reliability_min_runs=assignment_config.reviewer_completion_min_runs,
+            reliability_signals_out=_planner_reliability_signals,
+            reliability_audit=_planner_reliability_audit,
+        )
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
@@ -2649,6 +2991,12 @@ def assign_models(
             recency=effective_recency,
             completion_signals_out=_pr_completion_signals,
             completion_audit=_pr_completion_audit,
+            value_enabled=assignment_config.reviewer_value_enabled,
+            value_uniqueness_threshold=assignment_config.reviewer_value_uniqueness_threshold,
+            value_min_runs=assignment_config.reviewer_value_min_runs,
+            value_complexity=norm_complexity,
+            value_signals_out=_pr_value_signals,
+            value_audit=_pr_value_audit,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -2768,6 +3116,12 @@ def assign_models(
             pr_completion_audit=_pr_completion_audit,
             cr_completion_signals=_cr_completion_signals,
             cr_completion_audit=_cr_completion_audit,
+            pr_value_signals=_pr_value_signals,
+            pr_value_audit=_pr_value_audit,
+            preflight_reliability_signals=_preflight_reliability_signals,
+            preflight_reliability_audit=_preflight_reliability_audit,
+            planner_reliability_signals=_planner_reliability_signals,
+            planner_reliability_audit=_planner_reliability_audit,
         )
         return _dc_replace(dec, routing_decision=block)
 

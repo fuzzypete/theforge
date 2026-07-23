@@ -465,6 +465,13 @@ class CoordinatorState:
     plan_attempt_metadata: list[dict] = field(
         default_factory=list
     )  # per-attempt: {files_touched, p1_count, p2_count, finding_themes}
+    # Per-plan-reviewer mechanical value telemetry (#1443). One dict per (reviewer,
+    # pool attempt): {attempt, reviewer, complexity, unique_p1_count, total_p1_count,
+    # latency_s, parse_error_count, actual_model, provider, cli}. Uniqueness is the
+    # deterministic anchor-overlap computed at pool completion; parse_error_count is
+    # derived from the same parse step that feeds plan_review_failures (no parallel
+    # parse-failure writer). Consumed by audit.py and the reviewer_value fold.
+    plan_reviewer_value: list[dict] = field(default_factory=list)
     plan_regen_disposition: str | None = None  # "patch" | "backtrack" | "escalate"
     plan_backtrack_used: bool = False  # True once the backtrack regen has been dispatched
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/

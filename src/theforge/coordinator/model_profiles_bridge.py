@@ -12,7 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.model_profiles import ReviewerAttempt, RunOutcome, update_from_run
+from theforge.model_profiles import ReviewerAttempt, RoleAttempt, RunOutcome, update_from_run
+from theforge.reviewer_value import PlanReviewerValueSample
 
 from .state import CoordinatorState
 from .trust_status import derive_trust_status, is_tainted
@@ -71,6 +72,112 @@ def _extract_reviewer_attempts(state: CoordinatorState) -> list[ReviewerAttempt]
     return attempts
 
 
+def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerValueSample]:
+    """Convert per-plan-reviewer value telemetry dicts into typed samples (#1443).
+
+    ``state.plan_reviewer_value`` is the native per-(reviewer, pool-attempt) capture
+    written at plan-review pool completion. This pure adapter lifts it into the
+    carrier the profile aggregator folds, keyed by each reviewer's canonical
+    identity so the value signal lands under the same model entry the router looks
+    it up by.
+    """
+    samples: list[PlanReviewerValueSample] = []
+    for v in state.plan_reviewer_value or []:
+        if not isinstance(v, dict) or not v.get("reviewer"):
+            continue
+        samples.append(
+            PlanReviewerValueSample(
+                name=str(v["reviewer"]),
+                complexity=str(v.get("complexity") or "medium"),
+                unique_p1=int(v.get("unique_p1_count", 0)),
+                total_p1=int(v.get("total_p1_count", 0)),
+                latency_s=v.get("latency_s"),
+                actual_model=v.get("actual_model"),
+                provider=v.get("provider"),
+                cli=v.get("cli"),
+            )
+        )
+    return samples
+
+
+def _extract_preflight_attempts(state: CoordinatorState) -> list[RoleAttempt]:
+    """Per-attempt preflight reliability from the native attempts list (#1489).
+
+    ``state.preflight_result.raw['attempts']`` is the authoritative per-invocation
+    record written by preflight_flow — one entry per primary/parse-retry/fallback
+    call, each carrying its own model identity and ``completed`` outcome. Lifting
+    every attempt (not just the final one) keeps the derived completion signal
+    complete over attempts and attributes a failure to the model that produced it,
+    so a failed primary followed by a healthy fallback never improves the primary's
+    completion history. A cached preflight ran no model this story, so it records
+    nothing.
+    """
+    if state.preflight_cached:
+        return []
+    result = state.preflight_result
+    if result is None or not isinstance(getattr(result, "raw", None), dict):
+        return []
+    attempts_raw = result.raw.get("attempts")
+    if not isinstance(attempts_raw, list):
+        return []
+    attempts: list[RoleAttempt] = []
+    for a in attempts_raw:
+        if not isinstance(a, dict) or not a.get("profile_name"):
+            continue
+        attempts.append(
+            RoleAttempt(
+                name=str(a["profile_name"]),
+                completed=bool(a.get("completed")),
+                actual_model=a.get("model"),
+                provider=a.get("provider"),
+                cli=a.get("cli"),
+                cost_usd=a.get("cost_usd"),
+            )
+        )
+    return attempts
+
+
+def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[RoleAttempt]:
+    """Per-attempt planner reliability (#1489).
+
+    Complete over the reliability-relevant plan-generation invocations:
+
+    - every ``plan_transport_retries`` entry is a transport failure of the planner
+      model — a failed attempt that a later successful plan output must not hide;
+    - every ``plan_results`` entry is a finished plan-generation invocation whose
+      ``success`` is its completion outcome (review-driven regens are healthy
+      invocations and count as successes; only transport/crash failures fail).
+
+    All attributed to the planner profile identity: the transport retries are the
+    same model retried, and in the common (non-escalation) path every plan_results
+    entry is that same model. Mid-plan model escalation is rare and would attribute
+    the escalated invocation to the base planner — a known minor imprecision far
+    smaller than collapsing every attempt into one boolean.
+    """
+    name = planner_profile.name
+    actual_model = getattr(planner_profile, "model", None)
+    provider = getattr(planner_profile, "provider", None)
+    cli = getattr(planner_profile, "cli", None)
+
+    def _attempt(completed: bool, cost: float | None) -> RoleAttempt:
+        return RoleAttempt(
+            name=name,
+            completed=completed,
+            actual_model=actual_model,
+            provider=provider,
+            cli=cli,
+            cost_usd=cost,
+        )
+
+    attempts: list[RoleAttempt] = []
+    for retry in state.plan_transport_retries or []:
+        if isinstance(retry, dict):
+            attempts.append(_attempt(False, None))
+    for r in state.plan_results or []:
+        attempts.append(_attempt(bool(getattr(r, "success", False)), getattr(r, "cost_usd", None)))
+    return attempts
+
+
 def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: bool) -> RunOutcome:
     """Pure: assemble a :class:`RunOutcome` from coordinator state."""
     complexity = state.preflight_complexity or "medium"
@@ -108,6 +215,32 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     # "unchecked" (admissible); only an affirmative failed check taints it.
     trust_status = derive_trust_status(state.trust_checks.values())
     run_tainted = is_tainted(trust_status)
+    preflight_attempts = _extract_preflight_attempts(state)
+    # Planner reliability (#1489): the planner that actually ran is the adaptive
+    # decision's planner (plan_flow uses ``_adaptive.planner`` unless the role is an
+    # explicit override, in which case that same profile is what ran). Recorded only
+    # when planning was attempted this story, so a story that skipped planning folds
+    # nothing.
+    adaptive = getattr(state, "_adaptive_decision", None)
+    planner_profile = getattr(adaptive, "planner", None) if adaptive is not None else None
+    planner_model: str | None = None
+    planner_actual_model: str | None = None
+    planner_provider: str | None = None
+    planner_cli: str | None = None
+    planner_cost: float | None = None
+    planner_attempts: list[RoleAttempt] = []
+    if planner_profile is not None:
+        planner_model = planner_profile.name
+        planner_actual_model = getattr(planner_profile, "model", None)
+        planner_provider = getattr(planner_profile, "provider", None)
+        planner_cli = getattr(planner_profile, "cli", None)
+        planner_cost = state.total_plan_cost_measured
+        planner_attempts = _extract_planner_attempts(state, planner_profile)
+        # No admissible attempt (planning skipped) ⇒ record no cost/identity either,
+        # so the planner section is untouched for a story that never planned.
+        if not planner_attempts:
+            planner_model = None
+            planner_cost = None
     return RunOutcome(
         complexity=complexity,
         complexity_score=state.preflight_complexity_score,
@@ -137,8 +270,16 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         if getattr(config, "preflight_profile", None)
         else None,
         preflight_cost_usd=state.total_preflight_cost_measured,
+        preflight_attempts=preflight_attempts,
+        planner_model=planner_model,
+        planner_actual_model=planner_actual_model,
+        planner_provider=planner_provider,
+        planner_cli=planner_cli,
+        planner_cost_usd=planner_cost,
+        planner_attempts=planner_attempts,
         reviewers=_extract_reviewers(state),
         reviewer_attempts=_extract_reviewer_attempts(state),
+        plan_reviewer_values=_extract_plan_reviewer_values(state),
         # Domain tags (#155) recorded by preflight, folded into per-domain dev
         # slices so future routing can prefer models strong in the story's domains.
         domains=list(state.preflight_domains or []),

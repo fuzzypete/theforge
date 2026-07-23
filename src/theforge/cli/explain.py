@@ -264,6 +264,57 @@ def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:
         detail,
         lines,
     )
+    _render_reviewer_value_check(role_block.get("value_check") or {}, lines)
+
+
+def _fmt_value_signal(signal: dict) -> str:
+    """Render a uniqueness / latency-per-P1 sub-signal (raw + weighted + floor)."""
+    raw = signal.get("raw")
+    weighted = signal.get("weighted")
+    floor = signal.get("floor")
+    raw_s = f"{raw:.4f}" if isinstance(raw, (int, float)) else "—"
+    weighted_s = f"{weighted:.4f}" if isinstance(weighted, (int, float)) else "—"
+    floor_s = {"pass": "floor pass", "fail": "floor fail"}.get(
+        floor or "", f"floor {floor or '?'}"
+    )
+    return f"raw={raw_s} weighted={weighted_s} ({floor_s})"
+
+
+def _render_reviewer_value_check(value: dict, lines: list[str]) -> None:
+    """Render the plan-reviewer value_check (#1443): P1-uniqueness + wall-clock cost.
+
+    Surfaces, per consulted reviewer, the uniqueness rate and latency-per-P1 so an
+    operator can answer "is this reviewer earning its wall-clock cost?" directly
+    from the explain view. Absent block → mechanism not checked (opt-in/disabled).
+    """
+    if not value:
+        # Omitted when the mechanism was not consulted (opt-in disabled / no
+        # profiles), mirroring how completion_check is only added when present.
+        return
+    depri = value.get("deprioritized") or []
+    detail = f"threshold={value.get('uniqueness_threshold')} band={value.get('complexity')}"
+    if depri:
+        detail += f" — deprioritized: {', '.join(depri)}"
+    _render_mechanism(
+        f"value ({value.get('mechanism', 'reviewer_value')})",
+        _mechanism_state(checked=True, fired=bool(value.get("fired"))),
+        detail,
+        lines,
+    )
+    for name, sig in (value.get("signals") or {}).items():
+        if not isinstance(sig, dict):
+            continue
+        sel = "✓" if sig.get("selected") else "✗"
+        runs = sig.get("runs")
+        tainted = sig.get("tainted_runs")
+        uniq = sig.get("uniqueness_rate") or {}
+        latency = sig.get("latency_per_p1") or {}
+        lines.append(
+            f"        {sel} {name}: runs={runs if runs is not None else '?'}"
+            f" tainted={tainted if tainted is not None else '?'}"
+        )
+        lines.append(f"            uniqueness: {_fmt_value_signal(uniq)}")
+        lines.append(f"            latency/P1: {_fmt_value_signal(latency)}")
 
 
 def _render_final(role_block: dict, lines: list[str]) -> None:
