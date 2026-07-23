@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -63,6 +64,65 @@ def _upsert_into_substrate(project_root: Path, record: dict) -> None:
             conn.close()
     except Exception as exc:  # noqa: BLE001
         _log(f"warning: failed to update audit substrate: {exc}")
+
+
+def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
+    """Write the canonical per-story run JSON and mirror it into the substrate."""
+    run_id = audit_data.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        _upsert_into_substrate(project_root, audit_data)
+        return
+
+    try:
+        from ..coordinator import audit_substrate
+        from ..coordinator.redact import redact
+
+        record = {
+            "schema_version": audit_substrate.CURRENT_RECORD_SCHEMA_VERSION,
+            "run_id": run_id,
+            "parent_run_id": None,
+            "forge_version": audit_data.get("forge_version"),
+        }
+        record.update(audit_data)
+        record["schema_version"] = audit_substrate.CURRENT_RECORD_SCHEMA_VERSION
+        record["run_id"] = run_id
+        record["parent_run_id"] = None
+        record["forge_version"] = audit_data.get("forge_version")
+
+        env_file = audit_substrate.secrets_env_path(project_root)
+        env_file_arg = env_file if env_file.exists() else None
+        redacted = redact(record, env_file_arg)
+
+        runs_dir = audit_substrate.runs_dir(project_root)
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run_id}.json"
+        if not run_file.exists():
+            with open(run_file, "w", encoding="utf-8") as f:
+                json.dump(redacted, f, default=str, indent=2)
+            persisted = redacted
+        else:
+            with open(run_file, encoding="utf-8") as f:
+                persisted = json.load(f)
+            if not isinstance(persisted, dict):
+                persisted = redacted
+
+        stat = run_file.stat()
+        conn = audit_substrate.create_or_open(project_root)
+        try:
+            audit_substrate.upsert_run_record(
+                conn,
+                persisted,
+                provenance="native",
+                source_path=str(run_file.relative_to(project_root)),
+                source_mtime=stat.st_mtime,
+                env_file=env_file_arg,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        _log(f"warning: failed to write native story audit record: {exc}")
+        _upsert_into_substrate(project_root, audit_data)
 
 
 def _build_advisory_summary(config: ForgeConfig | None) -> dict | None:
@@ -1127,7 +1187,7 @@ def _write_story_audit(
 
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
-    _upsert_into_substrate(config.project_root, audit_data)
+    _write_native_story_record(config.project_root, audit_data)
 
     log_dir = result.state.log_dir
     if log_dir is None:
