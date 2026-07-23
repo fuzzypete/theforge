@@ -1706,7 +1706,8 @@ def _run_review_phase(
 
     # Escalate dev model on persistent P1 (only when explicitly enabled via forge.yaml)
     if (
-        config.retry.auto_model_escalation
+        config.assignment.adaptive_enabled
+        and config.retry.auto_model_escalation
         and _is_persistent_p1
         and not state.dev_escalated
         and (

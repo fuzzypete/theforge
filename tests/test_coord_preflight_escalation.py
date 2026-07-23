@@ -656,6 +656,65 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
+    def test_escalation_skipped_when_adaptive_assignment_disabled(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Repeated P1s do not swap the dev model when adaptive assignment is disabled."""
+        config = _make_smart_config(tmp_path, max_review_cycles=3)
+        config = replace(
+            config,
+            assignment=replace(config.assignment, adaptive_enabled=False),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        dev_profiles: list[str] = []
+
+        def tracking_agent(**kwargs):
+            dev_profiles.append(kwargs["profile"].model)
+            return _make_agent_result()
+
+        mock_agent.side_effect = tracking_agent
+
+        pool_call = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_call["n"] += 1
+            if pool_call["n"] <= 2:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=_PERSISTENT_P1_REVIEW,
+                        profile_name="claude-opus",
+                    )
+                ]
+            return [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.dev_escalated is False
+        assert dev_profiles
+        assert all(model == "sonnet" for model in dev_profiles)
+        if result.state.routing_decision is not None:
+            assert (
+                result.state.routing_decision["dev"].get("persistent_p1_dev_escalation") is None
+            )
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
     def test_escalation_skipped_when_dev_attempt_unproductive(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
