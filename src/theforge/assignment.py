@@ -90,6 +90,7 @@ ROUTING_RATIONALE_STATES: frozenset[str] = frozenset(
 # so the two never drift. Referenced by _dev_routing_rationale and
 # apply_post_plan_checkpoint.
 MECHANISM_DEV_PROMOTION = "_check_promotion"
+MECHANISM_DEV_RECENCY_RECOVERY = "dev_recency_recovery"
 MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
 MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
 MECHANISM_PERSISTENT_P1_DEV_ESCALATION = "persistent_p1_dev_escalation"
@@ -144,9 +145,17 @@ class RoutingSymmetryPair:
 # demotion or a catalogued open_followup fails the enforcement test — that is the
 # architectural backstop this story lands (#1389).
 ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
-    # Dev-tier promotion (2+ recent ESCALATE outcomes bump the tier up) is paired
-    # with the post-plan checkpoint demotion (clean plan-review on a medium story
-    # steps the tier back down) — the first concrete inverse (#1387).
+    # Dev-tier pre-promotion (#158): the selected dev model's recency-weighted
+    # success rate at the story's complexity band falls below the configured
+    # threshold over the sample floor, so the tier is bumped up before the first
+    # iteration. Its PAIRED return path is the passive recency recovery
+    # (ADR-0006 clause 2.4/5): as old failures age out of the weighted ring the
+    # rate climbs back to/above threshold and pre-promotion stops firing while
+    # admissible samples remain — recorded in the dev demotion_check block
+    # (clause 7). This is the cross-run inverse the clause-5 CI gate requires
+    # (#1389). The post-plan checkpoint (#1387) remains a separate, independently
+    # tested in-run demotion, but the recovery condition is the registered
+    # inverse of THIS promotion.
     RoutingSymmetryPair(
         promotion=RoutingMechanism(
             name=MECHANISM_DEV_PROMOTION,
@@ -154,12 +163,13 @@ ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
             audit_label=ROUTING_RATIONALE_PROMOTED,
         ),
         demotion=RoutingMechanism(
-            name=MECHANISM_POST_PLAN_DEMOTION,
-            symbol="theforge.assignment.apply_post_plan_checkpoint",
-            audit_label=ROUTING_RATIONALE_DEMOTED,
+            name=MECHANISM_DEV_RECENCY_RECOVERY,
+            symbol="theforge.assignment._dev_recency_demotion_check",
+            audit_label="recency_recovery",
         ),
         promotion_tests=("tests/test_assignment.py",),
-        demotion_tests=("tests/test_post_plan_checkpoint.py",),
+        demotion_tests=("tests/test_assignment.py",),
+        demotion_test_token="recency_recovery",
     ),
     # Reviewer completion-rate deprioritization (#1388): a reviewer with a poor
     # attempt-completion history is reranked down. The inverse — re-inclusion once
@@ -257,17 +267,6 @@ def _dev_routing_rationale(
         "from_tier": effective_tier,
         "to_tier": effective_tier,
     }
-
-
-def _agent_canonical_id(agent: AgentDef) -> str | None:
-    """Derive the canonical model ID (provider/model/transport) for an agent."""
-    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
-
-    return canonical_id_from_identity(
-        actual_model=agent.model,
-        provider=agent.provider,
-        cli=agent.cli,
-    )
 
 
 def _has_auth(agent: AgentDef, secrets: dict[str, str] | None = None) -> bool:
@@ -886,43 +885,216 @@ def _select_reviewers(
     return selected[:n]
 
 
+# Machine-queryable outcomes for the profile-backed dev pre-promotion check
+# (#158). Kept as a closed set so the routing_decision audit stays queryable.
+PROMOTION_OUTCOME_STICKY = "sticky_sprint_promotion"
+PROMOTION_OUTCOME_PROMOTED = "promoted_below_threshold"
+PROMOTION_OUTCOME_RECOVERED = "recovered_at_or_above_threshold"
+PROMOTION_OUTCOME_BELOW_FLOOR = "below_sample_floor"
+PROMOTION_OUTCOME_NO_SIGNAL = "no_profile_signal"
+
+
+@dataclass(frozen=True)
+class DevPromotionSignal:
+    """Outcome of the profile-backed dev pre-promotion check (#158).
+
+    Carries both the decision (``fired``) and the full evidence the router
+    weighed — model, complexity band, raw and recency-weighted success rate,
+    admissible sample size, taint exclusions, and the configured threshold /
+    sample floor — so the routing_decision audit block (clause 7) is built from
+    ONE profile read, never a second re-scan.
+    """
+
+    fired: bool
+    outcome: str
+    model: str
+    complexity: str
+    raw: float | None
+    weighted: float | None
+    runs: int
+    tainted_runs: int
+    threshold: float
+    min_runs: int
+    floor: str
+
+
 def _check_promotion(
     complexity: str,
-    dev_agent_name: str,
-    history: list[EscalationRecord],
-    sprint_promotions: dict[str, str] | None,
+    dev_agent: AgentDef | None,
+    profiles: dict | None,
     *,
-    dev_canonical_id: str | None = None,
-) -> str | None:
-    """Return promoted tier string if promotion is warranted, else None.
+    threshold: float,
+    min_runs: int,
+    recency: object | None = None,
+    sprint_promotions: dict[str, str] | None = None,
+) -> DevPromotionSignal:
+    """Profile-backed dev pre-promotion signal (#158, ADR-0006 clauses 2.3/2.4/4/5/7).
 
-    Checks sprint_promotions cache first (sticky within sprint).
-    Looks at last 10 records matching complexity and dev model identity.
-    Records are matched against ``dev_canonical_id`` when provided (so
-    canonicalized history records still match the agent), and against the
-    legacy ``dev_agent_name`` as a fallback for unmigrated history.
-    Promotes if 2+ have outcome=ESCALATE.
+    Reads the selected dev model's **recency-weighted** success rate at the
+    story's complexity band from the in-memory capability profiles (the shared
+    #1392 mechanism via :func:`model_profiles.get_dev_signal`, which already
+    excludes tainted runs — clause 4). Fires a one-step tier promotion only when
+    the admissible sample size meets ``min_runs`` (clause 2.3) AND the weighted
+    rate is below ``threshold``. Below the sample floor no promotion fires and
+    routing falls through to the static tier. When admissible samples remain but
+    the weighted rate has recovered to/above ``threshold`` the promotion does not
+    fire — the passive recency-recovery return path (clause 2.4/5); the caller
+    records that non-firing in the dev demotion_check (clause 7).
+
+    A ``sprint_promotions`` cache hit short-circuits to a sticky promotion so a
+    band that promoted earlier in the same sprint stays promoted (within-sprint
+    stability); recovery is the CROSS-run path (a fresh sprint has an empty
+    cache). Pure: no I/O, no LLM call — deterministic for fixed profile data.
     """
+    model_name = dev_agent.name if dev_agent else ""
+
     if sprint_promotions and complexity in sprint_promotions:
-        return sprint_promotions[complexity]
+        return DevPromotionSignal(
+            fired=True,
+            outcome=PROMOTION_OUTCOME_STICKY,
+            model=model_name,
+            complexity=complexity,
+            raw=None,
+            weighted=None,
+            runs=0,
+            tainted_runs=0,
+            threshold=threshold,
+            min_runs=min_runs,
+            floor="cached",
+        )
 
-    def _matches(r: EscalationRecord) -> bool:
-        if r.complexity != complexity:
-            return False
-        if dev_canonical_id and r.dev_model == dev_canonical_id:
-            return True
-        return r.dev_model == dev_agent_name
+    if dev_agent is None or not profiles:
+        return DevPromotionSignal(
+            fired=False,
+            outcome=PROMOTION_OUTCOME_NO_SIGNAL,
+            model=model_name,
+            complexity=complexity,
+            raw=None,
+            weighted=None,
+            runs=0,
+            tainted_runs=0,
+            threshold=threshold,
+            min_runs=min_runs,
+            floor="fail",
+        )
 
-    # Filter to last 10 matching records
-    matching = [r for r in history if _matches(r)][-10:]
+    from theforge.model_profiles import get_dev_signal  # noqa: PLC0415
 
-    if not matching:
-        return None
+    signal = get_dev_signal(
+        profiles,
+        model_name,
+        complexity,
+        min_runs,
+        actual_model=dev_agent.model,
+        provider=dev_agent.provider,
+        cli=dev_agent.cli,
+        recency=recency,
+    )
+    raw = signal["raw"]
+    weighted = signal["weighted"]
+    runs = int(signal["runs"])
+    tainted = int(signal["tainted_runs"])
+    floor = signal["floor"]
+    rate = signal["rate"]  # weighted, gated by the sample floor; None below it
 
-    escalation_count = sum(1 for r in matching if r.outcome == "ESCALATE")
-    if escalation_count >= 2:
-        return "promoted"  # signal to caller to promote
-    return None
+    def _signal(fired: bool, outcome: str) -> DevPromotionSignal:
+        return DevPromotionSignal(
+            fired=fired,
+            outcome=outcome,
+            model=model_name,
+            complexity=complexity,
+            raw=raw,
+            weighted=weighted,
+            runs=runs,
+            tainted_runs=tainted,
+            threshold=threshold,
+            min_runs=min_runs,
+            floor=floor,
+        )
+
+    # Below the sample floor (clause 2.3): no promotion, fall through to static.
+    if rate is None or floor != "pass":
+        return _signal(False, PROMOTION_OUTCOME_BELOW_FLOOR)
+
+    # Sample floor met — the weighted rate decides.
+    if rate < threshold:
+        return _signal(True, PROMOTION_OUTCOME_PROMOTED)
+    # Admissible samples remain but the weighted rate recovered to/above the
+    # threshold: the passive return path (clause 2.4). Promotion could have fired
+    # but didn't; the caller records this in the dev demotion_check (clause 7).
+    return _signal(False, PROMOTION_OUTCOME_RECOVERED)
+
+
+def _promotion_check_block(signal: DevPromotionSignal, resulting_tier: str) -> dict[str, object]:
+    """Build the ``dev.promotion_check`` audit block from a promotion signal (#158).
+
+    Records the mechanism firing, the evidence (model, complexity band, raw AND
+    recency-weighted success rate, admissible sample size, taint exclusions), the
+    configured threshold / sample floor, and the resulting tier (ADR-0006 clause
+    7 / #1391). Pure assembly from the single :func:`_check_promotion` read.
+    """
+    return {
+        "mechanism": MECHANISM_DEV_PROMOTION,
+        "fired": signal.fired,
+        "outcome": signal.outcome,
+        "model": signal.model,
+        "complexity": signal.complexity,
+        "raw_success_rate": signal.raw,
+        "weighted_success_rate": signal.weighted,
+        "sample_size": signal.runs,
+        "tainted_runs": signal.tainted_runs,
+        "threshold": signal.threshold,
+        "min_runs": signal.min_runs,
+        "floor": signal.floor,
+        "resulting_tier": resulting_tier,
+    }
+
+
+def _dev_recency_demotion_check(promotion_block: dict[str, object]) -> dict[str, object]:
+    """Dev-tier recency-recovery return path audit block (#158, ADR-0006 clause 5/7).
+
+    The paired inverse of the dev pre-promotion is the passive recency recovery
+    (clause 2.4): as old failures age out of the weighted ring the rate climbs
+    back to/above threshold and pre-promotion stops firing. This records that
+    return path per clause 7 — firing when the recovery condition holds
+    (admissible samples remain, weighted rate recovered) and recording the
+    checked-but-didn't-fire outcome otherwise, so the demotion is always
+    reconstructable from the audit (never a silent gap).
+    """
+    outcome = promotion_block.get("outcome")
+    checked = {
+        "weighted_success_rate": promotion_block.get("weighted_success_rate"),
+        "threshold": promotion_block.get("threshold"),
+        "sample_size": promotion_block.get("sample_size"),
+        "min_runs": promotion_block.get("min_runs"),
+    }
+    if outcome == PROMOTION_OUTCOME_RECOVERED:
+        return {
+            "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
+            "applicable": True,
+            "fired": True,
+            "checked": checked,
+            "reason": "weighted_rate_recovered_to_or_above_threshold",
+        }
+    if promotion_block.get("fired"):
+        # Promotion is active this run — the recovery return path has NOT yet
+        # reversed it (weighted rate still below threshold, or sticky cache).
+        return {
+            "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
+            "applicable": True,
+            "fired": False,
+            "checked": checked,
+            "reason": "promotion_active_weighted_rate_below_threshold",
+        }
+    # No promotion fired and no recovery to record (below the sample floor, or no
+    # profile signal): the return path is not applicable this run.
+    return {
+        "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
+        "applicable": False,
+        "fired": False,
+        "checked": checked,
+        "reason": "no_admissible_promotion_signal",
+    }
 
 
 def _enforce_budget(
@@ -1628,18 +1800,14 @@ def _build_routing_decision(
             "routing_rationale": _dev_routing_rationale(
                 promotion_block, dev_base_tier, dev_effective_tier
             ),
-            # Dev-tier demotion/recovery (ADR-0006 clause 5 tier-demotion) is a
-            # future enforcement (#1389) — no dev-tier demotion runs in v1, so this
-            # records "no such mechanism ran" (a complete explanation, not a gap).
-            # Provider-health demotion is reviewer-only; see each reviewer role's
-            # own demotion_check for that live mechanism's outcome.
-            "demotion_check": {
-                "mechanism": "dev_tier_demotion",
-                "applicable": False,
-                "fired": False,
-                "checked": None,
-                "reason": "no_dev_tier_demotion_mechanism_v1",
-            },
+            # Dev-tier recency-recovery return path (#158, ADR-0006 clause 5/7):
+            # the paired inverse of the profile-backed pre-promotion. Records when
+            # the passive recovery fired (admissible samples remain, weighted rate
+            # recovered to/above threshold so pre-promotion held) or the
+            # checked-but-didn't-fire outcome — so the demotion is always
+            # reconstructable from the audit. Provider-health demotion is
+            # reviewer-only; see each reviewer role's own demotion_check.
+            "demotion_check": _dev_recency_demotion_check(promotion_block),
             # Post-plan dev-tier checkpoint (#1387). Preflight records the
             # not-yet-run sentinel; apply_post_plan_checkpoint() overwrites this
             # block with the real decision after plan-review completes.
@@ -2152,7 +2320,12 @@ def assign_models(
         raise ValueError("assign_models requires a non-empty agents pool")
 
     explicit_profiles = explicit_profiles or {}
-    history = escalation_history or []
+    # ``escalation_history`` is retained for call-site compatibility but no longer
+    # drives dev promotion: cross-run escalation/success signal now flows through
+    # the capability profiles (#158), which are seeded/backfilled from that same
+    # history (model_profiles.backfill_from_history) and consulted with recency
+    # weighting + taint exclusion. Kept a no-op read so callers need not change.
+    _ = escalation_history
 
     norm_complexity = _normalize_complexity(complexity)
     rationale: dict[str, str] = {}
@@ -2183,17 +2356,28 @@ def assign_models(
     # challenger mode so the run spends from the challenger's envelope (clause 8).
     _dev_exploration: dict[str, object] | None = None
     _dev_budget_floor: str | None = None
+    # Default dev promotion_check block: overwritten by _promotion_check_block once
+    # the profile-backed pre-promotion (#158) runs. The "not_checked" outcome
+    # stands for explicit-override / static-mode dev where the check never fires.
     _promotion_block: dict[str, object] = {
+        "mechanism": MECHANISM_DEV_PROMOTION,
         "fired": False,
-        "matching_records": 0,
-        "escalations": 0,
         "outcome": "not_checked",
+        "model": "",
+        "complexity": None,
+        "raw_success_rate": None,
+        "weighted_success_rate": None,
+        "sample_size": 0,
+        "tainted_runs": 0,
+        "threshold": assignment_config.dev_promotion_threshold,
+        "min_runs": assignment_config.dev_promotion_min_runs,
+        "floor": "not_checked",
+        "resulting_tier": None,
     }
     adaptive_enabled = assignment_config.adaptive_enabled
     # In static mode, ignore the numeric score, capability profiles, and
     # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
     score = _normalize_complexity_score(complexity_score) if adaptive_enabled else None
-    effective_history = history if adaptive_enabled else []
     effective_promotions = sprint_promotions if adaptive_enabled else None
     effective_profiles = model_profiles if adaptive_enabled else None
     # Recency-weighting params (#1392): the dev signal ranks on the decayed view
@@ -2231,55 +2415,51 @@ def assign_models(
             recency=effective_recency,
         )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
-        dev_canonical = _agent_canonical_id(dev_agent_for_check) if dev_agent_for_check else None
-        promoted = _check_promotion(
+        # Profile-backed dev pre-promotion (#158): the selected dev model's
+        # recency-weighted success rate at this band drives the decision — not an
+        # ESCALATE-outcome count. Tainted runs are already excluded by the profile
+        # reader (clause 4). One read serves both the decision and the audit.
+        promo_signal = _check_promotion(
             norm_complexity,
-            dev_model_name,
-            effective_history,
-            effective_promotions,
-            dev_canonical_id=dev_canonical,
+            dev_agent_for_check,
+            effective_profiles,
+            threshold=assignment_config.dev_promotion_threshold,
+            min_runs=assignment_config.dev_promotion_min_runs,
+            recency=effective_recency,
+            sprint_promotions=effective_promotions,
         )
         effective_dev_tier = dev_base_tier
-        # Capture the promotion-check outcome for the routing_decision block
-        # regardless of whether it fired — a checked-but-didn't-fire path is
-        # part of the explanation. Uses the same matching slice _check_promotion
-        # consulted, so no additional history scan drives selection.
-        _promo_matching = [
-            r
-            for r in effective_history
-            if r.complexity == norm_complexity
-            and (r.dev_model == dev_model_name or (dev_canonical and r.dev_model == dev_canonical))
-        ][-10:]
-        _promo_escalations = sum(1 for r in _promo_matching if r.outcome == "ESCALATE")
-        if promoted is not None:
+        if promo_signal.fired:
             effective_dev_tier = _promote_tier(dev_base_tier)
-            _promotion_block = {
-                "fired": True,
-                "matching_records": len(_promo_matching),
-                "escalations": _promo_escalations,
-                "outcome": f"promoted_to_{effective_dev_tier}",
-            }
-            # Use filtered matching records (same slice as _check_promotion uses)
-            _matching = _promo_matching
-            escalation_cnt = _promo_escalations
-            rationale["dev"] = (
-                f"{norm_complexity} dev promoted {dev_model_name} "
-                f"(tier {dev_base_tier} → {effective_dev_tier}) — "
-                f"{escalation_cnt}/10 recent {norm_complexity} stories escalated"
-            )
+            _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
+            if promo_signal.weighted is not None:
+                rationale["dev"] = (
+                    f"{norm_complexity} dev pre-promoted {dev_model_name} "
+                    f"(tier {dev_base_tier} → {effective_dev_tier}) — "
+                    f"weighted success_rate {promo_signal.weighted:.2f} < "
+                    f"threshold {promo_signal.threshold:.2f} over {promo_signal.runs} "
+                    f"admissible {norm_complexity} runs"
+                )
+            else:
+                rationale["dev"] = (
+                    f"{norm_complexity} dev pre-promoted {dev_model_name} "
+                    f"(tier {dev_base_tier} → {effective_dev_tier}) — "
+                    f"sticky sprint promotion"
+                )
         else:
-            _promotion_block = {
-                "fired": False,
-                "matching_records": len(_promo_matching),
-                "escalations": _promo_escalations,
-                "outcome": "no_promotion",
-            }
+            _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
             if score is not None:
                 rationale["dev"] = (
                     f"complexity score {score} ({norm_complexity}) → tier {effective_dev_tier}"
                 )
             else:
                 rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
+            if promo_signal.outcome == PROMOTION_OUTCOME_RECOVERED:
+                rationale["dev"] += (
+                    f" (recency recovery: weighted success_rate "
+                    f"{promo_signal.weighted:.2f} ≥ threshold {promo_signal.threshold:.2f} "
+                    f"over {promo_signal.runs} admissible runs — pre-promotion held)"
+                )
 
         _dev_effective_tier = effective_dev_tier
         dev_agent = _pick_agent(

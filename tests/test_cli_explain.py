@@ -60,17 +60,31 @@ def _routing_block(*, dev_override: bool = False, reviewer_fired: bool = False) 
             "base_tier_from_score": "strong",
             "candidate_pool": dev_pool,
             "promotion_check": {
+                "mechanism": "_check_promotion",
                 "fired": False,
-                "matching_records": 4,
-                "escalations": 1,
-                "outcome": "no_promotion",
+                "outcome": "below_sample_floor",
+                "model": "opus",
+                "complexity": "HIGH",
+                "raw_success_rate": None,
+                "weighted_success_rate": None,
+                "sample_size": 3,
+                "tainted_runs": 0,
+                "threshold": 0.60,
+                "min_runs": 5,
+                "floor": "fail",
+                "resulting_tier": "strong",
             },
             "demotion_check": {
-                "mechanism": "dev_tier_demotion",
+                "mechanism": "dev_recency_recovery",
                 "applicable": False,
                 "fired": False,
-                "checked": None,
-                "reason": "no_dev_tier_demotion_mechanism_v1",
+                "checked": {
+                    "weighted_success_rate": None,
+                    "threshold": 0.60,
+                    "sample_size": 3,
+                    "min_runs": 5,
+                },
+                "reason": "no_admissible_promotion_signal",
             },
             "post_plan_checkpoint": {"applied": False, "reason": "checkpoint_not_implemented_v1"},
             "persistent_p1_dev_escalation": {
@@ -190,10 +204,11 @@ def test_render_surfaces_score_policy_per_axis() -> None:
 
 def test_tri_state_distinguishes_not_checked_from_did_not_fire() -> None:
     """not-checked vs checked-did-not-fire vs fired must be distinguishable."""
-    # promotion checked but did not fire → ◐; dev-tier demotion not applicable → ○.
+    # promotion checked but did not fire → ◐; recency-recovery return path not
+    # applicable (below sample floor, no admissible signal) → ○.
     text = "\n".join(explain.render_routing_decision(_routing_block()))
     assert "promotion: checked, did not fire" in text
-    assert "demotion (dev_tier_demotion): not checked" in text
+    assert "demotion (dev_recency_recovery): not checked" in text
     assert "post-plan checkpoint: not checked" in text
 
     # A reviewer health demotion that fired renders as fired.

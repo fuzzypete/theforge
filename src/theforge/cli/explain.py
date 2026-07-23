@@ -141,9 +141,16 @@ def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
     # outcome == "not_checked" is the sentinel for a mechanism that never ran.
     promo_checked = promo.get("outcome") != "not_checked"
     promo_fired = bool(promo.get("fired"))
+    # Profile-backed dev pre-promotion (#158): the evidence is the recency-weighted
+    # success rate over the admissible sample vs. the configured threshold.
+    _weighted = promo.get("weighted_success_rate")
+    _weighted_txt = f"{_weighted:.2f}" if isinstance(_weighted, (int, float)) else "n/a"
+    _threshold = promo.get("threshold")
+    _threshold_txt = f"{_threshold:.2f}" if isinstance(_threshold, (int, float)) else "n/a"
     detail = (
         f"{promo.get('outcome', '?')} "
-        f"({promo.get('escalations', 0)}/{promo.get('matching_records', 0)} matching escalations)"
+        f"(weighted rate {_weighted_txt} vs threshold {_threshold_txt} "
+        f"over {promo.get('sample_size', 0)} admissible runs)"
         if promo_checked
         else "no promotion signal recorded"
     )

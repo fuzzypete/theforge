@@ -1392,20 +1392,40 @@ def _apply_preflight_config(
     }
 
     _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-    _dev_agent = _pick_agt(config.agents, _dev_base_tier, config.secrets)
+    _dev_agent = _pick_agt(
+        config.agents,
+        _dev_base_tier,
+        config.secrets,
+        model_profiles=_model_profiles if config.assignment.adaptive_enabled else None,
+        role="dev",
+        complexity=_norm_complexity(complexity),
+        recency=config.assignment.recency if config.assignment.adaptive_enabled else None,
+    )
     _dev_name = _dev_agent.name if _dev_agent else ""
-    if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
+    if (
+        config.assignment.adaptive_enabled
+        and _dev_name
+        and "dev" not in _explicit
+        and complexity not in state.sprint_promotions
+    ):
+        # Profile-backed dev pre-promotion (#158): sticky-cache the tier bump so a
+        # band that pre-promotes early in a sprint stays promoted for the sprint
+        # (within-sprint stability). Recovery is the cross-run path — a fresh
+        # sprint starts with an empty cache and re-evaluates the recency signal.
         _prom = _chk_prom(
             _norm_complexity(complexity),
-            _dev_name,
-            _esc_history,
-            state.sprint_promotions,
+            _dev_agent,
+            _model_profiles,
+            threshold=config.assignment.dev_promotion_threshold,
+            min_runs=config.assignment.dev_promotion_min_runs,
+            recency=config.assignment.recency,
+            sprint_promotions=state.sprint_promotions,
         )
-        if _prom is not None:
+        if _prom.fired:
             _promoted_tier = _prom_tier(_dev_base_tier)
             state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
             _log_verbose(
-                f"[adaptive] {_norm_complexity(complexity)} dev promoted "
+                f"[adaptive] {_norm_complexity(complexity)} dev pre-promoted "
                 f"{_dev_name} -> tier {_promoted_tier} (sticky for sprint)"
             )
 

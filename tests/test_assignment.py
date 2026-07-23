@@ -6,14 +6,55 @@ import pytest
 
 from theforge.assignment import (
     PHASE_TIER,
+    PROMOTION_OUTCOME_BELOW_FLOOR,
+    PROMOTION_OUTCOME_PROMOTED,
+    PROMOTION_OUTCOME_RECOVERED,
     AssignmentConfig,
     AssignmentDecision,
     EscalationRecord,
+    _check_promotion,
     _normalize_complexity,
     _reviewer_count,
     assign_models,
 )
 from theforge.config import AgentDef, ApiFallbackConfig
+
+
+def _dev_profiles(
+    model: str,
+    band: str,
+    *,
+    runs: int,
+    success_rate: float,
+    recent: list[int],
+    tainted: int = 0,
+) -> dict:
+    """Build a model_profiles dict with a dev bucket at one complexity band.
+
+    ``runs``/``success_rate`` are the ADMISSIBLE (post-taint) lifetime aggregates
+    and ``recent`` is the ordered outcome ring (oldest→newest) the recency-weighted
+    rate is computed from. ``tainted`` records how many runs were excluded for taint
+    (they never enter ``runs``/``recent`` — exclusion happens upstream at fold time).
+    """
+    bucket = {
+        "runs": runs,
+        "success_rate": success_rate,
+        "_recent": list(recent),
+        "tainted_runs": tainted,
+    }
+    return {
+        "models": {
+            model: {
+                "dev": {
+                    "runs": runs,
+                    "success_rate": success_rate,
+                    "_recent": list(recent),
+                    "tainted_runs": tainted,
+                    "by_complexity": {band: bucket},
+                }
+            }
+        }
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -392,64 +433,199 @@ def test_cross_provider_fallback_same_provider():
 # ── test_escalation_promotion ─────────────────────────────────────────
 
 
-def test_escalation_promotion():
-    """History with 2 ESCALATE records (MEDIUM, same dev_model) → dev promoted."""
+def test_promotion_fires_below_threshold():
+    """#158: weighted dev success rate below threshold over the sample floor → promote.
+
+    The MEDIUM dev tier is "mid" (sonnet). A profile whose recency-weighted MEDIUM
+    success rate is well below the 0.60 default threshold, over >= 5 admissible
+    runs, pre-promotes sonnet → strong (opus) before the first iteration.
+    """
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
-
-    # Default MEDIUM dev tier is "mid" → sonnet
-    # Build history: 2 escalations with sonnet on MEDIUM
-    history = [
-        EscalationRecord(
-            story=f"story-{i}",
-            complexity="MEDIUM",
-            dev_model="sonnet",
-            outcome="ESCALATE",
-        )
-        for i in range(2)
-    ] + [
-        EscalationRecord(
-            story="story-done",
-            complexity="MEDIUM",
-            dev_model="sonnet",
-            outcome="DONE",
-        )
-    ]
-
-    decision = assign_models(agents, cfg, "medium", escalation_history=history)
-
-    # Should promote from mid (sonnet) to strong (opus)
-    assert decision.dev.model == "opus", (
-        f"Expected opus (promoted), got {decision.dev.model}. Rationale: {decision.rationale}"
+    # 6 recent MEDIUM runs, mostly failures → weighted rate ~0.17 < 0.60.
+    profiles = _dev_profiles(
+        "sonnet", "medium", runs=6, success_rate=0.17, recent=[0, 1, 0, 0, 0, 0]
     )
 
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
 
-def test_no_escalation_below_threshold():
-    """Only 1 escalation in last 10 → no promotion."""
+    assert decision.dev.model == "opus", (
+        f"Expected opus (pre-promoted), got {decision.dev.model}. Rationale: {decision.rationale}"
+    )
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is True
+    assert promo["outcome"] == PROMOTION_OUTCOME_PROMOTED
+    assert promo["weighted_success_rate"] < promo["threshold"]
+    assert promo["sample_size"] == 6
+    assert promo["resulting_tier"] == "strong"
+
+
+def test_no_promotion_above_threshold():
+    """#158: weighted dev success rate at/above threshold over the floor → no promotion."""
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    # 6 recent MEDIUM runs, mostly successes → weighted rate ~0.83 >= 0.60.
+    profiles = _dev_profiles(
+        "sonnet", "medium", runs=6, success_rate=0.83, recent=[1, 0, 1, 1, 1, 1]
+    )
 
-    history = [
-        EscalationRecord(
-            story="story-0",
-            complexity="MEDIUM",
-            dev_model="sonnet",
-            outcome="ESCALATE",
-        ),
-        EscalationRecord(
-            story="story-done",
-            complexity="MEDIUM",
-            dev_model="sonnet",
-            outcome="DONE",
-        ),
-    ]
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
 
-    decision = assign_models(agents, cfg, "medium", escalation_history=history)
-
-    # Should NOT promote — only 1 escalation, need 2+
     assert decision.dev.model == "sonnet", (
         f"Expected sonnet (no promotion), got {decision.dev.model}"
     )
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
+    assert promo["weighted_success_rate"] >= promo["threshold"]
+
+
+def test_minimum_sample_size_suppresses_promotion():
+    """#158: below the min-runs sample floor, no promotion fires — static tier holds."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    # Only 4 admissible runs (< default floor 5), all failures. Rate is awful but
+    # the sample floor is not met, so pre-promotion must NOT fire.
+    profiles = _dev_profiles("sonnet", "medium", runs=4, success_rate=0.0, recent=[0, 0, 0, 0])
+
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
+
+    assert decision.dev.model == "sonnet"
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
+    assert promo["outcome"] == PROMOTION_OUTCOME_BELOW_FLOOR
+    assert promo["floor"] == "fail"
+    assert promo["sample_size"] == 4
+
+
+def test_recency_recovery_reverses_promotion():
+    """#158, ADR-0006 clause 5: as old failures age out the weighted rate recovers,
+    pre-promotion stops firing, and the paired demotion is recorded (clause 7).
+
+    Lifetime cumulative rate stays poisoned (0.30) but the recent ring has
+    recovered (old failures aged out), so the recency-weighted rate is >= threshold
+    and pre-promotion does NOT fire — the passive return path.
+    """
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    # Poisoned lifetime rate, but recent ring is mostly successes → recovered.
+    profiles = _dev_profiles(
+        "sonnet",
+        "medium",
+        runs=40,
+        success_rate=0.30,
+        recent=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    )
+
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
+
+    # Recovery: pre-promotion held, sonnet keeps the static mid tier.
+    assert decision.dev.model == "sonnet"
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
+    assert promo["outcome"] == PROMOTION_OUTCOME_RECOVERED
+    assert promo["raw_success_rate"] == 0.30
+    assert promo["weighted_success_rate"] >= promo["threshold"]
+    # The paired recency-recovery demotion is recorded as fired (clause 7).
+    demo = decision.routing_decision["dev"]["demotion_check"]
+    assert demo["mechanism"] == "dev_recency_recovery"
+    assert demo["applicable"] is True
+    assert demo["fired"] is True
+    assert demo["reason"] == "weighted_rate_recovered_to_or_above_threshold"
+
+
+def test_tainted_runs_excluded_from_promotion_rate():
+    """#158, ADR-0006 clause 4: tainted runs contribute no promotion weight.
+
+    A band with only 4 admissible runs but 20 tainted ones stays below the sample
+    floor — the tainted runs do not count toward the floor or the rate — so no
+    promotion fires, and the exclusion count is surfaced in the audit.
+    """
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    profiles = _dev_profiles(
+        "sonnet", "medium", runs=4, success_rate=0.0, recent=[0, 0, 0, 0], tainted=20
+    )
+
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
+
+    assert decision.dev.model == "sonnet"
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
+    assert promo["outcome"] == PROMOTION_OUTCOME_BELOW_FLOOR
+    assert promo["sample_size"] == 4  # tainted runs excluded from the count
+    assert promo["tainted_runs"] == 20
+
+
+def test_explicit_override_bypasses_pre_promotion():
+    """#158, ADR-0006 clause 1: an explicit dev override skips the profile check."""
+    from theforge.config import ModelProfile
+
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    # Profile that would otherwise force a promotion.
+    profiles = _dev_profiles(
+        "sonnet", "medium", runs=8, success_rate=0.0, recent=[0, 0, 0, 0, 0, 0, 0, 0]
+    )
+    explicit_dev = ModelProfile(
+        name="custom-dev",
+        cli="claude",
+        provider=None,
+        model="custom-model",
+        budget_usd=3.0,
+        timeout_seconds=500,
+        allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    )
+
+    decision = assign_models(
+        agents,
+        cfg,
+        "medium",
+        model_profiles=profiles,
+        explicit_profiles={"dev": explicit_dev},
+    )
+
+    assert decision.dev.model == "custom-model"
+    # The pre-promotion mechanism never ran for an overridden dev role.
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
+    assert promo["outcome"] == "not_checked"
+
+
+def test_pre_promotion_is_deterministic():
+    """#158: same profile data + same complexity → identical decision."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    profiles = _dev_profiles(
+        "sonnet", "medium", runs=6, success_rate=0.17, recent=[0, 1, 0, 0, 0, 0]
+    )
+
+    first = assign_models(agents, cfg, "medium", model_profiles=profiles)
+    second = assign_models(agents, cfg, "medium", model_profiles=profiles)
+
+    assert first.dev.model == second.dev.model == "opus"
+    assert (
+        first.routing_decision["dev"]["promotion_check"]
+        == second.routing_decision["dev"]["promotion_check"]
+    )
+
+
+def test_check_promotion_unit_recency_recovery():
+    """#158 unit: _check_promotion returns the recency_recovery outcome directly."""
+    agents = _make_agents_one_per_tier()
+    dev_agent = next(a for a in agents if a.tier == "mid")
+    profiles = _dev_profiles(
+        "sonnet",
+        "medium",
+        runs=40,
+        success_rate=0.30,
+        recent=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    )
+
+    signal = _check_promotion("MEDIUM", dev_agent, profiles, threshold=0.60, min_runs=5)
+
+    assert signal.fired is False
+    assert signal.outcome == PROMOTION_OUTCOME_RECOVERED
+    assert signal.weighted is not None and signal.weighted >= signal.threshold
 
 
 # ── test_explicit_override ────────────────────────────────────────────
@@ -521,7 +697,7 @@ def test_adaptive_disabled_ignores_complexity_score():
 
 
 def test_adaptive_disabled_skips_promotion_and_profiles():
-    """Static mode bypasses escalation-history promotion and capability rerank."""
+    """Static mode bypasses profile-backed pre-promotion and capability rerank."""
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(
         min_reviewers=1,
@@ -529,17 +705,12 @@ def test_adaptive_disabled_skips_promotion_and_profiles():
         prefer_cross_provider=False,
         adaptive_enabled=False,
     )
-    history = [
-        EscalationRecord(
-            story=f"story-{i}",
-            complexity="MEDIUM",
-            dev_model="sonnet",
-            outcome="ESCALATE",
-        )
-        for i in range(5)
-    ]
+    # A profile that would force a promotion under adaptive routing.
+    profiles = _dev_profiles(
+        "sonnet", "medium", runs=8, success_rate=0.0, recent=[0, 0, 0, 0, 0, 0, 0, 0]
+    )
 
-    decision = assign_models(agents, cfg, "medium", escalation_history=history)
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
 
     # With adaptive off, no promotion: dev stays at MEDIUM band tier "mid" → sonnet.
     assert decision.dev.model == "sonnet"
@@ -923,25 +1094,36 @@ def test_reviewer_count_medium():
 
 
 def test_sprint_promotions_cached():
-    """If sprint_promotions already has a promotion for the complexity, use it."""
-    # No history, but sprint_promotions says MEDIUM was already promoted
-    sprint_promotions = {"MEDIUM": "strong"}
+    """A sprint_promotions cache hit short-circuits to a sticky promotion.
 
-    # With the cached promotion, the check should return the cached result
-    from theforge.assignment import _check_promotion
+    Even with no profile signal, a band already promoted earlier in the sprint
+    stays promoted (within-sprint stability). Recovery is the cross-run path.
+    """
+    agents = _make_agents_one_per_tier()
+    dev_agent = next(a for a in agents if a.tier == "mid")
 
-    result = _check_promotion("MEDIUM", "sonnet", [], sprint_promotions)
-    assert result == "strong"
+    signal = _check_promotion(
+        "MEDIUM",
+        dev_agent,
+        None,
+        threshold=0.60,
+        min_runs=5,
+        sprint_promotions={"MEDIUM": "strong"},
+    )
+    assert signal.fired is True
+    assert signal.outcome == "sticky_sprint_promotion"
 
 
-def test_no_promotion_with_empty_history():
-    """Empty history → no promotion."""
+def test_no_promotion_without_profiles():
+    """No profile data → no promotion (cold start falls through to static tier)."""
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
-    decision = assign_models(agents, cfg, "medium", escalation_history=[])
+    decision = assign_models(agents, cfg, "medium")
 
-    # No promotion — should use mid (sonnet)
+    # No profile signal — should use mid (sonnet).
     assert decision.dev.model == "sonnet"
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
 
 
 # ── Plan reviewer diversity tests ─────────────────────────────────────
@@ -1167,27 +1349,26 @@ def test_guardrail_warns_when_no_floor_compliant_agent_exists(monkeypatch):
     )
 
 
-def test_guardrail_mid_promoted_to_strong_for_large():
-    """Existing promotion logic: 2+ MEDIUM escalations promote mid → strong for LARGE."""
+def test_guardrail_promotion_cannot_exceed_top_tier():
+    """#158 guardrail: for HIGH the base tier is already strong — promotion has no room.
+
+    A poor profile at the LARGE band cannot push the dev above the top tier; the
+    guardrail (strong is the ceiling) holds and opus is selected.
+    """
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    # opus is the strong-tier dev for HIGH; even an awful LARGE-band rate can only
+    # keep it at strong (promotion clamps at the top tier).
+    profiles = _dev_profiles(
+        "opus", "large", runs=8, success_rate=0.0, recent=[0, 0, 0, 0, 0, 0, 0, 0]
+    )
 
-    # sonnet is the mid-tier dev for MEDIUM; build history with 2 escalations
-    history = [
-        EscalationRecord(
-            story=f"story-{i}",
-            complexity="MEDIUM",
-            dev_model="sonnet",
-            outcome="ESCALATE",
-        )
-        for i in range(2)
-    ]
-
-    # For HIGH (large) the base tier is already "strong" — promotion isn't triggered
-    # from mid. This test confirms strong (opus) is selected for large even with history.
-    decision = assign_models(agents, cfg, "large", escalation_history=history)
+    decision = assign_models(agents, cfg, "large", model_profiles=profiles)
 
     assert decision.dev.name == "opus", f"Expected strong (opus) for HIGH, got {decision.dev.name}"
+    # Resulting tier never exceeds the top tier even when the check fires.
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["resulting_tier"] == "strong"
 
 
 # ── per-story routing cost target (split from sprint budget) ──────────────

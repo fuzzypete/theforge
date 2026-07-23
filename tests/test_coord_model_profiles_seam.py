@@ -309,6 +309,100 @@ def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pres
     assert "planner" in audit["per_story_routing_cost_target"].get("protected_roles", [])
 
 
+def test_preflight_seam_profile_backed_pre_promotion_propagates(tmp_path, monkeypatch):
+    """Seam (#158): a low recency-weighted band success rate in model_profiles.yaml
+    pre-promotes the dev tier through preflight → assign_models → routing_decision,
+    and stickies the promotion on sprint state.
+
+    Covers convention 8: the config threshold + on-disk profile flow across the
+    preflight ↔ assign_models boundary and land in both the audit block and the
+    per-sprint promotion cache.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    # API-provider agents (no cli) so ANTHROPIC_API_KEY alone satisfies auth — the
+    # credential scrub removes CLI binaries, which would otherwise fail cli agents.
+    agents = [
+        AgentDef(
+            name="sonnet",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="mid",
+        ),
+        AgentDef(
+            name="opus",
+            provider="anthropic",
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+        ),
+    ]
+    config = replace(
+        _make_config(tmp_path),
+        agents=agents,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            max_cost_per_story_usd=100.0,
+            min_reviewers=1,
+            max_reviewers=1,
+            prefer_cross_provider=False,
+            dev_promotion_threshold=0.60,
+            dev_promotion_min_runs=5,
+        ),
+    )
+
+    # Seed a profile whose recency-weighted MEDIUM dev rate is well below 0.60 over
+    # >= 5 admissible runs → the sonnet (mid) dev must pre-promote to opus (strong).
+    profiles_path = tmp_path / ".forge" / "model_profiles.yaml"
+    profiles_path.parent.mkdir(parents=True, exist_ok=True)
+    recent = [0, 1, 0, 0, 0, 0]
+    profiles_path.write_text(
+        yaml.safe_dump(
+            {
+                "models": {
+                    "sonnet": {
+                        "dev": {
+                            "runs": 6,
+                            "success_rate": 0.17,
+                            "_recent": recent,
+                            "by_complexity": {
+                                "medium": {
+                                    "runs": 6,
+                                    "success_rate": 0.17,
+                                    "_recent": recent,
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    # Dev pre-promoted mid → strong before the first iteration.
+    assert state._adaptive_decision.dev.model == "opus"
+    promo = state.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is True
+    assert promo["outcome"] == "promoted_below_threshold"
+    assert promo["weighted_success_rate"] < promo["threshold"]
+    assert promo["resulting_tier"] == "strong"
+    # Promotion is stickied on sprint state for within-sprint stability.
+    assert state.sprint_promotions.get("MEDIUM") == "strong"
+
+
 def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):
     """Seam: adaptive_enabled toggles between score-aware routing and static bands."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")

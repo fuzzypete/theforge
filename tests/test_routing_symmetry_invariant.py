@@ -23,16 +23,15 @@ import pytest
 
 from theforge.assignment import (
     MECHANISM_DEV_PROMOTION,
+    MECHANISM_DEV_RECENCY_RECOVERY,
     MECHANISM_PERSISTENT_P1_DEV_ESCALATION,
     MECHANISM_POST_PLAN_DEMOTION,
     MECHANISM_RUN_SCOPED_RESET,
     ROUTING_RATIONALE_DEMOTED,
     ROUTING_RATIONALE_PROMOTED,
-    ROUTING_RATIONALE_STATES,
     ROUTING_RATIONALE_STAYED,
     ROUTING_SYMMETRY_REGISTRY,
     AssignmentConfig,
-    EscalationRecord,
     RoutingSymmetryPair,
     apply_post_plan_checkpoint,
     assign_models,
@@ -42,6 +41,16 @@ from theforge.coordinator.engine import _fresh_run_state
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CATALOGUE_DOC = _REPO_ROOT / "docs" / "routing-symmetry-followups.md"
+
+
+def _low_rate_dev_profiles(model: str, band: str) -> dict:
+    """A profile whose recency-weighted band success rate is below threshold.
+
+    Drives the profile-backed dev pre-promotion (#158): >= 5 admissible runs, all
+    recent outcomes failures → weighted rate ~0.0 < 0.60 → promote one tier.
+    """
+    bucket = {"runs": 8, "success_rate": 0.0, "_recent": [0] * 8, "tainted_runs": 0}
+    return {"models": {model: {"dev": {**bucket, "by_complexity": {band: bucket}}}}}
 
 
 @pytest.fixture(autouse=True)
@@ -168,23 +177,30 @@ def test_every_promotion_path_has_inverse_or_catalogued_followup(pair: RoutingSy
         )
 
 
-def test_dev_tier_pair_has_landed_tested_inverse_both_directions():
-    """The dev promotion↔post-plan-checkpoint pair is the worked example (#1387).
+def test_dev_tier_pair_registers_recency_recovery_inverse():
+    """The dev pre-promotion↔recency-recovery pair is the worked example (#158).
 
-    Both directions must be landed, reachable, and each covered by a test —
-    the concrete invariant the story requires to exist after it lands.
+    The profile-backed pre-promotion's PAIRED return path is the passive recency
+    recovery (ADR-0006 clause 2.4/5), not the in-run post-plan checkpoint. Both
+    directions must be landed, reachable, and named — the concrete invariant this
+    story requires. (The post-plan checkpoint remains a separate, independently
+    tested in-run demotion; it is simply not THIS promotion's registered inverse.)
     """
     pair = next(
         p for p in ROUTING_SYMMETRY_REGISTRY if p.promotion.name == MECHANISM_DEV_PROMOTION
     )
     assert pair.demotion is not None
-    assert pair.demotion.name == MECHANISM_POST_PLAN_DEMOTION
+    assert pair.demotion.name == MECHANISM_DEV_RECENCY_RECOVERY
     assert callable(_resolve_symbol(pair.promotion.symbol))
     assert callable(_resolve_symbol(pair.demotion.symbol))
-    # Both directions carry a valid routing_rationale audit label.
+    # The promotion carries the canonical promoted routing_rationale label.
     assert pair.promotion.audit_label == ROUTING_RATIONALE_PROMOTED
-    assert pair.demotion.audit_label == ROUTING_RATIONALE_DEMOTED
-    assert {pair.promotion.audit_label, pair.demotion.audit_label} <= ROUTING_RATIONALE_STATES
+    # The recency-recovery return path surfaces in the dev demotion_check block.
+    assert pair.demotion.audit_label == "recency_recovery"
+    # The post-plan checkpoint (#1387) is still a real, reachable demotion symbol,
+    # independently tested — it just is not this promotion's registered inverse.
+    assert MECHANISM_POST_PLAN_DEMOTION
+    assert callable(apply_post_plan_checkpoint)
 
 
 def test_persistent_p1_pair_registers_fresh_run_reset_inverse():
@@ -212,13 +228,8 @@ def test_routing_rationale_reports_stayed_when_no_ratchet_fires():
 
 
 def test_routing_rationale_reports_promoted_by_named_mechanism():
-    history = [
-        EscalationRecord(
-            story=f"s{i}", complexity="MEDIUM", dev_model="sonnet", outcome="ESCALATE"
-        )
-        for i in range(2)
-    ]
-    decision = assign_models(_agents(), _cfg(), "medium", escalation_history=history)
+    profiles = _low_rate_dev_profiles("sonnet", "medium")
+    decision = assign_models(_agents(), _cfg(), "medium", model_profiles=profiles)
     rationale = decision.routing_decision["dev"]["routing_rationale"]
     assert rationale["state"] == ROUTING_RATIONALE_PROMOTED
     assert rationale["mechanism"] == MECHANISM_DEV_PROMOTION
@@ -231,17 +242,12 @@ def test_routing_rationale_reports_promoted_by_named_mechanism():
 def test_routing_rationale_reports_demoted_by_post_plan_checkpoint():
     """After a clean medium plan-review, the checkpoint overwrites the rationale."""
     agents = _agents()
-    # Land a real strong-tier dev via promotion (2 ESCALATE on mid → strong), so
-    # the recorded baseline tier resolves to "strong" from the agent registry and
-    # the one-step demotion has room to fire.
-    history = [
-        EscalationRecord(
-            story=f"s{i}", complexity="MEDIUM", dev_model="sonnet", outcome="ESCALATE"
-        )
-        for i in range(2)
-    ]
-    decision = assign_models(agents, _cfg(), "medium", escalation_history=history)
-    assert decision.dev.model == "opus"  # promoted to strong
+    # Land a real strong-tier dev via profile-backed pre-promotion (mid → strong),
+    # so the recorded baseline tier resolves to "strong" from the agent registry
+    # and the one-step demotion has room to fire.
+    profiles = _low_rate_dev_profiles("sonnet", "medium")
+    decision = assign_models(agents, _cfg(), "medium", model_profiles=profiles)
+    assert decision.dev.model == "opus"  # pre-promoted to strong
     assert decision.routing_decision["dev"]["routing_rationale"]["state"] == (
         ROUTING_RATIONALE_PROMOTED
     )
