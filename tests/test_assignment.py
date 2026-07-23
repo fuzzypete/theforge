@@ -1090,28 +1090,62 @@ def test_reviewer_count_medium():
     assert 1 <= count <= 3
 
 
-# ── Sprint promotion stickiness ───────────────────────────────────────
+# ── Sample-floor contract: no evidence → no firing ────────────────────
 
 
-def test_sprint_promotions_cached():
-    """A sprint_promotions cache hit short-circuits to a sticky promotion.
+def test_promotion_never_fires_without_admissible_evidence():
+    """A fired pre-promotion ALWAYS carries admissible profile evidence (#158).
 
-    Even with no profile signal, a band already promoted earlier in the sprint
-    stays promoted (within-sprint stability). Recovery is the cross-run path.
+    The profile signal is the sole authoritative driver — there is no sprint
+    cache or other shortcut that can report a fired promotion with a null rate or
+    a zero sample size. Every no-evidence path (no profiles, empty band, below
+    the sample floor) returns ``fired=False``, so the sample-floor contract holds
+    on every path (regression guard for the cached-promotion bypass, cycle 1 P1).
     """
     agents = _make_agents_one_per_tier()
     dev_agent = next(a for a in agents if a.tier == "mid")
 
-    signal = _check_promotion(
+    # No profiles at all.
+    no_profiles = _check_promotion("MEDIUM", dev_agent, None, threshold=0.60, min_runs=5)
+    assert no_profiles.fired is False
+    assert no_profiles.outcome == "no_profile_signal"
+    assert no_profiles.raw is None and no_profiles.weighted is None
+    assert no_profiles.runs == 0
+
+    # Admissible samples below the floor: awful rate, but too few runs to fire.
+    below_floor = _check_promotion(
         "MEDIUM",
         dev_agent,
-        None,
+        _dev_profiles("sonnet", "medium", runs=3, success_rate=0.0, recent=[0, 0, 0]),
         threshold=0.60,
         min_runs=5,
-        sprint_promotions={"MEDIUM": "strong"},
     )
-    assert signal.fired is True
-    assert signal.outcome == "sticky_sprint_promotion"
+    assert below_floor.fired is False
+    assert below_floor.outcome == PROMOTION_OUTCOME_BELOW_FLOOR
+    assert below_floor.runs == 3
+
+    # Invariant across every outcome: firing implies real, admissible evidence.
+    for signal in (no_profiles, below_floor):
+        if signal.fired:  # never true here, but encodes the contract
+            assert signal.weighted is not None
+            assert signal.runs >= signal.min_runs
+
+
+def test_assign_models_promotion_check_never_reports_null_evidence_firing():
+    """Seam of the P1 fix: routing_decision.promotion_check cannot report a fired
+    promotion with sample_size 0 / null rates. Below the floor, no firing."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    profiles = _dev_profiles("sonnet", "medium", runs=3, success_rate=0.0, recent=[0, 0, 0])
+
+    decision = assign_models(agents, cfg, "medium", model_profiles=profiles)
+
+    assert decision.dev.model == "sonnet"  # no promotion below the floor
+    promo = decision.routing_decision["dev"]["promotion_check"]
+    assert promo["fired"] is False
+    if promo["fired"]:  # contract: a fired promotion carries admissible evidence
+        assert promo["weighted_success_rate"] is not None
+        assert promo["sample_size"] >= promo["min_runs"]
 
 
 def test_no_promotion_without_profiles():

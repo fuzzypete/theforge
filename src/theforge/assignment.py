@@ -887,7 +887,6 @@ def _select_reviewers(
 
 # Machine-queryable outcomes for the profile-backed dev pre-promotion check
 # (#158). Kept as a closed set so the routing_decision audit stays queryable.
-PROMOTION_OUTCOME_STICKY = "sticky_sprint_promotion"
 PROMOTION_OUTCOME_PROMOTED = "promoted_below_threshold"
 PROMOTION_OUTCOME_RECOVERED = "recovered_at_or_above_threshold"
 PROMOTION_OUTCOME_BELOW_FLOOR = "below_sample_floor"
@@ -926,7 +925,6 @@ def _check_promotion(
     threshold: float,
     min_runs: int,
     recency: object | None = None,
-    sprint_promotions: dict[str, str] | None = None,
 ) -> DevPromotionSignal:
     """Profile-backed dev pre-promotion signal (#158, ADR-0006 clauses 2.3/2.4/4/5/7).
 
@@ -941,27 +939,16 @@ def _check_promotion(
     fire — the passive recency-recovery return path (clause 2.4/5); the caller
     records that non-firing in the dev demotion_check (clause 7).
 
-    A ``sprint_promotions`` cache hit short-circuits to a sticky promotion so a
-    band that promoted earlier in the same sprint stays promoted (within-sprint
-    stability); recovery is the CROSS-run path (a fresh sprint has an empty
-    cache). Pure: no I/O, no LLM call — deterministic for fixed profile data.
+    The profile signal is the SOLE authoritative driver: a promotion never fires
+    without admissible profile evidence meeting the sample floor, so the audit
+    can never report a fired pre-promotion with a null rate or a zero sample size
+    (the sample-floor contract holds on every path). Determinism (same profile
+    data + same complexity → same decision) makes a same-sprint promotion cache
+    unnecessary — repeated same-band stories re-derive the identical decision,
+    and a genuinely updated profile legitimately re-decides. Pure: no I/O, no LLM
+    call.
     """
     model_name = dev_agent.name if dev_agent else ""
-
-    if sprint_promotions and complexity in sprint_promotions:
-        return DevPromotionSignal(
-            fired=True,
-            outcome=PROMOTION_OUTCOME_STICKY,
-            model=model_name,
-            complexity=complexity,
-            raw=None,
-            weighted=None,
-            runs=0,
-            tainted_runs=0,
-            threshold=threshold,
-            min_runs=min_runs,
-            floor="cached",
-        )
 
     if dev_agent is None or not profiles:
         return DevPromotionSignal(
@@ -1078,7 +1065,7 @@ def _dev_recency_demotion_check(promotion_block: dict[str, object]) -> dict[str,
         }
     if promotion_block.get("fired"):
         # Promotion is active this run — the recovery return path has NOT yet
-        # reversed it (weighted rate still below threshold, or sticky cache).
+        # reversed it (weighted rate still below threshold).
         return {
             "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
             "applicable": True,
@@ -2295,7 +2282,6 @@ def assign_models(
     complexity_score: int | None = None,
     escalation_history: list[EscalationRecord] | None = None,
     explicit_profiles: dict[str, ModelProfile] | None = None,
-    sprint_promotions: dict[str, str] | None = None,
     secrets: dict[str, str] | None = None,
     model_profiles: dict | None = None,
     unhealthy_models: set[str] | None = None,
@@ -2378,7 +2364,6 @@ def assign_models(
     # In static mode, ignore the numeric score, capability profiles, and
     # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
     score = _normalize_complexity_score(complexity_score) if adaptive_enabled else None
-    effective_promotions = sprint_promotions if adaptive_enabled else None
     effective_profiles = model_profiles if adaptive_enabled else None
     # Recency-weighting params (#1392): the dev signal ranks on the decayed view
     # of admissible history. Only consulted under adaptive routing (static mode
@@ -2426,26 +2411,21 @@ def assign_models(
             threshold=assignment_config.dev_promotion_threshold,
             min_runs=assignment_config.dev_promotion_min_runs,
             recency=effective_recency,
-            sprint_promotions=effective_promotions,
         )
         effective_dev_tier = dev_base_tier
         if promo_signal.fired:
+            # A fired promotion always carries admissible evidence: the only firing
+            # outcome is PROMOTION_OUTCOME_PROMOTED, which requires the sample floor
+            # met AND a non-None weighted rate below threshold.
             effective_dev_tier = _promote_tier(dev_base_tier)
             _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
-            if promo_signal.weighted is not None:
-                rationale["dev"] = (
-                    f"{norm_complexity} dev pre-promoted {dev_model_name} "
-                    f"(tier {dev_base_tier} → {effective_dev_tier}) — "
-                    f"weighted success_rate {promo_signal.weighted:.2f} < "
-                    f"threshold {promo_signal.threshold:.2f} over {promo_signal.runs} "
-                    f"admissible {norm_complexity} runs"
-                )
-            else:
-                rationale["dev"] = (
-                    f"{norm_complexity} dev pre-promoted {dev_model_name} "
-                    f"(tier {dev_base_tier} → {effective_dev_tier}) — "
-                    f"sticky sprint promotion"
-                )
+            rationale["dev"] = (
+                f"{norm_complexity} dev pre-promoted {dev_model_name} "
+                f"(tier {dev_base_tier} → {effective_dev_tier}) — "
+                f"weighted success_rate {promo_signal.weighted:.2f} < "
+                f"threshold {promo_signal.threshold:.2f} over {promo_signal.runs} "
+                f"admissible {norm_complexity} runs"
+            )
         else:
             _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
             if score is not None:

@@ -392,15 +392,15 @@ def test_preflight_seam_profile_backed_pre_promotion_propagates(tmp_path, monkey
 
     _pf._apply_preflight_config(config, state)
 
-    # Dev pre-promoted mid → strong before the first iteration.
+    # Dev pre-promoted mid → strong before the first iteration, driven entirely
+    # by the recency-weighted profile signal (no separate sprint promotion cache).
     assert state._adaptive_decision.dev.model == "opus"
     promo = state.routing_decision["dev"]["promotion_check"]
     assert promo["fired"] is True
     assert promo["outcome"] == "promoted_below_threshold"
     assert promo["weighted_success_rate"] < promo["threshold"]
+    assert promo["sample_size"] >= promo["min_runs"]  # fired only with admissible evidence
     assert promo["resulting_tier"] == "strong"
-    # Promotion is stickied on sprint state for within-sprint stability.
-    assert state.sprint_promotions.get("MEDIUM") == "strong"
 
 
 def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):

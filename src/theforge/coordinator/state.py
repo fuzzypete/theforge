@@ -576,9 +576,6 @@ class CoordinatorState:
     # Families from the most recent classification that are present in 2+ cycles.
     # Consumed by build_fix_prompt on the RETRY_DEV path.  Reset each classification.
     surviving_families: list[dict] = field(default_factory=list)
-    sprint_promotions: dict[str, str] = field(default_factory=dict)
-    # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
-    # Sticky within a sprint (single forge process lifetime); resets on process exit.
     # Challenger-sampling exploration (#325, ADR-0006 clause 8). When the router
     # ran a challenger instead of the winner for this story's dev slot, this
     # holds the decision (routing_key/challenger/winner) so the coordinator can
