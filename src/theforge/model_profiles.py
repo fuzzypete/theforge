@@ -167,6 +167,13 @@ class RunOutcome:
     # derived completion rate is complete over attempts. Folded into the review
     # section's ``_attempted_count`` / ``_completed_count`` / ``completion_rate``.
     reviewer_attempts: list[ReviewerAttempt] = field(default_factory=list)
+    # Per-plan-reviewer mechanical value samples for this run (#1443): one
+    # :class:`theforge.reviewer_value.PlanReviewerValueSample` per (reviewer, plan-
+    # review pool attempt) that raised ≥1 P1. Folded into the ``plan_review_value``
+    # profile section (uniqueness rate + latency-per-P1 rings) under the same taint
+    # gate as every other capability aggregate. Typed as ``list`` to avoid an
+    # import cycle; :func:`apply_run` reads each sample's attributes.
+    plan_reviewer_values: list = field(default_factory=list)
     # Domain tags for this run (issue #155), from the fixed taxonomy recorded by
     # preflight. The dev outcome is folded into a per-domain slice for each tag so
     # per-domain success rate can be aggregated deterministically. Empty = the run
@@ -901,6 +908,21 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         _update_review_completion(
             rev_entry, att.completed_parseable_verdict, tainted=outcome.dev_tainted
         )
+    # Plan-reviewer mechanical value telemetry (#1443): fold each per-attempt
+    # uniqueness / latency-per-P1 sample under the reviewer's canonical model ID,
+    # gated by the same run-level taint marker.
+    if outcome.plan_reviewer_values:
+        from theforge.reviewer_value import fold_plan_reviewer_value  # noqa: PLC0415
+
+        for sample in outcome.plan_reviewer_values:
+            rev_entry = _ensure_model(
+                data,
+                sample.name,
+                actual_model=sample.actual_model,
+                provider=sample.provider,
+                cli=sample.cli,
+            )
+            fold_plan_reviewer_value(rev_entry, sample, tainted=outcome.dev_tainted)
     return data
 
 
@@ -986,7 +1008,7 @@ def _recency_params(recency: Any | None) -> tuple[str, float, int]:
 
 
 def _weighted_rate(
-    recent: list[int],
+    recent: list[float],
     *,
     fallback: float | None,
     mode: str = DEFAULT_RECENCY_MODE,
@@ -994,13 +1016,17 @@ def _weighted_rate(
     window: int = DEFAULT_RECENCY_WINDOW,
     min_samples: int = 0,
 ) -> float | None:
-    """Recency-weight a bounded ring of ``0/1`` dev outcomes (ADR-0006 clause 2.4).
+    """Recency-weight a bounded ring of numeric outcomes (ADR-0006 clause 2.4).
 
     This is the single weighting path every profile-derived rate flows through
     (#1392): the per-complexity dev signal, the per-domain dev signal (via
-    :func:`_windowed_rate`), and any future reviewer completion-rate signal.
-    ``recent`` is an ordered outcome ring (oldest first, newest last), already
-    bounded per bucket. Modes:
+    :func:`_windowed_rate`), the reviewer completion-rate signal, and the
+    plan-reviewer value signals (:mod:`theforge.reviewer_value`). ``recent`` is an
+    ordered outcome ring (oldest first, newest last), already bounded per bucket.
+    Entries are ``0/1`` for the boolean signals (success / completion) and
+    arbitrary floats for continuous ones (uniqueness rate, latency-per-P1); the
+    weighted mean below is identical for the ``0/1`` case, so this generalization
+    is behavior-preserving for every existing caller. Modes:
 
     - ``"exponential"`` (default): weight run at age ``a`` (0 = newest) by
       ``0.5 ** (a / half_life_runs)``, so a run decays to half its weight every
@@ -1037,7 +1063,7 @@ def _weighted_rate(
     den = 0.0
     for i, outcome in enumerate(capped):
         weight = decay ** (n - 1 - i)  # newest outcome → age 0 → weight 1.0
-        num += weight * int(outcome)
+        num += weight * float(outcome)
         den += weight
     return round(num / den, 4) if den > 0 else fallback
 

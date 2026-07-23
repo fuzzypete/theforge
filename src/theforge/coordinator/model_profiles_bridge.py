@@ -13,6 +13,7 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig
 from theforge.model_profiles import ReviewerAttempt, RunOutcome, update_from_run
+from theforge.reviewer_value import PlanReviewerValueSample
 
 from .state import CoordinatorState
 from .trust_status import derive_trust_status, is_tainted
@@ -69,6 +70,34 @@ def _extract_reviewer_attempts(state: CoordinatorState) -> list[ReviewerAttempt]
             )
         )
     return attempts
+
+
+def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerValueSample]:
+    """Convert per-plan-reviewer value telemetry dicts into typed samples (#1443).
+
+    ``state.plan_reviewer_value`` is the native per-(reviewer, pool-attempt) capture
+    written at plan-review pool completion. This pure adapter lifts it into the
+    carrier the profile aggregator folds, keyed by each reviewer's canonical
+    identity so the value signal lands under the same model entry the router looks
+    it up by.
+    """
+    samples: list[PlanReviewerValueSample] = []
+    for v in state.plan_reviewer_value or []:
+        if not isinstance(v, dict) or not v.get("reviewer"):
+            continue
+        samples.append(
+            PlanReviewerValueSample(
+                name=str(v["reviewer"]),
+                complexity=str(v.get("complexity") or "medium"),
+                unique_p1=int(v.get("unique_p1_count", 0)),
+                total_p1=int(v.get("total_p1_count", 0)),
+                latency_s=v.get("latency_s"),
+                actual_model=v.get("actual_model"),
+                provider=v.get("provider"),
+                cli=v.get("cli"),
+            )
+        )
+    return samples
 
 
 def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: bool) -> RunOutcome:
@@ -139,6 +168,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         preflight_cost_usd=state.total_preflight_cost_measured,
         reviewers=_extract_reviewers(state),
         reviewer_attempts=_extract_reviewer_attempts(state),
+        plan_reviewer_values=_extract_plan_reviewer_values(state),
         # Domain tags (#155) recorded by preflight, folded into per-domain dev
         # slices so future routing can prefer models strong in the story's domains.
         domains=list(state.preflight_domains or []),

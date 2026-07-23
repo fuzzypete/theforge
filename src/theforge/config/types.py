@@ -89,6 +89,21 @@ class AssignmentConfig:
     # low-completion reviewer is still selected when no better candidate exists.
     reviewer_completion_threshold: float = 0.5
     reviewer_completion_min_runs: int = 5
+    # Plan-reviewer mechanical value routing (#1443, ADR-0006 clause 2). Opt-in
+    # (default off): only when the operator sets ``reviewer_value_enabled: true``
+    # may the router consult a plan reviewer's recency-weighted P1-uniqueness rate
+    # to adjust ordering. A reviewer whose admissible uniqueness rate (fraction of
+    # its blocking findings no peer corroborated) falls below
+    # ``reviewer_value_uniqueness_threshold`` — once it has ``reviewer_value_min_runs``
+    # admissible, non-tainted, P1-bearing samples at the story's complexity band —
+    # is sorted *after* higher-value candidates within the already-eligible pool.
+    # Sort-after, not filter-out; explicit operator profile pins still win outright
+    # (they bypass adaptive reviewer selection entirely). Latency-per-P1 is recorded
+    # alongside for explainability. Below the sample floor no reordering fires and
+    # ordering falls through to the existing tier / completion / health selection.
+    reviewer_value_enabled: bool = False
+    reviewer_value_uniqueness_threshold: float = 0.34
+    reviewer_value_min_runs: int = 5
     # Dev pre-promotion from cross-run capability profiles (#158, ADR-0006
     # clauses 1/2.3/2.4/4/5/7). Before the first iteration the router reads the
     # selected dev model's **recency-weighted** success rate at the story's

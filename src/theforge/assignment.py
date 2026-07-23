@@ -755,6 +755,73 @@ def _rerank_reviewers_by_completion(
     return reranked
 
 
+def _rerank_reviewers_by_value(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    *,
+    uniqueness_threshold: float,
+    min_runs: int,
+    complexity: str | None = None,
+    recency: object | None = None,
+    signals_out: dict[str, dict] | None = None,
+    audit: dict[str, object] | None = None,
+) -> list[AgentDef]:
+    """Stable sort-after plan reviewers below the P1-uniqueness floor (#1443).
+
+    The value analog of :func:`_rerank_reviewers_by_completion`. A plan reviewer
+    whose recency-weighted P1-uniqueness rate at the story's complexity band is
+    below ``uniqueness_threshold`` — *and only once it has accumulated ``min_runs``
+    admissible (non-tainted, P1-bearing) samples* — is sorted **after** every
+    higher-uniqueness candidate. This is a sort-after, not a filter-out: a
+    redundant reviewer stays in the pool and is still selected when no better
+    candidate is available, so it is never permanently locked out.
+
+    Below the sample floor a reviewer's signal is ``floor="fail"`` (cold start), so
+    it is not deprioritized and ordering falls through unchanged. The sort is
+    stable on the incoming index, so every non-deprioritized reviewer keeps the
+    ordering it arrived with (i.e. the completion/tier/health order).
+    """
+    if not model_profiles or not candidates:
+        return candidates
+    from theforge.reviewer_value import get_reviewer_value_signal  # noqa: PLC0415
+
+    rows: list[tuple[int, int, AgentDef]] = []
+    deprioritized: list[str] = []
+    for idx, agent in enumerate(candidates):
+        signal = get_reviewer_value_signal(
+            model_profiles,
+            agent.name,
+            complexity,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+            recency=recency,
+        )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        uniq = signal["uniqueness_rate"]
+        rate = uniq["rate"]
+        is_low = uniq["floor"] == "pass" and rate is not None and rate < uniqueness_threshold
+        if is_low:
+            deprioritized.append(agent.name)
+        rows.append((1 if is_low else 0, idx, agent))
+
+    reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
+    if audit is not None:
+        original_order = [a.name for a in candidates]
+        final_order = [a.name for a in reranked]
+        audit["mechanism"] = "reviewer_value"
+        audit["uniqueness_threshold"] = uniqueness_threshold
+        audit["min_runs"] = min_runs
+        audit["complexity"] = complexity
+        audit["applied"] = original_order != final_order
+        audit["deprioritized"] = deprioritized
+        audit["original_order"] = original_order
+        audit["final_order"] = final_order
+    return reranked
+
+
 def _select_reviewers(
     agents: list[AgentDef],
     tier: str,
@@ -770,6 +837,12 @@ def _select_reviewers(
     recency: object | None = None,
     completion_signals_out: dict[str, dict] | None = None,
     completion_audit: dict[str, object] | None = None,
+    value_enabled: bool = False,
+    value_uniqueness_threshold: float = 0.34,
+    value_min_runs: int = 5,
+    value_complexity: str | None = None,
+    value_signals_out: dict[str, dict] | None = None,
+    value_audit: dict[str, object] | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -855,6 +928,22 @@ def _select_reviewers(
         signals_out=completion_signals_out,
         audit=completion_audit,
     )
+
+    # Plan-reviewer value rerank (#1443): opt-in, runs on top of the completion
+    # rerank. A reviewer whose admissible P1-uniqueness is below the floor is
+    # sorted after higher-value candidates within the same eligible pool. Only
+    # fires when the operator enabled it; explicit profile pins never reach here.
+    if value_enabled:
+        candidates = _rerank_reviewers_by_value(
+            candidates,
+            model_profiles,
+            uniqueness_threshold=value_uniqueness_threshold,
+            min_runs=value_min_runs,
+            complexity=value_complexity,
+            recency=recency,
+            signals_out=value_signals_out,
+            audit=value_audit,
+        )
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -1586,6 +1675,61 @@ def _reviewer_completion_check(
     return block
 
 
+def _reviewer_value_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+    selected_names: set[str],
+) -> dict[str, object]:
+    """Build the plan-reviewer value_check block (#1443, ADR-0006 clause 7).
+
+    Records the P1-uniqueness rerank so the routing_decision explains when (and
+    how) mechanical reviewer-value history shaped the plan-reviewer ordering. For
+    every reviewer weighed it surfaces the consulted uniqueness rate and
+    latency-per-P1 (raw + recency-weighted), the sample count, the sample-floor
+    status, and the taint-excluded count — enough for an operator to answer "is
+    this reviewer earning its wall-clock cost?" without grepping logs. Returns an
+    empty dict when the mechanism was not consulted (disabled / no profiles), which
+    the caller omits.
+    """
+    if not signals and not audit:
+        return {}
+    fired = bool(audit and audit.get("applied"))
+    per_candidate: dict[str, object] = {}
+    for name, sig in (signals or {}).items():
+        uniq = sig.get("uniqueness_rate") or {}
+        latency = sig.get("latency_per_p1") or {}
+        per_candidate[name] = {
+            "runs": sig.get("runs"),
+            "tainted_runs": sig.get("tainted_runs"),
+            "uniqueness_rate": {
+                "raw": uniq.get("raw"),
+                "weighted": uniq.get("weighted"),
+                "rate": uniq.get("rate"),
+                "floor": uniq.get("floor"),
+            },
+            "latency_per_p1": {
+                "raw": latency.get("raw"),
+                "weighted": latency.get("weighted"),
+                "rate": latency.get("rate"),
+                "floor": latency.get("floor"),
+            },
+            "selected": name in selected_names,
+        }
+    block: dict[str, object] = {
+        "mechanism": "reviewer_value",
+        "fired": fired,
+        "uniqueness_threshold": audit.get("uniqueness_threshold") if audit else None,
+        "min_runs": audit.get("min_runs") if audit else None,
+        "complexity": audit.get("complexity") if audit else None,
+        "deprioritized": (audit.get("deprioritized") if audit else None) or [],
+        "signals": per_candidate,
+    }
+    if fired and audit:
+        block["original_order"] = audit.get("original_order")
+        block["final_order"] = audit.get("final_order")
+    return block
+
+
 def _reviewer_count_policy(
     score: int | None, min_r: int, max_r: int, seated: int
 ) -> dict[str, object]:
@@ -1637,6 +1781,8 @@ def _build_routing_decision(
     pr_completion_audit: dict[str, object] | None = None,
     cr_completion_signals: dict[str, dict] | None = None,
     cr_completion_audit: dict[str, object] | None = None,
+    pr_value_signals: dict[str, dict] | None = None,
+    pr_value_audit: dict[str, object] | None = None,
     min_reviewers: int = 1,
     max_reviewers: int = 1,
 ) -> dict[str, object]:
@@ -1717,6 +1863,9 @@ def _build_routing_decision(
     cr_completion_block = _reviewer_completion_check(
         cr_completion_signals, cr_completion_audit, cr_selected
     )
+    # Plan-reviewer value rerank (#1443) explanation. Only the plan-review role has
+    # a value signal (this story is plan-review-specific).
+    pr_value_block = _reviewer_value_check(pr_value_signals, pr_value_audit, pr_selected)
 
     return {
         "origin": origin,
@@ -1836,6 +1985,7 @@ def _build_routing_decision(
                 pr_fired, pr_depri, pr_fellback, unhealthy_models
             ),
             **({"completion_check": pr_completion_block} if pr_completion_block else {}),
+            **({"value_check": pr_value_block} if pr_value_block else {}),
             "exploration": dict(exploration),
             "final": {
                 "models": [p.model for p in decision.plan_reviewers],
@@ -2333,6 +2483,12 @@ def assign_models(
     _pr_completion_audit: dict[str, object] = {}
     _cr_completion_signals: dict[str, dict] = {}
     _cr_completion_audit: dict[str, object] = {}
+    # Plan-reviewer value rerank accumulators (#1443). Populated by
+    # _select_reviewers when reviewer_value_enabled and consumed by
+    # _build_routing_decision so the routing_decision records the consulted
+    # uniqueness / latency-per-P1 signals and the ranking effect.
+    _pr_value_signals: dict[str, dict] = {}
+    _pr_value_audit: dict[str, object] = {}
     _preflight_tier: str | None = None
     _dev_effective_tier: str = "cheap"
     # Challenger-sampling exploration block for the dev role (#325). None until
@@ -2649,6 +2805,12 @@ def assign_models(
             recency=effective_recency,
             completion_signals_out=_pr_completion_signals,
             completion_audit=_pr_completion_audit,
+            value_enabled=assignment_config.reviewer_value_enabled,
+            value_uniqueness_threshold=assignment_config.reviewer_value_uniqueness_threshold,
+            value_min_runs=assignment_config.reviewer_value_min_runs,
+            value_complexity=norm_complexity,
+            value_signals_out=_pr_value_signals,
+            value_audit=_pr_value_audit,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -2768,6 +2930,8 @@ def assign_models(
             pr_completion_audit=_pr_completion_audit,
             cr_completion_signals=_cr_completion_signals,
             cr_completion_audit=_cr_completion_audit,
+            pr_value_signals=_pr_value_signals,
+            pr_value_audit=_pr_value_audit,
         )
         return _dc_replace(dec, routing_decision=block)
 
