@@ -8,12 +8,14 @@ sprint, not just those completed under the terminal run_id.
 from __future__ import annotations
 
 import datetime
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
+from theforge.cli import explain
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -23,6 +25,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator import audit_substrate as sub
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import run_sprint
 from theforge.sprint.audit import (
@@ -61,10 +64,11 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _make_spec_file(tmp_path: Path, name: str, slug: str) -> Path:
+def _make_spec_file(tmp_path: Path, name: str, slug: str, github_issue: int | None = None) -> Path:
     spec = tmp_path / f"{slug}.md"
+    github_issue_line = f"github_issue: {github_issue}\n" if github_issue is not None else ""
     spec.write_text(
-        f"---\nname: {name}\nslug: {slug}\n---\n# {name}\nDo the thing.",
+        f"---\nname: {name}\nslug: {slug}\n{github_issue_line}---\n# {name}\nDo the thing.",
         encoding="utf-8",
     )
     return spec
@@ -80,10 +84,17 @@ def _make_manifest(tmp_path: Path, specs: list[str], name: str = "Test Sprint") 
 
 
 def _make_coordinator_result(
-    success: bool = True, cost: float = 1.0, phase: Phase = Phase.DONE
+    success: bool = True,
+    cost: float = 1.0,
+    phase: Phase = Phase.DONE,
+    *,
+    run_id: str | None = None,
+    routing_decision: dict | None = None,
 ) -> CoordinatorResult:
     state = CoordinatorState()
     state.preflight_verdict = "PROCEED"
+    state.run_id = run_id
+    state.routing_decision = routing_decision
     mock_preflight = MagicMock()
     mock_preflight.cost_usd = cost
     state.preflight_result = mock_preflight
@@ -161,6 +172,106 @@ class TestAccumulatedState:
 
 
 class TestRunIdRolloverReporting:
+    def test_multi_story_sprint_keeps_story_run_ids_distinct_for_audit_and_explain(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Each attempted sprint story keeps its own native audit identity and explain lookup."""
+        from tests.test_cli_explain import _routing_block
+
+        (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
+        story_ids = {
+            "issue-1370": "story-run-1370",
+            "issue-1371": "story-run-1371",
+            "issue-1872": "story-run-1872",
+        }
+        for issue in (1370, 1371, 1872):
+            _make_spec_file(
+                tmp_path,
+                f"Issue {issue}",
+                f"issue-{issue}",
+                github_issue=issue,
+            )
+        manifest_path = _make_manifest(
+            tmp_path,
+            ["issue-1370.md", "issue-1371.md", "issue-1872.md"],
+        )
+        config = _make_config(tmp_path)
+        sprint_id = _get_or_create_sprint_id("Test Sprint", tmp_path)
+
+        def _run_story(_cfg, task, **kwargs):  # noqa: ANN001
+            from theforge.coordinator import audit as coordinator_audit
+
+            assert "run_id" not in kwargs
+            result = _make_coordinator_result(
+                success=True,
+                cost=1.0,
+                run_id=story_ids[task.slug],
+                routing_decision=_routing_block(),
+            )
+            record = coordinator_audit.generate_audit_log(config, task, result)
+            record["sprint_id"] = sprint_id
+            record["sprint_name"] = "Test Sprint"
+            runs_dir = sub.runs_dir(tmp_path)
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            (runs_dir / f"{record['run_id']}.json").write_text(
+                json.dumps(record),
+                encoding="utf-8",
+            )
+            return result
+
+        with patch("theforge.sprint.runner.run_task", side_effect=_run_story):
+            sprint_result = run_sprint(config, manifest_path, run_id="sprint-cli-run")
+
+        assert sprint_result.specs_total == 3
+        assert sprint_result.specs_succeeded == 3
+
+        summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
+        summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+        assert summary["sprint"]["run_id"] == "sprint-cli-run"
+        assert summary["sprint"]["sprint_id"] == sprint_id
+        summary_story_ids = {story["slug"]: story["story_run_id"] for story in summary["stories"]}
+        assert summary_story_ids == story_ids
+        assert find_sprint_summary("sprint-cli-run", tmp_path) == summary_path.with_name(
+            "run-sprint-cli-run-summary.yaml"
+        )
+
+        run_files = sorted((tmp_path / ".forge" / "audits" / "runs").glob("*.json"))
+        assert [path.stem for path in run_files] == sorted(story_ids.values())
+
+        sub.rebuild_from_runs(tmp_path)
+        conn = sub.require_substrate(tmp_path)
+        try:
+            rows = conn.execute(
+                "SELECT run_id, slug, issue_id FROM audit_records "
+                "WHERE slug IN (?, ?, ?) ORDER BY issue_id",
+                ("issue-1370", "issue-1371", "issue-1872"),
+            ).fetchall()
+            assert [(row[0], row[1], row[2]) for row in rows] == [
+                ("story-run-1370", "issue-1370", 1370),
+                ("story-run-1371", "issue-1371", 1371),
+                ("story-run-1872", "issue-1872", 1872),
+            ]
+            for issue in (1370, 1371, 1872):
+                record = sub.latest_record_for(conn, issue_id=issue)
+                assert record is not None
+                assert record["run_id"] == story_ids[f"issue-{issue}"]
+        finally:
+            conn.close()
+
+        for issue in (1370, 1371, 1872):
+            args = type(
+                "_Args",
+                (),
+                {
+                    "file": None,
+                    "story": str(issue),
+                    "run": None,
+                    "config": str(tmp_path / "forge.yaml"),
+                },
+            )()
+            assert explain.cmd_explain(args) == 0
+            assert f"story {issue}" in capsys.readouterr().out
+
     def test_summary_includes_prior_run_stories(self, tmp_path: Path) -> None:
         """A resume run shows stories from prior run_ids in sprint-summary.yaml.
 
@@ -198,8 +309,18 @@ class TestRunIdRolloverReporting:
                 "batch": 0,
                 "depends_on": [],
                 "iteration_usage": {
-                    "dev": {"used": 1, "max": 5, "hit_limit": False, "early_finish": True},
-                    "review": {"used": 1, "max": 3, "hit_limit": False, "early_finish": True},
+                    "dev": {
+                        "used": 1,
+                        "max": 5,
+                        "hit_limit": False,
+                        "early_finish": True,
+                    },
+                    "review": {
+                        "used": 1,
+                        "max": 3,
+                        "hit_limit": False,
+                        "early_finish": True,
+                    },
                 },
             }
         ]
@@ -355,7 +476,10 @@ class TestRunIdRolloverReporting:
         )
 
         with patch("theforge.sprint.runner.resolve_from_manifest", return_value=resolved):
-            with patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                return_value=_make_coordinator_result(),
+            ):
                 with patch("theforge.sprint.runner.SprintStateWriter.remove"):
                     run_sprint(config, manifest_path, resume=True, run_id="run-live-test")
 
@@ -1052,9 +1176,11 @@ class TestRedirectChainResolution:
 
         summary = yaml.safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
         slugs = {s["slug"] for s in summary["stories"]}
-        assert slugs == {"issue-119", "issue-169", "issue-510"}, (
-            f"Summary missing prior-resume stories: {slugs}"
-        )
+        assert slugs == {
+            "issue-119",
+            "issue-169",
+            "issue-510",
+        }, f"Summary missing prior-resume stories: {slugs}"
         by_slug = {s["slug"]: s for s in summary["stories"]}
         assert by_slug["issue-119"]["outcome"] == "DONE"
         assert by_slug["issue-169"]["outcome"] == "DONE"
@@ -1154,9 +1280,11 @@ class TestRedirectChainResolution:
 
         summary = yaml.safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
         slugs = {s["slug"] for s in summary["stories"]}
-        assert slugs == {"issue-119", "issue-169", "issue-510"}, (
-            f"Summary missing prior-resume stories: {slugs}"
-        )
+        assert slugs == {
+            "issue-119",
+            "issue-169",
+            "issue-510",
+        }, f"Summary missing prior-resume stories: {slugs}"
         # Totals project from canonical story_state and must include prior
         # stories that were pre-populated from accumulated state.
         assert summary["sprint"]["specs_total"] == 3
