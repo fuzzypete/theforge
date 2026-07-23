@@ -162,6 +162,27 @@ def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
             lines,
         )
 
+    runtime_escalation = role_block.get("persistent_p1_dev_escalation") or {}
+    if runtime_escalation:
+        signal = runtime_escalation.get("signal") or {}
+        model_swap = runtime_escalation.get("model_swap") or {}
+        descriptions = signal.get("descriptions") or []
+        desc_text = f"; findings: {'; '.join(descriptions)}" if descriptions else ""
+        detail = (
+            f"{signal.get('kind', 'persistent_p1')} in {signal.get('file', '?')} "
+            f"(cycle {signal.get('review_cycle', '?')}) "
+            f"{model_swap.get('from_model', '?')} → {model_swap.get('to_model', '?')} "
+            f"[scope={runtime_escalation.get('scope', '?')}, "
+            f"return={runtime_escalation.get('return_path', '?')}]"
+            f"{desc_text}"
+        )
+        _render_mechanism(
+            "in-run persistent-P1 escalation",
+            _mechanism_state(checked=True, fired=bool(runtime_escalation.get("fired", True))),
+            detail,
+            lines,
+        )
+
 
 def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:
     demo = role_block.get("demotion_check") or {}

@@ -87,6 +87,8 @@ ROUTING_RATIONALE_STATES: frozenset[str] = frozenset(
 MECHANISM_DEV_PROMOTION = "_check_promotion"
 MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
 MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
+MECHANISM_PERSISTENT_P1_DEV_ESCALATION = "persistent_p1_dev_escalation"
+MECHANISM_RUN_SCOPED_RESET = "fresh_run_state_reset"
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,30 @@ ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
         # audit-block builder directly, so grep for the mechanism token.
         promotion_test_token="completion",
         open_followup="reviewer-reinclusion",
+    ),
+    # In-run persistent-P1 dev escalation (#296): a repeated P1 across
+    # consecutive review cycles upgrades the dev model for the current run only.
+    # The inverse is the next story's fresh CoordinatorState construction, which
+    # resets the run-scoped flag and leaves cross-run tier/routing weights
+    # untouched.
+    RoutingSymmetryPair(
+        promotion=RoutingMechanism(
+            name=MECHANISM_PERSISTENT_P1_DEV_ESCALATION,
+            symbol="theforge.coordinator.review_phase._record_persistent_p1_dev_escalation",
+            audit_label="in_run_escalation",
+        ),
+        demotion=RoutingMechanism(
+            name=MECHANISM_RUN_SCOPED_RESET,
+            symbol="theforge.coordinator.engine._fresh_run_state",
+            audit_label="run_scoped_reset",
+        ),
+        promotion_tests=("tests/test_coord_preflight_escalation.py",),
+        demotion_tests=(
+            "tests/test_coord_preflight_escalation.py",
+            "tests/test_routing_symmetry_invariant.py",
+        ),
+        promotion_test_token="persistent_p1_dev_escalation",
+        demotion_test_token="_fresh_run_state",
     ),
 )
 

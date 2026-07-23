@@ -97,6 +97,15 @@ LogLevel = None
 # ── Lazy runner import ────────────────────────────────────────────────
 
 
+def _fresh_run_state() -> CoordinatorState:
+    """Return a fresh per-run state container.
+
+    In-run routing escalations are scoped to this object, so constructing a new
+    state for the next story is the return path that clears them.
+    """
+    return CoordinatorState()
+
+
 def _ensure_runners() -> None:
     """Import theforge.runners and bind its symbols into this module's namespace.
 
@@ -751,7 +760,7 @@ def run_task(
             a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
     """
     _ensure_runners()
-    state = CoordinatorState()
+    state = _fresh_run_state()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
@@ -1488,7 +1497,7 @@ def run_review_only(
     (REQUEST_CHANGES — no DEV retry in review-only mode).
     """
     _ensure_runners()
-    state = CoordinatorState()
+    state = _fresh_run_state()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _ro_task_start = time.monotonic()
 
