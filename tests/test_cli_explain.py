@@ -73,6 +73,19 @@ def _routing_block(*, dev_override: bool = False, reviewer_fired: bool = False) 
                 "reason": "no_dev_tier_demotion_mechanism_v1",
             },
             "post_plan_checkpoint": {"applied": False, "reason": "checkpoint_not_implemented_v1"},
+            "persistent_p1_dev_escalation": {
+                "mechanism": "persistent_p1_dev_escalation",
+                "fired": True,
+                "scope": "run",
+                "return_path": "fresh_run_state_reset",
+                "signal": {
+                    "kind": "persistent_p1",
+                    "review_cycle": 2,
+                    "file": "src/cli.py",
+                    "descriptions": ["cli.py never wires gate_override into TaskStory"],
+                },
+                "model_swap": {"from_model": "sonnet", "to_model": "opus"},
+            },
             "exploration": {"mode": "winner"},
             "final": {"model": "opus", "tier": "strong", "rationale": "[preflight] dev on strong"},
         },
@@ -159,6 +172,14 @@ def test_tri_state_distinguishes_not_checked_from_did_not_fire() -> None:
     # A reviewer health demotion that fired renders as fired.
     fired_text = "\n".join(explain.render_routing_decision(_routing_block(reviewer_fired=True)))
     assert "demotion (provider_health): fired" in fired_text
+
+
+def test_render_surfaces_in_run_persistent_p1_escalation() -> None:
+    text = "\n".join(explain.render_routing_decision(_routing_block()))
+    assert "in-run persistent-P1 escalation: fired" in text
+    assert "sonnet → opus" in text
+    assert "scope=run" in text
+    assert "return=fresh_run_state_reset" in text
 
 
 def test_reviewer_health_no_op_renders_checked_did_not_fire() -> None:
