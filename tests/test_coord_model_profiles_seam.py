@@ -1003,3 +1003,54 @@ def test_seam_harness_kill_does_not_contaminate_capability_stats(tmp_path):
     assert stuck_bc["harness_terminated"]["by_cause"] == {"stuck_pattern": 1}
     assert stuck_bc.get("runs", 0) == 0
     assert stuck_bc.get("max_killed_timeout_s", 0.0) == 0.0
+
+
+def test_seam_bridge_derives_preflight_and_planner_reliability(tmp_path):
+    """Seam (state → bridge): build_run_outcome derives the non-dev role
+    reliability completion signals (#1489) from native coordinator telemetry.
+
+    A usable preflight result and a parseable plan fold as completed; a degraded
+    preflight folds as not-completed; a cached preflight records no attempt."""
+    from types import SimpleNamespace
+
+    from theforge.config import ModelProfile
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.preflight_result = _make_agent_result(success=True)
+    state.preflight_degraded = False
+    state.preflight_verdict = "PROCEED"
+    planner = ModelProfile(
+        name="pl",
+        cli="claude",
+        provider=None,
+        model="opus",
+        budget_usd=8.0,
+        timeout_seconds=1200,
+        allowed_tools=("Read",),
+    )
+    state._adaptive_decision = SimpleNamespace(planner=planner)
+    state.plan_output = "the plan"
+
+    outcome = build_run_outcome(config, state, success=True)
+    assert outcome.preflight_completed is True
+    assert outcome.planner_model == "pl"
+    assert outcome.planner_actual_model == "opus"
+    assert outcome.planner_completed is True
+
+    # A degraded preflight is a failed reliability outcome.
+    state.preflight_degraded = True
+    assert build_run_outcome(config, state, success=True).preflight_completed is False
+
+    # A cached preflight ran no model this story → no attempt recorded.
+    state.preflight_degraded = False
+    state.preflight_cached = True
+    assert build_run_outcome(config, state, success=True).preflight_completed is None
+
+    # No planning attempted → no planner telemetry.
+    bare = _dev_state_medium()
+    bare._adaptive_decision = SimpleNamespace(planner=planner)
+    outcome_bare = build_run_outcome(config, bare, success=True)
+    assert outcome_bare.planner_model is None
+    assert outcome_bare.planner_completed is None

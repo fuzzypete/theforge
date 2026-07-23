@@ -137,6 +137,43 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     # "unchecked" (admissible); only an affirmative failed check taints it.
     trust_status = derive_trust_status(state.trust_checks.values())
     run_tainted = is_tainted(trust_status)
+    # Preflight reliability (#1489): a deterministic aggregate over native preflight
+    # telemetry — did the preflight invocation return a usable, parseable result?
+    # ``None`` when preflight ran no model this story (cached / no result), so the
+    # completion counters stay untouched instead of folding a spurious outcome.
+    preflight_completed: bool | None = None
+    if getattr(config, "preflight_profile", None) and not state.preflight_cached:
+        pf_result = state.preflight_result
+        if pf_result is not None:
+            preflight_completed = (
+                bool(getattr(pf_result, "success", False)) and not state.preflight_degraded
+            )
+    # Planner reliability (#1489): the planner that actually ran is the adaptive
+    # decision's planner (plan_flow uses ``_adaptive.planner`` unless the role is an
+    # explicit override, in which case that same profile is what ran). Recorded only
+    # when planning was attempted this story, so a story that skipped planning folds
+    # nothing.
+    adaptive = getattr(state, "_adaptive_decision", None)
+    planner_profile = getattr(adaptive, "planner", None) if adaptive is not None else None
+    planning_attempted = bool(
+        state.plan_results
+        or state.plan_output
+        or state.plan_structured
+        or state.plan_transport_retries
+    )
+    planner_model: str | None = None
+    planner_actual_model: str | None = None
+    planner_provider: str | None = None
+    planner_cli: str | None = None
+    planner_cost: float | None = None
+    planner_completed: bool | None = None
+    if planner_profile is not None and planning_attempted:
+        planner_model = planner_profile.name
+        planner_actual_model = getattr(planner_profile, "model", None)
+        planner_provider = getattr(planner_profile, "provider", None)
+        planner_cli = getattr(planner_profile, "cli", None)
+        planner_cost = state.total_plan_cost_measured
+        planner_completed = bool(state.plan_output) or state.plan_structured is not None
     return RunOutcome(
         complexity=complexity,
         complexity_score=state.preflight_complexity_score,
@@ -166,6 +203,13 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         if getattr(config, "preflight_profile", None)
         else None,
         preflight_cost_usd=state.total_preflight_cost_measured,
+        preflight_completed=preflight_completed,
+        planner_model=planner_model,
+        planner_actual_model=planner_actual_model,
+        planner_provider=planner_provider,
+        planner_cli=planner_cli,
+        planner_cost_usd=planner_cost,
+        planner_completed=planner_completed,
         reviewers=_extract_reviewers(state),
         reviewer_attempts=_extract_reviewer_attempts(state),
         plan_reviewer_values=_extract_plan_reviewer_values(state),
