@@ -32,8 +32,9 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.audit import generate_audit_log
-from theforge.coordinator.engine import run_task
-from theforge.coordinator.state import Phase
+from theforge.coordinator.engine import _fresh_run_state, run_task
+from theforge.coordinator.plan_flow import _record_plan_model_escalation
+from theforge.coordinator.state import CoordinatorState, Phase
 
 # ── Local helpers ─────────────────────────────────────────────────────
 
@@ -632,6 +633,24 @@ findings:
         assert result.state.plan_escalation_note is not None
         assert "MODEL ESCALATION" in result.state.plan_escalation_note
 
+        # Escalation must be recorded in the canonical routing_decision block
+        # (ADR-0006 clause 7 / #1391), not only in a telemetry log line.
+        assert isinstance(result.state.routing_decision, dict)
+        planner_block = result.state.routing_decision.get("planner")
+        assert isinstance(planner_block, dict)
+        escalation = planner_block.get("plan_model_escalation")
+        assert isinstance(escalation, dict)
+        assert escalation["mechanism"] == "plan_model_escalation"
+        assert escalation["fired"] is True
+        # Clause-5 symmetry markers: story-scoped with a named return path.
+        assert escalation["scope"] == "run"
+        assert escalation["return_path"] == "fresh_run_state_reset"
+        # Consecutive-rejection signal and the concrete planner model swap.
+        assert escalation["signal"]["kind"] == "consecutive_plan_rejections"
+        assert escalation["signal"]["rejections"] == 2
+        assert escalation["model_swap"]["from_model"] == "sonnet"
+        assert escalation["model_swap"]["to_model"] == "opus"
+
         # The 3rd run_agent call (index 2) is the 2nd regen — should use opus
         # (call[0]=plan, call[1]=1st regen, call[2]=2nd regen, call[3]=dev;
         # preflight mocked separately)
@@ -644,6 +663,39 @@ findings:
         # The regen prompt should contain the escalation note
         regen_prompt = regen_call.kwargs.get("prompt") or regen_call[1].get("prompt")
         assert "MODEL ESCALATION" in regen_prompt
+
+    def test_plan_escalation_does_not_persist_into_next_story(self):
+        """Planner escalation is story-scoped (ADR-0006 clause 5 return path).
+
+        A story that escalated its planner leaves run-scoped state
+        (``plan_escalated``/``plan_escalation_note``) and the recorded
+        ``routing_decision`` escalation block set. The next story is a freshly
+        constructed ``CoordinatorState`` (``_fresh_run_state``), which resets all
+        of those to their defaults — so the escalated planner tier never ratchets
+        forward into the next story's planner assignment.
+        """
+        # Story 1: simulate an escalation having fired.
+        story1 = CoordinatorState()
+        story1.plan_regen_count = 2
+        story1.plan_escalated = True
+        story1.plan_escalation_note = "MODEL ESCALATION: rejected 2 time(s)."
+        _record_plan_model_escalation(
+            story1,
+            previous_model="sonnet",
+            escalated_model="opus",
+            rejections=2,
+            findings="P0: insufficient plan",
+        )
+        assert story1.plan_escalated is True
+        assert story1.routing_decision["planner"]["plan_model_escalation"]["fired"] is True
+
+        # Story 2: the return path is a fresh per-run state container. The escalated
+        # planner tier does not carry over — the next story starts from defaults.
+        story2 = _fresh_run_state()
+        assert story2.plan_escalated is False
+        assert story2.plan_escalation_note is None
+        assert story2.plan_regen_count == 0
+        assert story2.routing_decision is None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))

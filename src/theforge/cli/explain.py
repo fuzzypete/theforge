@@ -184,6 +184,27 @@ def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
         )
 
 
+def _render_planner_mechanisms(role_block: dict, lines: list[str]) -> None:
+    escalation = role_block.get("plan_model_escalation") or {}
+    if not escalation:
+        return
+    signal = escalation.get("signal") or {}
+    model_swap = escalation.get("model_swap") or {}
+    detail = (
+        f"{signal.get('kind', 'consecutive_plan_rejections')} "
+        f"({signal.get('rejections', '?')} rejection(s)) "
+        f"{model_swap.get('from_model', '?')} → {model_swap.get('to_model', '?')} "
+        f"[scope={escalation.get('scope', '?')}, "
+        f"return={escalation.get('return_path', '?')}]"
+    )
+    _render_mechanism(
+        "in-run plan-model escalation",
+        _mechanism_state(checked=True, fired=bool(escalation.get("fired", True))),
+        detail,
+        lines,
+    )
+
+
 def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:
     demo = role_block.get("demotion_check") or {}
     reason = demo.get("reason", "")
@@ -264,6 +285,9 @@ def render_routing_decision(block: dict) -> list[str]:
         if role == "dev":
             lines.append("  adaptive mechanisms:")
             _render_dev_mechanisms(role_block, lines)
+        elif role == "planner" and role_block.get("plan_model_escalation"):
+            lines.append("  adaptive mechanisms:")
+            _render_planner_mechanisms(role_block, lines)
         elif role in ("plan_review", "code_review"):
             lines.append("  adaptive mechanisms:")
             _render_reviewer_mechanisms(role_block, lines)
