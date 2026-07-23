@@ -1462,8 +1462,6 @@ def _build_routing_decision(
     dev_effective_tier: str,
     preflight_tier: str | None,
     planner_tier: str | None,
-    min_reviewers: int = 1,
-    max_reviewers: int = 1,
     dev_signals: dict[str, dict],
     promotion_block: dict[str, object],
     planner_model: str,
@@ -1480,6 +1478,8 @@ def _build_routing_decision(
     pr_completion_audit: dict[str, object] | None = None,
     cr_completion_signals: dict[str, dict] | None = None,
     cr_completion_audit: dict[str, object] | None = None,
+    min_reviewers: int = 1,
+    max_reviewers: int = 1,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 

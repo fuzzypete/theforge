@@ -97,6 +97,39 @@ def _render_candidate_pool(pool: list[dict], lines: list[str]) -> None:
             lines.append(f"        success_rate: {_fmt_signal(success_rate)}")
 
 
+def _render_score_policy(role_block: dict, lines: list[str]) -> None:
+    """Render the per-axis score-to-routing policy (#1019) for a role.
+
+    One line per axis naming the applied score bucket, its covering range, the
+    thresholds, and the selected output — the operator-facing view of what the
+    complexity score actually controlled. Axes not driven by the score (or with
+    no numeric score) print their recorded reason instead of a fabricated bucket.
+    """
+    policy = role_block.get("score_policy") or {}
+    if not isinstance(policy, dict) or not policy:
+        return
+    lines.append("  score policy:")
+    for axis in policy.values():
+        if not isinstance(axis, dict):
+            continue
+        name = axis.get("axis", "?")
+        if axis.get("applied"):
+            bucket = axis.get("bucket")
+            rng = axis.get("range")
+            thresholds = axis.get("thresholds")
+            output = axis.get("output")
+            detail = f"score={axis.get('score')} → bucket={bucket} range={rng} output={output}"
+            if isinstance(axis.get("resolved_count"), int):
+                detail += f" resolved_count={axis['resolved_count']}"
+            if isinstance(axis.get("seated_count"), int):
+                detail += f" seated={axis['seated_count']}"
+            if thresholds:
+                detail += f" (thresholds {thresholds})"
+        else:
+            detail = f"not applied — {axis.get('reason', 'not_score_controlled')}"
+        lines.append(f"    {name}: {detail}")
+
+
 def _render_mechanism(label: str, state: tuple[str, str], detail: str, lines: list[str]) -> None:
     glyph, state_text = state
     suffix = f" — {detail}" if detail else ""
@@ -256,6 +289,15 @@ def render_routing_decision(block: dict) -> list[str]:
     excluded_for_taint = block.get("excluded_for_taint")
     if isinstance(excluded_for_taint, int) and excluded_for_taint > 0:
         lines.append(f"excluded for taint: {excluded_for_taint} run(s) set aside (not deleted)")
+    # reasoning_effort is a score axis not tied to a role (#1019): recorded
+    # top-level as intentionally NOT score-controlled. Surface it so the operator
+    # sees the axis was considered and deliberately excluded, not overlooked.
+    reasoning = block.get("reasoning_effort")
+    if isinstance(reasoning, dict) and reasoning:
+        lines.append(
+            f"reasoning_effort: not score-controlled — {reasoning.get('reason', '')} "
+            f"({reasoning.get('rationale', '')})".rstrip()
+        )
     for role in _ROLE_ORDER:
         role_block = block.get(role)
         if not isinstance(role_block, dict):
@@ -275,6 +317,8 @@ def render_routing_decision(block: dict) -> list[str]:
         lines.append("-" * 60)
 
         _render_final(role_block, lines)
+
+        _render_score_policy(role_block, lines)
 
         lines.append("  candidate pool:")
         _render_candidate_pool(role_block.get("candidate_pool") or [], lines)

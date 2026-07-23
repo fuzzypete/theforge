@@ -400,6 +400,23 @@ def test_score_policy_low_score_routes_to_min_reviewers(_keys_except_deepseek):
     assert count["resolved_count"] == 1
 
 
+def test_score_policy_mid_score_routes_to_midpoint_reviewers(_keys_except_deepseek):
+    """A mid-range score (5-7) selects the midpoint reviewer-count bucket
+    end-to-end through _build_routing_decision / _reviewer_count_policy."""
+    decision = assign_models(
+        _agents(), _cfg(min_reviewers=1, max_reviewers=3), complexity="MEDIUM", complexity_score=6
+    )
+    dev_axis = decision.routing_decision["dev"]["score_policy"]["dev_tier"]
+    assert dev_axis["bucket"] == "mid"
+    assert dev_axis["range"] == [4, 6]
+    for role in ("plan_review", "code_review"):
+        count = decision.routing_decision[role]["score_policy"]["reviewer_count"]
+        assert count["bucket"] == "mid"
+        assert count["range"] == [5, 7]
+        # midpoint of [1, 3] = 1 + (3 - 1 + 1) // 2 = 2
+        assert count["resolved_count"] == 2
+
+
 def test_score_policy_marks_static_fallback_without_score(_keys_except_deepseek):
     """Static band routing (no numeric score) still records the axis with the
     static-fallback reason and full threshold table — never a fabricated bucket."""
