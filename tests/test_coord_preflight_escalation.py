@@ -33,6 +33,7 @@ from theforge.coordinator.preflight import (
 )
 from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.review import ReviewFinding
+from theforge.task import TaskStory
 
 # ── Dev model escalation tests ────────────────────────────────────────
 
@@ -494,6 +495,17 @@ class TestDevModelEscalationIntegration:
         assert result.state.dev_escalated is True
         # After escalation, dev should have used opus
         assert "opus" in dev_profiles
+        persistent_p1_dev_escalation = result.state.routing_decision["dev"][
+            "persistent_p1_dev_escalation"
+        ]
+        assert persistent_p1_dev_escalation["mechanism"] == "persistent_p1_dev_escalation"
+        assert persistent_p1_dev_escalation["signal"]["kind"] == "persistent_p1"
+        assert persistent_p1_dev_escalation["model_swap"] == {
+            "from_model": "sonnet",
+            "to_model": "opus",
+        }
+        assert persistent_p1_dev_escalation["scope"] == "run"
+        assert persistent_p1_dev_escalation["return_path"] == "fresh_run_state_reset"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -684,6 +696,85 @@ class TestDevModelEscalationIntegration:
         assert "budget" not in result.message.lower()
         # Escalation flag never set (unproductive-attempt guard fired first)
         assert result.state.dev_escalated is False
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_run_scoped_reset_starts_next_story_at_normal_dev_tier(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """A persistent-P1 escalation is scoped to one run; the next story starts fresh."""
+        config = _make_smart_config(tmp_path, max_review_cycles=3)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+        second_task = TaskStory(
+            name="Second Task",
+            story_path=tmp_path / "spec-second.md",
+            slug="test-task-2",
+        )
+        second_task.story_path.write_text(
+            "# Second Spec\n\nImplement the second thing.",
+            encoding="utf-8",
+        )
+        second_workspace = tmp_path / second_task.slug
+        second_workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        first_run_profiles: list[str] = []
+
+        def first_run_agent(**kwargs):
+            first_run_profiles.append(kwargs["profile"].model)
+            return _make_agent_result()
+
+        mock_agent.side_effect = first_run_agent
+        pool_call = {"n": 0}
+
+        def first_run_pool(**kwargs):
+            pool_call["n"] += 1
+            if pool_call["n"] <= 2:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=_PERSISTENT_P1_REVIEW,
+                        profile_name="claude-opus",
+                    )
+                ]
+            return [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+            ]
+
+        mock_pool.side_effect = first_run_pool
+
+        first_result = run_task(config, task)
+
+        assert first_result.success is True
+        assert first_result.state.dev_escalated is True
+        assert "opus" in first_run_profiles
+
+        mock_shell.side_effect = _shell_with_gate(second_workspace, "PASS")
+        second_run_profiles: list[str] = []
+
+        def second_run_agent(**kwargs):
+            second_run_profiles.append(kwargs["profile"].model)
+            return _make_agent_result()
+
+        mock_agent.side_effect = second_run_agent
+        mock_pool.side_effect = [
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")]
+        ]
+
+        second_result = run_task(config, second_task)
+
+        assert second_result.success is True
+        assert second_result.state.dev_escalated is False
+        assert second_run_profiles
+        assert second_run_profiles[0] == "sonnet"
 
 
 class TestAutoModelEscalationFlag:
