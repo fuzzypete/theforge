@@ -706,9 +706,7 @@ class TestDevModelEscalationIntegration:
         assert dev_profiles
         assert all(model == "sonnet" for model in dev_profiles)
         if result.state.routing_decision is not None:
-            assert (
-                result.state.routing_decision["dev"].get("persistent_p1_dev_escalation") is None
-            )
+            assert result.state.routing_decision["dev"].get("persistent_p1_dev_escalation") is None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
