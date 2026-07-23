@@ -1055,7 +1055,6 @@ def _run_fresh(
                 interactive=interactive,
                 auto_merge=effective_auto_merge,
                 notify=notify,
-                run_id=sprint_run_id,
                 sprint_name=sprint_name,
                 state_update_fn=state_update_fn,
                 no_pull=no_pull,
@@ -1069,7 +1068,6 @@ def _run_fresh(
             interactive=interactive,
             auto_merge=effective_auto_merge,
             notify=notify,
-            run_id=sprint_run_id,
             sprint_name=sprint_name,
             state_update_fn=state_update_fn,
             no_pull=no_pull,
@@ -1085,7 +1083,6 @@ def _run_fresh(
         interactive=interactive,
         auto_merge=False,
         notify=notify,
-        run_id=sprint_run_id,
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
         no_pull=no_pull,
@@ -1123,7 +1120,6 @@ def _run_fresh(
         interactive=interactive,
         auto_merge=effective_auto_merge,
         notify=notify,
-        run_id=sprint_run_id,
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
         no_pull=no_pull,
@@ -1177,7 +1173,6 @@ def _run_single_story(
                     interactive=interactive,
                     auto_merge=effective_auto_merge,
                     notify=notify,
-                    run_id=sprint_run_id,
                     sprint_name=sprint_name,
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
@@ -1193,7 +1188,6 @@ def _run_single_story(
                     interactive=interactive,
                     auto_merge=effective_auto_merge,
                     notify=notify,
-                    run_id=sprint_run_id,
                     sprint_name=sprint_name,
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
@@ -2672,9 +2666,10 @@ def run_sprint(
         # Read effective mode from the pending merge action stored by _finalize_approve.
         # Falls back to config.workspace.on_approve for legacy/direct callers.
         effective_on_approve = (result.merge or {}).get("action") or config.workspace.on_approve
+        story_run_id = result.state.run_id or _sprint_run_id
 
         story_logger = StructuredLogger(
-            run_id=_sprint_run_id,
+            run_id=story_run_id,
             project=config.project,
             task=task.slug,
             log_file=config.log.log_file,
@@ -2697,7 +2692,7 @@ def run_sprint(
                 result.state,
                 effective_on_approve,
                 logger=story_logger,
-                run_id=_sprint_run_id,
+                run_id=story_run_id,
             )
 
         result.merge = merge_info

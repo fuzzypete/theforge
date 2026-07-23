@@ -777,7 +777,7 @@ def _write_sprint_summary(
                 "verdict": last_verdict or None,
                 "cost_usd": _entry_cost,
                 "dev_model": _dev_model,
-                "story_run_id": run_id,
+                "story_run_id": getattr(res.state, "run_id", None) or run_id,
                 "preflight": preflight,
                 "preflight_original_verdict": getattr(
                     res.state, "preflight_cached_original_verdict", None
