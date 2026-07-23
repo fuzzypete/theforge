@@ -811,7 +811,7 @@ class TestAuditStartStopPhase:
 
 class TestSprintStoryAuditHistory:
     def test_write_story_audit_persists_to_substrate(self, tmp_path: Path) -> None:
-        """Story audit goes into the SQLite substrate; legacy history.jsonl is gone."""
+        """Story audit goes into rebuildable native storage; legacy history.jsonl is gone."""
         from theforge.sprint.audit import _write_story_audit
 
         config = _make_config(tmp_path)
@@ -826,9 +826,32 @@ class TestSprintStoryAuditHistory:
 
         _write_story_audit(config, task, result)
 
-        # Substrate is the canonical write path — substrate file must exist.
+        run_file = audit_substrate.runs_dir(tmp_path) / "test-run-001.json"
+        assert run_file.exists()
+
+        # Substrate is the query path and must point at the canonical run file.
         sub_path = audit_substrate.substrate_path(tmp_path)
         assert sub_path.exists()
+        conn = audit_substrate.open_readonly(tmp_path)
+        try:
+            row = conn.execute(
+                "SELECT source_path FROM audit_records WHERE run_id = ?",
+                ("test-run-001",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["source_path"] == ".forge/audits/runs/test-run-001.json"
+
+        audit_substrate.rebuild_from_runs(tmp_path)
+        conn = audit_substrate.open_readonly(tmp_path)
+        try:
+            rebuilt = audit_substrate.latest_record_for(conn, run_id="test-run-001")
+        finally:
+            conn.close()
+        assert rebuilt is not None
+        assert rebuilt["task"]["slug"] == task.slug
+
         # Legacy jsonl path must NOT be written.
         history_path = tmp_path / ".forge" / "audits" / "history.jsonl"
         assert not history_path.exists()
