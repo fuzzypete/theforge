@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -290,12 +291,18 @@ def test_workspace_effect_command_grants_worktree_git_writes_macos(tmp_path: Pat
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-only sandbox-exec test")
-def test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice(
-    tmp_path: Path,
-) -> None:
+def test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice() -> None:
     """Executable regression for #1443/#1907: under the real sandbox profile a
     legitimate commit inside the story worktree succeeds, while writing/committing
-    to the project root or a sibling worktree fails mechanically."""
+    to the project root or a sibling worktree fails mechanically.
+
+    The project tree is anchored under /private/var/tmp rather than pytest's
+    tmp_path: the sandbox profile intentionally grants write to /tmp (agent
+    scratch), and under the scrubbed gate (env -i strips TMPDIR) tmp_path lands
+    in /tmp, which would make every "write is denied" assertion vacuously fail.
+    /private/var/tmp is a real, writable, non-granted location on macOS — the
+    same relationship the real worktree has to the project checkout.
+    """
     git = shutil.which("git")
     if git is None:
         pytest.skip("git unavailable")
@@ -310,10 +317,13 @@ def test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice(
     if probe.returncode != 0 and "Operation not permitted" in (probe.stderr + probe.stdout):
         pytest.skip("sandbox-exec present but denied by host environment")
 
+    base = Path("/private/var/tmp")
+    if not base.is_dir():
+        pytest.skip("/private/var/tmp unavailable")
+
     from theforge.runners.sandbox import workspace_effect_sandbox_command
 
-    proot = tmp_path / "proj"
-    proot.mkdir()
+    proot = Path(tempfile.mkdtemp(dir=str(base))).resolve()
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "t",
@@ -327,63 +337,66 @@ def test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice(
             [git, *args], cwd=str(cwd), capture_output=True, text=True, env=env, check=True
         )
 
-    _git("init", "-q", "-b", "main", cwd=proot)
-    (proot / "base.txt").write_text("hello\n", encoding="utf-8")
-    _git("add", "base.txt", cwd=proot)
-    _git("commit", "-qm", "init", cwd=proot)
-    main_sha_before = _git("rev-parse", "main", cwd=proot).stdout.strip()
-    (proot / ".forge" / "worktrees").mkdir(parents=True)
-    worktree = proot / ".forge" / "worktrees" / "issue-1443"
-    sibling = proot / ".forge" / "worktrees" / "issue-999"
-    _git("worktree", "add", "-q", str(worktree), "-b", "feat/issue-1443", cwd=proot)
-    _git("worktree", "add", "-q", str(sibling), "-b", "feat/issue-999", cwd=proot)
+    try:
+        _git("init", "-q", "-b", "main", cwd=proot)
+        (proot / "base.txt").write_text("hello\n", encoding="utf-8")
+        _git("add", "base.txt", cwd=proot)
+        _git("commit", "-qm", "init", cwd=proot)
+        main_sha_before = _git("rev-parse", "main", cwd=proot).stdout.strip()
+        (proot / ".forge" / "worktrees").mkdir(parents=True)
+        worktree = proot / ".forge" / "worktrees" / "issue-1443"
+        sibling = proot / ".forge" / "worktrees" / "issue-999"
+        _git("worktree", "add", "-q", str(worktree), "-b", "feat/issue-1443", cwd=proot)
+        _git("worktree", "add", "-q", str(sibling), "-b", "feat/issue-999", cwd=proot)
 
-    # Clear the lru-cached probe: an earlier test that mocked subprocess.run can
-    # have poisoned it to False for this worker.
-    from theforge.runners import sandbox as _sbmod
+        # Clear the lru-cached probe: an earlier test that mocked subprocess.run
+        # can have poisoned it to False for this worker.
+        from theforge.runners import sandbox as _sbmod
 
-    _sbmod._sandbox_available.cache_clear()
-    wrapped = workspace_effect_sandbox_command(["true"], worktree)
-    if wrapped[0] != "sandbox-exec":
-        pytest.skip("host sandbox wrapper unavailable in this environment")
-    profile = wrapped[2]
+        _sbmod._sandbox_available.cache_clear()
+        wrapped = workspace_effect_sandbox_command(["true"], worktree)
+        if wrapped[0] != "sandbox-exec":
+            pytest.skip("host sandbox wrapper unavailable in this environment")
+        profile = wrapped[2]
 
-    def _sandboxed(script: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["sandbox-exec", "-p", profile, "bash", "-c", script],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
+        def _sandboxed(script: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["sandbox-exec", "-p", profile, "bash", "-c", script],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+
+        # 1. Legitimate commit inside the story worktree SUCCEEDS.
+        ok = _sandboxed(
+            f"cd {worktree} && echo work > feature.txt && {git} add feature.txt && "
+            f"{git} commit -qm 'legit worktree commit'"
         )
+        assert ok.returncode == 0, f"worktree commit failed: {ok.stderr}"
 
-    # 1. Legitimate commit inside the story worktree SUCCEEDS.
-    ok = _sandboxed(
-        f"cd {worktree} && echo work > feature.txt && {git} add feature.txt && "
-        f"{git} commit -qm 'legit worktree commit'"
-    )
-    assert ok.returncode == 0, f"worktree commit failed: {ok.stderr}"
+        # 2. Writing a source file in the project root FAILS.
+        rogue_write = _sandboxed(f"echo x > {proot}/rogue.txt")
+        assert rogue_write.returncode != 0
+        assert not (proot / "rogue.txt").exists()
 
-    # 2. Writing a source file in the project root FAILS.
-    rogue_write = _sandboxed(f"echo x > {proot}/rogue.txt")
-    assert rogue_write.returncode != 0
-    assert not (proot / "rogue.txt").exists()
+        # 3. The #1443 vector — commit from the project root — FAILS.
+        rogue_commit = _sandboxed(
+            f"cd {proot} && echo x >> base.txt && {git} add base.txt && {git} commit -qm rogue"
+        )
+        assert rogue_commit.returncode != 0
 
-    # 3. The #1443 vector — commit from the project root — FAILS.
-    rogue_commit = _sandboxed(
-        f"cd {proot} && echo x >> base.txt && {git} add base.txt && {git} commit -qm rogue"
-    )
-    assert rogue_commit.returncode != 0
+        # 4. Rewriting the main branch ref FAILS (main is unchanged).
+        rogue_ref = _sandboxed(f"cd {worktree} && {git} update-ref refs/heads/main HEAD")
+        assert rogue_ref.returncode != 0
+        assert _git("rev-parse", "main", cwd=proot).stdout.strip() == main_sha_before
 
-    # 4. Rewriting the main branch ref FAILS (main is unchanged).
-    rogue_ref = _sandboxed(f"cd {worktree} && {git} update-ref refs/heads/main HEAD")
-    assert rogue_ref.returncode != 0
-    assert _git("rev-parse", "main", cwd=proot).stdout.strip() == main_sha_before
-
-    # 5. Writing into a sibling worktree FAILS.
-    sibling_write = _sandboxed(f"echo x > {sibling}/rogue.txt")
-    assert sibling_write.returncode != 0
-    assert not (sibling / "rogue.txt").exists()
+        # 5. Writing into a sibling worktree FAILS.
+        sibling_write = _sandboxed(f"echo x > {sibling}/rogue.txt")
+        assert sibling_write.returncode != 0
+        assert not (sibling / "rogue.txt").exists()
+    finally:
+        shutil.rmtree(proot, ignore_errors=True)
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-only sandbox-exec test")
