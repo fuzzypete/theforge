@@ -119,6 +119,31 @@ class ReviewerAttempt:
 
 
 @dataclass
+class RoleAttempt:
+    """One non-dev single-model invocation outcome, recorded per attempt (#1489).
+
+    The preflight/planner analog of :class:`ReviewerAttempt`. A role that retries
+    (preflight parse-retry) or falls back to a different model (preflight fallback)
+    or is retried at transport (planner) produces *several* native invocations in a
+    single run; each is one ``RoleAttempt`` so the derived reliability rate is
+    complete over attempts (ADR-0006 clause 2) and each attempt is attributed to the
+    model that actually ran it — a failed primary followed by a healthy fallback
+    must not improve the primary's completion history.
+
+    ``completed`` is the single load-bearing boolean: did this invocation return a
+    usable, parseable result? Identity fields key the fold under the same canonical
+    model ID the router looks the role up by.
+    """
+
+    name: str
+    completed: bool
+    actual_model: str | None = None
+    provider: str | None = None
+    cli: str | None = None
+    cost_usd: float | None = None
+
+
+@dataclass
 class RunOutcome:
     """Everything ``update_from_run`` needs about one coordinator run.
 
@@ -160,25 +185,28 @@ class RunOutcome:
     preflight_provider: str | None = None
     preflight_cli: str | None = None
     preflight_cost_usd: float | None = None  # None = cost unmeasured
-    # Preflight reliability signal (#1489): did the preflight invocation return a
-    # usable, parseable result this run? A deterministic aggregate over the native
-    # preflight telemetry (transport/parse failure ⇒ False; a degraded or hard-
-    # failed run ⇒ False; a cached run that ran no model ⇒ None). ``None`` means
-    # "no admissible preflight attempt to record" (cached / preflight didn't run),
-    # so the completion counters are left untouched — never folded as a $0-style
-    # zero. Mirrors the reviewer attempt-completion signal (#1388).
-    preflight_completed: bool | None = None
-    # Planner role identity + reliability (#1489). Recorded so non-dev adaptive
-    # routing can consult the planner's admissible completion history the same way
-    # reviewer routing consults reviewer-attempt completion. ``planner_model`` empty
-    # / ``planner_completed`` None means planning did not run (or produced no
+    # Preflight reliability, one entry per native preflight invocation (#1489).
+    # Unlike a single collapsed boolean, this carries a ``RoleAttempt`` for every
+    # attempt the phase ran — the primary, any same-profile parse-retry, and a
+    # fallback model — each attributed to the model that actually ran it, so a
+    # failed primary followed by a healthy fallback records a failure for the
+    # primary and a success for the fallback (never a spurious primary success).
+    # Empty ⇒ no admissible preflight attempt to record (cached / preflight
+    # skipped), so the completion counters are left untouched. Mirrors the reviewer
+    # attempt-completion signal (#1388).
+    preflight_attempts: list[RoleAttempt] = field(default_factory=list)
+    # Planner role identity + reliability (#1489). ``planner_model``/cost feed the
+    # per-phase cost aggregate; ``planner_attempts`` carries one ``RoleAttempt`` per
+    # native plan-generation invocation — including transport-retry failures that a
+    # later successful plan output would otherwise hide — so the completion signal
+    # is complete over attempts. Empty ⇒ planning did not run (or produced no
     # attempt) this run, so nothing is folded.
     planner_model: str | None = None
     planner_actual_model: str | None = None
     planner_provider: str | None = None
     planner_cli: str | None = None
     planner_cost_usd: float | None = None  # None = cost unmeasured
-    planner_completed: bool | None = None
+    planner_attempts: list[RoleAttempt] = field(default_factory=list)
     reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
     # Every reviewer invocation this run, including failures (#1388). Unlike
     # ``reviewers`` (which is survivorship-biased — only reviewers that returned a
@@ -750,15 +778,34 @@ def _update_review_completion(entry: dict, completed: bool, tainted: bool = Fals
     _fold_completion_counters(rev, completed)
 
 
-def _update_preflight(
-    entry: dict,
-    cost_usd: float | None,
-    tainted: bool = False,
-    completed: bool | None = None,
+def _update_role_completion(
+    entry: dict, role: str, completed: bool, tainted: bool = False
 ) -> None:
+    """Fold one non-dev single-model invocation's completion into ``entry[role]``.
+
+    The per-attempt reliability fold for preflight/planner (#1489), invoked once per
+    :class:`RoleAttempt` so retries and fallbacks each land under the model that ran
+    them. Decoupled from the phase-level runs/cost fold (:func:`_update_preflight` /
+    :func:`_update_planner`): the completion signal is complete over *attempts*
+    while cost is aggregated per *phase*, so the two counters are independent.
+
+    Taint gate (ADR-0006 clause 4): a tainted run "doesn't teach", so its attempt is
+    kept out of the completion aggregate. The ``tainted_runs`` tally is owned by the
+    per-phase fold (:func:`_update_preflight` / :func:`_update_planner`) so a single
+    tainted run is counted once, not once per attempt — this fold only skips.
+    """
+    if tainted:
+        return
+    section = entry.setdefault(role, {})
+    _fold_completion_counters(section, completed)
+
+
+def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
     pf = entry.setdefault("preflight", {})
-    # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the
-    # preflight capability aggregate and tallied under ``tainted_runs`` instead.
+    # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the preflight
+    # capability aggregate and tallied under ``tainted_runs`` instead. This
+    # per-phase fold owns the single tainted-run tally (the per-attempt completion
+    # fold only skips) so one tainted run is counted once.
     if tainted:
         pf["tainted_runs"] = int(pf.get("tainted_runs", 0)) + 1
         return
@@ -771,27 +818,17 @@ def _update_preflight(
     runs = int(pf.get("runs", 0)) + 1
     pf["runs"] = runs
     _fold_cost(pf, cost_usd)
-    # Reliability signal (#1489): fold the attempt-completion outcome when the run
-    # produced one. ``None`` = no admissible preflight attempt (cached / skipped),
-    # so the completion counters are left untouched.
-    if completed is not None:
-        _fold_completion_counters(pf, bool(completed))
 
 
-def _update_planner(
-    entry: dict,
-    cost_usd: float | None,
-    tainted: bool = False,
-    completed: bool | None = None,
-) -> None:
-    """Fold one planner run into the ``planner`` section (#1489).
+def _update_planner(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
+    """Fold one planner phase's runs + cost into the ``planner`` section (#1489).
 
-    Parallel to :func:`_update_preflight`: records ``runs``/cost plus the
-    attempt-completion reliability signal so non-dev routing can deprioritize a
-    planner model that repeatedly fails to return a usable plan. Same taint gate as
-    every other capability aggregate (ADR-0006 clause 4).
+    Parallel to :func:`_update_preflight`. Per-attempt reliability is folded
+    separately by :func:`_update_role_completion`. Same taint gate as every other
+    capability aggregate (ADR-0006 clause 4).
     """
     pl = entry.setdefault("planner", {})
+    # Per-phase taint tally (owns the single count; the per-attempt fold only skips).
     if tainted:
         pl["tainted_runs"] = int(pl.get("tainted_runs", 0)) + 1
         return
@@ -804,8 +841,6 @@ def _update_planner(
     runs = int(pl.get("runs", 0)) + 1
     pl["runs"] = runs
     _fold_cost(pl, cost_usd)
-    if completed is not None:
-        _fold_completion_counters(pl, bool(completed))
 
 
 def _zero_dev_bucket(bucket: dict) -> None:
@@ -975,16 +1010,18 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             provider=outcome.preflight_provider,
             cli=outcome.preflight_cli,
         )
-        _update_preflight(
-            pf_entry,
-            outcome.preflight_cost_usd,
-            tainted=outcome.dev_tainted,
-            completed=outcome.preflight_completed,
+        _update_preflight(pf_entry, outcome.preflight_cost_usd, tainted=outcome.dev_tainted)
+    # Preflight reliability telemetry (#1489): fold one completion outcome per
+    # native preflight invocation under the model that actually ran it, so a
+    # parse-retry or fallback is attributed correctly (never collapsed onto the
+    # configured primary). Decoupled from the per-phase cost fold above.
+    for att in outcome.preflight_attempts:
+        att_entry = _ensure_model(
+            data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
         )
-    # Planner reliability telemetry (#1489): fold the planner's run + attempt-
-    # completion outcome under its canonical model ID so non-dev routing can
-    # consult the planner's admissible completion history. Skipped when planning
-    # did not run this story (``planner_model`` empty).
+        _update_role_completion(att_entry, "preflight", att.completed, tainted=outcome.dev_tainted)
+    # Planner cost telemetry (#1489): fold the planner phase's runs + cost under its
+    # canonical model ID. Per-attempt reliability is folded separately below.
     if outcome.planner_model:
         pl_entry = _ensure_model(
             data,
@@ -993,12 +1030,15 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             provider=outcome.planner_provider,
             cli=outcome.planner_cli,
         )
-        _update_planner(
-            pl_entry,
-            outcome.planner_cost_usd,
-            tainted=outcome.dev_tainted,
-            completed=outcome.planner_completed,
+        _update_planner(pl_entry, outcome.planner_cost_usd, tainted=outcome.dev_tainted)
+    # Planner reliability telemetry (#1489): one completion outcome per native
+    # plan-generation invocation, so transport-retry failures contribute failed
+    # attempts rather than being hidden by a later successful plan output.
+    for att in outcome.planner_attempts:
+        att_entry = _ensure_model(
+            data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
         )
+        _update_role_completion(att_entry, "planner", att.completed, tainted=outcome.dev_tainted)
     # Reviewer identity from the attempt records (#1388) lets findings/cost and
     # completion telemetry fold under the SAME canonical model ID the router looks
     # a reviewer up by — otherwise findings would key by bare profile name while

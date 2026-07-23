@@ -17,6 +17,7 @@ import pytest
 from theforge.assignment import AssignmentConfig, assign_models
 from theforge.config import AgentDef, ModelProfile
 from theforge.model_profiles import (
+    RoleAttempt,
     RunOutcome,
     apply_run,
     get_role_reliability_signal,
@@ -91,12 +92,16 @@ def test_apply_run_folds_preflight_and_planner_completion():
         preflight_actual_model="haiku",
         preflight_provider="anthropic",
         preflight_cost_usd=0.01,
-        preflight_completed=False,
+        preflight_attempts=[
+            RoleAttempt("pf-a", completed=False, actual_model="haiku", provider="anthropic")
+        ],
         planner_model="pl-a",
         planner_actual_model="opus",
         planner_provider="anthropic",
         planner_cost_usd=0.02,
-        planner_completed=True,
+        planner_attempts=[
+            RoleAttempt("pl-a", completed=True, actual_model="opus", provider="anthropic")
+        ],
     )
     apply_run(data, outcome)
 
@@ -110,8 +115,62 @@ def test_apply_run_folds_preflight_and_planner_completion():
     assert pl["completion_rate"] == 1.0
 
 
-def test_preflight_completion_none_records_no_attempt():
-    # A cached preflight (completed=None) still records runs/cost but folds no
+def test_preflight_retry_then_fallback_attributes_per_attempt():
+    # A failed primary + successful fallback must record a FAILURE for the primary
+    # and a SUCCESS for the fallback — never a spurious primary success (#1489 P1).
+    data: dict = {"models": {}}
+    outcome = RunOutcome(
+        complexity="medium",
+        dev_model="dev",
+        dev_success=True,
+        dev_iterations=1,
+        dev_cost_usd=0.0,
+        preflight_model="pf-a",
+        preflight_actual_model="haiku",
+        preflight_provider="anthropic",
+        preflight_cost_usd=0.01,
+        preflight_attempts=[
+            RoleAttempt("pf-a", completed=False, actual_model="haiku", provider="anthropic"),
+            RoleAttempt("pf-b", completed=True, actual_model="gpt-mini", provider="openai"),
+        ],
+    )
+    apply_run(data, outcome)
+    primary = data["models"]["anthropic/haiku/api"]["preflight"]
+    assert primary["_attempted_count"] == 1
+    assert primary["_completed_count"] == 0
+    fallback = data["models"]["openai/gpt-mini/api"]["preflight"]
+    assert fallback["_attempted_count"] == 1
+    assert fallback["_completed_count"] == 1
+
+
+def test_planner_transport_retry_folds_failed_attempt():
+    # A transport-retry failure followed by a successful plan output must still
+    # record the failed attempt — not be hidden by the later success (#1489).
+    data: dict = {"models": {}}
+    outcome = RunOutcome(
+        complexity="medium",
+        dev_model="dev",
+        dev_success=True,
+        dev_iterations=1,
+        dev_cost_usd=0.0,
+        planner_model="pl-a",
+        planner_actual_model="opus",
+        planner_provider="anthropic",
+        planner_cost_usd=0.02,
+        planner_attempts=[
+            RoleAttempt("pl-a", completed=False, actual_model="opus", provider="anthropic"),
+            RoleAttempt("pl-a", completed=True, actual_model="opus", provider="anthropic"),
+        ],
+    )
+    apply_run(data, outcome)
+    pl = data["models"]["anthropic/opus/api"]["planner"]
+    assert pl["_attempted_count"] == 2
+    assert pl["_completed_count"] == 1
+    assert pl["completion_rate"] == 0.5
+
+
+def test_no_preflight_attempts_records_no_completion():
+    # A cached preflight (no attempts) still records runs/cost but folds no
     # completion attempt, so the reliability signal stays cold-start.
     data: dict = {"models": {}}
     outcome = RunOutcome(
@@ -124,7 +183,7 @@ def test_preflight_completion_none_records_no_attempt():
         preflight_actual_model="haiku",
         preflight_provider="anthropic",
         preflight_cost_usd=0.01,
-        preflight_completed=None,
+        preflight_attempts=[],
     )
     apply_run(data, outcome)
     pf = data["models"]["anthropic/haiku/api"]["preflight"]
@@ -149,7 +208,9 @@ def test_role_reliability_signal_excludes_tainted_runs():
                 preflight_actual_model="haiku",
                 preflight_provider="anthropic",
                 preflight_cost_usd=0.0,
-                preflight_completed=True,
+                preflight_attempts=[
+                    RoleAttempt("pf-a", completed=True, actual_model="haiku", provider="anthropic")
+                ],
                 dev_tainted=True,
             ),
         )
@@ -342,7 +403,11 @@ def test_bridge_roundtrip_teaches_role_reliability(monkeypatch):
                 preflight_actual_model="haiku",
                 preflight_provider="anthropic",
                 preflight_cost_usd=0.0,
-                preflight_completed=False,
+                preflight_attempts=[
+                    RoleAttempt(
+                        "pf-a", completed=False, actual_model="haiku", provider="anthropic"
+                    )
+                ],
             ),
         )
     sig = get_role_reliability_signal(
