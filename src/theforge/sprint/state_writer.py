@@ -211,6 +211,27 @@ def write_bootstrap_state(
     per-story data.
     """
     state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
+
+    # If state file already exists and contains a sprint_id or non-waiting stories,
+    # don't overwrite it as this would blank the board during an active sprint
+    if state_path.exists():
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                existing_data = yaml.safe_load(f) or {}
+
+            # Check if sprint_id is set (not None/null)
+            if existing_data.get("sprint_id") is not None:
+                return state_path
+
+            # Check if any story has a non-waiting status
+            existing_stories = existing_data.get("stories", [])
+            for story in existing_stories:
+                if story.get("status") != "waiting":
+                    return state_path
+        except (OSError, yaml.YAMLError):
+            # If we can't read the file, proceed with writing bootstrap state
+            pass
+
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     stories: list[dict] = []
