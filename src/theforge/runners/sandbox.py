@@ -108,6 +108,98 @@ def _dedupe_resolved(paths: list[Path] | tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(out)
 
 
+def _parse_worktree_gitdir(git_file: Path, root: Path) -> Path | None:
+    """Resolve the real gitdir from a linked worktree's ``.git`` pointer file."""
+    content = git_file.read_text(encoding="utf-8").strip()
+    prefix = "gitdir:"
+    if not content.startswith(prefix):
+        return None
+    target = Path(content[len(prefix) :].strip())
+    if not target.is_absolute():
+        target = root / target
+    return target.resolve()
+
+
+def _resolve_common_dir(gitdir: Path) -> Path | None:
+    """Resolve the shared common dir (object store + refs) for a worktree gitdir."""
+    commondir_file = gitdir / "commondir"
+    if commondir_file.exists():
+        rel = commondir_file.read_text(encoding="utf-8").strip()
+        candidate = Path(rel)
+        if not candidate.is_absolute():
+            candidate = gitdir / candidate
+        return candidate.resolve()
+    # Standard layout fallback: <common>/worktrees/<name>.
+    if gitdir.parent.name == "worktrees":
+        return gitdir.parent.parent.resolve()
+    return None
+
+
+def _worktree_branch_namespace(gitdir: Path, common: Path) -> Path | None:
+    """Return the shared refs dir holding the worktree's *own* branch ref.
+
+    E.g. HEAD ``ref: refs/heads/feat/issue-1907`` → ``<common>/refs/heads/feat``.
+    Scoping to the branch's namespace lets the worktree update (and lock) its own
+    ref while leaving sibling namespaces like ``refs/heads/main`` / ``release``
+    read-only. Returns None for a detached HEAD (no shared branch ref).
+    """
+    head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+    prefix = "ref:"
+    if not head.startswith(prefix):
+        return None
+    ref = head[len(prefix) :].strip()
+    if not ref:
+        return None
+    return (common / ref).resolve().parent
+
+
+def _git_worktree_write_roots(allowed_root: Path) -> tuple[Path, ...]:
+    """Writable git paths a wrapped CLI needs to commit *within* this worktree.
+
+    A linked git worktree keeps its private state under
+    ``<repo>/.git/worktrees/<name>`` and shares the object store and refs under
+    ``<repo>/.git`` — all outside the worktree root. Without write access there,
+    a legitimate ``git commit`` from the correctly-scoped worktree fails with
+    "Operation not permitted" (#1907 review P1).
+
+    Scope stays tight so containment is preserved: only the worktree's own
+    private gitdir, the shared object store and reflogs (a reflog cannot move a
+    ref), packed-refs, and the *namespace directory of the worktree's own branch
+    ref*. The main checkout's index/HEAD and other branches' refs stay
+    read-only, so ``cd <project-root> && git commit`` and
+    ``git update-ref refs/heads/main`` still fail mechanically (the #1443 vector).
+    """
+    root = allowed_root.resolve()
+    git_path = root / ".git"
+    try:
+        if not git_path.exists():
+            return ()
+        if git_path.is_dir():
+            # Non-worktree checkout: allowed_root is the repo itself; its whole
+            # .git is the private gitdir and there is no separate main checkout.
+            return (git_path.resolve(),)
+        gitdir = _parse_worktree_gitdir(git_path, root)
+        if gitdir is None:
+            return ()
+        roots: list[Path] = [gitdir]
+        common = _resolve_common_dir(gitdir)
+        if common is not None:
+            packed_refs = common / "packed-refs"
+            roots += [
+                common / "objects",
+                common / "logs",
+                packed_refs,
+                packed_refs.with_name("packed-refs.lock"),
+            ]
+            branch_ns = _worktree_branch_namespace(gitdir, common)
+            # Fall back to the shared refs dir only when the branch cannot be
+            # determined (e.g. detached HEAD) — a rare, functional degradation.
+            roots.append(branch_ns if branch_ns is not None else common / "refs")
+        return _dedupe_resolved(roots)
+    except OSError:
+        return ()
+
+
 @lru_cache(maxsize=None)
 def _credential_read_roots() -> tuple[Path, ...]:
     """Keychain directories a macOS CLI must open to authenticate under sandbox.
@@ -329,12 +421,17 @@ def workspace_effect_sandbox_command(
     access a CLI needs to authenticate under the sandbox (macOS securityd);
     without it, wrapping Claude reproduces the #925 "Not logged in" regression.
 
+    The worktree's own git internals (private gitdir, shared object store, and
+    its own branch-ref namespace) are granted automatically so ``git commit``
+    from the correctly-scoped worktree works, while the main checkout and other
+    branches' refs stay read-only.
+
     Returns *cmd* unchanged when no host sandbox (sandbox-exec/bwrap) is
     available — callers that require mechanical containment must detect this
     (``result[0] == cmd[0]``) and fail closed.
     """
     root = allowed_root.resolve()
-    extra_write_roots = tuple(extra_write_roots)
+    extra_write_roots = tuple(extra_write_roots) + _git_worktree_write_roots(root)
     blocked_worktrees = _blocked_worktree_roots(root)
     if _SYSTEM == "Darwin":
         profile = _macos_profile(
