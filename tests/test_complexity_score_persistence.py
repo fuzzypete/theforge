@@ -272,21 +272,42 @@ def test_bridge_propagates_complexity_score_from_state(tmp_path: Path) -> None:
     assert by_score["6"]["runs"] == 1
 
 
-def test_check_promotion_works_with_mixed_score_presence() -> None:
-    history = [
-        EscalationRecord(
-            story=f"s{i}",
-            complexity="MEDIUM",
-            dev_model="anthropic/sonnet/cli",
-            outcome="ESCALATE",
-            complexity_score=(7 if i == 0 else None),
-        )
-        for i in range(2)
-    ]
-    promoted = _check_promotion(
-        "MEDIUM",
-        "anthropic/sonnet/cli",
-        history,
-        sprint_promotions=None,
+def test_check_promotion_reads_profile_signal() -> None:
+    """Cross-run dev promotion now flows through the capability profiles (#158).
+
+    The complexity_score persisted on escalation records (this file's subject,
+    #1101) still round-trips, but the promotion decision no longer reads those
+    records: ``_check_promotion`` consults the model profile's recency-weighted
+    band success rate and fires when it is below threshold over the sample floor.
+    """
+    from theforge.config import AgentDef
+
+    dev_agent = AgentDef(
+        name="sonnet",
+        provider="anthropic",
+        model="sonnet",
+        budget_usd=5.0,
+        timeout_seconds=900,
+        tier="mid",
     )
-    assert promoted == "promoted"
+    profiles = {
+        "models": {
+            "sonnet": {
+                "dev": {
+                    "runs": 6,
+                    "success_rate": 0.0,
+                    "_recent": [0, 0, 0, 0, 0, 0],
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 6,
+                            "success_rate": 0.0,
+                            "_recent": [0, 0, 0, 0, 0, 0],
+                        }
+                    },
+                }
+            }
+        }
+    }
+    signal = _check_promotion("MEDIUM", dev_agent, profiles, threshold=0.60, min_runs=5)
+    assert signal.fired is True
+    assert signal.weighted is not None and signal.weighted < signal.threshold

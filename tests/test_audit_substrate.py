@@ -411,13 +411,15 @@ class TestEscalationProjection:
         complexities = [p["complexity"] for p in projected]
         assert complexities == ["LOW", "MEDIUM", "HIGH"]
 
-    def test_promotion_fires_from_two_substrate_escalations(self, tmp_path: Path) -> None:
-        """Two substrate ESCALATE rows for the same model trigger _check_promotion.
+    def test_projection_yields_canonical_identity_and_promotion_band(self, tmp_path: Path) -> None:
+        """Substrate ESCALATE rows project to a canonical dev identity + promotion band.
 
         Regression guard: pre-fix the projection emitted ``medium`` while the
-        promotion comparator used ``MEDIUM``, so the rows never matched.
+        promotion comparator used ``MEDIUM``, so the rows never matched. Cross-run
+        dev promotion now flows through the capability profiles (#158) seeded from
+        this same history, so the projection must still surface a canonical
+        ``dev_model`` and the normalized promotion band the profile reader keys on.
         """
-        from theforge.assignment import _check_promotion
         from theforge.coordinator.escalation_history import (
             load_escalation_history_from_substrate,
         )
@@ -441,16 +443,10 @@ class TestEscalationProjection:
             conn.close()
 
         history = load_escalation_history_from_substrate(tmp_path)
-        # All projected rows agree on the canonical dev model identity.
+        # All projected rows agree on the canonical dev model identity and the
+        # normalized promotion band (MEDIUM), not the raw lower-case audit band.
         assert all(r.dev_model == "anthropic/sonnet/cli" for r in history)
-        result = _check_promotion(
-            "MEDIUM",
-            "anthropic/sonnet/cli",
-            history,
-            sprint_promotions=None,
-            dev_canonical_id="anthropic/sonnet/cli",
-        )
-        assert result == "promoted"
+        assert {r.complexity for r in history} == {"MEDIUM"}
 
 
 class TestLoaderFailsLoudWhenAuditInputsExist:

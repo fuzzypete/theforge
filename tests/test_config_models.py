@@ -888,3 +888,47 @@ class TestAssignmentPlanTierReduction:
         )
         config = load_config(config_path)
         assert config.assignment.plan_tier_reduction is False
+
+
+class TestAssignmentDevPromotion:
+    """assignment.dev_promotion_threshold / dev_promotion_min_runs (#158) parsing."""
+
+    def test_omitted_uses_defaults(self):
+        from theforge.config.models import _parse_assignment
+
+        cfg = _parse_assignment({"enabled": True})
+        assert cfg.dev_promotion_threshold == 0.60
+        assert cfg.dev_promotion_min_runs == 5
+
+    def test_explicit_values_parsed(self):
+        from theforge.config.models import _parse_assignment
+
+        cfg = _parse_assignment(
+            {"enabled": True, "dev_promotion_threshold": 0.45, "dev_promotion_min_runs": 8}
+        )
+        assert cfg.dev_promotion_threshold == 0.45
+        assert cfg.dev_promotion_min_runs == 8
+
+    def test_out_of_range_threshold_is_rejected(self):
+        import pytest
+
+        from theforge.config.models import _parse_assignment
+
+        with pytest.raises(ValueError, match="dev_promotion_threshold"):
+            _parse_assignment({"enabled": True, "dev_promotion_threshold": 1.5})
+
+    def test_non_numeric_threshold_is_rejected(self):
+        import pytest
+
+        from theforge.config.models import _parse_assignment
+
+        with pytest.raises(ValueError, match="dev_promotion_threshold"):
+            _parse_assignment({"enabled": True, "dev_promotion_threshold": "high"})
+
+    def test_zero_min_runs_is_rejected(self):
+        import pytest
+
+        from theforge.config.models import _parse_assignment
+
+        with pytest.raises(ValueError, match="dev_promotion_min_runs"):
+            _parse_assignment({"enabled": True, "dev_promotion_min_runs": 0})
