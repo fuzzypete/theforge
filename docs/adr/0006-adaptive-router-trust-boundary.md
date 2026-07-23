@@ -282,6 +282,13 @@ agent invocations or new profile reads. The standard is: **a routing
 decision that cannot be reconstructed from the audit record alone is a
 defect in the router, not a gap in logging.** This is test-enforced as part
 of #1391's acceptance criteria, not left to review discretion.
+The score-to-routing policy each axis records in this block — which
+`complexity_score` bucket maps to which model tier or reviewer count — is
+owned by a single SSOT (`src/theforge/routing.py`) and described for operators
+in `docs/guides/routing-policy.md` (#1019). That guide is the canonical
+operator-facing statement of the intended per-axis bucket design; this clause
+does not restate the threshold tables.
+
 Operator-facing query surfaces (`forge explain`, `--dry-run` forms) are
 conveniences built on this block; the block is the contract. The operator-facing
 enable/disable/rollback procedure, the first-dogfood feature posture, and a

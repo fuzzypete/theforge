@@ -161,6 +161,33 @@ def test_render_excluded_reason_is_scannable() -> None:
     assert "health_deprioritized" in text
 
 
+def test_render_surfaces_score_policy_per_axis() -> None:
+    """The #1019 score-to-routing policy is rendered per role, and the
+    reasoning_effort axis is surfaced as intentionally not score-controlled."""
+    from theforge.routing import axis_decision
+
+    block = _routing_block()
+    block["reasoning_effort"] = axis_decision("reasoning_effort", 9)
+    block["dev"]["score_policy"] = {"dev_tier": axis_decision("dev_tier", 9)}
+    block["planner"]["score_policy"] = {"plan_tier": axis_decision("plan_tier", 9)}
+    count_axis = dict(axis_decision("reviewer_count", 9))
+    count_axis["resolved_count"] = 3
+    count_axis["seated_count"] = 1
+    block["code_review"]["score_policy"] = {
+        "reviewer_tier": axis_decision("plan_tier", 9),
+        "reviewer_count": count_axis,
+    }
+
+    text = "\n".join(explain.render_routing_decision(block))
+    assert "score policy:" in text
+    assert "dev_tier: score=9 → bucket=strong range=[7, 10] output=strong" in text
+    assert "reviewer_count:" in text
+    assert "resolved_count=3" in text
+    assert "seated=1" in text
+    # reasoning_effort is surfaced top-level as deliberately excluded.
+    assert "reasoning_effort: not score-controlled" in text
+
+
 def test_tri_state_distinguishes_not_checked_from_did_not_fire() -> None:
     """not-checked vs checked-did-not-fire vs fired must be distinguishable."""
     # promotion checked but did not fire → ◐; dev-tier demotion not applicable → ○.
