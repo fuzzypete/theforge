@@ -10,6 +10,10 @@ from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
+from theforge.assignment import (
+    MECHANISM_PERSISTENT_P1_DEV_ESCALATION,
+    MECHANISM_RUN_SCOPED_RESET,
+)
 from theforge.config import ForgeConfig, apply_model_info
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.escalation_advisor import (
@@ -102,6 +106,41 @@ def _perform_dev_model_escalation(
     old_model = config.dev_profile.model
     new_dev = apply_model_info(config.dev_profile, next_info)
     return old_model, next_info.model, _dc_replace(config, dev_profile=new_dev)
+
+
+def _record_persistent_p1_dev_escalation(
+    state: CoordinatorState,
+    *,
+    previous_model: str,
+    escalated_model: str,
+    persistent_descriptions: list[str],
+    p1_file: str,
+) -> None:
+    """Attach the in-run persistent-P1 escalation to the canonical audit block."""
+    if not isinstance(state.routing_decision, dict):
+        state.routing_decision = {"origin": "preflight"}
+
+    dev_block = state.routing_decision.get("dev")
+    if not isinstance(dev_block, dict):
+        dev_block = {}
+        state.routing_decision["dev"] = dev_block
+
+    dev_block["persistent_p1_dev_escalation"] = {
+        "mechanism": MECHANISM_PERSISTENT_P1_DEV_ESCALATION,
+        "fired": True,
+        "scope": "run",
+        "return_path": MECHANISM_RUN_SCOPED_RESET,
+        "signal": {
+            "kind": "persistent_p1",
+            "review_cycle": state.review_cycle,
+            "file": p1_file,
+            "descriptions": list(persistent_descriptions),
+        },
+        "model_swap": {
+            "from_model": previous_model,
+            "to_model": escalated_model,
+        },
+    }
 
 
 def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
@@ -1667,7 +1706,8 @@ def _run_review_phase(
 
     # Escalate dev model on persistent P1 (only when explicitly enabled via forge.yaml)
     if (
-        config.retry.auto_model_escalation
+        config.assignment.adaptive_enabled
+        and config.retry.auto_model_escalation
         and _is_persistent_p1
         and not state.dev_escalated
         and (
@@ -1689,6 +1729,13 @@ def _run_review_phase(
             _prev_result = state.review_results[-2]
             _persistent_descs = _persistent_p1_descriptions(
                 parsed_review.findings, _prev_result.findings
+            )
+            _record_persistent_p1_dev_escalation(
+                state,
+                previous_model=_old_model,
+                escalated_model=_new_model_name,
+                persistent_descriptions=_persistent_descs,
+                p1_file=_p1_file,
             )
             state.escalation_note = (
                 f"MODEL ESCALATION: A P1 finding persisted across review cycles. "

@@ -23,7 +23,9 @@ import pytest
 
 from theforge.assignment import (
     MECHANISM_DEV_PROMOTION,
+    MECHANISM_PERSISTENT_P1_DEV_ESCALATION,
     MECHANISM_POST_PLAN_DEMOTION,
+    MECHANISM_RUN_SCOPED_RESET,
     ROUTING_RATIONALE_DEMOTED,
     ROUTING_RATIONALE_PROMOTED,
     ROUTING_RATIONALE_STATES,
@@ -36,6 +38,7 @@ from theforge.assignment import (
     assign_models,
 )
 from theforge.config import AgentDef
+from theforge.coordinator.engine import _fresh_run_state
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CATALOGUE_DOC = _REPO_ROOT / "docs" / "routing-symmetry-followups.md"
@@ -120,6 +123,7 @@ def test_registry_is_non_empty_and_covers_dev_promotion():
     assert ROUTING_SYMMETRY_REGISTRY, "routing-symmetry registry must not be empty"
     promo_names = {pair.promotion.name for pair in ROUTING_SYMMETRY_REGISTRY}
     assert MECHANISM_DEV_PROMOTION in promo_names
+    assert MECHANISM_PERSISTENT_P1_DEV_ESCALATION in promo_names
 
 
 @pytest.mark.parametrize("pair", ROUTING_SYMMETRY_REGISTRY, ids=lambda p: p.promotion.name)
@@ -181,6 +185,19 @@ def test_dev_tier_pair_has_landed_tested_inverse_both_directions():
     assert pair.promotion.audit_label == ROUTING_RATIONALE_PROMOTED
     assert pair.demotion.audit_label == ROUTING_RATIONALE_DEMOTED
     assert {pair.promotion.audit_label, pair.demotion.audit_label} <= ROUTING_RATIONALE_STATES
+
+
+def test_persistent_p1_pair_registers_fresh_run_reset_inverse():
+    pair = next(
+        p
+        for p in ROUTING_SYMMETRY_REGISTRY
+        if p.promotion.name == MECHANISM_PERSISTENT_P1_DEV_ESCALATION
+    )
+    assert pair.demotion is not None
+    assert pair.demotion.name == MECHANISM_RUN_SCOPED_RESET
+    fresh = _fresh_run_state()
+    assert fresh.dev_escalated is False
+    assert fresh.routing_decision is None
 
 
 # ── Audit label ↔ code path (both directions exercised end-to-end) ──────
