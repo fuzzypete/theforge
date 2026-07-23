@@ -88,6 +88,7 @@ MECHANISM_DEV_PROMOTION = "_check_promotion"
 MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
 MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
 MECHANISM_PERSISTENT_P1_DEV_ESCALATION = "persistent_p1_dev_escalation"
+MECHANISM_PLAN_MODEL_ESCALATION = "plan_model_escalation"
 MECHANISM_RUN_SCOPED_RESET = "fresh_run_state_reset"
 
 
@@ -194,6 +195,30 @@ ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
             "tests/test_routing_symmetry_invariant.py",
         ),
         promotion_test_token="persistent_p1_dev_escalation",
+        demotion_test_token="_fresh_run_state",
+    ),
+    # In-run plan-model escalation (#330): N consecutive plan-review rejections
+    # upgrade the planner model to the next tier for the current story only. The
+    # inverse is the same next-story fresh CoordinatorState construction that
+    # resets the dev-side run-scoped flag — plan_escalated/plan_escalation_note
+    # default back to False/None, so no planner tier ratchets across stories.
+    RoutingSymmetryPair(
+        promotion=RoutingMechanism(
+            name=MECHANISM_PLAN_MODEL_ESCALATION,
+            symbol="theforge.coordinator.plan_flow._record_plan_model_escalation",
+            audit_label="in_run_escalation",
+        ),
+        demotion=RoutingMechanism(
+            name=MECHANISM_RUN_SCOPED_RESET,
+            symbol="theforge.coordinator.engine._fresh_run_state",
+            audit_label="run_scoped_reset",
+        ),
+        promotion_tests=("tests/test_coord_plan_flow_agent.py",),
+        demotion_tests=(
+            "tests/test_coord_plan_flow_agent.py",
+            "tests/test_routing_symmetry_invariant.py",
+        ),
+        promotion_test_token="plan_model_escalation",
         demotion_test_token="_fresh_run_state",
     ),
 )

@@ -22,6 +22,10 @@ from textwrap import dedent
 from typing import TYPE_CHECKING
 
 from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
+from theforge.assignment import (
+    MECHANISM_PLAN_MODEL_ESCALATION,
+    MECHANISM_RUN_SCOPED_RESET,
+)
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile, apply_model_info
 from theforge.config.profiles import _apply_provider_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
@@ -536,6 +540,48 @@ def _apply_post_plan_dev_checkpoint(
             f"  ↳ post-plan checkpoint: dev {_cp.get('baseline_tier')} → "
             f"{_cp.get('final_tier')} ({_updated.dev.model}) — {_cp.get('rationale')}"
         )
+
+
+def _record_plan_model_escalation(
+    state: CoordinatorState,
+    *,
+    previous_model: str,
+    escalated_model: str,
+    rejections: int,
+    findings: str,
+) -> None:
+    """Attach the in-run plan-model escalation to the canonical routing_decision.
+
+    Mirrors ``review_phase._record_persistent_p1_dev_escalation`` for the planner
+    role (ADR-0006 clause 7 / #1391): a telemetry log line is not enough — the
+    mechanism that fired, the consecutive-rejection signal, and the planner model
+    swap must all be reconstructable from the audit's ``routing_decision`` block.
+    ``scope``/``return_path`` record clause-5 symmetry: this escalation is
+    story-scoped and reset by the next story's fresh ``CoordinatorState``.
+    """
+    if not isinstance(state.routing_decision, dict):
+        state.routing_decision = {"origin": "preflight"}
+
+    planner_block = state.routing_decision.get("planner")
+    if not isinstance(planner_block, dict):
+        planner_block = {}
+        state.routing_decision["planner"] = planner_block
+
+    planner_block["plan_model_escalation"] = {
+        "mechanism": MECHANISM_PLAN_MODEL_ESCALATION,
+        "fired": True,
+        "scope": "run",
+        "return_path": MECHANISM_RUN_SCOPED_RESET,
+        "signal": {
+            "kind": "consecutive_plan_rejections",
+            "rejections": rejections,
+            "findings": findings,
+        },
+        "model_swap": {
+            "from_model": previous_model,
+            "to_model": escalated_model,
+        },
+    }
 
 
 def _run_plan_phase(
@@ -1302,6 +1348,13 @@ def _run_plan_agent_review(
                         f" acceptable plan. You are now running on an upgraded"
                         f" model ({_new_model}). Key findings from prior"
                         f" rejections: {findings_text}"
+                    )
+                    _record_plan_model_escalation(
+                        state,
+                        previous_model=_old_model,
+                        escalated_model=_new_model,
+                        rejections=state.plan_regen_count,
+                        findings=findings_text,
                     )
                     _log(
                         f"  Plan escalation:"
