@@ -25,7 +25,12 @@ from .config import (
 )
 from .config.auth import check_agent_auth
 from .config.models import price_tiebreak_signal
-from .routing import score_to_dev_tier
+from .routing import (
+    axis_decision,
+    score_to_dev_tier,
+    score_to_plan_tier,
+    score_to_reviewer_target,
+)
 
 log = logging.getLogger(__name__)
 
@@ -392,11 +397,16 @@ def _normalize_complexity_score(complexity_score: int | None) -> int | None:
 
 
 def _plan_tier_for_score(complexity: str, complexity_score: int | None) -> str:
-    """Return the planner tier, preferring score-driven routing when present."""
+    """Return the planner tier, preferring score-driven routing when present.
+
+    Score thresholds are owned by the canonical routing policy
+    (:func:`theforge.routing.score_to_plan_tier`); this is a thin adapter that
+    falls back to the legacy band when no numeric score is available.
+    """
     score = _normalize_complexity_score(complexity_score)
     if score is None:
         return PHASE_TIER["plan"][complexity]
-    return "mid" if score <= 5 else "strong"
+    return score_to_plan_tier(score)
 
 
 def _dev_tier_for_score(complexity: str, complexity_score: int | None) -> str:
@@ -413,13 +423,20 @@ def _reviewer_target_for_score(
     min_r: int,
     max_r: int,
 ) -> int:
-    """Return reviewer count, allowing same-band stories to diverge by score."""
+    """Return reviewer count, allowing same-band stories to diverge by score.
+
+    Bucket boundaries are owned by the canonical routing policy
+    (:func:`theforge.routing.score_to_reviewer_target`); this adapter resolves
+    the symbolic "min"/"mid"/"max" target against the configured reviewer
+    bounds. Falls back to the legacy band count when no numeric score exists.
+    """
     score = _normalize_complexity_score(complexity_score)
     if score is None:
         return _reviewer_count(complexity, min_r, max_r)
-    if score <= 4:
+    target = score_to_reviewer_target(score)
+    if target == "min":
         return min_r
-    if score >= 8:
+    if target == "max":
         return max_r
     return min_r + (max_r - min_r + 1) // 2
 
@@ -1410,6 +1427,31 @@ def _reviewer_completion_check(
     return block
 
 
+def _reviewer_count_policy(
+    score: int | None, min_r: int, max_r: int, seated: int
+) -> dict[str, object]:
+    """Reviewer-count axis decision augmented with the resolved concrete count.
+
+    :func:`theforge.routing.axis_decision` records the policy view (bucket,
+    thresholds, "min"/"mid"/"max" target); this resolves that symbolic target
+    against the configured reviewer bounds and records the number of reviewers
+    actually seated so a shortfall (candidate-pool exhaustion / budget drop) is
+    visible next to the policy target.
+    """
+    block = dict(axis_decision("reviewer_count", score))
+    if block.get("applied"):
+        target = str(block.get("output"))
+        block["resolved_count"] = {"min": min_r, "max": max_r}.get(
+            target, min_r + (max_r - min_r + 1) // 2
+        )
+    else:
+        block["resolved_count"] = None
+    block["min_reviewers"] = min_r
+    block["max_reviewers"] = max_r
+    block["seated_count"] = seated
+    return block
+
+
 def _build_routing_decision(
     decision: AssignmentDecision,
     agents: list[AgentDef],
@@ -1420,6 +1462,8 @@ def _build_routing_decision(
     dev_effective_tier: str,
     preflight_tier: str | None,
     planner_tier: str | None,
+    min_reviewers: int = 1,
+    max_reviewers: int = 1,
     dev_signals: dict[str, dict],
     promotion_block: dict[str, object],
     planner_model: str,
@@ -1524,6 +1568,12 @@ def _build_routing_decision(
         # discounted for taint before any per-role explanation. The runs remain in
         # the substrate (ADR-0002 refusal-to-forget); this is a read-time count.
         "excluded_for_taint": int(excluded_for_taint),
+        # Score-to-routing policy axis not tied to a single role: reasoning_effort
+        # is intentionally NOT score-controlled (config/override field only). Recorded
+        # top-level so its exclusion from score routing is explicit, never silent
+        # (#1019). The per-role score_policy blocks below cover the axes the score
+        # DOES control (dev tier, plan tier, reviewer count).
+        "reasoning_effort": axis_decision("reasoning_effort", score),
         "preflight": {
             "candidate_pool": _single_model_pool(
                 agents,
@@ -1540,6 +1590,8 @@ def _build_routing_decision(
             },
         },
         "planner": {
+            # Canonical plan-tier score policy (#1019).
+            "score_policy": {"plan_tier": axis_decision("plan_tier", score)},
             "candidate_pool": _single_model_pool(
                 agents,
                 planner_tier,
@@ -1557,6 +1609,9 @@ def _build_routing_decision(
         "dev": {
             "score": score,
             "base_tier_from_score": dev_base_tier,
+            # Canonical dev-tier score policy (#1019): bucket, thresholds, covering
+            # range, selected tier, and rationale, sourced from theforge.routing.
+            "score_policy": {"dev_tier": axis_decision("dev_tier", score)},
             "candidate_pool": dev_pool,
             # Domain preference (#155): the story's tags, the matching profile
             # slice per candidate (on each pool entry's ``signals.domain``), and
@@ -1605,6 +1660,15 @@ def _build_routing_decision(
             },
         },
         "plan_review": {
+            # Two score-derived outputs for a reviewer role (#1019): the reviewer
+            # MODEL tier (plan_tier axis) and the reviewer COUNT (reviewer_count
+            # axis, resolved against min/max_reviewers).
+            "score_policy": {
+                "reviewer_tier": axis_decision("plan_tier", score),
+                "reviewer_count": _reviewer_count_policy(
+                    score, min_reviewers, max_reviewers, len(decision.plan_reviewers)
+                ),
+            },
             "candidate_pool": _reviewer_candidate_pool(
                 agents,
                 pr_selected,
@@ -1624,6 +1688,12 @@ def _build_routing_decision(
             },
         },
         "code_review": {
+            "score_policy": {
+                "reviewer_tier": axis_decision("plan_tier", score),
+                "reviewer_count": _reviewer_count_policy(
+                    score, min_reviewers, max_reviewers, len(decision.code_reviewers)
+                ),
+            },
             "candidate_pool": _reviewer_candidate_pool(
                 agents,
                 cr_selected,
@@ -2520,6 +2590,8 @@ def assign_models(
             dev_effective_tier=_dev_effective_tier,
             preflight_tier=_preflight_tier,
             planner_tier=planner_target_tier,
+            min_reviewers=assignment_config.min_reviewers,
+            max_reviewers=assignment_config.max_reviewers,
             dev_signals=_dev_signals,
             promotion_block=_promotion_block,
             planner_model=dec.planner.model,

@@ -333,6 +333,83 @@ def test_health_deprioritized_reviewer_is_excluded_not_falsely_included(monkeypa
         assert entry["reason"] in EXCLUSION_REASONS
 
 
+def test_score_policy_recorded_for_every_axis(_keys_except_deepseek):
+    """Each routing axis records score, bucket, thresholds/range, output, and an
+    explanation in routing_decision — the #1019 acceptance contract."""
+    decision = assign_models(_agents(), _cfg(), complexity="HIGH", complexity_score=9)
+    block = decision.routing_decision
+
+    # Dev tier axis.
+    dev_axis = block["dev"]["score_policy"]["dev_tier"]
+    assert dev_axis["axis"] == "dev_tier"
+    assert dev_axis["score"] == 9
+    assert dev_axis["bucket"] == "strong"
+    assert dev_axis["range"] == [7, 10]
+    assert dev_axis["thresholds"] == [3, 6, 10]
+    assert dev_axis["output"] == "strong"
+    assert dev_axis["rationale"]
+
+    # Plan tier axis.
+    plan_axis = block["planner"]["score_policy"]["plan_tier"]
+    assert plan_axis["bucket"] == "strong"
+    assert plan_axis["range"] == [6, 10]
+    assert plan_axis["thresholds"] == [5, 10]
+    assert plan_axis["output"] == "strong"
+
+    # Reviewer axes (tier + count) on both reviewer roles.
+    for role in ("plan_review", "code_review"):
+        sp = block[role]["score_policy"]
+        assert sp["reviewer_tier"]["output"] == "strong"
+        count = sp["reviewer_count"]
+        assert count["axis"] == "reviewer_count"
+        assert count["bucket"] == "max"  # score 9 → max reviewers
+        assert count["range"] == [8, 10]
+        assert count["thresholds"] == [4, 7, 10]
+        assert count["output"] == "max"
+        assert count["resolved_count"] == 3  # max_reviewers in _cfg
+        assert count["seated_count"] == len(
+            decision.plan_reviewers if role == "plan_review" else decision.code_reviewers
+        )
+        assert count["rationale"]
+
+
+def test_reasoning_effort_axis_recorded_as_not_score_controlled(_keys_except_deepseek):
+    """reasoning_effort appears in routing_decision, explicitly marked as NOT
+    score-controlled rather than silently omitted (#1019 / P2 plan note)."""
+    decision = assign_models(_agents(), _cfg(), complexity="HIGH", complexity_score=9)
+    axis = decision.routing_decision["reasoning_effort"]
+    assert axis["axis"] == "reasoning_effort"
+    assert axis["score_controlled"] is False
+    assert axis["applied"] is False
+    assert axis["output"] is None
+    assert axis["reason"] == "not_score_controlled"
+    assert axis["rationale"]
+
+
+def test_score_policy_low_score_routes_to_min_reviewers(_keys_except_deepseek):
+    """A low complexity score selects the min reviewer-count bucket — the coarse
+    3-bucket shape is intentional and its boundary is auditable."""
+    decision = assign_models(
+        _agents(), _cfg(min_reviewers=1, max_reviewers=3), complexity="LOW", complexity_score=2
+    )
+    dev_axis = decision.routing_decision["dev"]["score_policy"]["dev_tier"]
+    assert dev_axis["bucket"] == "cheap"
+    assert dev_axis["range"] == [1, 3]
+    count = decision.routing_decision["code_review"]["score_policy"]["reviewer_count"]
+    assert count["bucket"] == "min"
+    assert count["resolved_count"] == 1
+
+
+def test_score_policy_marks_static_fallback_without_score(_keys_except_deepseek):
+    """Static band routing (no numeric score) still records the axis with the
+    static-fallback reason and full threshold table — never a fabricated bucket."""
+    decision = assign_models(_agents(), _cfg(), complexity="HIGH", complexity_score=None)
+    dev_axis = decision.routing_decision["dev"]["score_policy"]["dev_tier"]
+    assert dev_axis["applied"] is False
+    assert dev_axis["reason"] == "no_numeric_score_static_band_routing"
+    assert dev_axis["thresholds"] == [3, 6, 10]
+
+
 def test_health_demotion_records_checked_but_not_fired(monkeypatch):
     """With no unhealthy models, the reviewer demotion_check still records a
     checked-but-didn't-fire outcome (AC clause 5), not silence."""
