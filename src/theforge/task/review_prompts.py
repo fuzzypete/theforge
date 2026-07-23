@@ -170,6 +170,7 @@ def build_review_prompt(
     no_scratch_files: bool | None = None,
     assembled_context: ContextPack | None = None,
     sandboxed: bool = True,
+    containment: str | None = None,
     fix_claim_flags: list[str] | None = None,
 ) -> str:
     """Build the review agent prompt.
@@ -394,7 +395,20 @@ def build_review_prompt(
               suggestion: ""
         """)
 
-    sandbox_label = "enabled" if sandboxed else "DISABLED (unsandboxed — effects ran unconfined)"
+    # Distinguish mechanical containment from native-flag / prompt-only runs so
+    # the reviewer knows whether write confinement was syscall-enforced (#1907).
+    _containment_labels = {
+        "mechanical": "MECHANICAL (host sandbox wrapper confined writes to the worktree)",
+        "native": "NATIVE (provider sandbox flag confined writes to the worktree)",
+        "unavailable": "DISABLED (containment requested but host sandbox unavailable)",
+        "none": "DISABLED (unsandboxed — effects ran unconfined)",
+    }
+    if containment is not None:
+        sandbox_label = _containment_labels.get(
+            containment, "enabled" if sandboxed else _containment_labels["none"]
+        )
+    else:
+        sandbox_label = "enabled" if sandboxed else _containment_labels["none"]
     _hard_block = render_hard_conventions_block(
         stack=stack,
         allowed_root_files=allowed_root_files,

@@ -701,6 +701,7 @@ def _run_review_pool(
                     **hard_convention_review_kwargs(config),
                     assembled_context=review_context,
                     sandboxed=state.sandboxed,
+                    containment=state.dev_containment,
                     fix_claim_flags=fix_claim_flags,
                 )
                 for p in pool
@@ -724,6 +725,7 @@ def _run_review_pool(
                 **hard_convention_review_kwargs(config),
                 assembled_context=review_context,
                 sandboxed=state.sandboxed,
+                containment=state.dev_containment,
                 fix_claim_flags=fix_claim_flags,
             )
         )

@@ -154,6 +154,74 @@ def test_user_config_roots_excludes_sensitive_credentials(tmp_path: Path) -> Non
     assert fake_home / ".ssh" not in roots
 
 
+def test_macos_profile_grants_network_and_dns(tmp_path: Path) -> None:
+    """A wrapped network-bound CLI needs outbound egress + mDNS to reach its API (#1907)."""
+    from theforge.runners.sandbox import _macos_profile
+
+    profile = _macos_profile(tmp_path)
+    assert "(allow network-outbound)" in profile
+    assert '(allow mach-lookup (global-name "com.apple.mDNSResponder"))' in profile
+
+
+def test_macos_profile_credential_services_adds_keychain_access(tmp_path: Path) -> None:
+    """allow_credential_services grants securityd + keychain reads so auth survives (#1907)."""
+    from theforge.runners.sandbox import _macos_profile
+
+    without = _macos_profile(tmp_path)
+    assert "com.apple.SecurityServer" not in without
+
+    with_creds = _macos_profile(tmp_path, allow_credential_services=True)
+    assert '(allow mach-lookup (global-name "com.apple.SecurityServer"))' in with_creds
+    keychains = str((Path.home() / "Library" / "Keychains").resolve())
+    if (Path.home() / "Library" / "Keychains").exists():
+        assert keychains in with_creds
+
+
+def test_macos_profile_extra_write_roots_are_writable(tmp_path: Path) -> None:
+    """Claude's ~/.claude-style state dir appears in the file-write* block, not read-only."""
+    from theforge.runners.sandbox import _macos_profile
+
+    state_dir = tmp_path / "state"
+    profile = _macos_profile(tmp_path, extra_write_roots=(state_dir,))
+    write_block = profile.split("(allow file-read*")[0]
+    assert f'(subpath "{state_dir.resolve()}")' in write_block
+
+
+def test_linux_command_binds_extra_write_roots(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import workspace_effect_sandbox_command
+
+    worktree = tmp_path / ".forge" / "worktrees" / "issue-1"
+    worktree.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    with (
+        patch("theforge.runners.sandbox._SYSTEM", "Linux"),
+        patch("theforge.runners.sandbox._sandbox_available", return_value=True),
+    ):
+        wrapped = workspace_effect_sandbox_command(
+            ["bash", "-c", "pwd"], worktree, extra_write_roots=(state_dir,)
+        )
+    assert "--bind-try" in wrapped
+    idx = wrapped.index("--bind-try")
+    assert wrapped[idx + 1] == str(state_dir.resolve())
+
+
+def test_workspace_effect_command_threads_credential_services(tmp_path: Path) -> None:
+    """allow_credential_services reaches the macOS profile through the public wrapper."""
+    from theforge.runners.sandbox import workspace_effect_sandbox_command
+
+    with (
+        patch("theforge.runners.sandbox._SYSTEM", "Darwin"),
+        patch("theforge.runners.sandbox._sandbox_available", return_value=True),
+    ):
+        wrapped = workspace_effect_sandbox_command(
+            ["claude", "-p"], tmp_path, allow_credential_services=True
+        )
+    assert wrapped[0] == "sandbox-exec"
+    profile = wrapped[2]
+    assert "com.apple.SecurityServer" in profile
+
+
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-only sandbox-exec test")
 def test_macos_sandbox_profile_blocks_sibling_worktree_reads_in_practice(tmp_path: Path) -> None:
     from theforge.runners.sandbox import _blocked_worktree_roots, _macos_profile

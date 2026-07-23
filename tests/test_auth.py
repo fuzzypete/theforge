@@ -7,7 +7,11 @@ from unittest.mock import patch
 import pytest
 
 from theforge.config import ModelProfile
-from theforge.config.auth import check_agent_auth
+from theforge.config.auth import (
+    check_agent_auth,
+    sandbox_available_for_profile,
+    sandbox_containment_mode,
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -314,3 +318,57 @@ def test_cli_profile_can_skip_sandbox_readiness_for_auth_only() -> None:
         ok, reason = check_agent_auth(profile, {}, include_sandbox_readiness=False)
     assert ok is True
     assert reason == ""
+
+
+# ── Mechanical containment readiness (#1907) ──────────────────────────
+
+
+def _sandbox_cli_profile(cli: str, sandbox_mode: str = "workspace-write") -> ModelProfile:
+    return ModelProfile(
+        name=f"{cli}-dev",
+        cli=cli,
+        model="sonnet",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Edit", "Write", "Bash"),
+        sandbox_mode=sandbox_mode,
+    )
+
+
+def test_claude_cli_readiness_follows_host_wrapper_available() -> None:
+    """Claude CLI is only 'mechanically sandboxed' when the host wrapper exists."""
+    profile = _sandbox_cli_profile("claude")
+    with patch("theforge.config.auth._host_sandbox_available", return_value=True):
+        assert sandbox_available_for_profile(profile) is True
+    with patch("theforge.config.auth._host_sandbox_available", return_value=False):
+        assert sandbox_available_for_profile(profile) is False
+
+
+def test_gemini_cli_readiness_follows_host_wrapper_available() -> None:
+    profile = _sandbox_cli_profile("gemini")
+    with patch("theforge.config.auth._host_sandbox_available", return_value=False):
+        assert sandbox_available_for_profile(profile) is False
+
+
+def test_claude_cli_sandbox_mode_none_is_not_mechanical() -> None:
+    """sandbox_mode=none must never report mechanical containment, wrapper or not."""
+    profile = _sandbox_cli_profile("claude", sandbox_mode="none")
+    with patch("theforge.config.auth._host_sandbox_available", return_value=True):
+        assert sandbox_available_for_profile(profile) is False
+
+
+def test_codex_cli_is_mechanical_without_host_wrapper() -> None:
+    """Codex asserts a provider-native --sandbox flag, so it stays mechanical."""
+    profile = _sandbox_cli_profile("codex")
+    with patch("theforge.config.auth._host_sandbox_available", return_value=False):
+        assert sandbox_available_for_profile(profile) is True
+
+
+def test_containment_mode_classifications() -> None:
+    claude = _sandbox_cli_profile("claude")
+    with patch("theforge.config.auth._host_sandbox_available", return_value=True):
+        assert sandbox_containment_mode(claude) == "mechanical"
+    with patch("theforge.config.auth._host_sandbox_available", return_value=False):
+        assert sandbox_containment_mode(claude) == "unavailable"
+    assert sandbox_containment_mode(_sandbox_cli_profile("claude", "none")) == "none"
+    assert sandbox_containment_mode(_sandbox_cli_profile("codex")) == "native"
