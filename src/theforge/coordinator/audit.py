@@ -193,6 +193,40 @@ def _build_plan_review_per_reviewer(state: CoordinatorState, config: ForgeConfig
     return per_reviewer
 
 
+def _build_plan_reviewer_value(state: CoordinatorState) -> list[dict]:
+    """Per-plan-reviewer mechanical value telemetry for the audit record (#1443).
+
+    Surfaces the deterministic signals captured at plan-review pool completion —
+    unique P1 count, total P1 count, latency, and parse-error count — plus the
+    derived ``latency_per_p1_s`` so an operator can answer "is this reviewer
+    earning its wall-clock cost?" from structured telemetry without grepping logs.
+    Parse-error count is carried straight from the per-reviewer capture, which
+    derives it from the existing parse step (no parallel parse-failure writer).
+    """
+    out: list[dict] = []
+    for v in state.plan_reviewer_value or []:
+        if not isinstance(v, dict):
+            continue
+        total_p1 = int(v.get("total_p1_count", 0))
+        latency_s = v.get("latency_s")
+        latency_per_p1 = (
+            round(latency_s / total_p1, 2) if latency_s is not None and total_p1 > 0 else None
+        )
+        out.append(
+            {
+                "attempt": v.get("attempt"),
+                "reviewer": v.get("reviewer"),
+                "complexity": v.get("complexity"),
+                "unique_p1_count": int(v.get("unique_p1_count", 0)),
+                "total_p1_count": total_p1,
+                "latency_s": latency_s,
+                "latency_per_p1_s": latency_per_p1,
+                "parse_error_count": int(v.get("parse_error_count", 0)),
+            }
+        )
+    return out
+
+
 def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     """Build the phases + totals block for the audit log.
 
@@ -416,6 +450,7 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "files_changed_count": item.files_changed_count,
             "tests_fixed_count": item.tests_fixed_count,
             "sandboxed": item.sandboxed,
+            "containment": item.containment,
             "agent_exit_code": item.agent_exit_code,
             "runner_failure_code": item.runner_failure_code,
             "runner_failure_summary": item.runner_failure_summary,
@@ -694,6 +729,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 # an unmeasured (None) cost stays null here too, never coerced 0.0.
                 "cost_usd": _round_cost(state.total_plan_review_cost_measured),
                 **({"per_reviewer": plan_review_per_reviewer} if plan_review_per_reviewer else {}),
+                **(
+                    {"per_reviewer_value": _build_plan_reviewer_value(state)}
+                    if state.plan_reviewer_value
+                    else {}
+                ),
                 "plan_finding_registry": [
                     {
                         "description": r.description,

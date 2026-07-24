@@ -20,51 +20,98 @@ _LOCAL_PREFIXES = (
 )
 
 
-def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
-    """Return whether workspace-effect sandboxing is active for this profile.
+# CLI runners with no native sandbox flag — their write containment comes
+# solely from the host wrapper (sandbox-exec/bwrap). Codex, by contrast, passes
+# a provider-native ``--sandbox`` flag, so it is mechanically contained without
+# the host wrapper.
+_HOST_WRAPPED_CLIS = frozenset({"claude", "gemini"})
 
-    For CLI profiles, reports whether native CLI sandboxing is engaged based on
-    the profile's sandbox_mode field. For API profiles, probes whether the
-    platform can confine bash/tool effects to the working directory.
-    """
-    if profile.mode != "api":
-        # CLI profiles: sandboxing is active when sandbox_mode is not "none"
-        if profile.sandbox_mode == "none":
-            return (False, "sandbox disabled by sandbox_mode: none")
-        return (True, "")
-    if "bash" not in profile.allowed_tools:
-        return (True, "")
 
+def _host_sandbox_available() -> bool:
+    """Return True when the host sandbox wrapper (sandbox-exec/bwrap) is usable."""
     from theforge.runners.sandbox import workspace_effect_sandbox_command
 
     probe = workspace_effect_sandbox_command(["true"], Path.cwd())
-    if probe and probe[0] != "true":
-        return (True, "")
+    return bool(probe) and probe[0] != "true"
 
+
+def _host_unavailable_reason(effect_label: str) -> tuple[bool, str]:
+    """Build the (False, reason) tuple for an unavailable host sandbox."""
     system = platform.system()
     if system == "Darwin":
         return (
             False,
-            "workspace sandbox unavailable: sandbox-exec not usable; "
-            "bash/tool effects will run unsandboxed",
+            f"workspace sandbox unavailable: sandbox-exec not usable; {effect_label}",
         )
     if system == "Linux":
         return (
             False,
-            "workspace sandbox unavailable: bwrap not usable; "
-            "bash/tool effects will run unsandboxed",
+            f"workspace sandbox unavailable: bwrap not usable; {effect_label}",
         )
     return (True, "")
 
 
+def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
+    """Return whether *mechanical* workspace containment is active for this profile.
+
+    ``True`` means agent writes are confined by a real OS mechanism (host
+    sandbox-exec/bwrap wrapper, or a provider-native sandbox flag). It is NOT
+    set merely because ``sandbox_mode != none`` — a native/prompt-only
+    permission mode is cooperative, not mechanical, so profiles that rely on the
+    host wrapper report ``False`` when that wrapper is unavailable (#1907).
+    """
+    if profile.mode != "api":
+        # CLI profiles: sandbox explicitly disabled → not contained.
+        if profile.sandbox_mode == "none":
+            return (False, "sandbox disabled by sandbox_mode: none")
+        # Claude/Gemini have no native sandbox; containment is the host wrapper.
+        if profile.cli in _HOST_WRAPPED_CLIS:
+            if _host_sandbox_available():
+                return (True, "")
+            return _host_unavailable_reason(
+                "CLI write containment cannot be enforced; refusing to run unsandboxed"
+            )
+        # Codex and other CLIs assert a provider-native --sandbox flag.
+        return (True, "")
+    if "bash" not in profile.allowed_tools:
+        return (True, "")
+
+    if _host_sandbox_available():
+        return (True, "")
+    return _host_unavailable_reason("bash/tool effects will run unsandboxed")
+
+
 def sandbox_available_for_profile(profile: ModelProfile) -> bool:
-    """Return True if workspace-effect sandboxing is available for *profile*.
+    """Return True if *mechanical* workspace containment is available for *profile*.
 
     Thin public wrapper around the private probe; safe to call repeatedly
     because the underlying sandbox availability check is lru_cache-backed.
     """
     available, _ = _sandbox_readiness(profile)
     return available
+
+
+def sandbox_containment_mode(profile: ModelProfile) -> str:
+    """Classify how a run's writes are contained, for audit/status output.
+
+    Distinguishes mechanically-contained runs from native-flag and
+    uncontained/prompt-only ones (#1907):
+
+    - ``"mechanical"`` — host sandbox wrapper (sandbox-exec/bwrap) confines writes.
+    - ``"native"``     — provider-native sandbox flag (e.g. Codex ``--sandbox``).
+    - ``"unavailable"``— containment requested but the host wrapper is missing;
+      the run fails closed rather than proceeding with prompt-only discipline.
+    - ``"none"``       — no containment (``sandbox_mode: none`` or no tool surface).
+    """
+    if profile.mode != "api":
+        if profile.sandbox_mode == "none":
+            return "none"
+        if profile.cli in _HOST_WRAPPED_CLIS:
+            return "mechanical" if _host_sandbox_available() else "unavailable"
+        return "native"
+    if "bash" not in profile.allowed_tools:
+        return "none"
+    return "mechanical" if _host_sandbox_available() else "unavailable"
 
 
 def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:

@@ -1,0 +1,2528 @@
+{
+  "schema_version": 9,
+  "run_id": "e567be28c0e4",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Claude dev runner can write outside story worktree via absolute paths",
+    "slug": "issue-1907",
+    "story_path": null,
+    "story_text": "## What happened\n\nDuring the sprint for `issues-1899,158,1019,1108,1443,1489`, issue #1443 ran in a story worktree:\n\n```text\n/Users/pwickersham/src/theforge/.forge/worktrees/issue-1443\nbranch feat/issue-1443\n```\n\nThe dev prompt and Claude session metadata both identified that worktree as the working directory. However, the Claude dev agent used absolute paths back to the main project checkout and committed there:\n\n```text\ncd /Users/pwickersham/src/theforge && git commit ...\n```\n\nThat created commit `2358c1a` on local `release/v0.13`, while the story worktree branch `feat/issue-1443` still had zero commits. The coordinator then reported:\n\n```text\nDev attempt produced no usable output ($21.5647 spent, no commits)\n```\n\nThat was mechanically true for the story worktree, but operationally misleading: usable work existed, just in the wrong checkout. The stray commit also caused local `release/v0.13` to diverge from `origin/release/v0.13`, which later caused #1899 to fail workspace setup.\n\n## Why this matters\n\nThis is a workspace containment failure, not a prompt-compliance problem. The runner relied on cwd/prompt discipline plus Claude's native permission mode, but #1443 shows a dev agent can still write/commit outside the intended story worktree by using absolute paths.\n\nFor v0.13 dogfooding, story isolation has to be mechanical. A dev run that can mutate the release/base checkout can corrupt sprint state, produce false no-commit failures, and poison subsequent workspace setup.\n\n## Acceptance criteria\n\n- When `sandbox_mode != none`, Claude dev runs cannot write to or commit from the project root or sibling worktrees.\n- A command like `cd /Users/pwickersham/src/theforge && git commit ...` fails mechanically during a contained dev run whose story worktree is `/Users/pwickersham/src/theforge/.forge/worktrees/issue-1443`.\n- A regression test proves the Claude runner command is wrapped or otherwise confined when host sandbox support exists.\n- If containment cannot be provided, the Claude dev runner fails closed rather than running with only cwd/prompt discipline.\n- Audit/review/status output distinguishes mechanically contained runs from prompt-only/native-permission-mode runs.\n- The fix should reuse the existing workspace containment machinery where possible, likely the same `workspace_effect_sandbox_command` path Gemini uses for workspace-write containment.\n\n## Evidence\n\n- #1443 dev log/handoff claimed commit `2358c1a` and gate pass.\n- Local git showed `2358c1a` on `release/v0.13`, not `feat/issue-1443`.\n- The #1443 worktree remained at the old base with zero commits ahead.\n- The sprint summary classified #1443 as failed/no commits and #1899 later failed because `release/v0.13` had diverged.\n- The #1443 implementation was later included inside PR #1903 for #1489, so the work was not lost, but the workflow state was corrupted.\n\n## References\n\n- #1443 \u2014 triggering story\n- #1489 / PR #1903 \u2014 later PR that included the stray #1443 commit\n- #1905 \u2014 divergence classified as `unknown_needs_rca`\n- #1906 \u2014 sprint summary/status wording bug for already-done stories\n",
+    "github_issue": 1907,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug missing Diagnosis section \u2014 not fix-ready (run `forge diagnose` or add diagnosis manually)"
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Claude dev runner can write outside story worktree via absolute paths' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-1907",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-23T16:05:34.196388+00:00",
+    "finished_at": "2026-07-23T17:03:58.307293+00:00",
+    "duration_seconds": 3504.110905
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1907",
+    "branch": "feat/issue-1907"
+  },
+  "iterations": {
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "dev_iterations": 3,
+    "gate_decisions": [
+      "PASS",
+      "FAIL",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 15.276316749999994,
+        "duration_s": 1907.74,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/config/auth.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/review_phase.py",
+          "src/theforge/coordinator/review_pool.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/runners/runner_claude.py",
+          "src/theforge/runners/sandbox.py",
+          "src/theforge/task/review_prompts.py",
+          "tests/conftest.py",
+          "tests/test_auth.py",
+          "tests/test_coord_sandbox.py",
+          "tests/test_runner_claude.py",
+          "tests/test_runner_pool.py",
+          "tests/test_runner_sandbox.py",
+          "tests/test_runner_stuck_detection.py"
+        ],
+        "files_changed_count": 16,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error",
+          "tests/test_runner_sandbox.py::test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 7.996303750000001,
+        "duration_s": 766.31,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/runners/sandbox.py",
+          "tests/test_runner_sandbox.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 5.7972019999999995,
+        "duration_s": 386.17,
+        "meaningful_progress": true,
+        "files_changed": [
+          "tests/test_runner_sandbox.py"
+        ],
+        "files_changed_count": 1,
+        "tests_fixed_count": 1,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 2,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 2,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 1.374456,
+        "duration_s": 183.28
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.465084,
+        "duration_s": 124.09
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 3,
+        "max": 3,
+        "hit_limit": true,
+        "early_finish": false
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 81,
+      "profile_avg_iterations": 1.8889,
+      "profile_avg_cost_usd": 8.639994,
+      "profile_raw_dev_max": 2.8334,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 21.6,
+      "review_history_sample_size": 13,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 81 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-23T16:05:34.998106+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-23T16:41:05.536257+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 3,
+        "timestamp": "2026-07-23T16:54:44.225656+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 29.069822499999994,
+    "review_usd": null,
+    "dev_invocations": 3,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 15.276316749999994,
+        "duration_seconds": 1907.7444375000196,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.00629
+          },
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 15.270026749999994
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 7.996303750000001,
+        "duration_seconds": 766.3107168750139,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 7.996303750000001
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 5.7972019999999995,
+        "duration_seconds": 386.1715824579587,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 5.7972019999999995
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 61.04864815265561,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 61.04864815265561,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.3744560499999998,
+        "duration_seconds": 61.04864815265561,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.039152000000000006
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.33530405
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 41.31163322230956,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 41.31163322230956,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.4650839,
+        "duration_seconds": 41.31163322230956,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.4650839
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The Claude CLI runner has no mechanical write containment today \u2014 runner_claude.py only sets --permission-mode default (prompt-only) for sandbox_mode=read-only and never calls workspace_effect_sandbox_command, unlike runner_gemini.py which wraps and fails closed. This is genuinely unfinished, cross-module work.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 2,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "release_blocking_validation",
+        "signal": "acceptance criteria gate a release: 'gate' near 'release' and 'v0.13'",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "security",
+      "cli",
+      "backend"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.5601463999999998,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "774a5f80ee4c",
+    "cache_snapshot": {
+      "worktree_head": "f1e8e38cd4e8ae73b7f517de6cc3deb3f9015494",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "f1e8e38cd4e8ae73b7f517de6cc3deb3f9015494"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "f1e8e38cd4e8ae73b7f517de6cc3deb3f9015494",
+      "current_worktree_head": "f1e8e38cd4e8ae73b7f517de6cc3deb3f9015494",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "f1e8e38cd4e8ae73b7f517de6cc3deb3f9015494",
+      "current_evaluation_base_branch_head": "f1e8e38cd4e8ae73b7f517de6cc3deb3f9015494",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "cost_usd": 0.5601463999999998,
+        "duration_s": 108.38,
+        "success": true,
+        "exit_code": 0
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev promoted claude-opus (tier strong \u2192 strong) \u2014 3/10 recent HIGH stories escalated (profile success_rate=0.67 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1907/iter_1.yaml",
+      "handoff": {
+        "summary": "Made Claude CLI dev runs mechanically write-contained to the story worktree by wrapping the launcher in the existing host sandbox (sandbox-exec/bwrap) via workspace_effect_sandbox_command when sandbox_mode != none, failing closed (SANDBOX_UNAVAILABLE) when the host sandbox is unavailable \u2014 matching runner_gemini. Native --permission-mode is retained only as defense-in-depth. Critically, the prior attempt (#920) was reverted (#925) because the sandbox blocked Claude's macOS Keychain auth; I reproduced that failure empirically on the dev host and fixed it by granting the com.apple.SecurityServer mach-lookup + ~/Library/Keychains reads (allow_credential_services), network-outbound + mDNSResponder for API egress, and ~/.claude as a writable state root \u2014 verified end-to-end that the #1443 attack (cd /abs && git add) and sibling writes/reads are blocked while auth, DNS, worktree writes, and ~/.claude writes work. Readiness/audit now distinguish mechanical containment from prompt-only/native: _sandbox_readiness reports Claude/Gemini CLIs as sandboxed only when the host wrapper is available (Codex stays native), and sandbox_containment_mode (mechanical/native/unavailable/none) is surfaced in dev-phase state, audit iteration metrics, and the reviewer prompt.",
+        "commits": [
+          {
+            "sha": "da93e53",
+            "message": "fix(runners): mechanically contain Claude dev runs in the story worktree"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "When sandbox_mode != none, Claude dev runs cannot write to or commit from the project root or sibling worktrees.",
+            "status": "MET",
+            "notes": "runner_claude wraps the launcher in workspace_effect_sandbox_command; empirically confirmed project-root and sibling-worktree writes fail with 'Operation not permitted' under the real generated profile."
+          },
+          {
+            "criterion": "A command like `cd .../theforge && git commit ...` fails mechanically during a contained dev run.",
+            "status": "MET",
+            "notes": "Verified: `cd <project-root> && git add` fails with EPERM under the sandbox profile scoped to the worktree."
+          },
+          {
+            "criterion": "A regression test proves the Claude runner command is wrapped or otherwise confined when host sandbox support exists.",
+            "status": "MET",
+            "notes": "TestClaudeSandboxWrapper: test_workspace_write_wraps_command asserts Popen receives the wrapper (sandbox-exec), not the bare claude argv; test_read_only_also_wraps; wrapper receives allow_credential_services + ~/.claude write roots."
+          },
+          {
+            "criterion": "If containment cannot be provided, the Claude dev runner fails closed rather than running with only cwd/prompt discipline.",
+            "status": "MET",
+            "notes": "test_sandbox_unavailable_fails_closed asserts Popen is never called and a startup_failure SANDBOX_UNAVAILABLE result is returned."
+          },
+          {
+            "criterion": "Audit/review/status output distinguishes mechanically contained runs from prompt-only/native-permission-mode runs.",
+            "status": "MET",
+            "notes": "sandbox_containment_mode + state.dev_containment surfaced in audit dev_loop metrics and the reviewer prompt (MECHANICAL/NATIVE/DISABLED labels); tests in test_coord_sandbox.py and test_auth.py."
+          },
+          {
+            "criterion": "The fix reuses the existing workspace_effect_sandbox_command path Gemini uses.",
+            "status": "MET",
+            "notes": "Reused workspace_effect_sandbox_command; extended it with extra_write_roots + allow_credential_services rather than adding a parallel mechanism."
+          }
+        ],
+        "gate_result": "PASS",
+        "story_deviations": "The macOS Keychain-auth/DNS behavior (the root cause of the prior #925 revert) can only be validated empirically on the macOS dev host \u2014 CI is Linux, so this specific interaction is not exercised by the gate (known Linux/macOS coverage gap). All containment logic, fail-closed, and readiness/audit changes are unit-tested. Also repurposed one test asserting the old 'launcher invoked directly' contract and set claude lifecycle test fixtures to sandbox_mode=none (mirroring the existing gemini_profile fixture) since they exercise streaming/lifecycle, not containment.",
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1907/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 addresses both P1 review findings on top of the iter-0 mechanical containment. (1) Legitimate `git commit` inside the correctly-scoped worktree was failing EPERM because a linked worktree's private gitdir (<repo>/.git/worktrees/<name>) and shared object store/refs (<repo>/.git) live outside the worktree root and were never write-allowed. Added _git_worktree_write_roots, auto-applied by workspace_effect_sandbox_command for both Claude and Gemini, granting a tight set: the worktree's own private gitdir, shared objects+reflogs+packed-refs, and ONLY the namespace dir of the worktree's own branch ref (e.g. .git/refs/heads/feat). The main checkout's index/HEAD and other branches' refs stay read-only, so `cd <project-root> && git commit` and `git update-ref refs/heads/main` still fail mechanically \u2014 the #1443 vector remains blocked (verified empirically on a real linked worktree: worktree commit exit 0/clean, main-checkout commit blocked, main-ref rewrite blocked, project-root and sibling writes blocked). (2) Added an executable macOS-gated regression test that runs real commands under the generated sandbox-exec profile proving the escape fails and the legit commit succeeds, plus cross-platform structural tests for the git-write-root scoping. Full suite: 5907 passed, 31 skipped; ruff check/format clean on changed files.",
+        "commits": [
+          {
+            "sha": "52062f5",
+            "message": "fix(runners): grant worktree git internals + executable escape test (iter 1)"
+          },
+          {
+            "sha": "da93e53",
+            "message": "fix(runners): mechanically contain Claude dev runs in the story worktree"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "When sandbox_mode != none, Claude dev runs cannot write to or commit from the project root or sibling worktrees.",
+            "status": "MET",
+            "notes": "Wrapping confines writes to the worktree; empirically verified project-root source writes, project-root commits, main-branch-ref rewrites, and sibling-worktree writes all fail under the real profile."
+          },
+          {
+            "criterion": "A command like `cd .../theforge && git commit ...` fails mechanically during a contained dev run.",
+            "status": "MET",
+            "notes": "Main checkout's .git/index stays read-only, so cd <project-root> && git add/commit fails EPERM; covered by the new executable integration test (step 3 assertion)."
+          },
+          {
+            "criterion": "A regression test proves the Claude runner command is wrapped or otherwise confined when host sandbox support exists.",
+            "status": "MET",
+            "notes": "TestClaudeSandboxWrapper asserts wrapping; new test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice executes real commands under the generated sandbox-exec profile and asserts the #1443 escape fails while a legit worktree commit succeeds."
+          },
+          {
+            "criterion": "If containment cannot be provided, the Claude dev runner fails closed rather than running with only cwd/prompt discipline.",
+            "status": "MET",
+            "notes": "runner_claude returns SANDBOX_UNAVAILABLE startup_failure without launching claude; unchanged this iteration."
+          },
+          {
+            "criterion": "Audit/review/status output distinguishes mechanically contained runs from prompt-only/native-permission-mode runs.",
+            "status": "MET",
+            "notes": "sandbox_containment_mode + state.dev_containment surfaced in audit metrics and reviewer prompt; unchanged this iteration."
+          },
+          {
+            "criterion": "The fix reuses the existing workspace_effect_sandbox_command path Gemini uses.",
+            "status": "MET",
+            "notes": "git write-root grant added centrally in workspace_effect_sandbox_command so both Claude and Gemini benefit."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "The git write-root grant is applied centrally in workspace_effect_sandbox_command (affects Gemini too), not only in the Claude path \u2014 Gemini had the identical latent commit-under-sandbox bug, and centralizing avoids duplication. The branch-ref scoping (own-namespace-only) intentionally goes beyond the reviewer's literal 'add commondir' suggestion because granting the whole common .git would have reopened the #1443 main-checkout-commit escape; verified empirically. macOS Keychain/DNS and the git-commit-under-sandbox behavior can only be validated on the macOS dev host (CI is Linux and does not run real claude/sandbox); the git-scoping logic itself has cross-platform structural unit tests.",
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 3,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1907/iter_2.yaml",
+      "handoff": {
+        "summary": "Iteration 2 fixes the gate failure the owner flagged. The only failing test was the new executable containment regression (test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice). Root cause: the sandbox profile intentionally grants write to /tmp (agent scratch), and under make gate's scrubbed `env -i` TMPDIR is stripped so pytest's tmp_path resolves under /tmp \u2014 placing the fake project inside a sandbox-writable temp root, making every write-denial assertion vacuously false. It passed in normal unscrubbed runs (tmp_path under /var/folders, which is read-only in the profile), which is why it slipped through. Fix: anchor the test's project tree under /private/var/tmp \u2014 a real, writable, non-TMPDIR-dependent path the profile does NOT grant write to \u2014 with cleanup in a finally. Reproduced the failure under the exact scrubbed gate command and confirmed the fix there, then ran the full gate green (5907 passed, 31 skipped, exit 0). No production code changed; the cycle-1 P1 fixes (git write-root grant in workspace_effect_sandbox_command and the executable escape test) remain in place.",
+        "commits": [
+          {
+            "sha": "3e00dee",
+            "message": "fix(tests): anchor sandbox escape test outside /tmp so it holds under gate scrub"
+          },
+          {
+            "sha": "52062f5",
+            "message": "fix(runners): grant worktree git internals + executable escape test (iter 1)"
+          },
+          {
+            "sha": "da93e53",
+            "message": "fix(runners): mechanically contain Claude dev runs in the story worktree"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "When sandbox_mode != none, Claude dev runs cannot write to or commit from the project root or sibling worktrees.",
+            "status": "MET",
+            "notes": "Wrapping confines writes to the worktree; the executable regression test now runs under the gate and asserts project-root and sibling writes/commits fail while a legit worktree commit succeeds."
+          },
+          {
+            "criterion": "A command like `cd .../theforge && git commit ...` fails mechanically during a contained dev run.",
+            "status": "MET",
+            "notes": "Main checkout's .git/index stays read-only; assertion 3 of the executable test verifies the project-root commit fails under the real sandbox profile."
+          },
+          {
+            "criterion": "A regression test proves the Claude runner command is wrapped or otherwise confined when host sandbox support exists.",
+            "status": "MET",
+            "notes": "TestClaudeSandboxWrapper asserts wrapping; the macOS-gated integration test executes real commands under the generated sandbox-exec profile and now passes under the scrubbed gate."
+          },
+          {
+            "criterion": "If containment cannot be provided, the Claude dev runner fails closed rather than running with only cwd/prompt discipline.",
+            "status": "MET",
+            "notes": "runner_claude returns SANDBOX_UNAVAILABLE startup_failure without launching claude; unchanged this iteration."
+          },
+          {
+            "criterion": "Audit/review/status output distinguishes mechanically contained runs from prompt-only/native-permission-mode runs.",
+            "status": "MET",
+            "notes": "sandbox_containment_mode + state.dev_containment surfaced in audit metrics and reviewer prompt; unchanged this iteration."
+          },
+          {
+            "criterion": "The fix reuses the existing workspace_effect_sandbox_command path Gemini uses.",
+            "status": "MET",
+            "notes": "git write-root grant added centrally in workspace_effect_sandbox_command so both Claude and Gemini benefit; unchanged this iteration."
+          }
+        ],
+        "gate_result": "PASS",
+        "story_deviations": "The executable regression test anchors its project tree under /private/var/tmp rather than pytest tmp_path \u2014 necessary because the sandbox intentionally grants /tmp write and the scrubbed gate forces tmp_path into /tmp, which would make the containment assertions vacuous. This is macOS-only (the test is already Darwin-gated). No production behavior changed.",
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "1c2d15fcfa5d68ea",
+        "17862cbb2e4678eb"
+      ]
+    },
+    {
+      "iteration": 3,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] Claude now wraps and fails closed, but the original absolute-path write escape is not covered by an executable regression test. | [google-gemini-3.5-flash] The Claude dev runner is now mechanically write-contained to the story worktree using the host sandbox wrapper, with robust fail-closed behavior and clear audit/status reporting. | [claude-sonnet] Mechanical sandbox containment is well-designed for the #1443 attack path, but empirically the write-allow list omits the git worktree's actual gitdir/object-store location, so git commit fails even from the correctly-scoped worktree.",
+      "sanitization_audit": null,
+      "p1_count": 2,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "tests/test_runner_sandbox.py",
+          "line": 99,
+          "description": "The containment regression tests inspect wrapper arguments and profile text but never execute a contained command that attempts the issue's escaped project-root write or commit path, so a sandbox profile that still permits the #1443 write escape would pass the gate.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/runners/sandbox.py",
+          "line": 215,
+          "description": "Running git commit inside the story worktree under the generated sandbox-exec profile fails with Operation not permitted because the profile does not grant write access to the worktree's real gitdir (<project-root>/.git/worktrees/<name>) or the shared object database under <project-root>/.git.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "When sandbox_mode != none, Claude dev runs cannot write to or commit from the project root or sibling worktrees.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/runners/runner_claude.py:666 wraps Claude when sandbox_mode is not none, and src/theforge/runners/sandbox.py:246 plus src/theforge/runners/sandbox.py:297 make only the story worktree writable in the generated sandbox command; tests/test_runner_sandbox.py:99-118 only validates wrapper shape and does not execute a project-root or sibling-worktree write/commit escape.; Writes to the project root and sibling worktrees via absolute paths are correctly blocked (src/theforge/runners/sandbox.py write_roots/denied_read_roots), but the criterion's implicit requirement that legitimate worktree commits still succeed is not met \u2014 git commit from inside the worktree itself fails because the worktree's gitdir/object store live under the project root, which is read-only under this profile."
+        },
+        {
+          "criterion": "A command like cd /Users/pwickersham/src/theforge && git commit ... fails mechanically during a contained dev run whose story worktree is /Users/pwickersham/src/theforge/.forge/worktrees/issue-1443.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/runners/runner_claude.py:667 passes the story worktree as the allowed sandbox root, but there is no test that executes an escaped cd into the project root followed by git add, git commit, or an equivalent write assertion.; Confirmed by design and by the pre-existing test_macos_sandbox_profile_blocks_sibling_worktree_reads_in_practice plus the write_roots restriction; the #1443 attack path itself is blocked."
+        },
+        {
+          "criterion": "A regression test proves the Claude runner command is wrapped or otherwise confined when host sandbox support exists.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:666-695 wraps the Claude argv before Popen, and tests/test_runner_claude.py:683-702 asserts workspace-write mode calls the sandbox wrapper and Popen receives sandbox-exec rather than bare claude.; tests/test_runner_claude.py:683-703 (test_workspace_write_wraps_command) asserts that Popen receives the wrapped command (sandbox-exec) instead of the bare claude argv.; tests/test_runner_claude.py TestClaudeSandboxWrapper::test_workspace_write_wraps_command and test_read_only_also_wraps assert Popen receives the sandbox-exec wrapper, not the bare claude argv."
+        },
+        {
+          "criterion": "If containment cannot be provided, the Claude dev runner fails closed rather than running with only cwd/prompt discipline.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:673-694 returns a startup_failure AgentResult with SANDBOX_UNAVAILABLE before launch when the wrapper is unavailable, and tests/test_runner_claude.py:737-753 asserts Popen is not called and the error string is returned.; src/theforge/runners/runner_claude.py:673-690 returns an AgentResult with success=False and startup_failure=True when the host sandbox is unavailable, and tests/test_runner_claude.py:737-750 (test_sandbox_unavailable_fails_closed) verifies this behavior.; src/theforge/runners/runner_claude.py:666-695 returns AgentResult(success=False, startup_failure=True) with SANDBOX_UNAVAILABLE before Popen when workspace_effect_sandbox_command returns the cmd unchanged; tests/test_runner_claude.py::test_sandbox_unavailable_fails_closed asserts Popen is never called."
+        },
+        {
+          "criterion": "Audit/review/status output distinguishes mechanically contained runs from prompt-only/native-permission-mode runs.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/auth.py:94-114 classifies containment as mechanical, native, unavailable, or none; src/theforge/coordinator/dev_phase.py:621-634 records and logs the mode; src/theforge/coordinator/audit.py:452-453 serializes it; src/theforge/task/review_prompts.py:400-411 labels it in review prompts; tests/test_coord_sandbox.py:151-229 and tests/test_auth.py:367-374 cover the state, audit, prompt, and classification behavior.; src/theforge/config/auth.py:94-114 (sandbox_containment_mode) classifies the containment mode, which is recorded in state.dev_containment and DevIterationTelemetry.containment (src/theforge/coordinator/dev_phase.py:622), serialized in src/theforge/coordinator/audit.py:453, and rendered in src/theforge/task/review_prompts.py:398-411. Verified by tests/test_coord_sandbox.py:151-230.; src/theforge/config/auth.py sandbox_containment_mode; state.dev_containment surfaced in src/theforge/coordinator/audit.py:453 and src/theforge/task/review_prompts.py containment labels; tests/test_coord_sandbox.py TestStateAndAuditContainment and TestReviewPromptContainment."
+        },
+        {
+          "criterion": "The fix should reuse the existing workspace containment machinery where possible, likely the same workspace_effect_sandbox_command path Gemini uses for workspace-write containment.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:23 imports workspace_effect_sandbox_command and src/theforge/runners/runner_claude.py:667-672 calls it with Claude-specific state roots and credential access; tests/test_runner_claude.py:704-721 asserts those wrapper arguments are threaded.; src/theforge/runners/runner_claude.py imports and calls workspace_effect_sandbox_command directly (same function extended with extra_write_roots/allow_credential_services rather than a parallel mechanism)."
+        },
+        {
+          "criterion": "When `sandbox_mode != none`, Claude dev runs cannot write to or commit from the project root or sibling worktrees.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:666-672 wraps the command in workspace_effect_sandbox_command when profile.sandbox_mode != 'none'. src/theforge/runners/sandbox.py:338 blocks sibling worktrees via _blocked_worktree_roots(root). tests/test_runner_sandbox.py:225 verifies that sibling worktree reads/writes are blocked."
+        },
+        {
+          "criterion": "A command like `cd /Users/pwickersham/src/theforge && git commit ...` fails mechanically during a contained dev run whose story worktree is `/Users/pwickersham/src/theforge/.forge/worktrees/issue-1443`.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py:215-218 restricts write roots to the worktree, /tmp, /dev, and extra_write_roots (which is ~/.claude and ~/.claude.json). The project root is not in the write roots, so any write or commit to the project root fails mechanically."
+        },
+        {
+          "criterion": "The fix should reuse the existing workspace containment machinery where possible, likely the same `workspace_effect_sandbox_command` path Gemini uses for workspace-write containment.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:667 invokes workspace_effect_sandbox_command from theforge.runners.sandbox."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior P1s are fixed, the latest iteration only adjusts the executable test location, and no blocking regressions were found. | [google-gemini-3.5-flash] The Claude dev runner containment implementation is fully verified, robustly tested, and completely resolves all prior P1 findings. | [claude-sonnet] Iteration 2 fixes both cycle-1 P1s: the executable macOS test now proves a legitimate commit inside the story worktree succeeds while project-root writes/commits and main-ref rewrites still fail, and _git_worktree_write_roots grants only the worktree's own gitdir/objects/branch-namespace (not the whole refs tree or main checkout). Reproduced independently against this review worktree with sandbox-exec: worktree commit succeeded (exit 0), project-root commit and refs/heads/main rewrite both failed with 'Operation not permitted' (exit 128).",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "When sandbox_mode != none, Claude dev runs cannot write to or commit from the project root or sibling worktrees.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:666 wraps Claude whenever sandbox_mode is not none, src/theforge/runners/sandbox.py:433 threads the allowed story worktree into workspace_effect_sandbox_command, and src/theforge/runners/sandbox.py:156 scopes linked-worktree git writes to the worktree's private gitdir plus required shared git internals. tests/test_runner_sandbox.py:371 verifies a legitimate worktree commit succeeds, while tests/test_runner_sandbox.py:378 and tests/test_runner_sandbox.py:394 verify project-root and sibling-worktree writes fail under the generated sandbox profile.; src/theforge/runners/runner_claude.py lines 658-671 wraps the Claude CLI command using workspace_effect_sandbox_command when profile.sandbox_mode != 'none'. tests/test_runner_sandbox.py lines 294-399 (test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice) executes real commands under the generated sandbox-exec profile and asserts that writing/committing to the project root or sibling worktrees fails mechanically.; src/theforge/runners/sandbox.py write_roots (worktree, /tmp, /dev, extra_write_roots) exclude the project root and sibling worktrees; _git_worktree_write_roots (sandbox.py, added in 52062f5) grants only the worktree's own private gitdir + shared objects/logs/packed-refs + its own branch-ref namespace, not the common root or other branches' refs. tests/test_runner_sandbox.py::test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice asserts a project-root source write and a sibling-worktree write both fail (returncode != 0) under the real generated sandbox-exec profile. Independently reproduced against the live issue-1907 worktree: project-root git commit fails with 'Unable to create .../index.lock: Operation not permitted'."
+        },
+        {
+          "criterion": "A command like cd /Users/pwickersham/src/theforge && git commit ... fails mechanically during a contained dev run whose story worktree is /Users/pwickersham/src/theforge/.forge/worktrees/issue-1443.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py:184 grants the story worktree's private gitdir while leaving the main checkout's gitdir root and index outside the write roots, and tests/test_runner_sandbox.py:383 runs the project-root commit escape shape under sandbox-exec and asserts it fails.; tests/test_runner_sandbox.py lines 384-387 (test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice) asserts that a commit from the project root fails under the real sandbox profile.; tests/test_runner_sandbox.py::test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice assertion 3 runs cd {proot} && ... git commit under the real sandbox-exec profile and asserts returncode != 0, plus assertion 4 confirms git update-ref refs/heads/main HEAD also fails and main is unchanged. Independently reproduced against issue-1907: project-root commit and main-ref rewrite both exit 128 with 'Operation not permitted', while the correctly-scoped worktree commit (the cycle-1 regression) now succeeds (exit 0)."
+        },
+        {
+          "criterion": "A regression test proves the Claude runner command is wrapped or otherwise confined when host sandbox support exists.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:667 calls workspace_effect_sandbox_command before subprocess launch, tests/test_runner_claude.py:683 asserts Popen receives the sandbox wrapper rather than bare claude, and tests/test_runner_sandbox.py:357 executes commands under the real generated macOS sandbox profile when sandbox-exec is available.; tests/test_runner_claude.py lines 671-691 (TestClaudeSandboxWrapper.test_workspace_write_wraps_command) asserts that the Claude CLI command is wrapped with sandbox-exec when sandbox_mode != 'none'. tests/test_runner_sandbox.py lines 294-399 (test_macos_sandbox_allows_worktree_commit_but_blocks_escape_in_practice) executes real commands under the generated sandbox-exec profile.; tests/test_runner_claude.py::TestClaudeSandboxWrapper::test_workspace_write_wraps_command asserts Popen receives sandbox-exec, not the bare claude argv; test_read_only_also_wraps; plus the new executable sandbox-exec integration test."
+        },
+        {
+          "criterion": "If containment cannot be provided, the Claude dev runner fails closed rather than running with only cwd/prompt discipline.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:673 detects an unchanged wrapper command and returns a SANDBOX_UNAVAILABLE startup_failure instead of launching Claude, with tests/test_runner_claude.py:737 asserting subprocess.Popen is not called and the result contains SANDBOX_UNAVAILABLE.; src/theforge/runners/runner_claude.py lines 665-698 returns AgentResult with startup_failure=True and SANDBOX_UNAVAILABLE output if the host sandbox is unavailable and sandbox_mode != 'none'. tests/test_runner_claude.py lines 724-739 (test_sandbox_unavailable_fails_closed) asserts that the runner fails closed without launching Claude when the host sandbox is unavailable.; src/theforge/runners/runner_claude.py:673-694 (unchanged this iteration) returns AgentResult(startup_failure=True, output contains SANDBOX_UNAVAILABLE) before Popen when wrapping is unavailable; tests/test_runner_claude.py::test_sandbox_unavailable_fails_closed asserts Popen is never called."
+        },
+        {
+          "criterion": "Audit/review/status output distinguishes mechanically contained runs from prompt-only/native-permission-mode runs.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/auth.py:94 classifies containment as mechanical, native, unavailable, or none; src/theforge/coordinator/dev_phase.py:621 records sandboxed and dev_containment at runtime; src/theforge/coordinator/audit.py:452 serializes containment; src/theforge/task/review_prompts.py:398 renders distinct prompt labels; tests/test_coord_sandbox.py:151 verifies state and audit recording, and tests/test_coord_sandbox.py:215 verifies reviewer prompt labels.; src/theforge/config/auth.py lines 94-117 (sandbox_containment_mode) classifies containment as 'mechanical', 'native', 'unavailable', or 'none'. src/theforge/coordinator/dev_phase.py lines 619-620 records state.dev_containment = sandbox_containment_mode(config.dev_profile). src/theforge/coordinator/audit.py line 453 serializes containment in dev iteration metrics. src/theforge/task/review_prompts.py lines 398-411 (build_review_prompt) renders the containment mode label in the reviewer prompt. tests/test_coord_sandbox.py lines 151-232 (TestStateAndAuditContainment and TestReviewPromptContainment) verify that the containment mode is recorded in state, audit, and reviewer prompt.; src/theforge/config/auth.py sandbox_containment_mode; state.dev_containment surfaced in coordinator/audit.py and task/review_prompts.py; tests/test_coord_sandbox.py TestStateAndAuditContainment and TestReviewPromptContainment (unchanged this iteration, still passing)."
+        },
+        {
+          "criterion": "The fix should reuse the existing workspace containment machinery where possible, likely the same workspace_effect_sandbox_command path Gemini uses for workspace-write containment.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_claude.py:25 imports workspace_effect_sandbox_command, src/theforge/runners/runner_claude.py:667 uses that shared wrapper for Claude, src/theforge/runners/sandbox.py:409 keeps the git write-root grants centralized in workspace_effect_sandbox_command, and src/theforge/runners/runner_gemini.py:109 continues to use the same shared path.; src/theforge/runners/runner_claude.py line 25 imports workspace_effect_sandbox_command from theforge.runners.sandbox. src/theforge/runners/runner_claude.py lines 659-664 invokes workspace_effect_sandbox_command to wrap the Claude CLI command.; workspace_effect_sandbox_command (src/theforge/runners/sandbox.py) is the single shared entry point used by runner_claude.py; the git-write-root grant added in 52062f5 is threaded through this same function, so Gemini's existing wrapping benefits automatically without a parallel mechanism."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1909",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1907",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1909",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1909",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-23T17:03:58.307293+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1283 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1353 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 768 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 907 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2166 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1581 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1410 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1555 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1808 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1054 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2004 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1100 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 840 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 929 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 872 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 816 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 982 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1206 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1114 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 3575 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 934 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1423 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1244 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1009 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 1811 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1155 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1173 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1165 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1084 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1376 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1476 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1541 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 2699 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1070 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1268 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1413 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "1c2d15fcfa5d68ea",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "tests/test_runner_sandbox.py",
+      "line": 99,
+      "severity": "P1",
+      "description": "The containment regression tests inspect wrapper arguments and profile text but never execute a contained command that attempts the issue's escaped project-root write or commit path, so a sandbox profile that still permits the #1443 write escape would pass the gate.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "17862cbb2e4678eb",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/runners/sandbox.py",
+      "line": 215,
+      "severity": "P1",
+      "description": "Running git commit inside the story worktree under the generated sandbox-exec profile fails with Operation not permitted because the profile does not grant write access to the worktree's real gitdir (<project-root>/.git/worktrees/<name>) or the shared object database under <project-root>/.git.",
+      "reporter": "claude-sonnet",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 0,
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8765,
+              "weighted": 0.6667,
+              "runs": 81,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.6667
+            },
+            "domain": {
+              "domains": [
+                "security",
+                "cli",
+                "backend"
+              ],
+              "raw": 0.8,
+              "weighted": 0.8,
+              "runs": 5,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.8,
+              "by_domain": {
+                "security": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 1,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 4,
+                  "raw": 0.75,
+                  "weighted": 0.75,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "security",
+                "cli",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "security": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "security",
+          "cli",
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "security",
+            "cli",
+            "backend"
+          ],
+          "raw": 0.8,
+          "weighted": 0.8,
+          "runs": 5,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.8,
+          "by_domain": {
+            "security": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 1,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 4,
+              "raw": 0.75,
+              "weighted": 0.75,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "fired": true,
+        "matching_records": 10,
+        "escalations": 3,
+        "outcome": "promoted_to_strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_tier_demotion",
+        "applicable": false,
+        "fired": false,
+        "checked": null,
+        "reason": "no_dev_tier_demotion_mechanism_v1"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+cli+security",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend",
+          "cli",
+          "security"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev promoted claude-opus (tier strong \u2192 strong) \u2014 3/10 recent HIGH stories escalated (profile success_rate=0.67 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 9,
+            "completed": 8,
+            "raw": 0.8889,
+            "weighted": 0.8935,
+            "rate": 0.8935,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 4,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 11,
+            "completed": 11,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 9,
+            "completed": 8,
+            "raw": 0.8889,
+            "weighted": 0.8935,
+            "rate": 0.8935,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 4,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.560146,
+      "duration_s": 108.38,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 29.069822,
+      "duration_s": 3060.23,
+      "iterations": 3,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 124.38,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 307.08,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 2.83954,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 3600.06,
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 2,
+    "dev_iterations": 3,
+    "review_cycles": 2
+  },
+  "sprint_id": "cb1ed713b3a2",
+  "sprint_name": "issues-1907,1904"
+}

@@ -41,6 +41,7 @@ from theforge.review import (
     parse_plan_review_output,
     plan_review_findings_to_text,
 )
+from theforge.reviewer_value import compute_plan_reviewer_uniqueness
 from theforge.sessions import save_sessions
 from theforge.task import (
     ContextAssembler,
@@ -1014,6 +1015,10 @@ def _run_plan_agent_review(
             complexity=state.preflight_complexity,
             state_update_fn=state_update_fn,
         )
+        # Capture per-reviewer wall-clock from the initial pool fan-out so the
+        # per-plan-reviewer latency signal (#1443) attributes time to the reviewer
+        # that spent it, not the pool aggregate. Index-aligned to par_profiles.
+        _pr_reviewer_durations: list[float] = []
         pr_results = run_agent_pool(
             prompt=pr_prompt,
             profiles=par_profiles,
@@ -1021,6 +1026,7 @@ def _run_plan_agent_review(
             session_ids=_pool_session_ids,
             secrets=config.secrets,
             progress_cb=_pr_channel.cb,
+            durations_out=_pr_reviewer_durations,
         )
         pr_results, _transport_retry_events = _retry_transient_plan_review_failures(
             prompt=pr_prompt,
@@ -1122,6 +1128,41 @@ def _run_plan_agent_review(
                 _res.output or "",
             )
             _parsed_prs.append(_parsed)
+
+        # ── Per-plan-reviewer mechanical value telemetry (#1443) ──────────────
+        # Deterministic, coordinator-computed, over the structured findings from
+        # THIS completed pool (no LLM judgment). Uniqueness compares each
+        # reviewer's blocking (P1) findings against every peer's via anchor
+        # overlap; parse-error count is derived from the same parse step that
+        # feeds plan_review_failures (no parallel parse-failure writer, per the
+        # ADR-0006 boundary). Latency is the per-reviewer pool wall-clock captured
+        # above. Recorded for every reviewer regardless of outcome so the audit
+        # can answer "is this reviewer earning its wall-clock cost?".
+        _uniq_inputs = [
+            (_prof.name, _parsed.findings)
+            for _prof, _parsed in zip(par_profiles, _parsed_prs)
+            if not _parsed.parse_errors
+        ]
+        _uniqueness = compute_plan_reviewer_uniqueness(_uniq_inputs)
+        for _i, (_prof, _parsed) in enumerate(zip(par_profiles, _parsed_prs)):
+            _unique_p1, _total_p1 = _uniqueness.get(_prof.name, (0, 0))
+            _latency_s = (
+                round(_pr_reviewer_durations[_i], 2) if _i < len(_pr_reviewer_durations) else None
+            )
+            state.plan_reviewer_value.append(
+                {
+                    "attempt": _attempt,
+                    "reviewer": _prof.name,
+                    "complexity": state.preflight_complexity or "medium",
+                    "unique_p1_count": _unique_p1,
+                    "total_p1_count": _total_p1,
+                    "latency_s": _latency_s,
+                    "parse_error_count": len(_parsed.parse_errors),
+                    "actual_model": getattr(_prof, "model", None),
+                    "provider": getattr(_prof, "provider", None),
+                    "cli": getattr(_prof, "cli", None),
+                }
+            )
 
         # Minimum-success gate: require the configured number of parseable reviewers
         _failed_this_attempt = sum(1 for _p in _parsed_prs if _p.parse_errors)

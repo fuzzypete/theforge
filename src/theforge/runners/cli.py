@@ -592,6 +592,7 @@ def run_agent_pool(
     plain_text: bool = False,
     stop_event: "threading.Event | None" = None,
     progress_cb: "Callable[[dict], None] | None" = None,
+    durations_out: "list[float] | None" = None,
 ) -> list[AgentResult]:
     """Run multiple agents concurrently, each with its own prompt or a shared prompt.
 
@@ -602,6 +603,12 @@ def run_agent_pool(
     Uses ThreadPoolExecutor for parallel execution; single-agent pools
     run directly without thread overhead. Each agent runs independently
     with no shared context.
+
+    When ``durations_out`` is provided, it is populated (via slice assignment) with
+    the per-agent wall-clock seconds, index-aligned to ``profiles`` — the pool
+    already measures these internally, so this exposes them without changing the
+    return type. Callers that don't pass it are unaffected (#1443, per-plan-reviewer
+    latency capture).
     """
     prompts: list[str] = [prompt] * len(profiles) if isinstance(prompt, str) else prompt
     if session_ids is not None:
@@ -619,6 +626,7 @@ def run_agent_pool(
     if len(profiles) == 1:
         sid = session_ids[0] if session_ids else None
         only = profiles[0]
+        _single_start = time.monotonic()
         result = run_agent(
             prompt=prompts[0],
             profile=only,
@@ -630,6 +638,8 @@ def run_agent_pool(
             stop_event=stop_event,
             progress_cb=progress_cb,
         )
+        if durations_out is not None:
+            durations_out[:] = [time.monotonic() - _single_start]
         only_label = only.name or f"{only.cli or only.provider}/{only.model}"
         # Only a successful result means the reviewer is done. An unsuccessful
         # (e.g. transient transport) result is a finished attempt the coordinator
@@ -700,6 +710,8 @@ def run_agent_pool(
     _log(
         f"  Review pool complete: {wall_clock:.0f}s wall clock ({sequential_est:.0f}s sequential)"
     )
+    if durations_out is not None:
+        durations_out[:] = list(agent_durations)
     assert all(r is not None for r in results), "BUG: pool finished with unfilled result slots"
     return cast(list[AgentResult], results)
 

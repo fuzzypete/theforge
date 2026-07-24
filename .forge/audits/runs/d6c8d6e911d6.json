@@ -1,0 +1,2250 @@
+{
+  "schema_version": 9,
+  "run_id": "d6c8d6e911d6",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Extend adaptive routing to all agent roles using reliability signals",
+    "slug": "issue-1489",
+    "story_path": null,
+    "story_text": "## Summary\n\nAdaptive model routing should account for observed performance across all agent roles, not only the dev role.\n\n## Problem\n\nThe system currently learns from dev outcomes, but reviewer, planner, plan-reviewer, and preflight selection are routed primarily by tier and budget. A model that is slow, flaky, or otherwise poor in a non-dev role keeps getting picked regardless of local run history. This makes repeated sprint pain possible even when accumulated evidence clearly shows the model is unreliable for that role.\n\nThe profile surface also only captures a narrow set of success/cost data today. Non-dev routing needs complete, structured role-specific telemetry: attempts, timeouts, transport failures, parse failures, latency, and role/phase attribution. Without that, any non-dev routing profile would be too weak or biased to trust.\n\n## Expected\n\nNon-dev routing may use role-specific historical signals only when they satisfy ADR-0006 clause 2: mechanically recorded, complete over the relevant attempts, sample-floor gated, recency-aware, schema-stable, role-specific, and traceable to authoritative native telemetry.\n\nThis issue extends adaptive routing beyond dev, but it does not create new signal semantics by itself. It consumes the role-specific signals produced by narrower issues such as #1388 (reviewer attempt completion), #1392 (shared recency weighting), #1443 (mechanical reviewer value signals, once groomed), and #1852 (taint filtering).\n\n## Acceptance criteria\n\n- Non-dev model selection can use observed role-specific performance only when the matching signal has cleared ADR-0006 clause-2 admissibility requirements: sample floor, completeness, recency handling, schema compatibility, and per-role scope.\n- Reliability signals relevant to routing are recorded as authoritative native telemetry or deterministic aggregations over it, not as log prose, LLM summaries, or profile-only state.\n- Historical role-specific aggregates exclude tainted runs through the centralized filter from #1852.\n- A model with repeated poor reliability in a role is deprioritized for that role without requiring manual removal from `forge.yaml`.\n- Deprioritization is a sort-after, not a filter-out: an operator-enabled candidate remains eligible unless explicit configuration excludes it.\n- Explicit CLI / `forge.yaml` configuration still wins over learned preference, per ADR-0006 clause 1.\n- Routing decisions that use role-specific profile history record the consulted signal, sample count, floor status, raw and weighted values where applicable, taint-excluded count where applicable, and ranking effect in the `routing_decision` block from #1391.\n- Tests cover at least one non-dev role where sufficient reliable history changes ordering, one cold-start case where ordering falls back to static policy, and one explicit override case where learned preference does not override operator configuration.\n\n## Example\n\nIf a strong-tier reviewer model repeatedly times out or fails transport during review, future review assignment should prefer another eligible strong-tier reviewer after the unreliable model has enough admissible attempts. The decision is recorded in `routing_decision` so it is not a silent demotion.\n\n## References\n\n- ADR-0006 clauses 1, 2, 4, and 7\n- #1391 \u2014 canonical `routing_decision` block\n- #1388 \u2014 reviewer attempt-completion telemetry\n- #1392 \u2014 shared recency weighting\n- #1852 \u2014 tainted-run aggregate filtering\n",
+    "github_issue": 1489,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Extend adaptive routing to all agent roles using reliability signals' completed. Review approved after 2 cycle(s), 1 dev iteration(s). Branch: feat/issue-1489",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-23T08:26:03.406042+00:00",
+    "finished_at": "2026-07-23T09:06:04.379453+00:00",
+    "duration_seconds": 2400.973411
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1489",
+    "branch": "feat/issue-1489"
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 9.01884675,
+        "duration_s": 1162.08,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/assignment.py",
+          "src/theforge/coordinator/model_profiles_bridge.py",
+          "src/theforge/model_profiles.py",
+          "tests/test_assignment_role_reliability.py",
+          "tests/test_coord_model_profiles_seam.py"
+        ],
+        "files_changed_count": 5,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 10.093474499999997,
+        "duration_s": 715.62,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/model_profiles_bridge.py",
+          "src/theforge/coordinator/preflight_flow.py",
+          "src/theforge/model_profiles.py",
+          "tests/test_assignment_role_reliability.py",
+          "tests/test_coord_model_profiles_seam.py",
+          "tests/test_coord_preflight_fallback.py"
+        ],
+        "files_changed_count": 6,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 1.199096,
+        "duration_s": 225.69
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.854469,
+        "duration_s": 150.36
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 9,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 9,
+      "base_review": 5,
+      "profile_history_runs": 80,
+      "profile_avg_iterations": 1.8875,
+      "profile_avg_cost_usd": 8.50909,
+      "profile_raw_dev_max": 2.8312,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 21.2727,
+      "review_history_sample_size": 8,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 80 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-23T08:27:13.131421+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-23T08:50:54.965885+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 19.112321249999997,
+    "review_usd": null,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 9.01884675,
+        "duration_seconds": 1162.082823166973,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.005737
+          },
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 9.01310975
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 10.093474499999997,
+        "duration_seconds": 715.6225450419588,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 10.093474499999997
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 75.18453838870239,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 75.18453838870239,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.1990958,
+        "duration_seconds": 75.18453838870239,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.039134999999999996
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.1599608
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 50.07185018066472,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 50.07185018066472,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.8544692,
+        "duration_seconds": 50.07185018066472,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.8544692
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "PROCEED",
+    "reason": "Preflight and planner selection (src/theforge/assignment.py:2727-2767) call _pick_agent() without model_profiles, so they use pure tier/budget ordering today; only dev (and reviewer via _select_reviewers) consult reliability signals. Extending reliability-based routing to preflight/planner while adding new structured telemetry and routing_decision fields is unfinished, cross-module work.",
+    "complexity": "large",
+    "complexity_score": 9,
+    "implementation_complexity_score": 9,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 9",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "backend",
+      "config"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.3275200499999999,
+    "cached": false,
+    "original_verdict": null,
+    "source_run_id": null,
+    "cache_snapshot": {
+      "worktree_head": "2358c1a88b53a024e3925298921a4e2775213064",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "2358c1a88b53a024e3925298921a4e2775213064"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "b711a9ff6f45d2db719622f208c27d326f100dbe",
+      "current_worktree_head": "2358c1a88b53a024e3925298921a4e2775213064",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "b711a9ff6f45d2db719622f208c27d326f100dbe",
+      "current_evaluation_base_branch_head": "2358c1a88b53a024e3925298921a4e2775213064",
+      "status": "invalidated",
+      "reason": "worktree_head_changed"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "cost_usd": 0.3275200499999999,
+        "duration_s": 68.61,
+        "success": true,
+        "exit_code": 0
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 9,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev promoted claude-opus (tier strong \u2192 strong) \u2014 3/10 recent HIGH stories escalated (profile success_rate=0.88 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 9,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "preflight",
+      "context_budget": 200,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1489/iter_1.yaml",
+      "handoff": {
+        "summary": "Extended adaptive routing from dev-only to the preflight and planner roles (reviewer roles already had it via #1388/#1443). Added a per-role reliability completion signal to model_profiles (planner section + preflight completion counters, shared fold helper, get_role_reliability_signal with sample-floor/recency/taint/schema gating, plus merge/reset coverage), a sort-after rerank in assignment (_rerank_single_by_reliability wired through _pick_agent into preflight/planner selection) with a routing_decision reliability_check audit block, and bridge derivation of the completion booleans and planner identity from native coordinator state. Explicit config and static mode bypass learned preference.",
+        "commits": [
+          {
+            "sha": "d4cd45d",
+            "message": "feat(routing): extend adaptive routing to preflight and planner via reliability signals"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Non-dev model selection can use observed role-specific performance only when the matching signal has cleared ADR-0006 clause-2 admissibility (sample floor, completeness, recency handling, schema compatibility, per-role scope).",
+            "status": "MET",
+            "notes": "get_role_reliability_signal gates rate on floor='pass' (min_runs) and schema_ok, reads a per-role section, applies recency weighting via _weighted_rate. Below floor / bad schema returns rate=None \u2192 static fallback."
+          },
+          {
+            "criterion": "Reliability signals recorded as authoritative native telemetry or deterministic aggregations over it, not prose/LLM/profile-only state.",
+            "status": "MET",
+            "notes": "Completion counters are deterministically folded from native telemetry (preflight_result/degraded, plan_output/structured) via the bridge; no LLM or log-prose input."
+          },
+          {
+            "criterion": "Historical role-specific aggregates exclude tainted runs through the centralized filter from #1852.",
+            "status": "MET",
+            "notes": "_update_preflight/_update_planner apply the run-level taint gate (from is_tainted/derive_trust_status), tally tainted_runs, and the signal surfaces tainted_runs. Covered by test_role_reliability_signal_excludes_tainted_runs."
+          },
+          {
+            "criterion": "A model with repeated poor reliability in a role is deprioritized without manual forge.yaml removal.",
+            "status": "MET",
+            "notes": "_rerank_single_by_reliability sorts below-floor models after; test_preflight_low_reliability_reorders_selection and test_planner_low_reliability_reorders_selection."
+          },
+          {
+            "criterion": "Deprioritization is sort-after, not filter-out; operator-enabled candidate stays eligible unless explicit config excludes it.",
+            "status": "MET",
+            "notes": "Stable sort-after on original index; test_low_reliability_is_sort_after_not_filter_out shows a lone unreliable candidate still selected."
+          },
+          {
+            "criterion": "Explicit CLI/forge.yaml configuration still wins over learned preference (ADR-0006 clause 1).",
+            "status": "MET",
+            "notes": "Explicit preflight/planner branches short-circuit before _pick_agent; test_explicit_preflight_override_beats_learned_preference and test_static_mode_ignores_role_reliability."
+          },
+          {
+            "criterion": "Routing decisions using role-specific history record consulted signal, sample count, floor status, raw/weighted values, taint-excluded count, and ranking effect in routing_decision (#1391).",
+            "status": "MET",
+            "notes": "reliability_check block per role via _role_reliability_check; test_preflight_reliability_audit_records_signal_and_effect and test_cold_start_audit_shows_no_demotion assert the fields."
+          },
+          {
+            "criterion": "Tests cover a non-dev role where reliable history changes ordering, a cold-start fallback, and an explicit override.",
+            "status": "MET",
+            "notes": "Added tests/test_assignment_role_reliability.py (14 tests) covering all three plus audit/seam, and a build_run_outcome seam test in test_coord_model_profiles_seam.py."
+          }
+        ],
+        "gate_result": "PASS",
+        "story_deviations": [
+          "Reused the existing reviewer_completion_threshold/min_runs config for the preflight/planner reliability floor instead of adding new AssignmentConfig fields \u2014 same semantics (a completion-rate floor), avoids config-surface churn for a solo operator. Flag if a distinct knob is wanted."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1489/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 fixes the P1: non-dev (preflight/planner) reliability was folded once per phase under the configured primary profile, so retry/fallback attempts were misattributed and transport-retry failures hidden. Reworked to per-attempt attribution: added a RoleAttempt carrier and preflight_attempts/planner_attempts lists on RunOutcome, folded each attempt's completion under the model that ran it (_update_role_completion) decoupled from the per-phase runs/cost fold (which keeps the single tainted-run tally). preflight_flow now records provider/cli + a per-attempt completed flag; the bridge lifts raw['attempts'] and folds planner transport-retries as failed attempts plus each plan_results invocation. The routing rerank, routing_decision audit, and signal accessor from cycle 0 are unchanged and now receive complete-over-attempts data. Added per-attempt unit tests and seam tests for preflight retry/fallback and planner transport-retry telemetry.",
+        "commits": [
+          {
+            "sha": "d4cd45d",
+            "message": "feat(routing): extend adaptive routing to preflight and planner via reliability signals"
+          },
+          {
+            "sha": "e035547",
+            "message": "fix(routing): fold non-dev reliability per attempt, not per phase (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Non-dev model selection can use observed role-specific performance only when the matching signal has cleared ADR-0006 clause-2 admissibility (sample floor, completeness, recency handling, schema compatibility, per-role scope).",
+            "status": "MET",
+            "notes": "get_role_reliability_signal gates on floor/schema_ok/per-role section/recency; now complete over attempts after the iter-1 fix."
+          },
+          {
+            "criterion": "Reliability signals recorded as authoritative native telemetry or deterministic aggregations over it.",
+            "status": "MET",
+            "notes": "Folded per native invocation from preflight raw['attempts'] and plan_results/plan_transport_retries \u2014 no prose/LLM."
+          },
+          {
+            "criterion": "Historical role-specific aggregates exclude tainted runs through the centralized filter from #1852.",
+            "status": "MET",
+            "notes": "Per-phase fold owns the single tainted-run tally; per-attempt fold skips tainted. Covered by test_role_reliability_signal_excludes_tainted_runs and test_review_and_preflight_aggregates_exclude_tainted."
+          },
+          {
+            "criterion": "A model with repeated poor reliability in a role is deprioritized without manual forge.yaml removal.",
+            "status": "MET",
+            "notes": "Sort-after rerank unchanged from cycle 0; now fed correctly-attributed per-attempt history."
+          },
+          {
+            "criterion": "Deprioritization is sort-after, not filter-out.",
+            "status": "MET",
+            "notes": "test_low_reliability_is_sort_after_not_filter_out."
+          },
+          {
+            "criterion": "Explicit CLI/forge.yaml configuration still wins over learned preference (ADR-0006 clause 1).",
+            "status": "MET",
+            "notes": "Explicit branches short-circuit before rerank; test_explicit_preflight_override_beats_learned_preference and test_static_mode_ignores_role_reliability."
+          },
+          {
+            "criterion": "Routing decisions record consulted signal, sample count, floor status, raw/weighted values, taint-excluded count, and ranking effect in routing_decision.",
+            "status": "MET",
+            "notes": "reliability_check block per role; audit tests unchanged and passing."
+          },
+          {
+            "criterion": "Tests cover ordering-change, cold-start, and explicit-override; plus per-attempt attribution.",
+            "status": "MET",
+            "notes": "Added test_preflight_retry_then_fallback_attributes_per_attempt, test_planner_transport_retry_folds_failed_attempt, and seam tests test_seam_preflight_parse_retry_and_fallback_attributed_per_model / test_seam_planner_transport_retry_folds_failed_attempt."
+          }
+        ],
+        "gate_result": "BLOCKED",
+        "gate_delegated": true,
+        "story_deviations": [
+          "Reused reviewer_completion_threshold/min_runs config for the preflight/planner reliability floor instead of adding new AssignmentConfig fields (unchanged from cycle 0).",
+          "Planner attempts are attributed to the planner profile identity; mid-plan model escalation (rare) would attribute an escalated invocation to the base planner \u2014 documented in _extract_planner_attempts as a known minor imprecision, far smaller than the collapse it replaces."
+        ],
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "93085795703d6c55"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The routing rerank itself is wired, but the new telemetry bridge is not complete over non-dev attempts, so learned reliability can reward or miss failed preflight/planner attempts. | [google-gemini-3.5-flash] The implementation successfully extends adaptive routing to preflight and planner roles using robust, admissibility-gated reliability signals with full auditability. | [claude-sonnet] Well-structured extension of adaptive routing to preflight/planner with correct sort-after semantics, taint/schema/floor gating, explicit-override bypass, and thorough seam-level tests; no P1 defects found.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/model_profiles_bridge.py",
+          "line": 145,
+          "description": "When preflight retries after a parse failure or falls back to a fallback model, the run outcome collapses all native preflight attempts into one final completion boolean recorded under the configured primary preflight profile.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Non-dev model selection can use observed role-specific performance only when the matching signal has cleared ADR-0006 clause-2 admissibility requirements: sample floor, completeness, recency handling, schema compatibility, and per-role scope.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/model_profiles.py:1393 implements get_role_reliability_signal with per-role sections, schema_ok, min_runs floor, and _weighted_rate, and src/theforge/assignment.py:2898 and src/theforge/assignment.py:2932 invoke it for preflight/planner selection; however src/theforge/coordinator/model_profiles_bridge.py:145 collapses preflight retries/fallbacks into one final primary-profile outcome, so completeness over relevant attempts is not satisfied.; src/theforge/model_profiles.py:1393-1483 implements get_role_reliability_signal with sample floor (attempted >= min_runs), completeness, recency weighting (_weighted_rate), schema compatibility (schema_ok), and per-role scope (role parameter).; src/theforge/model_profiles.py get_role_reliability_signal (~L1390-1480) gates rate to non-None only when `floor_ok = schema_ok and attempted >= min_runs and attempted > 0, reads a per-role section (entry.get(role)`), and applies recency weighting via _weighted_rate. Tests test_role_reliability_signal_cold_start_below_floor and test_role_reliability_signal_schema_incompatible_forces_cold_start in tests/test_assignment_role_reliability.py verify the floor/schema gating concretely."
+        },
+        {
+          "criterion": "Reliability signals relevant to routing are recorded as authoritative native telemetry or deterministic aggregations over it, not as log prose, LLM summaries, or profile-only state.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/model_profiles_bridge.py:145 and src/theforge/coordinator/model_profiles_bridge.py:156 derive booleans from CoordinatorState rather than prose or LLM summaries, but the preflight derivation ignores the authoritative per-attempt telemetry recorded at src/theforge/coordinator/preflight_flow.py:321.; src/theforge/coordinator/model_profiles_bridge.py:137-174 derives preflight_completed and planner_completed from native coordinator state.; src/theforge/coordinator/model_profiles_bridge.py derives preflight_completed from state.preflight_result.success / state.preflight_degraded (verified against preflight_flow.py L393-433 where preflight_degraded is set deterministically on parse-error or agent failure) and planner_completed from state.plan_output/state.plan_structured. No LLM or log-prose input; folded via _fold_completion_counters in model_profiles.py."
+        },
+        {
+          "criterion": "Historical role-specific aggregates exclude tainted runs through the centralized filter from #1852.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/model_profiles_bridge.py:138 derives run_tainted via derive_trust_status/is_tainted, src/theforge/model_profiles.py:975 and src/theforge/model_profiles.py:993 pass outcome.dev_tainted into preflight/planner folds, src/theforge/model_profiles.py:758 and src/theforge/model_profiles.py:788 tally tainted_runs without folding completion counters, and tests/test_assignment_role_reliability.py:126 verifies tainted preflight runs are excluded from attempted counts.; src/theforge/model_profiles.py:750-780 and get_role_reliability_signal exclude tainted runs from the completion rate and track them under tainted_runs.; model_profiles.py _update_preflight/_update_planner (~L738-806) check tainted first and tally under tainted_runs, returning before folding completion counters. get_role_reliability_signal surfaces tainted_runs separately from attempted. test_role_reliability_signal_excludes_tainted_runs confirms tainted attempts are excluded from attempted and floor stays \"fail\"."
+        },
+        {
+          "criterion": "A model with repeated poor reliability in a role is deprioritized for that role without requiring manual removal from forge.yaml.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:579 implements _rerank_single_by_reliability, src/theforge/assignment.py:2898 and src/theforge/assignment.py:2932 wire it into preflight and planner picks, and tests/test_assignment_role_reliability.py:170 and tests/test_assignment_role_reliability.py:202 verify low-reliability preflight and planner models reorder behind reliable alternatives.; src/theforge/assignment.py:579-640 implements _rerank_single_by_reliability which sorts low-reliability candidates after more-reliable ones.; assignment.py _rerank_single_by_reliability (~L579-643) sorts candidates with is_low below threshold after reliable ones. Verified by test_preflight_low_reliability_reorders_selection and test_planner_low_reliability_reorders_selection."
+        },
+        {
+          "criterion": "Deprioritization is a sort-after, not a filter-out: an operator-enabled candidate remains eligible unless explicit configuration excludes it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:626 sorts low-reliability candidates after others while keeping them in rows, src/theforge/assignment.py:703 still returns the first remaining candidate, and tests/test_assignment_role_reliability.py:211 verifies a lone unreliable preflight candidate remains selected.; src/theforge/assignment.py:628 uses a stable sort where low-reliability candidates are assigned a key of 1 and others 0, so they are sorted after but not filtered out.; _rerank_single_by_reliability never drops candidates, only reorders via stable sort on (is_low, idx). test_low_reliability_is_sort_after_not_filter_out shows a lone unreliable candidate is still selected."
+        },
+        {
+          "criterion": "Explicit CLI / forge.yaml configuration still wins over learned preference, per ADR-0006 clause 1.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:2687 disables effective_profiles in static mode, src/theforge/assignment.py:2892 and src/theforge/assignment.py:2921 bypass learned preflight/planner selection for explicit profiles, and tests/test_assignment_role_reliability.py:222 plus tests/test_assignment_role_reliability.py:251 verify explicit override and static routing ignore learned reliability.; src/theforge/assignment.py:2892-2894 and 2921-2924 bypass _pick_agent when explicit overrides are present.; assignment.py L2892/L2921 explicit branches (\"preflight\" in explicit_profiles, \"planner\" in explicit_profiles) short-circuit before _pick_agent runs, so reliability signals/audit stay empty and _role_reliability_check returns {} (omitted from routing_decision). Verified traced explicit-profile identity (config.plan.* rebuilt fields match _adaptive_decision.planner used later in plan_flow.py L713-733) so bridge telemetry correctly attributes to the model that actually ran. test_explicit_preflight_override_beats_learned_preference and test_static_mode_ignores_role_reliability both assert `\"reliability_check\" not in decision.routing_decision[...]`."
+        },
+        {
+          "criterion": "Routing decisions that use role-specific profile history record the consulted signal, sample count, floor status, raw and weighted values where applicable, taint-excluded count where applicable, and ranking effect in the routing_decision block from #1391.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:1818 builds reliability_check with attempted/completed/raw/weighted/rate/floor/schema_ok/tainted_runs and ranking effect, src/theforge/assignment.py:2037 and src/theforge/assignment.py:2059 attach it under preflight/planner routing_decision blocks, and tests/test_assignment_role_reliability.py:275 plus tests/test_assignment_role_reliability.py:307 verify fired and cold-start audit contents.; src/theforge/assignment.py:1819-1862 implements _role_reliability_check which records all of these fields in the reliability_check block.; assignment.py _role_reliability_check (~L1819-1865) builds a per-candidate block with attempted/completed/raw/weighted/rate/floor/schema_ok/tainted_runs/ selected, plus mechanism/fired/threshold/min_runs/deprioritized/original_order/ final_order at the top level, wired into _build_routing_decision's preflight/planner blocks. test_preflight_reliability_audit_records_signal_and_effect and test_cold_start_audit_shows_no_demotion assert these fields concretely."
+        },
+        {
+          "criterion": "Tests cover at least one non-dev role where sufficient reliable history changes ordering, one cold-start case where ordering falls back to static policy, and one explicit override case where learned preference does not override operator configuration.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_assignment_role_reliability.py:170 covers reliable non-dev history changing preflight ordering, tests/test_assignment_role_reliability.py:187 covers cold-start fallback to static ordering, and tests/test_assignment_role_reliability.py:222 covers explicit preflight override winning over learned preference.; tests/test_assignment_role_reliability.py covers all of these cases.; tests/test_assignment_role_reliability.py: reorder for preflight and planner (test_preflight_low_reliability_reorders_selection, test_planner_low_reliability_reorders_selection), cold-start (test_preflight_cold_start_preserves_static_order), explicit override (test_explicit_preflight_override_beats_learned_preference), plus a coordinator-bridge seam roundtrip (test_bridge_roundtrip_teaches_role_reliability and test_seam_bridge_derives_preflight_and_planner_reliability in tests/test_coord_model_profiles_seam.py) satisfying convention 8."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Cycle 1 P1 is resolved: preflight fallback/retry and planner transport retry telemetry now folds per attempt, and I found no P1 regressions. | [google-gemini-3.5-flash] The implementation successfully extends adaptive routing to preflight and planner roles using reliability signals, and resolves the prior P1 by folding reliability per attempt rather than per phase. | [claude-sonnet] Iteration 1 correctly fixes the Cycle 1 P1 (collapsed per-phase attribution) with per-attempt RoleAttempt tracking; verified against preflight_flow.py's retry/fallback control flow and plan_flow.py's transport-retry/plan_results split, confirmed no double-counting, and all 58 relevant tests pass locally.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Non-dev model selection can use observed role-specific performance only when the matching signal has cleared ADR-0006 clause-2 admissibility requirements: sample floor, completeness, recency handling, schema compatibility, and per-role scope.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/model_profiles.py:1433 defines get_role_reliability_signal with per-role lookup, schema_ok handling, sample-floor gating, and recency weighting; src/theforge/assignment.py:610 consumes that signal per candidate and src/theforge/assignment.py:2898 and src/theforge/assignment.py:2932 invoke it for preflight and planner. tests/test_assignment_role_reliability.py:248 covers sufficient preflight history changing ordering, tests/test_assignment_role_reliability.py:261 covers cold-start fallback, tests/test_assignment_role_reliability.py:274 covers planner ordering, and tests/test_assignment_role_reliability.py:235 covers schema-incompatible cold start.; src/theforge/model_profiles.py:1433-1523 (get_role_reliability_signal implements all clause-2 admissibility checks); tests/test_assignment_role_reliability.py:209-241 (test_role_reliability_signal_excludes_tainted_runs, test_role_reliability_signal_cold_start_below_floor, test_role_reliability_signal_schema_incompatible_forces_cold_start); model_profiles.py get_role_reliability_signal (~L1430-1520, unchanged from cycle 0) gates rate to non-None only when schema_ok and attempted>=min_runs. Now fed complete-over-attempts data by the iter-1 fix. test_role_reliability_signal_cold_start_below_floor and test_role_reliability_signal_schema_incompatible_forces_cold_start verify floor/schema gating."
+        },
+        {
+          "criterion": "Reliability signals relevant to routing are recorded as authoritative native telemetry or deterministic aggregations over it, not as log prose, LLM summaries, or profile-only state.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/preflight_flow.py:323 records native preflight attempt dictionaries with completed/provider/cli fields, src/theforge/coordinator/model_profiles_bridge.py:103 lifts raw attempts into RoleAttempt values, src/theforge/coordinator/model_profiles_bridge.py:140 derives planner attempts from plan_transport_retries and plan_results, and src/theforge/model_profiles.py:1018 and src/theforge/model_profiles.py:1037 deterministically fold those attempts. tests/test_coord_model_profiles_seam.py:1027 covers bridge extraction from native state.; src/theforge/coordinator/model_profiles_bridge.py:103-179 (_extract_preflight_attempts and _extract_planner_attempts extract attempts from native state); tests/test_coord_model_profiles_seam.py:1025-1153 (test_seam_bridge_derives_preflight_and_planner_reliability, test_seam_preflight_parse_retry_and_fallback_attributed_per_model, test_seam_planner_transport_retry_folds_failed_attempt); preflight_flow.py L316-340 _record_attempt/_attempt_failed derive \"completed\" deterministically from result.success and _is_parse_degraded; plan_flow.py's plan_transport_retries (L234-241) and plan_results (L796/1566/1761, one final entry per top-level attempt, never duplicated with a transport-retry entry) feed _extract_planner_attempts in model_profiles_bridge.py. No prose/LLM input."
+        },
+        {
+          "criterion": "Historical role-specific aggregates exclude tainted runs through the centralized filter from #1852.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/model_profiles_bridge.py:216 derives run_tainted from trust checks, src/theforge/model_profiles.py:797 skips tainted per-attempt reliability folding, and src/theforge/model_profiles.py:809 and src/theforge/model_profiles.py:832 tally tainted preflight/planner phase runs without folding them. tests/test_assignment_role_reliability.py:194 verifies tainted preflight attempts do not contribute to attempted/completed counts and remain visible via tainted_runs.; src/theforge/model_profiles.py:781-798 (_update_role_completion skips tainted runs); tests/test_assignment_role_reliability.py:178-208 (test_role_reliability_signal_excludes_tainted_runs); model_profiles.py _update_role_completion (~L781-798) skips folding when tainted (no tally, since the per-phase fold owns the single tainted_runs count) and _update_preflight/_update_planner retain the taint gate. test_role_reliability_signal_excludes_tainted_runs and test_review_and_preflight_aggregates_exclude_tainted (tests/test_router_taint_exclusion.py) both pass locally."
+        },
+        {
+          "criterion": "A model with repeated poor reliability in a role is deprioritized for that role without requiring manual removal from forge.yaml.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:622 computes low reliability after the sample floor and src/theforge/assignment.py:628 reranks the candidate list. tests/test_assignment_role_reliability.py:248 verifies preflight selection moves from pf-a to pf-b on poor history, and tests/test_assignment_role_reliability.py:274 verifies planner selection moves from pl-a to pl-b.; src/theforge/assignment.py:579-643 (_rerank_single_by_reliability deprioritizes low-reliability models); tests/test_assignment_role_reliability.py:244-254 (test_preflight_low_reliability_reorders_selection); assignment.py _rerank_single_by_reliability (unchanged from cycle 0) now consumes correctly-attributed per-attempt data. test_preflight_low_reliability_reorders_selection and test_planner_low_reliability_reorders_selection pass."
+        },
+        {
+          "criterion": "Deprioritization is a sort-after, not a filter-out: an operator-enabled candidate remains eligible unless explicit configuration excludes it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:626 keeps every candidate in rows and src/theforge/assignment.py:628 performs a stable sort rather than removing low-reliability candidates. tests/test_assignment_role_reliability.py:285 verifies the only unreliable preflight candidate remains selected.; src/theforge/assignment.py:579-643 (_rerank_single_by_reliability performs a stable sort-after); tests/test_assignment_role_reliability.py:271-280 (test_low_reliability_is_sort_after_not_filter_out); test_low_reliability_is_sort_after_not_filter_out passes."
+        },
+        {
+          "criterion": "Explicit CLI / forge.yaml configuration still wins over learned preference, per ADR-0006 clause 1.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:2892 takes the explicit preflight profile branch before reliability reranking, src/theforge/assignment.py:2921 does the same for planner, and src/theforge/assignment.py:2687 disables profile learning in static mode. tests/test_assignment_role_reliability.py:296 verifies explicit preflight override suppresses learned reranking, and tests/test_assignment_role_reliability.py:326 verifies static mode ignores role reliability.; src/theforge/assignment.py:2892-2947 (assign_models short-circuits on explicit overrides); tests/test_assignment_role_reliability.py:283-314 (test_explicit_preflight_override_beats_learned_preference); assignment.py explicit branches (L2892/L2921, unchanged) short-circuit before the rerank. test_explicit_preflight_override_beats_learned_preference and test_static_mode_ignores_role_reliability pass."
+        },
+        {
+          "criterion": "Routing decisions that use role-specific profile history record the consulted signal, sample count, floor status, raw and weighted values where applicable, taint-excluded count where applicable, and ranking effect in the routing_decision block from #1391.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:1839 records attempted/completed/raw/weighted/rate/floor/schema_ok/tainted_runs per candidate, src/theforge/assignment.py:1851 records threshold/min_runs/deprioritized/ranking effect, and src/theforge/assignment.py:2040 and src/theforge/assignment.py:2062 attach the block to preflight and planner routing_decision sections. tests/test_assignment_role_reliability.py:344 verifies the preflight audit includes signal values and original/final order, and tests/test_assignment_role_reliability.py:370 verifies cold-start audit records floor fail without demotion.; src/theforge/assignment.py:1819-1851 (_role_reliability_check builds the audit block); tests/test_assignment_role_reliability.py:328-361 (test_preflight_reliability_audit_records_signal_and_effect); _role_reliability_check (unchanged from cycle 0) still builds the reliability_check block from signals now correctly attributed per attempt. test_preflight_reliability_audit_records_signal_and_effect and test_cold_start_audit_shows_no_demotion pass."
+        },
+        {
+          "criterion": "Tests cover at least one non-dev role where sufficient reliable history changes ordering, one cold-start case where ordering falls back to static policy, and one explicit override case where learned preference does not override operator configuration.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_assignment_role_reliability.py:248 covers non-dev ordering changes, tests/test_assignment_role_reliability.py:261 covers cold-start static ordering, tests/test_assignment_role_reliability.py:296 covers explicit override, tests/test_assignment_role_reliability.py:118 covers preflight retry/fallback attribution, tests/test_assignment_role_reliability.py:146 covers planner transport retry attribution, and tests/test_coord_model_profiles_seam.py:1073 and tests/test_coord_model_profiles_seam.py:1131 cover the seam-level failure modes. I ran pytest -q tests/test_assignment_role_reliability.py tests/test_coord_model_profiles_seam.py::test_seam_bridge_derives_preflight_and_planner_reliability tests/test_coord_model_profiles_seam.py::test_seam_preflight_parse_retry_and_fallback_attributed_per_model tests/test_coord_model_profiles_seam.py::test_seam_planner_transport_retry_folds_failed_attempt tests/test_coord_preflight_fallback.py, and all 29 tests passed.; tests/test_assignment_role_reliability.py:244-314 (test_preflight_low_reliability_reorders_selection, test_preflight_cold_start_preserves_static_order, test_explicit_preflight_override_beats_learned_preference); Cycle-0 coverage retained plus new per-attempt regression tests: test_preflight_retry_then_fallback_attributes_per_attempt, test_planner_transport_retry_folds_failed_attempt, test_seam_preflight_parse_retry_and_fallback_attributed_per_model, and test_seam_planner_transport_retry_folds_failed_attempt \u2014 the last two directly reproduce the Cycle 1 P1 scenario end-to-end (preflight_flow attempts list \u2192 bridge \u2192 aggregator) and assert the primary's completion count is never improved by a later fallback success."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1903",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1489",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1903",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1903",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-23T09:06:04.379453+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1283 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1353 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 768 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 906 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2166 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1581 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1399 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1555 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1808 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1054 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2003 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1098 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 832 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 929 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 872 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 816 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 923 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1206 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1114 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 3575 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 934 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1423 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1244 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1009 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 1811 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1155 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1173 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1165 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1084 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1376 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1476 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1541 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1099 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1095 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 2699 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1070 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1268 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1413 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "93085795703d6c55",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/model_profiles_bridge.py",
+      "line": 145,
+      "severity": "P1",
+      "description": "When preflight retries after a parse failure or falls back to a fallback model, the run outcome collapses all native preflight attempts into one final completion boolean recorded under the configured primary preflight profile.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 0,
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 9,
+      "base_tier_from_score": "strong",
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "runs": 80,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.875
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "config"
+              ],
+              "raw": 0.75,
+              "weighted": 0.75,
+              "runs": 4,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.75,
+              "by_domain": {
+                "backend": {
+                  "runs": 3,
+                  "raw": 0.6667,
+                  "weighted": 0.6667,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 1,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "config"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "config"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "config"
+          ],
+          "raw": 0.75,
+          "weighted": 0.75,
+          "runs": 4,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.75,
+          "by_domain": {
+            "backend": {
+              "runs": 3,
+              "raw": 0.6667,
+              "weighted": 0.6667,
+              "tainted_runs": 0
+            },
+            "config": {
+              "runs": 1,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "fired": true,
+        "matching_records": 10,
+        "escalations": 3,
+        "outcome": "promoted_to_strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_tier_demotion",
+        "applicable": false,
+        "fired": false,
+        "checked": null,
+        "reason": "no_dev_tier_demotion_mechanism_v1"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+config",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev promoted claude-opus (tier strong \u2192 strong) \u2014 3/10 recent HIGH stories escalated (profile success_rate=0.88 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 7,
+            "completed": 6,
+            "raw": 0.8571,
+            "weighted": 0.8611,
+            "rate": 0.8611,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 9,
+            "completed": 9,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 7,
+            "completed": 6,
+            "raw": 0.8571,
+            "weighted": 0.8611,
+            "rate": 0.8611,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.32752,
+      "duration_s": 68.61,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 19.112321,
+      "duration_s": 1877.71,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 67.96,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 375.77,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 3.053565,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2390.04,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "849c9780c3bb",
+  "sprint_name": "issues-1899,158,1019,1108,1443,1489"
+}

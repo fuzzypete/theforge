@@ -97,6 +97,39 @@ def _render_candidate_pool(pool: list[dict], lines: list[str]) -> None:
             lines.append(f"        success_rate: {_fmt_signal(success_rate)}")
 
 
+def _render_score_policy(role_block: dict, lines: list[str]) -> None:
+    """Render the per-axis score-to-routing policy (#1019) for a role.
+
+    One line per axis naming the applied score bucket, its covering range, the
+    thresholds, and the selected output — the operator-facing view of what the
+    complexity score actually controlled. Axes not driven by the score (or with
+    no numeric score) print their recorded reason instead of a fabricated bucket.
+    """
+    policy = role_block.get("score_policy") or {}
+    if not isinstance(policy, dict) or not policy:
+        return
+    lines.append("  score policy:")
+    for axis in policy.values():
+        if not isinstance(axis, dict):
+            continue
+        name = axis.get("axis", "?")
+        if axis.get("applied"):
+            bucket = axis.get("bucket")
+            rng = axis.get("range")
+            thresholds = axis.get("thresholds")
+            output = axis.get("output")
+            detail = f"score={axis.get('score')} → bucket={bucket} range={rng} output={output}"
+            if isinstance(axis.get("resolved_count"), int):
+                detail += f" resolved_count={axis['resolved_count']}"
+            if isinstance(axis.get("seated_count"), int):
+                detail += f" seated={axis['seated_count']}"
+            if thresholds:
+                detail += f" (thresholds {thresholds})"
+        else:
+            detail = f"not applied — {axis.get('reason', 'not_score_controlled')}"
+        lines.append(f"    {name}: {detail}")
+
+
 def _render_mechanism(label: str, state: tuple[str, str], detail: str, lines: list[str]) -> None:
     glyph, state_text = state
     suffix = f" — {detail}" if detail else ""
@@ -108,9 +141,16 @@ def _render_dev_mechanisms(role_block: dict, lines: list[str]) -> None:
     # outcome == "not_checked" is the sentinel for a mechanism that never ran.
     promo_checked = promo.get("outcome") != "not_checked"
     promo_fired = bool(promo.get("fired"))
+    # Profile-backed dev pre-promotion (#158): the evidence is the recency-weighted
+    # success rate over the admissible sample vs. the configured threshold.
+    _weighted = promo.get("weighted_success_rate")
+    _weighted_txt = f"{_weighted:.2f}" if isinstance(_weighted, (int, float)) else "n/a"
+    _threshold = promo.get("threshold")
+    _threshold_txt = f"{_threshold:.2f}" if isinstance(_threshold, (int, float)) else "n/a"
     detail = (
         f"{promo.get('outcome', '?')} "
-        f"({promo.get('escalations', 0)}/{promo.get('matching_records', 0)} matching escalations)"
+        f"(weighted rate {_weighted_txt} vs threshold {_threshold_txt} "
+        f"over {promo.get('sample_size', 0)} admissible runs)"
         if promo_checked
         else "no promotion signal recorded"
     )
@@ -224,6 +264,57 @@ def _render_reviewer_mechanisms(role_block: dict, lines: list[str]) -> None:
         detail,
         lines,
     )
+    _render_reviewer_value_check(role_block.get("value_check") or {}, lines)
+
+
+def _fmt_value_signal(signal: dict) -> str:
+    """Render a uniqueness / latency-per-P1 sub-signal (raw + weighted + floor)."""
+    raw = signal.get("raw")
+    weighted = signal.get("weighted")
+    floor = signal.get("floor")
+    raw_s = f"{raw:.4f}" if isinstance(raw, (int, float)) else "—"
+    weighted_s = f"{weighted:.4f}" if isinstance(weighted, (int, float)) else "—"
+    floor_s = {"pass": "floor pass", "fail": "floor fail"}.get(
+        floor or "", f"floor {floor or '?'}"
+    )
+    return f"raw={raw_s} weighted={weighted_s} ({floor_s})"
+
+
+def _render_reviewer_value_check(value: dict, lines: list[str]) -> None:
+    """Render the plan-reviewer value_check (#1443): P1-uniqueness + wall-clock cost.
+
+    Surfaces, per consulted reviewer, the uniqueness rate and latency-per-P1 so an
+    operator can answer "is this reviewer earning its wall-clock cost?" directly
+    from the explain view. Absent block → mechanism not checked (opt-in/disabled).
+    """
+    if not value:
+        # Omitted when the mechanism was not consulted (opt-in disabled / no
+        # profiles), mirroring how completion_check is only added when present.
+        return
+    depri = value.get("deprioritized") or []
+    detail = f"threshold={value.get('uniqueness_threshold')} band={value.get('complexity')}"
+    if depri:
+        detail += f" — deprioritized: {', '.join(depri)}"
+    _render_mechanism(
+        f"value ({value.get('mechanism', 'reviewer_value')})",
+        _mechanism_state(checked=True, fired=bool(value.get("fired"))),
+        detail,
+        lines,
+    )
+    for name, sig in (value.get("signals") or {}).items():
+        if not isinstance(sig, dict):
+            continue
+        sel = "✓" if sig.get("selected") else "✗"
+        runs = sig.get("runs")
+        tainted = sig.get("tainted_runs")
+        uniq = sig.get("uniqueness_rate") or {}
+        latency = sig.get("latency_per_p1") or {}
+        lines.append(
+            f"        {sel} {name}: runs={runs if runs is not None else '?'}"
+            f" tainted={tainted if tainted is not None else '?'}"
+        )
+        lines.append(f"            uniqueness: {_fmt_value_signal(uniq)}")
+        lines.append(f"            latency/P1: {_fmt_value_signal(latency)}")
 
 
 def _render_final(role_block: dict, lines: list[str]) -> None:
@@ -256,6 +347,15 @@ def render_routing_decision(block: dict) -> list[str]:
     excluded_for_taint = block.get("excluded_for_taint")
     if isinstance(excluded_for_taint, int) and excluded_for_taint > 0:
         lines.append(f"excluded for taint: {excluded_for_taint} run(s) set aside (not deleted)")
+    # reasoning_effort is a score axis not tied to a role (#1019): recorded
+    # top-level as intentionally NOT score-controlled. Surface it so the operator
+    # sees the axis was considered and deliberately excluded, not overlooked.
+    reasoning = block.get("reasoning_effort")
+    if isinstance(reasoning, dict) and reasoning:
+        lines.append(
+            f"reasoning_effort: not score-controlled — {reasoning.get('reason', '')} "
+            f"({reasoning.get('rationale', '')})".rstrip()
+        )
     for role in _ROLE_ORDER:
         role_block = block.get(role)
         if not isinstance(role_block, dict):
@@ -275,6 +375,8 @@ def render_routing_decision(block: dict) -> list[str]:
         lines.append("-" * 60)
 
         _render_final(role_block, lines)
+
+        _render_score_policy(role_block, lines)
 
         lines.append("  candidate pool:")
         _render_candidate_pool(role_block.get("candidate_pool") or [], lines)

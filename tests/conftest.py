@@ -244,6 +244,8 @@ def dev_profile() -> ModelProfile:
         budget_usd=2.0,
         timeout_seconds=900,
         allowed_tools=("Read", "Edit", "Write", "Bash"),
+        # sandbox wrapping is tested in test_runner_claude.py / test_runner_sandbox.py
+        sandbox_mode="none",
     )
 
 
@@ -256,6 +258,8 @@ def review_profile() -> ModelProfile:
         budget_usd=1.0,
         timeout_seconds=300,
         allowed_tools=("Read", "Bash"),
+        # sandbox wrapping is tested in test_runner_claude.py / test_runner_sandbox.py
+        sandbox_mode="none",
     )
 
 

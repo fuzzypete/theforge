@@ -288,6 +288,7 @@ class TestClaudeGroupKill(_RunnerGroupKillBase):
             budget_usd=2.0,
             timeout_seconds=2,
             allowed_tools=("Bash",),
+            sandbox_mode="none",
         )
         result = _run_claude(
             prompt="do the thing",
@@ -333,6 +334,7 @@ class TestClaudeGroupKill(_RunnerGroupKillBase):
             budget_usd=2.0,
             timeout_seconds=30,
             allowed_tools=("Bash",),
+            sandbox_mode="none",
         )
         with pytest.raises(SystemExit):
             _run_claude(

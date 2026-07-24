@@ -203,6 +203,10 @@ class DevIterationTelemetry:
     tests_fixed_count: int = 0
     meaningful_progress: bool | None = None
     sandboxed: bool = True
+    # How writes were contained this iteration: "mechanical" (host sandbox
+    # wrapper), "native" (provider --sandbox flag), "unavailable" (fail-closed),
+    # or "none". Distinguishes real containment from prompt-only runs (#1907).
+    containment: str = "none"
     agent_exit_code: int | None = None
     runner_failure_code: str | None = None
     runner_failure_summary: str | None = None
@@ -465,12 +469,23 @@ class CoordinatorState:
     plan_attempt_metadata: list[dict] = field(
         default_factory=list
     )  # per-attempt: {files_touched, p1_count, p2_count, finding_themes}
+    # Per-plan-reviewer mechanical value telemetry (#1443). One dict per (reviewer,
+    # pool attempt): {attempt, reviewer, complexity, unique_p1_count, total_p1_count,
+    # latency_s, parse_error_count, actual_model, provider, cli}. Uniqueness is the
+    # deterministic anchor-overlap computed at pool completion; parse_error_count is
+    # derived from the same parse step that feeds plan_review_failures (no parallel
+    # parse-failure writer). Consumed by audit.py and the reviewer_value fold.
+    plan_reviewer_value: list[dict] = field(default_factory=list)
     plan_regen_disposition: str | None = None  # "patch" | "backtrack" | "escalate"
     plan_backtrack_used: bool = False  # True once the backtrack regen has been dispatched
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
     error_type: str | None = None
-    sandboxed: bool = False  # True if sandbox isolation was available at dev-phase entry
+    sandboxed: bool = False  # True if mechanical containment was available at dev-phase entry
+    # Containment classification for the dev run: "mechanical" | "native" |
+    # "unavailable" | "none". Surfaced in audit/status so a prompt-only run is
+    # never reported as mechanically contained (#1907).
+    dev_containment: str = "none"
     dev_escalated: bool = False  # True once model escalation has occurred this run
     timeout_escalation_used: bool = (
         False  # True once a timeout escalation has fired this sprint; gates re-escalation
@@ -576,9 +591,6 @@ class CoordinatorState:
     # Families from the most recent classification that are present in 2+ cycles.
     # Consumed by build_fix_prompt on the RETRY_DEV path.  Reset each classification.
     surviving_families: list[dict] = field(default_factory=list)
-    sprint_promotions: dict[str, str] = field(default_factory=dict)
-    # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
-    # Sticky within a sprint (single forge process lifetime); resets on process exit.
     # Challenger-sampling exploration (#325, ADR-0006 clause 8). When the router
     # ran a challenger instead of the winner for this story's dev slot, this
     # holds the decision (routing_key/challenger/winner) so the coordinator can

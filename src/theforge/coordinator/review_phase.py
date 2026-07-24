@@ -1877,6 +1877,7 @@ def _run_review_only_phase(
         **hard_convention_review_kwargs(config),
         assembled_context=review_context,
         sandboxed=state.sandboxed,
+        containment=state.dev_containment,
     )
 
     meta = ReviewCycleMetadata(

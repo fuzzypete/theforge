@@ -748,6 +748,25 @@ def _parse_recency(recency_raw: Any) -> RecencyConfig:
     return RecencyConfig(mode=mode, half_life_runs=half_life_runs, window=window)
 
 
+def _parse_unit_float(value: Any, *, key: str, default: float) -> float:
+    """Validate a probability threshold in ``[0.0, 1.0]`` at the config boundary.
+
+    Config loading is an integrity boundary (ADR-0006 clause 1): reject an
+    out-of-range or non-numeric threshold with a clear error rather than silently
+    clamping, which would hide bad config and let a nonsense promotion threshold
+    swing routing. ``bool`` is rejected explicitly (a YAML ``true`` is an ``int``
+    subtype but a nonsense rate).
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a number in [0.0, 1.0], got {value!r}")
+    coerced = float(value)
+    if not 0.0 <= coerced <= 1.0:
+        raise ValueError(f"{key} must be in [0.0, 1.0], got {coerced}")
+    return coerced
+
+
 def _parse_positive_int(value: Any, *, key: str, minimum: int, default: int) -> int:
     """Coerce/validate a bounded integer at the config integrity boundary.
 
@@ -833,5 +852,23 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
             assignment_raw.get("reviewer_completion_threshold", 0.5)
         ),
         reviewer_completion_min_runs=int(assignment_raw.get("reviewer_completion_min_runs", 5)),
+        reviewer_value_enabled=bool(assignment_raw.get("reviewer_value_enabled", False)),
+        reviewer_value_uniqueness_threshold=_parse_unit_float(
+            assignment_raw.get("reviewer_value_uniqueness_threshold"),
+            key="assignment.reviewer_value_uniqueness_threshold",
+            default=0.34,
+        ),
+        reviewer_value_min_runs=int(assignment_raw.get("reviewer_value_min_runs", 5)),
+        dev_promotion_threshold=_parse_unit_float(
+            assignment_raw.get("dev_promotion_threshold"),
+            key="assignment.dev_promotion_threshold",
+            default=0.60,
+        ),
+        dev_promotion_min_runs=_parse_positive_int(
+            assignment_raw.get("dev_promotion_min_runs"),
+            key="assignment.dev_promotion_min_runs",
+            minimum=1,
+            default=5,
+        ),
         plan_tier_reduction=bool(assignment_raw.get("plan_tier_reduction", True)),
     )

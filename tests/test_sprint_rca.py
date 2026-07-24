@@ -414,6 +414,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
+    assert payload["ruleset_version"] == 2
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -434,9 +435,9 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     write_sprint_rca(d)
     before = read_sprint_rca(d)
     assert before["stories"]["issue-5"]["primary_failure_class"] == UNKNOWN_CLASS
-    assert before["ruleset_version"] == 1
+    assert before["ruleset_version"] == 2
 
-    # Improved rule set (v2): a new rule now recognises the previously-unknown
+    # Improved rule set (v3): a new rule now recognises the previously-unknown
     # signature. Inputs on disk are unchanged.
     improved_rule = rca_mod.RcaRule(
         rule_id="flooble_detected",
@@ -450,14 +451,70 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(
         rca_mod, "_PRIMARY_PRIORITY", ("flooble_fault", *rca_mod._PRIMARY_PRIORITY)
     )
-    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 2)
+    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 3)
 
     write_sprint_rca(d, overwrite=True)
     after = read_sprint_rca(d)
     assert after["stories"]["issue-5"]["primary_failure_class"] == "flooble_fault"
-    assert after["ruleset_version"] == 2
+    assert after["ruleset_version"] == 3
     # Same inputs, different rule set → distinguishable analyses.
     assert before["ruleset_version"] != after["ruleset_version"]
+
+
+def test_cached_already_done_structured_outcome_vetoes_historical_intake_prose(
+    tmp_path: Path,
+) -> None:
+    """Historical intake prose echoed into preflight artifacts must not outrank
+    the current run's structured terminal outcome."""
+    empty_worktree_err = (
+        "Gate exited PASS but branch has no commits ahead of base — "
+        "treating empty worktree as missing-work failure"
+    )
+    d = _sprint_dir(tmp_path, name="already-done-veto")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-1904",
+                    "outcome": "FAILED",
+                    "error": empty_worktree_err,
+                    "preflight": "ALREADY_DONE",
+                    "preflight_original_verdict": "ALREADY_DONE",
+                }
+            ],
+            run_id="47acc396fb8f",
+        ),
+    )
+    _write(
+        d / "issue-1904" / "audit.yaml",
+        {
+            "error": empty_worktree_err,
+            "outcome": {"message": empty_worktree_err},
+            "preflight": {
+                "verdict": "ALREADY_DONE",
+                "original_verdict": "ALREADY_DONE",
+                "failure_action": "terminal cached preflight verdict accepted",
+            },
+        },
+    )
+    (d / "issue-1904" / "preflight-raw.log").write_text(
+        "Historical note from issue body: dropped after fix on a different host weeks ago.\n",
+        encoding="utf-8",
+    )
+    (d / "issue-1904" / "preflight.yaml").write_text(
+        "issue_body: |\n  This story previously dropped_after_fix elsewhere.\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-1904"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert not any(action.startswith("reshape") for action in entry["recommended_next_actions"])
+    assert any("diagnose" in action for action in entry["recommended_next_actions"])
+    assert {ev["rule_id"] for ev in entry["evidence"]} >= {
+        "intake_dropped_after_fix",
+        "captured_outcome",
+    }
 
 
 def test_evidence_source_cites_resolved_summary(tmp_path: Path) -> None:

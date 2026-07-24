@@ -206,9 +206,23 @@ def test_full_reconstruction_from_block_alone(tmp_path, _keys_except_deepseek):
     dev = block["dev"]
     assert dev["promotion_check"]["fired"] in (True, False)
     assert "outcome" in dev["promotion_check"]
-    # Demotion mechanism does not exist in v1: "no such mechanism ran" is a
-    # COMPLETE explanation, not a gap.
-    assert dev["demotion_check"]["applicable"] is False
+    # Profile-backed pre-promotion evidence is reconstructable from the block
+    # alone (#158): raw + recency-weighted rate, sample size, threshold, floor.
+    for key in (
+        "raw_success_rate",
+        "weighted_success_rate",
+        "sample_size",
+        "threshold",
+        "min_runs",
+        "floor",
+    ):
+        assert key in dev["promotion_check"]
+    # Paired recency-recovery return path (#158, ADR-0006 clause 5): the demotion
+    # mechanism is named and its fired/applicable state is recorded — a COMPLETE
+    # explanation, not a gap.
+    assert dev["demotion_check"]["mechanism"] == "dev_recency_recovery"
+    assert dev["demotion_check"]["applicable"] in (True, False)
+    assert dev["demotion_check"]["fired"] in (True, False)
     assert dev["demotion_check"]["reason"]
     # Post-plan checkpoint (#1387) runs AFTER plan-review; preflight-time
     # assignment records the not-yet-run sentinel.
