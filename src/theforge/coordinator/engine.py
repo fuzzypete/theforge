@@ -1266,6 +1266,32 @@ def _run_resume_coordinator(
         if cache_valid:
             apply_cached_preflight_state(state, cached_preflight_state)
             config = _apply_preflight_config(config, state, task_slug=task.slug)
+            # Dispatch the cached verdict just like run_task's cache-valid
+            # branch. Without this, a terminal ALREADY_DONE verdict served from
+            # cache is applied to state but never acted on, so the resume path
+            # falls straight through into DEV/GATE and escalates the empty
+            # branch as missing-work.
+            from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
+
+            config, _pf_result, _pf_already_done_loop = _handle_preflight_verdict(
+                verdict=state.preflight_verdict,
+                reason=state.preflight_reason,
+                state=state,
+                config=config,
+                task=task,
+                branch_name=branch_name,
+                notify=notify,
+                logger=logger,
+                task_start=_task_start,
+            )
+            if _pf_result is not None:
+                _total_elapsed = time.monotonic() - _task_start
+                _fire_post_run_hook(
+                    config, state, task, _pf_result, logger._run_id, _total_elapsed, logger
+                )
+                return _pf_result
+            if _pf_already_done_loop:
+                skip_dev_first_iter = True
         else:
             # Cache invalidated mid-sprint (e.g., base branch advanced after a
             # prior batch merged): re-run preflight against the current base so
