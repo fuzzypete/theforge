@@ -1,0 +1,1603 @@
+{
+  "schema_version": 9,
+  "run_id": "250b58e44380",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Escalation learning \u2014 auto-promotion from escalation history",
+    "slug": "issue-158",
+    "story_path": null,
+    "story_text": "---\ndepends_on:\n  - issue-169\n  - issue-283\n---\n\n## What\n\nBefore a story starts, the coordinator reads cross-run escalation history and model capability profiles to detect models that repeatedly fail at a given complexity band. When a pattern is detected, the coordinator pre-promotes the dev assignment to a higher tier \u2014 before the first iteration, not after a failure.\n\n## Why\n\nIn-run escalation (#296) reacts to failure after it happens \u2014 the dev agent burns cycles, hits persistent P1s, and then gets swapped. Cross-run learning prevents that waste entirely by recognizing \"sonnet fails at large-complexity dev 40% of the time\" and starting with opus from the beginning.\n\nThis is the learning layer that makes adaptive assignment improve over time rather than repeating the same mistakes across stories.\n\n## Depends On\n\n- #169 (model capability profiles) \u2014 the historical success/failure data this reads\n- #283 (adaptive model assignment) \u2014 the assignment function this modifies\n\n## Acceptance Criteria\n\n- Before assignment, the coordinator checks model profiles for the selected dev model's **recency-weighted** success rate at the story's complexity band, using the shared weighting mechanism (#1392 / ADR-0006 clause 2.4) \u2014 not a lifetime cumulative average\n- The escalation-history and profile reads **exclude runs flagged as tainted** by trust checks (ADR-0006 clause 4): a run that failed its own trust checks contributes no promotion weight\n- If the weighted success rate is below a configurable threshold (default: 60%) over a minimum sample size (default: 5 runs; ADR-0006 clause 2.3), the model is pre-promoted to the next tier; below the sample floor, no promotion fires and routing falls through to static tier logic\n- Pre-promotion is recorded in the `routing_decision` block (ADR-0006 clause 7 / #1391): the promotion mechanism firing, the evidence (model, complexity band, raw **and** recency-weighted success rate, sample size), and the resulting tier\n- **Symmetry / return path (ADR-0006 clause 5):** because this is a cross-run promotion, it has a paired, test-covered demotion. Recency weighting (clause 2.4) is the passive return path \u2014 as old failures age out, the weighted rate recovers and pre-promotion stops firing; the audit block records when the demotion could have fired but didn't (clause 7). A PR adding this promotion without the tested recovery path fails the clause-5 CI gate (#1389).\n- Pre-promotion respects the same guardrails as normal assignment (#168) \u2014 it cannot promote to a tier that violates guardrails\n- Pre-promotion is deterministic: same profile data + same complexity = same decision\n- Explicit profile overrides in forge.yaml bypass pre-promotion (override hierarchy, ADR-0006 clause 1)\n- Tests cover: pre-promotion triggers at threshold, no promotion above threshold, minimum sample size enforced, recency recovery reverses the promotion, tainted runs excluded from the rate, explicit override wins, guardrail compliance\n\n## ADR-0006 alignment (2026-07-21)\n\nThis is the cross-run promotion the ADR's \"one-way ratchet\" failure mode targets directly. Unlike the in-run escalations (#296/#330), it reads aggregated history, so it must obey the full admissibility set: recency weighting (clause 2.4 \u2014 no lifetime cumulative averages), sample floor (clause 2.3), taint exclusion (clause 4), a paired demotion via recency recovery (clause 5), audit recording (clause 7), and the operator override hierarchy (clause 1). The stale `depends_on` frontmatter (`issue-169`, `issue-283`) is file-story-era format; the prose \"Depends On\" section is authoritative \u2014 flag for cleanup if those slugs no longer map to live issues.\n\nReferences: ADR-0006 clauses 1, 2.3, 2.4, 4, 5, 7; #1392 (shared recency mechanism), #1391 (the `routing_decision` block), #1389 (clause-5 CI enforcement), #296 (the in-run counterpart).\n",
+    "github_issue": 158,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Escalation learning \u2014 auto-promotion from escalation history' completed. Review approved after 2 cycle(s), 1 dev iteration(s). Branch: feat/issue-158",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-23T06:35:46.728653+00:00",
+    "finished_at": "2026-07-23T07:15:58.683878+00:00",
+    "duration_seconds": 2411.955225
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-158",
+    "branch": "feat/issue-158"
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 15.908036499999998,
+        "duration_s": 1652.07,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/assets/sample-routing-decision-run.json",
+          "docs/routing-symmetry-followups.md",
+          "docs/v0.13-dogfood-readiness.md",
+          "src/theforge/assignment.py",
+          "src/theforge/cli/explain.py",
+          "src/theforge/config/models.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/preflight.py",
+          "tests/test_assignment.py",
+          "tests/test_assignment_routing_decision.py",
+          "tests/test_audit_substrate.py",
+          "tests/test_cli_explain.py",
+          "tests/test_complexity_score_persistence.py",
+          "tests/test_config_models.py",
+          "tests/test_coord_model_profiles_seam.py",
+          "tests/test_routing_decision_audit.py",
+          "tests/test_routing_symmetry_invariant.py"
+        ],
+        "files_changed_count": 17,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 8.128649999999999,
+        "duration_s": 374.17,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/assignment.py",
+          "src/theforge/coordinator/preflight.py",
+          "src/theforge/coordinator/state.py",
+          "tests/test_assignment.py",
+          "tests/test_coord_model_profiles_seam.py"
+        ],
+        "files_changed_count": 5,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 0.0,
+        "duration_s": 181.6
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 0.0,
+        "duration_s": 124.27
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 7,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 7,
+      "base_review": 5,
+      "profile_history_runs": 139,
+      "profile_avg_iterations": 1.6115,
+      "profile_avg_cost_usd": 4.378961,
+      "profile_raw_dev_max": 2.4173,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 8.7579,
+      "review_history_sample_size": 22,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 139 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-23T06:35:47.542719+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-23T07:06:55.701423+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 24.036686499999995,
+    "review_usd": null,
+    "dev_invocations": 2,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 15.908036499999998,
+        "duration_seconds": 1652.0733309999341,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.005907
+          },
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 15.902129499999997
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 8.128649999999999,
+        "duration_seconds": 374.1722935839789,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 8.128649999999999
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 90.7167554164771,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 90.7167554164771,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 62.04753083299147,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 62.04753083299147,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Substantial adjacent infrastructure exists (recency-weighted profile signal, taint exclusion, routing_decision block, symmetry-invariant CI registry) but the specific success-rate-threshold-driven dev pre-promotion mechanism described is not implemented \u2014 the current _check_promotion trigger uses an ESCALATE-outcome count (>=2 of last 10), not a recency-weighted success-rate/threshold/sample-floor computation drawn from model capability profiles.",
+    "complexity": "medium",
+    "complexity_score": 7,
+    "implementation_complexity_score": 7,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 7",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "backend"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 1.10371155,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "d96e64bc2094",
+    "cache_snapshot": {
+      "worktree_head": "fad876d0e321b32b048598e528984cd70f5eb533",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "fad876d0e321b32b048598e528984cd70f5eb533"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "fad876d0e321b32b048598e528984cd70f5eb533",
+      "current_worktree_head": "fad876d0e321b32b048598e528984cd70f5eb533",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "fad876d0e321b32b048598e528984cd70f5eb533",
+      "current_evaluation_base_branch_head": "fad876d0e321b32b048598e528984cd70f5eb533",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "cost_usd": 1.10371155,
+        "duration_s": 173.13,
+        "success": true,
+        "exit_code": 0
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 7,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "MEDIUM dev promoted claude-opus (tier strong \u2192 strong) \u2014 2/10 recent MEDIUM stories escalated (profile success_rate=0.91 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 7,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-158/iter_1.yaml",
+      "handoff": {
+        "summary": "Replaced the ESCALATE-count dev promotion trigger with a profile-backed recency-weighted success-rate signal. Before the first iteration, assign_models reads the selected dev model's recency-weighted success rate at the story's complexity band via model_profiles.get_dev_signal (tainted runs already excluded, clause 4), and pre-promotes one tier when the weighted rate is below the configurable dev_promotion_threshold (default 0.60) over dev_promotion_min_runs (default 5); below the floor no promotion fires and static tier logic continues. The paired return path is passive recency recovery (clause 2.4/5): as old failures age out the weighted rate recovers and pre-promotion stops firing, recorded in the dev demotion_check block (_dev_recency_demotion_check) and registered as the dev-promotion pair's inverse (MECHANISM_DEV_RECENCY_RECOVERY) in ROUTING_SYMMETRY_REGISTRY. routing_decision.promotion_check now carries model, band, raw+weighted rate, sample size, taint count, threshold, floor, and resulting tier. Explicit overrides and guardrail/budget precedence are unchanged. Added config validation, unit + routing-audit + symmetry + a preflight seam integration test, and regenerated the committed sample routing-decision JSON and dogfood-readiness doc from the live router.",
+        "commits": [
+          {
+            "sha": "b36d5b9",
+            "message": "feat(assignment): profile-backed dev pre-promotion from escalation history (#158)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Coordinator checks the selected dev model's recency-weighted success rate at the complexity band using the shared weighting mechanism (not lifetime average)",
+            "status": "MET",
+            "notes": "_check_promotion calls get_dev_signal with the config recency params; the ranked value is the recency-weighted rate (#1392). raw is surfaced alongside for drift auditing."
+          },
+          {
+            "criterion": "Escalation-history and profile reads exclude tainted runs (clause 4)",
+            "status": "MET",
+            "notes": "get_dev_signal excludes tainted runs upstream and surfaces tainted_runs. test_tainted_runs_excluded_from_promotion_rate asserts tainted runs don't count toward the floor/rate and the count is surfaced."
+          },
+          {
+            "criterion": "Below configurable threshold (default 60%) over minimum sample size (default 5) pre-promotes to next tier; below floor no promotion, falls through to static tier",
+            "status": "MET",
+            "notes": "dev_promotion_threshold=0.60, dev_promotion_min_runs=5. Covered by test_promotion_fires_below_threshold, test_no_promotion_above_threshold, test_minimum_sample_size_suppresses_promotion."
+          },
+          {
+            "criterion": "Pre-promotion recorded in routing_decision: mechanism firing, evidence (model, band, raw and recency-weighted rate, sample size), resulting tier",
+            "status": "MET",
+            "notes": "_promotion_check_block records all fields; test_full_reconstruction_from_block_alone asserts they are present, and the dogfood sample JSON shows a real firing/recovered case."
+          },
+          {
+            "criterion": "Symmetry / return path (clause 5): paired tested demotion via recency recovery; audit records when demotion could have fired but didn't; PR without it fails the clause-5 CI gate",
+            "status": "MET",
+            "notes": "Registry pair's demotion re-pointed to MECHANISM_DEV_RECENCY_RECOVERY (symbol _dev_recency_demotion_check); test_recency_recovery_reverses_promotion + test_dev_tier_pair_registers_recency_recovery_inverse; the symmetry-invariant test passes with both directions reachable and tested."
+          },
+          {
+            "criterion": "Pre-promotion respects the same guardrails as normal assignment (#168) \u2014 cannot promote to a disallowed tier",
+            "status": "MET",
+            "notes": "Promotion goes through _promote_tier (clamps at top tier) and the unchanged _pick_agent/_enforce_budget path. test_guardrail_promotion_cannot_exceed_top_tier confirms strong stays strong."
+          },
+          {
+            "criterion": "Pre-promotion is deterministic: same profile data + same complexity = same decision",
+            "status": "MET",
+            "notes": "Pure computation, no RNG. test_pre_promotion_is_deterministic asserts identical decision and promotion_check across two runs."
+          },
+          {
+            "criterion": "Explicit profile overrides in forge.yaml bypass pre-promotion (clause 1)",
+            "status": "MET",
+            "notes": "Explicit dev override short-circuits before the check; promotion_check stays not_checked. test_explicit_override_bypasses_pre_promotion."
+          },
+          {
+            "criterion": "Tests cover trigger at threshold, no promotion above, min sample enforced, recency recovery reverses, tainted excluded, explicit override wins, guardrail compliance",
+            "status": "MET",
+            "notes": "All seven cases added in tests/test_assignment.py plus a preflight\u2192assign_models\u2192state seam integration test (convention 8) in test_coord_model_profiles_seam.py."
+          }
+        ],
+        "gate_result": "PASS",
+        "story_deviations": [
+          "Design decision (per plan Step 5): the dev-promotion symmetry-registry inverse is re-pointed from the post-plan checkpoint (#1387) to the recency-recovery condition. The post-plan checkpoint remains a real, independently tested in-run demotion \u2014 it is simply no longer THIS promotion's registered inverse.",
+          "Kept the sprint_promotions sticky cache and the assign_models escalation_history parameter for call-site compatibility. escalation_history no longer drives promotion (profiles, seeded/backfilled from that same history, now do); it is read as a no-op. The sticky cache provides within-sprint stability while recovery is the cross-run passive path.",
+          "Flagging per the spec's ADR-0006 alignment note: the story's depends_on frontmatter slugs (issue-169, issue-283) are file-story-era format and do not map to live issues; the prose Depends On section (#169/#283) is authoritative. Left for backlog cleanup."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-158/iter_1.yaml",
+      "handoff": {
+        "summary": "Cycle-1 P1 fix: removed the same-sprint sprint_promotions cache that could fire a dev pre-promotion with sample_size 0 and null raw/weighted rates, bypassing the sample floor. The recency-weighted profile signal (model_profiles.get_dev_signal, tainted runs excluded) is now the sole authoritative driver: a promotion can only fire via PROMOTION_OUTCOME_PROMOTED, which requires the sample floor met AND a non-null weighted rate below threshold, so routing_decision.promotion_check can never report a fired promotion without admissible evidence. Dropped the sprint_promotions parameter from _check_promotion and assign_models, the preflight sticky pre-population block (and its now-unused imports), and the dead CoordinatorState.sprint_promotions field. Determinism makes a same-sprint cache unnecessary and also lets the recency-recovery return path fire within a sprint. Added sample-floor-contract regression tests (unit + assign_models seam) plus updated the preflight seam integration test.",
+        "commits": [
+          {
+            "sha": "e5c2941",
+            "message": "fix(assignment): make profile signal the sole dev pre-promotion driver (iter 1)"
+          },
+          {
+            "sha": "b36d5b9",
+            "message": "feat(assignment): profile-backed dev pre-promotion from escalation history (#158)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Coordinator checks the selected dev model's recency-weighted success rate at the complexity band using the shared weighting mechanism (not lifetime average)",
+            "status": "MET",
+            "notes": "_check_promotion calls get_dev_signal with config recency params; ranks on the recency-weighted rate (#1392), with raw surfaced for drift auditing."
+          },
+          {
+            "criterion": "Escalation-history and profile reads exclude tainted runs (clause 4)",
+            "status": "MET",
+            "notes": "get_dev_signal excludes tainted runs and surfaces tainted_runs; test_tainted_runs_excluded_from_promotion_rate asserts they don't count toward the floor/rate."
+          },
+          {
+            "criterion": "Below configurable threshold (default 60%) over minimum sample size (default 5) pre-promotes; below floor no promotion, falls through to static tier",
+            "status": "MET",
+            "notes": "dev_promotion_threshold=0.60, dev_promotion_min_runs=5. The P1 fix hardens this: NO path (including the removed cache) can fire below the floor. Covered by test_promotion_fires_below_threshold, test_no_promotion_above_threshold, test_minimum_sample_size_suppresses_promotion, and new test_promotion_never_fires_without_admissible_evidence."
+          },
+          {
+            "criterion": "Pre-promotion recorded in routing_decision: mechanism firing, evidence (model, band, raw and weighted rate, sample size), resulting tier",
+            "status": "MET",
+            "notes": "_promotion_check_block records all fields; test_assign_models_promotion_check_never_reports_null_evidence_firing guards against null-evidence firings; test_full_reconstruction_from_block_alone asserts field presence."
+          },
+          {
+            "criterion": "Symmetry / return path (clause 5): paired tested recency-recovery demotion; audit records when it could have fired but didn't; clause-5 CI gate satisfied",
+            "status": "MET",
+            "notes": "Registry pair inverse is MECHANISM_DEV_RECENCY_RECOVERY (_dev_recency_demotion_check); recovery can now fire within a sprint too. test_recency_recovery_reverses_promotion + symmetry invariant pass."
+          },
+          {
+            "criterion": "Pre-promotion respects the same guardrails as normal assignment (#168) \u2014 cannot promote to a disallowed tier",
+            "status": "MET",
+            "notes": "Promotion goes through _promote_tier (clamps at top tier) and the unchanged _pick_agent/_enforce_budget path. test_guardrail_promotion_cannot_exceed_top_tier."
+          },
+          {
+            "criterion": "Pre-promotion is deterministic: same profile data + same complexity = same decision",
+            "status": "MET",
+            "notes": "Pure computation, no cache to introduce path-dependence. test_pre_promotion_is_deterministic."
+          },
+          {
+            "criterion": "Explicit profile overrides in forge.yaml bypass pre-promotion (clause 1)",
+            "status": "MET",
+            "notes": "Explicit dev override short-circuits before the check; promotion_check stays not_checked. test_explicit_override_bypasses_pre_promotion."
+          },
+          {
+            "criterion": "Tests cover trigger at threshold, no promotion above, min sample enforced, recency recovery reverses, tainted excluded, explicit override wins, guardrail compliance",
+            "status": "MET",
+            "notes": "All cases present in tests/test_assignment.py, plus the new no-evidence-never-fires regression tests and the preflight\u2192assign_models\u2192state seam integration test (convention 8)."
+          }
+        ],
+        "gate_result": "BLOCKED",
+        "gate_delegated": true,
+        "story_deviations": [
+          "Removed the sprint_promotions same-sprint cache entirely (parameter, preflight pre-population, and CoordinatorState field) rather than storing evidence with it. This directly resolves the cycle-1 P1 (no fired promotion without admissible evidence), keeps the profile signal as the single authoritative driver per the plan's approach, and makes the recency-recovery return path observable within a sprint as well as across sprints.",
+          "The dev-promotion symmetry-registry inverse remains the recency-recovery condition (plan Step 5); the post-plan checkpoint (#1387) stays a separate, independently tested in-run demotion.",
+          "Flagging per the spec's ADR-0006 alignment note: the story's depends_on frontmatter slugs (issue-169, issue-283) are file-story-era format and do not map to live issues; the prose Depends On section (#169/#283) is authoritative. Left for backlog cleanup."
+        ],
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "4ae15398faa77242"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] Same-sprint cached promotions can still fire without any admissible profile evidence, so the implementation does not consistently enforce the profile-backed sample-floor contract. | [google-gemini-3.5-flash] The profile-backed dev pre-promotion from escalation history is fully implemented, robustly tested, and perfectly aligned with ADR-0006.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/assignment.py",
+          "line": 951,
+          "description": "When sprint_promotions already contains the story complexity, assign_models pre-promotes the dev tier with sample_size: 0, raw_success_rate: null, and weighted_success_rate: null even when no model profile data is available.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Before assignment, the coordinator checks model profiles for the selected dev model's recency-weighted success rate at the story's complexity band, using the shared weighting mechanism (#1392 / ADR-0006 clause 2.4) \u2014 not a lifetime cumulative average",
+          "status": "PARTIAL",
+          "evidence": "Normal routing calls _check_promotion from assign_models at src/theforge/assignment.py:2422 and _check_promotion calls get_dev_signal with recency at src/theforge/assignment.py:983; tests/test_assignment.py:436 and tests/test_assignment.py:500 cover weighted promotion/recovery. The sticky branch at src/theforge/assignment.py:951 returns before the profile read.; src/theforge/assignment.py:2422-2430 calls _check_promotion which uses get_dev_signal from model_profiles.py to retrieve the recency-weighted rate. Covered by tests/test_assignment.py:test_promotion_fires_below_threshold."
+        },
+        {
+          "criterion": "The escalation-history and profile reads exclude runs flagged as tainted by trust checks (ADR-0006 clause 4): a run that failed its own trust checks contributes no promotion weight",
+          "status": "PARTIAL",
+          "evidence": "Profile folding excludes tainted runs in src/theforge/model_profiles.py:469 and get_dev_signal surfaces tainted counts at src/theforge/model_profiles.py:1117; tests/test_assignment.py:536 covers tainted counts. The sticky promotion branch at src/theforge/assignment.py:951 does not consult taint-excluded profile data.; src/theforge/assignment.py:983-992 calls get_dev_signal which excludes tainted runs upstream. Covered by tests/test_assignment.py:test_tainted_runs_excluded_from_promotion_rate."
+        },
+        {
+          "criterion": "If the weighted success rate is below a configurable threshold (default: 60%) over a minimum sample size (default: 5 runs; ADR-0006 clause 2.3), the model is pre-promoted to the next tier; below the sample floor, no promotion fires and routing falls through to static tier logic",
+          "status": "PARTIAL",
+          "evidence": "Threshold and floor are implemented in src/theforge/assignment.py:1015 and src/theforge/assignment.py:1020 with config parsing at src/theforge/config/models.py:855; tests/test_assignment.py:436, tests/test_assignment.py:463, and tests/test_assignment.py:482 cover the normal path. The sticky path at src/theforge/assignment.py:951 fires with no rate and zero runs.; src/theforge/assignment.py:1015-1025 checks the sample floor and threshold. Covered by tests/test_assignment.py:test_minimum_sample_size_suppresses_promotion and test_promotion_fires_below_threshold."
+        },
+        {
+          "criterion": "Pre-promotion is recorded in the routing_decision block (ADR-0006 clause 7 / #1391): the promotion mechanism firing, the evidence (model, complexity band, raw and recency-weighted success rate, sample size), and the resulting tier",
+          "status": "PARTIAL",
+          "evidence": "_promotion_check_block records the evidence fields at src/theforge/assignment.py:1036 and _build_routing_decision attaches it at src/theforge/assignment.py:1793; tests/test_routing_decision_audit.py:206 checks field presence. For sticky_sprint_promotion, src/theforge/assignment.py:951 produces raw=None, weighted=None, and runs=0 while fired=True.; src/theforge/assignment.py:1028-1050 implements _promotion_check_block. Covered by tests/test_routing_decision_audit.py:test_full_reconstruction_from_block_alone."
+        },
+        {
+          "criterion": "Symmetry / return path (ADR-0006 clause 5): because this is a cross-run promotion, it has a paired, test-covered demotion. Recency weighting (clause 2.4) is the passive return path \u2014 as old failures age out, the weighted rate recovers and pre-promotion stops firing; the audit block records when the demotion could have fired but didn't (clause 7). A PR adding this promotion without the tested recovery path fails the clause-5 CI gate (#1389).",
+          "status": "PARTIAL",
+          "evidence": "The registry pairs _check_promotion with dev_recency_recovery at src/theforge/assignment.py:145, and tests/test_assignment.py:500 plus tests/test_routing_symmetry_invariant.py:177 cover the normal recovery path. The sticky cache branch at src/theforge/assignment.py:951 keeps promotion firing without a weighted recovery signal.; src/theforge/assignment.py:148-175 registers the symmetry pair with MECHANISM_DEV_RECENCY_RECOVERY. Covered by tests/test_assignment.py:test_recency_recovery_reverses_promotion and tests/test_routing_symmetry_invariant.py:test_dev_tier_pair_registers_recency_recovery_inverse."
+        },
+        {
+          "criterion": "Pre-promotion respects the same guardrails as normal assignment (#168) \u2014 it cannot promote to a tier that violates guardrails",
+          "status": "VERIFIED",
+          "evidence": "Promotion uses the one-step tier clamp in src/theforge/assignment.py:622 and the final selection still goes through _pick_agent and budget enforcement at src/theforge/assignment.py:2465 and src/theforge/assignment.py:2836. tests/test_assignment.py:1352 covers the top-tier ceiling.; src/theforge/assignment.py:2433 promotes the tier via _promote_tier which clamps at the top tier. Covered by tests/test_assignment.py:test_guardrail_promotion_cannot_exceed_top_tier."
+        },
+        {
+          "criterion": "Pre-promotion is deterministic: same profile data + same complexity = same decision",
+          "status": "VERIFIED",
+          "evidence": "_check_promotion is pure over its inputs at src/theforge/assignment.py:921 and assign_models consumes that result deterministically at src/theforge/assignment.py:2432. tests/test_assignment.py:594 asserts identical decisions and promotion blocks across repeated calls.; src/theforge/assignment.py:921-1026 is pure computation with no RNG. Covered by tests/test_assignment.py:test_pre_promotion_is_deterministic."
+        },
+        {
+          "criterion": "Explicit profile overrides in forge.yaml bypass pre-promotion (override hierarchy, ADR-0006 clause 1)",
+          "status": "VERIFIED",
+          "evidence": "assign_models short-circuits the dev override before _check_promotion at src/theforge/assignment.py:2401, leaving the default not_checked block from src/theforge/assignment.py:2362. tests/test_assignment.py:559 covers an override that would otherwise have promoted.; src/theforge/assignment.py:2401-2406 bypasses the check if 'dev' is in explicit_profiles. Covered by tests/test_assignment.py:test_explicit_override_bypasses_pre_promotion."
+        },
+        {
+          "criterion": "Tests cover: pre-promotion triggers at threshold, no promotion above threshold, minimum sample size enforced, recency recovery reverses the promotion, tainted runs excluded from the rate, explicit override wins, guardrail compliance",
+          "status": "PARTIAL",
+          "evidence": "The named normal-path tests exist in tests/test_assignment.py:436, tests/test_assignment.py:463, tests/test_assignment.py:482, tests/test_assignment.py:500, tests/test_assignment.py:536, tests/test_assignment.py:559, and tests/test_assignment.py:1352, with a seam test at tests/test_coord_model_profiles_seam.py:312. The suite does not cover the cached promotion path against the same sample-floor and evidence requirements.; tests/test_assignment.py implements all seven test cases. Covered by tests/test_assignment.py."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Cycle-1 cache P1 is resolved; the profile signal is now the only pre-promotion driver, and the targeted assignment/routing/audit tests pass. | [google-gemini-3.5-flash] The Cycle-1 P1 finding is fully resolved by removing the same-sprint cache, making the recency-weighted profile signal the sole authoritative driver for dev pre-promotion.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Before assignment, the coordinator checks model profiles for the selected dev model's recency-weighted success rate at the story's complexity band, using the shared weighting mechanism (#1392 / ADR-0006 clause 2.4) \u2014 not a lifetime cumulative average",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/preflight.py:1164-1178 invokes assign_models during preflight with model_profiles; src/theforge/assignment.py:2393-2414 selects the dev agent for the base tier and calls _check_promotion before the final dev pick; src/theforge/assignment.py:970-985 calls model_profiles.get_dev_signal with the configured recency object; src/theforge/model_profiles.py:1081-1148 computes and returns the recency-weighted rate. Covered by tests/test_assignment.py:436-460 and tests/test_coord_model_profiles_seam.py:313-404.; src/theforge/assignment.py:970-979 calls get_dev_signal with the configured recency parameters; tests/test_assignment.py:436-459 (test_promotion_fires_below_threshold) covers this behavior."
+        },
+        {
+          "criterion": "The escalation-history and profile reads exclude runs flagged as tainted by trust checks (ADR-0006 clause 4): a run that failed its own trust checks contributes no promotion weight",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/model_profiles.py:1045-1148 surfaces tainted_runs separately from admissible runs, and _check_promotion consumes only the returned runs/rate at src/theforge/assignment.py:980-1008. Covered by tests/test_assignment.py:536-556, which verifies tainted runs do not count toward the sample floor and are recorded in the audit.; src/theforge/assignment.py:970-985 uses get_dev_signal which filters out tainted runs; tests/test_assignment.py:514-532 (test_tainted_runs_excluded_from_promotion_rate) asserts that tainted runs do not count toward the floor or rate."
+        },
+        {
+          "criterion": "If the weighted success rate is below a configurable threshold (default: 60%) over a minimum sample size (default: 5 runs; ADR-0006 clause 2.3), the model is pre-promoted to the next tier; below the sample floor, no promotion fires and routing falls through to static tier logic",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:89-102 defines dev_promotion_threshold=0.60 and dev_promotion_min_runs=5; src/theforge/config/models.py:855-865 parses those config values; src/theforge/assignment.py:1002-1008 suppresses below-floor signals and fires only below threshold; src/theforge/assignment.py:2416-2421 promotes one tier only when the signal fires. Covered by tests/test_assignment.py:436-497 and tests/test_config_models.py:888-935.; src/theforge/assignment.py:1003-1012 enforces the sample floor and threshold check; tests/test_assignment.py:481-496 (test_minimum_sample_size_suppresses_promotion) asserts that no promotion fires below the sample floor."
+        },
+        {
+          "criterion": "Pre-promotion is recorded in the routing_decision block (ADR-0006 clause 7 / #1391): the promotion mechanism firing, the evidence (model, complexity band, raw and recency-weighted success rate, sample size), and the resulting tier",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:1015-1037 builds the promotion_check audit block with mechanism, fired, model, complexity, raw_success_rate, weighted_success_rate, sample_size, and resulting_tier; src/theforge/assignment.py:1780 includes it in routing_decision. Covered by tests/test_assignment.py:455-460, tests/test_assignment.py:1134-1148, and tests/test_routing_decision_audit.py:206-225.; src/theforge/assignment.py:1015-1037 (_promotion_check_block) constructs the audit block; tests/test_routing_decision_audit.py:209-227 (test_full_reconstruction_from_block_alone) asserts all fields are present."
+        },
+        {
+          "criterion": "Symmetry / return path (ADR-0006 clause 5): because this is a cross-run promotion, it has a paired, test-covered demotion. Recency weighting (clause 2.4) is the passive return path \u2014 as old failures age out, the weighted rate recovers and pre-promotion stops firing; the audit block records when the demotion could have fired but didn't (clause 7). A PR adding this promotion without the tested recovery path fails the clause-5 CI gate (#1389).",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:145-173 registers dev pre-promotion with dev_recency_recovery as its inverse; src/theforge/assignment.py:1040-1084 records the recency-recovery demotion outcome; src/theforge/assignment.py:1790-1797 writes that block into routing_decision. Covered by tests/test_assignment.py:500-533 and tests/test_routing_symmetry_invariant.py:177-194.; src/theforge/assignment.py:148-174 registers MECHANISM_DEV_RECENCY_RECOVERY as the paired inverse of MECHANISM_DEV_PROMOTION; tests/test_assignment.py:499-527 (test_recency_recovery_reverses_promotion) covers the recovery path."
+        },
+        {
+          "criterion": "Pre-promotion respects the same guardrails as normal assignment (#168) \u2014 it cannot promote to a tier that violates guardrails",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:2416-2421 routes fired promotion through _promote_tier, and src/theforge/assignment.py:2444-2457 then selects the final dev agent via the normal _pick_agent path; src/theforge/assignment.py:2482-2524 preserves the dev tier floor fallback. Covered by tests/test_assignment.py:1386-1405.; src/theforge/assignment.py:2417-2421 promotes the tier and picks the agent using the standard guardrail-compliant path; tests/test_assignment.py:1386-1407 (test_guardrail_promotion_cannot_exceed_top_tier) asserts that promotion clamps at the top tier."
+        },
+        {
+          "criterion": "Pre-promotion is deterministic: same profile data + same complexity = same decision",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:920-1012 implements _check_promotion as a pure profile read and comparison, with the prior sprint_promotions cache removed from src/theforge/assignment.py:2278-2293 and src/theforge/coordinator/state.py:576. Covered by tests/test_assignment.py:594-609.; src/theforge/assignment.py:920-1012 is a pure function of the profile data and complexity; tests/test_assignment.py:558-571 (test_pre_promotion_is_deterministic) asserts determinism."
+        },
+        {
+          "criterion": "Explicit profile overrides in forge.yaml bypass pre-promotion (override hierarchy, ADR-0006 clause 1)",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:2386-2390 short-circuits the dev role when an explicit profile is present, leaving the default not_checked promotion block from src/theforge/assignment.py:2345-2362. Covered by tests/test_assignment.py:559-591.; src/theforge/assignment.py:2359-2374 bypasses the check when explicit overrides are present; tests/test_assignment.py:535-555 (test_explicit_override_bypasses_pre_promotion) covers this bypass."
+        },
+        {
+          "criterion": "Tests cover: pre-promotion triggers at threshold, no promotion above threshold, minimum sample size enforced, recency recovery reverses the promotion, tainted runs excluded from the rate, explicit override wins, guardrail compliance",
+          "status": "VERIFIED",
+          "evidence": "tests/test_assignment.py:436-460 covers promotion firing below threshold; tests/test_assignment.py:463-479 covers no promotion above threshold; tests/test_assignment.py:482-497 covers the sample floor; tests/test_assignment.py:500-533 covers recency recovery; tests/test_assignment.py:536-556 covers tainted runs; tests/test_assignment.py:559-591 covers explicit override bypass; tests/test_assignment.py:1386-1405 covers guardrail compliance. I also ran pytest -q tests/test_assignment.py tests/test_coord_model_profiles_seam.py tests/test_assignment_routing_decision.py tests/test_routing_decision_audit.py tests/test_routing_symmetry_invariant.py tests/test_config_models.py tests/test_cli_explain.py and pytest -q tests/test_coord_audit.py tests/test_routing.py tests/test_audit_substrate.py tests/test_complexity_score_persistence.py tests/test_dogfood_readiness_sample.py; both passed.; tests/test_assignment.py contains dedicated tests for each of these scenarios, all of which are passing."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1902",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-158",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1902",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1902",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-23T07:15:58.683878+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1005 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "4ae15398faa77242",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/assignment.py",
+      "line": 951,
+      "severity": "P1",
+      "description": "When sprint_promotions already contains the story complexity, assign_models pre-promotes the dev tier with sample_size: 0, raw_success_rate: null, and weighted_success_rate: null even when no model profile data is available.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 0,
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 7,
+      "base_tier_from_score": "strong",
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.9065,
+              "weighted": 0.9065,
+              "runs": 139,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.9065
+            },
+            "domain": {
+              "domains": [
+                "backend"
+              ],
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 1,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 1,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend"
+          ],
+          "raw": 1.0,
+          "weighted": 1.0,
+          "runs": 1,
+          "tainted_runs": 0,
+          "floor": "fail",
+          "recency": "windowed",
+          "rate": null,
+          "by_domain": {
+            "backend": {
+              "runs": 1,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "fired": true,
+        "matching_records": 10,
+        "escalations": 2,
+        "outcome": "promoted_to_strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_tier_demotion",
+        "applicable": false,
+        "fired": false,
+        "checked": null,
+        "reason": "no_dev_tier_demotion_mechanism_v1"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": null,
+        "winner": null,
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] MEDIUM dev promoted claude-opus (tier strong \u2192 strong) \u2014 2/10 recent MEDIUM stories escalated (profile success_rate=0.91 @ MEDIUM); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 5,
+            "completed": 4,
+            "raw": 0.8,
+            "weighted": 0.8028,
+            "rate": 0.8028,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 5,
+            "completed": 4,
+            "raw": 0.8,
+            "weighted": 0.8028,
+            "rate": 0.8028,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 1.103712,
+      "duration_s": 173.13,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 24.036686,
+      "duration_s": 2026.25,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 67.89,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 305.53,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2572.8,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "849c9780c3bb",
+  "sprint_name": "issues-1899,158,1019,1108,1443,1489"
+}

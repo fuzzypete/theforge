@@ -1,0 +1,2464 @@
+{
+  "schema_version": 9,
+  "run_id": "726945a4203a",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Adaptive routing thresholds collapse the 1\u201310 complexity score into 2\u20133 output buckets per axis",
+    "slug": "issue-1019",
+    "story_path": null,
+    "story_text": "## What\n\nThe granular complexity score (1\u201310) produced by preflight is collapsed back into 2\u20133 discrete buckets at every routing decision point. The score is granular *as input* but the *output* (which model, how many reviewers) has very coarse granularity. This issue asks whether that's the intended design or whether finer-grained routing is wanted, and forces an explicit answer rather than letting the current behavior be discovered surprise-by-surprise.\n\n## Why\n\nFollowing the score-to-band flattening removal (#976/#986) and the adaptive assignment story (#283), one might reasonably expect that a complexity-4 story and a complexity-7 story would route to meaningfully different model pools. In practice, `assignment.py` currently maps the 1\u201310 score range to only a few output buckets per axis.\n\nThis is not necessarily wrong \u2014 reviewers and models come in discrete units, not continuous gradients, and aggressive bucketing limits cost variance. But the public framing of \"granular complexity scoring\" / \"score-driven routing\" oversells what the system actually does with the score downstream. Operators looking at a `complexity_score=4` in the audit and asking \"what would 8 do differently\" are entitled to a clear answer.\n\n## Acceptance Criteria\n\n- The intended design for score-to-routing thresholds is documented in one canonical routing-policy location, with each axis (dev tier, plan tier, code reviewer count, plan reviewer count, reasoning effort, anything else) showing bucket boundaries and rationale.\n- For each axis, the design states either (a) the current 2\u20133 bucket shape is intentional and the score is mostly a signal for future use, OR (b) finer-grained routing is desired and a target bucket structure is named.\n- If (b), at least one axis is rewired to use the score with finer granularity.\n- Every routing decision records the score, bucket, threshold values, and selected axis output in the `routing_decision` block from #1391.\n- Operator-facing docs describe what the score actually controls, in terms an operator tuning a sprint can act on.\n- Tests cover at least one decision per routing axis and assert the recorded `routing_decision` threshold/bucket explanation.\n\n## Notes\n\n- Depends on #1107 (routing policy SSOT) \u2014 threshold documentation and any rewiring must land at the single canonical location.\n- This issue is mostly a design forcing-function. The fix may be small (document and accept current behavior) or significant (rebuild threshold logic). Both are acceptable outcomes \u2014 the unacceptable outcome is leaving the gap between framing (\"granular routing\") and implementation (\"3 buckets in 10-point clothing\") undocumented.\n- Related: #283, #976 / #986, #1007, #1108.\n\n## References\n\n- ADR-0006 clause 7\n- #1391 \u2014 canonical `routing_decision` block\n",
+    "github_issue": 1019,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Adaptive routing thresholds collapse the 1\u201310 complexity score into 2\u20133 output buckets per axis' completed. Review approved after 2 cycle(s), 1 dev iteration(s). Branch: feat/issue-1019",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-23T04:59:27.227912+00:00",
+    "finished_at": "2026-07-23T05:21:15.653504+00:00",
+    "duration_seconds": 1308.425592
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1019",
+    "branch": "feat/issue-1019"
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 3.4783875,
+        "duration_s": 493.08,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/adr/0006-adaptive-router-trust-boundary.md",
+          "docs/guides/routing-policy.md",
+          "src/theforge/assignment.py",
+          "src/theforge/routing.py",
+          "tests/test_assignment_routing_decision.py",
+          "tests/test_routing.py"
+        ],
+        "files_changed_count": 6,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 2.665003,
+        "duration_s": 136.01,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/assignment.py",
+          "src/theforge/cli/explain.py",
+          "tests/test_assignment_routing_decision.py",
+          "tests/test_cli_explain.py"
+        ],
+        "files_changed_count": 4,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 2
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 2
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 3,
+        "restated_findings": 0,
+        "cost_usd": 0.818892,
+        "duration_s": 120.58
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 0.77689,
+        "duration_s": 91.47
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 78,
+      "profile_avg_iterations": 1.8974,
+      "profile_avg_cost_usd": 8.37204,
+      "profile_raw_dev_max": 2.8461,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 20.9301,
+      "review_history_sample_size": 12,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 78 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-23T05:05:21.947779+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-23T05:16:26.129802+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 6.143390500000001,
+    "review_usd": null,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 3.4783875,
+        "duration_seconds": 493.0767723750323,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.005325
+          },
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 3.4730625
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 2.665003,
+        "duration_seconds": 136.01093266694807,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.665003
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 40.13979998599583,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 40.13979998599583,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.81889225,
+        "duration_seconds": 40.13979998599583,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.026191000000000002
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.7927012500000001
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 30.427158472361043,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 30.427158472361043,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.77689035,
+        "duration_seconds": 30.427158472361043,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.77689035
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Bucket collapse is real and verified (routing.py documents only the dev-tier axis; assignment.py's plan-tier/reviewer-count bucketing is undocumented inline logic; reasoning_effort is a config field never wired to complexity_score), and no canonical routing-policy doc or full-axis threshold recording in routing_decision exists yet.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "backend",
+      "config"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.39737890000000003,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "38f44b71da30",
+    "cache_snapshot": {
+      "worktree_head": "6de2c0a48ada575eb8490b597fb08a3e0a040885",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "6de2c0a48ada575eb8490b597fb08a3e0a040885"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "6de2c0a48ada575eb8490b597fb08a3e0a040885",
+      "current_worktree_head": "6de2c0a48ada575eb8490b597fb08a3e0a040885",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "6de2c0a48ada575eb8490b597fb08a3e0a040885",
+      "current_evaluation_base_branch_head": "6de2c0a48ada575eb8490b597fb08a3e0a040885",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "cost_usd": 0.39737890000000003,
+        "duration_s": 64.75,
+        "success": true,
+        "exit_code": 0
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev promoted claude-opus (tier strong \u2192 strong) \u2014 2/10 recent HIGH stories escalated (profile success_rate=0.88 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1019/iter_1.yaml",
+      "handoff": {
+        "summary": "Resolved the #1019 design forcing-function by taking option (a) for every routing axis (coarse buckets are intentional) and making it auditable. Expanded src/theforge/routing.py into the canonical score-to-routing SSOT (ROUTING_POLICY covering dev_tier, plan_tier, reviewer_count, and reasoning_effort as intentionally-not-score-controlled), with score_to_plan_tier / score_to_reviewer_target / axis_decision helpers. Routed assignment.py's _plan_tier_for_score and _reviewer_target_for_score through the SSOT (runtime outputs unchanged). Instrumented _build_routing_decision so every axis records score, bucket, thresholds, covering range, selected output, and rationale via additive per-role score_policy blocks plus a top-level reasoning_effort axis; reviewer roles record both tier and count with resolved_count vs seated_count. Added an operator-facing docs/guides/routing-policy.md and cross-linked it from ADR-0006 clause 7. Added tests for the policy helpers and the recorded routing_decision on every axis.",
+        "commits": [
+          {
+            "sha": "c28bfd6",
+            "message": "feat(routing): centralize score-to-routing policy SSOT and instrument every axis (#1019)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "The intended design for score-to-routing thresholds is documented in one canonical routing-policy location, with each axis showing bucket boundaries and rationale.",
+            "status": "MET",
+            "notes": "src/theforge/routing.py ROUTING_POLICY is the single SSOT; every axis (dev tier, plan tier, reviewer count, reasoning_effort) carries buckets + rationale; docs/guides/routing-policy.md is the operator narrative."
+          },
+          {
+            "criterion": "For each axis, the design states either (a) intentional 2-3 buckets or (b) finer granularity desired with a named target structure.",
+            "status": "MET",
+            "notes": "All axes take option (a) \u2014 documented as intentional in both routing.py and the guide. reasoning_effort documented as intentionally not score-controlled."
+          },
+          {
+            "criterion": "If (b), at least one axis is rewired to use the score with finer granularity.",
+            "status": "MET",
+            "notes": "Not triggered \u2014 no axis chose (b), a valid outcome per the spec Notes ('document and accept current behavior')."
+          },
+          {
+            "criterion": "Every routing decision records the score, bucket, threshold values, and selected axis output in the routing_decision block from #1391.",
+            "status": "MET",
+            "notes": "Per-role score_policy blocks record score/bucket/thresholds/range/output/rationale for dev tier, plan tier, and reviewer count+tier; reasoning_effort recorded top-level. All additive."
+          },
+          {
+            "criterion": "Operator-facing docs describe what the score actually controls, in terms an operator tuning a sprint can act on.",
+            "status": "MET",
+            "notes": "docs/guides/routing-policy.md gives a per-axis table, tunables (forge.yaml min/max_reviewers, *_BUCKETS edits), and how to read the audit block."
+          },
+          {
+            "criterion": "Tests cover at least one decision per routing axis and assert the recorded routing_decision threshold/bucket explanation.",
+            "status": "MET",
+            "notes": "test_routing.py covers helpers + axis_decision for all axes; test_assignment_routing_decision.py asserts score_policy bucket/range/thresholds/output/rationale per axis incl. reasoning_effort and static-fallback."
+          }
+        ],
+        "gate_result": "PASS",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1019/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 review fixes for #1019. P1: reordered _build_routing_decision's keyword-only min_reviewers/max_reviewers params to the end of the signature to remove the defaulted-before-required ambiguity the reviewer flagged (they were already keyword-only after `*`, so valid Python; call site uses keywords and the direct-call test relies on the defaults, so no behavior change). P2: extended cli/explain.py render_routing_decision to print a per-role `score policy` section (bucket/range/thresholds/output, plus resolved_count/seated for reviewer count) and a top-level reasoning_effort line, making the operator guide's `forge explain` claim accurate. Added an end-to-end mid-bucket reviewer_count test (score=6 \u2192 mid, resolved_count==2) and an explain-render score_policy/reasoning_effort test. Core change from iter 0 unchanged: routing.py is the canonical score-to-routing SSOT (dev_tier, plan_tier, reviewer_count, reasoning_effort), assignment.py routes through it, and routing_decision records per-axis score/bucket/thresholds/range/output/rationale.",
+        "commits": [
+          {
+            "sha": "c28bfd6",
+            "message": "feat(routing): centralize score-to-routing policy SSOT and instrument every axis (#1019)"
+          },
+          {
+            "sha": "b72a0e0",
+            "message": "fix(routing): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "The intended design for score-to-routing thresholds is documented in one canonical routing-policy location, with each axis showing bucket boundaries and rationale.",
+            "status": "MET",
+            "notes": "src/theforge/routing.py ROUTING_POLICY is the single SSOT; docs/guides/routing-policy.md is the operator narrative."
+          },
+          {
+            "criterion": "For each axis, the design states either (a) intentional 2-3 buckets or (b) finer granularity desired with a named target structure.",
+            "status": "MET",
+            "notes": "All axes take option (a); reasoning_effort documented as intentionally not score-controlled."
+          },
+          {
+            "criterion": "If (b), at least one axis is rewired to use the score with finer granularity.",
+            "status": "MET",
+            "notes": "Not triggered \u2014 no axis chose (b), valid per spec Notes."
+          },
+          {
+            "criterion": "Every routing decision records the score, bucket, threshold values, and selected axis output in the routing_decision block from #1391.",
+            "status": "MET",
+            "notes": "Per-role score_policy blocks + top-level reasoning_effort; now also rendered by forge explain."
+          },
+          {
+            "criterion": "Operator-facing docs describe what the score actually controls, in terms an operator tuning a sprint can act on.",
+            "status": "MET",
+            "notes": "docs/guides/routing-policy.md; its forge-explain claim is now backed by real render output."
+          },
+          {
+            "criterion": "Tests cover at least one decision per routing axis and assert the recorded routing_decision threshold/bucket explanation.",
+            "status": "MET",
+            "notes": "test_routing.py (helpers/axis_decision), test_assignment_routing_decision.py (per-axis incl. min/mid/max reviewer buckets + static fallback), test_cli_explain.py (render)."
+          }
+        ],
+        "gate_result": "BLOCKED",
+        "gate_delegated": true,
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "cb1c74f51ae89fca"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The branch documents and instruments the routing policy, but the modified assignment module is not importable because the function signature places defaulted arguments before required ones. | [google-gemini-3.5-flash] The score-to-routing policy has been successfully centralized in a single SSOT and fully instrumented across all axes with comprehensive tests and operator documentation. | [claude-sonnet] SSOT for score-to-routing policy is real and wired through assignment.py; audit block instrumentation is additive and tested; two P2 gaps (explain CLI doesn't surface the new data, mid-bucket path lacks an end-to-end test).",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 2,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/assignment.py",
+          "line": 1462,
+          "description": "Importing the assignment module fails at parse time because _build_routing_decision declares defaulted min_reviewers and max_reviewers parameters before required parameters.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/cli/explain.py",
+          "line": 244,
+          "description": "docs/guides/routing-policy.md tells operators that \"forge explain --story <id> renders this block for a given run\" directly under an example of the new score_policy JSON, but render_routing_decision never reads or prints the score_policy key for any role.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        },
+        {
+          "severity": "P2",
+          "file": "tests/test_assignment_routing_decision.py",
+          "line": 375,
+          "description": "The reviewer-count axis is exercised end-to-end only at score=9 (max bucket) and score=2 (min bucket); no test asserts resolved_count or routing_decision output for a mid-range score (5-7) going through _build_routing_decision/_reviewer_count_policy.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "The intended design for score-to-routing thresholds is documented in one canonical routing-policy location, with each axis (dev tier, plan tier, code reviewer count, plan reviewer count, reasoning effort, anything else) showing bucket boundaries and rationale.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/routing.py adds ROUTING_POLICY and bucket tables for dev tier, plan tier, reviewer count, and reasoning effort, and docs/guides/routing-policy.md documents the operator-facing policy; runtime verification is blocked because src/theforge/assignment.py does not parse.; src/theforge/routing.py:135-177 defines ROUTING_POLICY with all axes, bucket boundaries, and rationales.; src/theforge/routing.py:127-183 ROUTING_POLICY dict defines dev_tier, plan_tier, reviewer_count, and reasoning_effort each with buckets and a rationale string; docs/guides/routing-policy.md:16-22 gives the operator-facing table for the same four axes. tests/test_routing.py's test_routing_policy_covers_every_axis asserts the exact axis set and that every score-controlled axis has a rationale."
+        },
+        {
+          "criterion": "For each axis, the design states either (a) the current 2\u20133 bucket shape is intentional and the score is mostly a signal for future use, OR (b) finer-grained routing is desired and a target bucket structure is named.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/routing.py states all axes use option (a), and docs/guides/routing-policy.md repeats that design decision; runtime verification is blocked by the assignment syntax error."
+        },
+        {
+          "criterion": "If (b), at least one axis is rewired to use the score with finer granularity.",
+          "status": "VERIFIED",
+          "evidence": "Not applicable because the implementation explicitly chose option (a) for every axis in src/theforge/routing.py and docs/guides/routing-policy.md; the spec allows documenting and accepting current coarse behavior.; Not triggered since option (a) was chosen for all axes, which is explicitly allowed by the spec.; Not triggered \u2014 every axis took option (a), a valid outcome per the spec's own Notes section (\"document and accept current behavior\" is acceptable)."
+        },
+        {
+          "criterion": "Every routing decision records the score, bucket, threshold values, and selected axis output in the routing_decision block from #1391.",
+          "status": "NOT_VERIFIED",
+          "evidence": "src/theforge/assignment.py adds score_policy blocks and top-level reasoning_effort, but the modified _build_routing_decision signature is syntactically invalid near line 1462, so no routing decision can be built or verified at runtime.; src/theforge/assignment.py:1562-1715 records score_policy for each axis in the routing_decision block.; src/theforge/assignment.py:1571 (top-level reasoning_effort), :1593 (planner plan_tier), :1612 (dev dev_tier), :1663-1670 (plan_review reviewer_tier + reviewer_count), :1688-1695 (code_review reviewer_tier + reviewer_count), each via axis_decision()/_reviewer_count_policy() which populate score/bucket/range/thresholds/output/rationale (routing.py:222-263). tests/test_assignment_routing_decision.py::test_score_policy_recorded_for_every_axis and test_reasoning_effort_axis_recorded_as_not_score_controlled assert every field on every axis at a concrete score (9), and test_score_policy_marks_static_fallback_without_score covers the score=None path."
+        },
+        {
+          "criterion": "Operator-facing docs describe what the score actually controls, in terms an operator tuning a sprint can act on.",
+          "status": "VERIFIED",
+          "evidence": "docs/guides/routing-policy.md adds the per-axis table, audit-reading guidance, and tuning notes for bucket tables and reviewer bounds; this documentation criterion is directly covered by the new guide content.; docs/guides/routing-policy.md provides a comprehensive guide on what the score controls and how to tune it.; docs/guides/routing-policy.md:16-22 gives a per-axis table naming the concrete config knobs (DEV_SCORE_TIER_BUCKETS, assignment.min_reviewers/max_reviewers in forge.yaml, REVIEWER_SCORE_COUNT_BUCKETS) an operator can edit."
+        },
+        {
+          "criterion": "Tests cover at least one decision per routing axis and assert the recorded routing_decision threshold/bucket explanation.",
+          "status": "NOT_VERIFIED",
+          "evidence": "tests/test_routing.py and tests/test_assignment_routing_decision.py add assertions for policy helpers and routing decision blocks, but the test suite cannot import src/theforge/assignment.py until the syntax error in _build_routing_decision is fixed.; tests/test_assignment_routing_decision.py:336-411 covers all axes and asserts the recorded routing_decision fields.; tests/test_assignment_routing_decision.py::test_score_policy_recorded_for_every_axis asserts bucket/range/thresholds/output/rationale for dev_tier, plan_tier, and reviewer_count (both reviewer roles) at score=9; test_reasoning_effort_axis_recorded_as_not_score_controlled covers the reasoning_effort axis; tests/test_routing.py::test_axis_decision_records_bucket_range_threshold_and_output and test_axis_decision_reasoning_effort_is_not_score_controlled cover the underlying helper directly. Ran locally: 19 passed in tests/test_routing.py + tests/test_assignment_routing_decision.py."
+        },
+        {
+          "criterion": "For each axis, the design states either (a) the current 2-3 bucket shape is intentional and the score is mostly a signal for future use, OR (b) finer-grained routing is desired and a target bucket structure is named.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/routing.py:15-30 and docs/guides/routing-policy.md:17-30 document that option (a) is chosen for all axes.; routing.py:16-33 module docstring and docs/guides/routing-policy.md:12-14 explicitly state option (a) for every axis, including reasoning_effort's explicit non-score-controlled status."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Cycle-1 signature issue is resolved; the current implementation satisfies the routing-policy ACs and the targeted touched tests pass. | [google-gemini-3.5-flash] The score-to-routing policy thresholds are centralized in routing.py, fully documented, and instrumented across all axes with comprehensive test coverage. | [claude-sonnet] Cycle 1's P1 (defaulted params before required params in _build_routing_decision) is fixed \u2014 module imports cleanly and all keyword-only params are reordered correctly; both P2s from cycle 1 (forge explain not rendering score_policy, missing mid-bucket end-to-end test) are also addressed. No regressions found in the iteration-1 diff; 40 tests pass.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "The intended design for score-to-routing thresholds is documented in one canonical routing-policy location, with each axis (dev tier, plan tier, code reviewer count, plan reviewer count, reasoning effort, anything else) showing bucket boundaries and rationale.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/routing.py:43-63 defines the canonical dev, plan, and reviewer-count bucket tables; src/theforge/routing.py:135-177 defines ROUTING_POLICY with per-axis rationale including reasoning_effort as not score-controlled; docs/adr/0006-adaptive-router-trust-boundary.md:285-290 points operators to the canonical policy and guide; tests/test_routing.py:52-64 asserts the policy covers every axis and includes rationale.; src/theforge/routing.py lines 41-140 defines DEV_SCORE_TIER_BUCKETS, PLAN_SCORE_TIER_BUCKETS, REVIEWER_SCORE_COUNT_BUCKETS, and ROUTING_POLICY with rationales and bucket boundaries for all axes. docs/guides/routing-policy.md lines 1-87 documents the intended design per axis, showing bucket boundaries and rationale.; src/theforge/routing.py:127-183 ROUTING_POLICY defines dev_tier, plan_tier, reviewer_count, and reasoning_effort each with buckets and a rationale string; docs/guides/routing-policy.md:16-22 gives the operator-facing table. tests/test_routing.py::test_routing_policy_covers_every_axis asserts the exact axis set and that every score-controlled axis has a rationale."
+        },
+        {
+          "criterion": "For each axis, the design states either (a) the current 2\u20133 bucket shape is intentional and the score is mostly a signal for future use, OR (b) finer-grained routing is desired and a target bucket structure is named.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/routing.py:15-30 states that all axes choose option (a), with dev tier, plan tier, reviewer count, and reasoning_effort documented individually; docs/guides/routing-policy.md:17-29 repeats the operator-facing design; tests/test_routing.py:52-64 verifies the canonical policy names all axes and rationales.; docs/guides/routing-policy.md lines 17-29 states that every axis takes option (a) and explains the rationale."
+        },
+        {
+          "criterion": "If (b), at least one axis is rewired to use the score with finer granularity.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/routing.py:15-17 and docs/guides/routing-policy.md:17-22 explicitly choose option (a) for every axis, so the conditional option (b) rewiring is not triggered; tests/test_routing.py:52-64 verifies the policy axes are score-controlled or explicitly excluded as documented.; docs/guides/routing-policy.md lines 17-21 states that option (a) is chosen for all axes, so no axis is rewired to finer granularity, which is valid per spec Notes.; Not triggered \u2014 every axis took option (a), a valid outcome per the spec's own Notes section."
+        },
+        {
+          "criterion": "Every routing decision records the score, bucket, threshold values, and selected axis output in the routing_decision block from #1391.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/routing.py:180-219 builds axis_decision with score, bucket, thresholds, range, output, and rationale; src/theforge/assignment.py:1576,1594,1614,1666-1670,1691-1695 records those decisions into routing_decision for reasoning_effort, planner, dev, plan_review, and code_review; src/theforge/assignment.py:2584-2611 shows assign_models invokes this block at runtime; tests/test_assignment_routing_decision.py:336-373 verifies every score-controlled axis in an end-to-end assignment decision, and tests/test_assignment_routing_decision.py:376-386 verifies reasoning_effort is recorded as not score-controlled.; src/theforge/assignment.py lines 1568-1699 records score_policy for dev_tier, plan_tier, reviewer_tier, reviewer_count, and reasoning_effort in the routing_decision block. src/theforge/routing.py lines 143-190 implements axis_decision which returns the score, bucket, thresholds, range, output, and rationale. tests/test_assignment_routing_decision.py lines 336-371 asserts that each routing axis records score, bucket, thresholds/range, output, and explanation in routing_decision.; src/theforge/assignment.py:1571 (top-level reasoning_effort), :1593 (planner plan_tier), :1612 (dev dev_tier), :1663-1670 (plan_review reviewer_tier + reviewer_count), :1688-1695 (code_review reviewer_tier + reviewer_count) via axis_decision()/_reviewer_count_policy(). tests/test_assignment_routing_decision.py::test_score_policy_recorded_for_every_axis (score=9, max bucket), ::test_score_policy_low_score_routes_to_min_reviewers (score=2, min bucket), and the new ::test_score_policy_mid_score_routes_to_midpoint_reviewers (score=6, mid bucket, resolved_count==2 for min_reviewers=1/max_reviewers=3) together cover all three reviewer_count buckets end-to-end through _build_routing_decision."
+        },
+        {
+          "criterion": "Operator-facing docs describe what the score actually controls, in terms an operator tuning a sprint can act on.",
+          "status": "VERIFIED",
+          "evidence": "docs/guides/routing-policy.md:24-29 lists each axis, score-to-output buckets, and operator tuning knobs; docs/guides/routing-policy.md:31-47 explains reviewer bounds, static fallback, and reasoning_effort exclusion; src/theforge/cli/explain.py:100-130 and 295-321 render the recorded score policy for operators; tests/test_cli_explain.py:164-188 verifies forge explain output surfaces score_policy, reviewer counts, and reasoning_effort.; docs/guides/routing-policy.md lines 23-29 table showing what an operator can tune for each axis.; docs/guides/routing-policy.md:16-22 names concrete config knobs (DEV_SCORE_TIER_BUCKETS, assignment.min_reviewers/max_reviewers in forge.yaml, REVIEWER_SCORE_COUNT_BUCKETS). Its claim that \"forge explain --story <id> renders this block\" is now backed by src/theforge/cli/explain.py:100-133 (_render_score_policy) and :292-299 (top-level reasoning_effort line), exercised by tests/test_cli_explain.py::test_render_surfaces_score_policy_per_axis."
+        },
+        {
+          "criterion": "Tests cover at least one decision per routing axis and assert the recorded routing_decision threshold/bucket explanation.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_routing.py:36-49 covers plan tier and reviewer-count bucket helpers; tests/test_routing.py:67-105 covers axis_decision bucket, range, thresholds, output, reasoning_effort exclusion, and static fallback; tests/test_assignment_routing_decision.py:336-427 covers end-to-end routing_decision recording for dev tier, plan tier, reviewer tier, reviewer count low/mid/max buckets, reasoning_effort, and no-score fallback; pytest tests/test_routing.py tests/test_assignment_routing_decision.py tests/test_cli_explain.py passed with 40 tests.; tests/test_assignment_routing_decision.py lines 336-421 covers dev_tier, plan_tier, reviewer_tier, reviewer_count, and reasoning_effort decisions and fallback behavior, asserting the recorded thresholds, buckets, and explanations.; tests/test_assignment_routing_decision.py covers dev_tier, plan_tier, and all three reviewer_count buckets (min/mid/max) plus the reasoning_effort and static-fallback axes; tests/test_routing.py covers the axis_decision helper directly for every axis; tests/test_cli_explain.py::test_render_surfaces_score_policy_per_axis covers the render path. Ran locally: 40 passed across tests/test_routing.py, tests/test_assignment_routing_decision.py, tests/test_cli_explain.py. Also verified `python -c \"import theforge.assignment\"` succeeds, confirming the prior P1 (parameter ordering) is resolved."
+        },
+        {
+          "criterion": "For each axis, the design states either (a) the current 2-3 bucket shape is intentional and the score is mostly a signal for future use, OR (b) finer-grained routing is desired and a target bucket structure is named.",
+          "status": "VERIFIED",
+          "evidence": "routing.py module docstring (lines 16-33) and docs/guides/routing-policy.md lines 12-14 explicitly state option (a) for every axis, including reasoning_effort's explicit non-score-controlled status."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] The routing_decision block is consumed by audit call sites and existing tests; adding new per-axis threshold/bucket fields (Step 3) may touch schema/consumers beyond the three listed test files.\n  Suggestion: During implementation, grep for routing_decision consumers (audit emitters, sprint story audit) to confirm additive-only fields don't break existing readers or snapshot assertions.\n- [P2] [claude-opus] Step 1 defers deciding whether reasoning_effort is in-scope ('unless current code proves otherwise'); role_derivation.py:147 sets reasoning_effort but not from complexity_score.\n  Suggestion: Confirm reasoning_effort is documented as intentionally-not-score-controlled rather than silently omitted from the axis table.",
+    "cost_usd": null,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.253148
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "The routing_decision block is consumed by audit call sites and existing tests; adding new per-axis threshold/bucket fields (Step 3) may touch schema/consumers beyond the three listed test files.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 1 defers deciding whether reasoning_effort is in-scope ('unless current code proves otherwise'); role_derivation.py:147 sets reasoning_effort but not from complexity_score.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty",
+          "findings[1].description must be non-empty"
+        ]
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1900",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1019",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1900",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1900",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-23T05:21:15.653504+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "PASS",
+    "cost_usd": 0.1083649,
+    "duration_s": 9.052763500018045,
+    "findings": []
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 2779 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1283 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1353 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 837 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 740 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 867 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2166 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1581 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1399 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1555 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1767 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1416 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2003 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1098 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 828 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 929 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 872 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 816 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2455 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 718 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 923 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1206 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1114 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 3575 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 934 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1356 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1024 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1423 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1244 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1009 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 1811 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1173 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1165 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1084 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1376 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1476 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1541 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1099 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1095 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 2699 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1070 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1268 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1413 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "cb1c74f51ae89fca",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/assignment.py",
+      "line": 1462,
+      "severity": "P1",
+      "description": "Importing the assignment module fails at parse time because _build_routing_decision declares defaulted min_reviewers and max_reviewers parameters before required parameters.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "497149f6881bf939",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/cli/explain.py",
+      "line": 244,
+      "severity": "P2",
+      "description": "docs/guides/routing-policy.md tells operators that \"forge explain --story <id> renders this block for a given run\" directly under an example of the new score_policy JSON, but render_routing_decision never reads or prints the score_policy key for any role.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "1a77e6c4f3617572",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "tests/test_assignment_routing_decision.py",
+      "line": 375,
+      "severity": "P2",
+      "description": "The reviewer-count axis is exercised end-to-end only at score=9 (max bucket) and score=2 (min bucket); no test asserts resolved_count or routing_decision output for a mid-range score (5-7) going through _build_routing_decision/_reviewer_count_policy.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 1,
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8846,
+              "weighted": 0.8846,
+              "runs": 78,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.8846
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "config"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "config"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "config"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "config"
+          ],
+          "raw": null,
+          "weighted": null,
+          "runs": 0,
+          "tainted_runs": 0,
+          "floor": "fail",
+          "recency": "windowed",
+          "rate": null,
+          "by_domain": {
+            "backend": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            },
+            "config": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "fired": true,
+        "matching_records": 10,
+        "escalations": 2,
+        "outcome": "promoted_to_strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_tier_demotion",
+        "applicable": false,
+        "fired": false,
+        "checked": null,
+        "reason": "no_dev_tier_demotion_mechanism_v1"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+config",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": null,
+        "winner": null,
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev promoted claude-opus (tier strong \u2192 strong) \u2014 2/10 recent HIGH stories escalated (profile success_rate=0.88 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 3,
+            "completed": 2,
+            "raw": 0.6667,
+            "weighted": 0.6667,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 5,
+            "completed": 5,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 3,
+            "completed": 2,
+            "raw": 0.6667,
+            "weighted": 0.6667,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [
+    {
+      "check": "reviewer_tree_currency",
+      "result": "pass",
+      "producer": "coordinator.review_context.reviewer_tree_currency",
+      "evidence": {
+        "base_branch": "release/v0.13",
+        "expected_commits": [
+          "c28bfd6 feat(routing): centralize score-to-routing policy SSOT and instrument every axis (#1019)",
+          "b72a0e0 fix(routing): address review findings (iter 1)"
+        ],
+        "actual_commits": [
+          "c28bfd6 feat(routing): centralize score-to-routing policy SSOT and instrument every axis (#1019)",
+          "b72a0e0 fix(routing): address review findings (iter 1)"
+        ],
+        "missing_from_branch": [],
+        "omitted_from_handoff": []
+      }
+    }
+  ],
+  "trust_status": "trusted",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.397379,
+      "duration_s": 64.75,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": null,
+      "duration_s": 35.93,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Keep the current coarse 2-3 bucket behavior as the explicit intended design for this story, avoiding routing rewires unless review rejects that product decision. Centralize all score-to-routing policy data in the existing routing module, make assignment consume it, and expose the applied score/bucket/threshold/output in routing_decision for every axis.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Establish the canonical routing policy SSOT for all axes.",
+            "files": [
+              "src/theforge/routing.py"
+            ],
+            "action": "modify",
+            "details": "Expand the existing dev-tier-only routing policy into a complete score-to-routing policy table covering dev tier, plan tier, code reviewer count, plan reviewer count, reasoning effort, and any other score-derived routing axis found while implementing. For each axis, record bucket boundaries, bucket names, selected output, and rationale. Mark the existing 2-3 bucket shape as intentional for dev tier, plan tier, and reviewer counts; mark reasoning_effort as intentionally not score-controlled unless current code proves otherwise."
+          },
+          {
+            "id": 2,
+            "description": "Route assignment decisions through the canonical policy.",
+            "files": [
+              "src/theforge/assignment.py"
+            ],
+            "action": "modify",
+            "details": "Replace inline score threshold logic in _plan_tier_for_score, _dev_tier_for_score, and _reviewer_target_for_score with lookups/helpers backed by src/theforge/routing.py. Preserve current runtime outputs unless Step 1 identifies an existing axis already intended to be finer-grained.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Add full per-axis routing_decision instrumentation.",
+            "files": [
+              "src/theforge/assignment.py"
+            ],
+            "action": "modify",
+            "details": "Update _build_routing_decision and related helpers so each routing axis records complexity_score, bucket name, threshold values or bucket range, selected output, and a short explanation/rationale from the canonical policy. Include dev model tier, planner model tier, code reviewer count, plan reviewer count, and reasoning_effort status/output if present in the routing_decision block.",
+            "depends_on": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Document operator-facing routing controls.",
+            "files": [
+              "docs/routing-policy.md",
+              "docs/adr/0006-adaptive-router-trust-boundary.md"
+            ],
+            "action": "create",
+            "details": "Create an operator-facing routing policy document that explains what complexity_score actually controls, how each bucket boundary affects model tier or reviewer count, and what a sprint operator can tune. Cross-link ADR-0006 clause 7 to this canonical policy document without duplicating detailed threshold tables beyond what the implementation treats as authoritative.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 5,
+            "description": "Cover routing policy and audit output in tests.",
+            "files": [
+              "tests/test_routing.py",
+              "tests/test_assignment_routing_decision.py",
+              "tests/test_routing_decision_audit.py"
+            ],
+            "action": "modify",
+            "details": "Add or update focused tests covering at least one decision for every routing axis. Assert that routing_decision includes the score, bucket, threshold/range, selected output, and explanation for each axis, and keep existing behavior assertions for the current 2-3 bucket outputs.",
+            "depends_on": [
+              1,
+              2,
+              3
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "The intended design for score-to-routing thresholds is documented in one canonical routing-policy location, with each axis (dev tier, plan tier, code reviewer count, plan reviewer count, reasoning effort, anything else) showing bucket boundaries and rationale.",
+            "steps": [
+              1,
+              4
+            ]
+          },
+          {
+            "criterion": "For each axis, the design states either (a) the current 2\u20133 bucket shape is intentional and the score is mostly a signal for future use, OR (b) finer-grained routing is desired and a target bucket structure is named.",
+            "steps": [
+              1,
+              4
+            ]
+          },
+          {
+            "criterion": "If (b), at least one axis is rewired to use the score with finer granularity.",
+            "steps": [
+              1,
+              2
+            ]
+          },
+          {
+            "criterion": "Every routing decision records the score, bucket, threshold values, and selected axis output in the routing_decision block from #1391.",
+            "steps": [
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "Operator-facing docs describe what the score actually controls, in terms an operator tuning a sprint can act on.",
+            "steps": [
+              4
+            ]
+          },
+          {
+            "criterion": "Tests cover at least one decision per routing axis and assert the recorded routing_decision threshold/bucket explanation.",
+            "steps": [
+              5
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The story leaves the product decision open: coarse buckets may be intentional, or finer-grained routing may be desired.",
+            "mitigation": "Choose the smallest viable documented design: preserve current coarse behavior and explicitly label it intentional per axis. Only rewire finer granularity if implementation discovers an already-approved target structure in existing policy docs or tests."
+          },
+          {
+            "description": "#1107 routing policy SSOT is a dependency but does not exist yet.",
+            "mitigation": "Establish the missing SSOT in this story by extending src/theforge/routing.py as the authoritative implementation policy and linking operator docs to it."
+          },
+          {
+            "description": "routing_decision schema changes may break existing audit tests or consumers expecting the old block shape.",
+            "mitigation": "Add fields compatibly where possible, avoid removing existing keys, and update tests to assert the new per-axis explanation while preserving existing behavior."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": null,
+      "duration_s": 295.16,
+      "iterations": 4,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.253148
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 6.143391,
+      "duration_s": 629.09,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 103.27,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 211.7,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 1.595783,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 1339.9,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "f6aaf4313b7c",
+  "sprint_name": "issues-1019"
+}

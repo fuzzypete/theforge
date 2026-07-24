@@ -1,0 +1,131 @@
+{
+  "schema_version": 9,
+  "run_id": "d3e4bb0833c3",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Sprint canonical run JSON path is not rebuild-safe when an existing run file is malformed",
+    "slug": "issue-1899",
+    "story_path": null,
+    "story_text": "What happened:\n\n#1897 makes sprint story audits write canonical `.forge/audits/runs/{run_id}.json` files and mirrors SQLite rows from that path. The clean path is covered, but the existing-file path is not rebuild-safe when the canonical JSON already exists and is malformed or not a JSON object. In that case the writer can fall back to a live SQLite upsert while leaving the bad canonical file in place, so `forge explain` may work until `forge audits rebuild` and then fail again.\n\nExpected behavior:\n\nThe sprint story audit writer must never leave a native SQLite row whose `source_path` points at an unreadable or non-object canonical run file. If an existing canonical file is malformed, the behavior should be explicit and rebuild-safe: either repair/replace it under a defined immutability rule, write a distinct recoverable record, or refuse the substrate mirror rather than creating a row rebuild cannot reproduce.\n\nDiagnosis:\n\nThe clean case added by #1897 writes `.forge/audits/runs/{run_id}.json`, sets SQLite `source_path`, and survives rebuild. The untested edge is the branch that encounters a pre-existing bad file. That path can preserve a broken canonical source while still updating the live substrate, recreating the same live-vs-rebuild split #1896 was meant to close.\n\nFix success observable:\n\nA regression test seeds an existing malformed or non-object `.forge/audits/runs/{run_id}.json`, invokes the sprint story audit writer, runs `forge audits rebuild`, and verifies the final behavior is explicit and rebuild-safe rather than silently losing the story record.",
+    "github_issue": 1899,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug missing Diagnosis section \u2014 not fix-ready (run `forge diagnose` or add diagnosis manually)"
+    ]
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Workspace creation failed: WORKSPACE abort: base branch 'release/v0.13' has diverged from origin (local is 1 ahead, 1 behind). Run: git rebase origin/release/v0.13",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-23T09:08:08.151336+00:00",
+    "finished_at": "2026-07-23T09:08:09.609720+00:00",
+    "duration_seconds": 1.458384
+  },
+  "workspace": {
+    "path": null,
+    "branch": null
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": null,
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "dev_usd": 0,
+    "review_usd": 0,
+    "dev_invocations": 0,
+    "review_invocations": 0,
+    "agents": []
+  },
+  "preflight": null,
+  "context_manifests": [],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "WORKSPACE abort: base branch 'release/v0.13' has diverged from origin (local is 1 ahead, 1 behind). Run: git rebase origin/release/v0.13",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": null,
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": null
+  },
+  "totals": {
+    "cost_usd": 0.0,
+    "duration_s": 0.0,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "dev_iterations": 0,
+    "review_cycles": 0
+  },
+  "sprint_id": "849c9780c3bb",
+  "sprint_name": "issues-1899,158,1019,1108,1443,1489"
+}
