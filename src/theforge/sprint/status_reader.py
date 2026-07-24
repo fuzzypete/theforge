@@ -268,6 +268,39 @@ def _format_usage_stage(used: object, maximum: object, label: str) -> str:
     return ""
 
 
+def _format_live_dev_stage(detail_data: dict) -> str:
+    """Render DEV progress as outer review-cycle position plus dev iteration.
+
+    ``review_cycle`` is the count of completed/active review cycles in the
+    story's dev->review feedback loop. ``dev_iteration`` is the current dev
+    attempt inside that loop. Showing only the latter makes a later DEV retry
+    look indistinguishable from first-pass development once the per-cycle dev
+    counter has reset.
+    """
+    parts: list[str] = []
+    cycle = detail_data.get("review_cycle")
+    if isinstance(cycle, int):
+        cycle_stage = _format_usage_stage(
+            cycle,
+            detail_data.get("review_max_cycles"),
+            "cycle",
+        )
+        parts.append(cycle_stage or f"cycle={cycle}")
+
+    iteration = detail_data.get("dev_iteration")
+    iter_stage = _format_usage_stage(
+        iteration,
+        detail_data.get("dev_max_iterations"),
+        "iter",
+    )
+    if not iter_stage and isinstance(iteration, int):
+        iter_stage = f"iter={iteration}"
+    if iter_stage:
+        parts.append(iter_stage)
+
+    return " ".join(parts)
+
+
 def _format_terminal_stage(iteration_usage: dict | None) -> str:
     if not isinstance(iteration_usage, dict):
         return ""
@@ -517,10 +550,7 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
         return stage, "planning", complexity
 
     if phase_val == "DEV":
-        iteration = detail_data.get("dev_iteration")
-        stage = _format_usage_stage(iteration, detail_data.get("dev_max_iterations"), "iter")
-        if not stage and isinstance(iteration, int):
-            stage = f"iter={iteration}"
+        stage = _format_live_dev_stage(detail_data)
         current_finding = _nonempty_str(detail_data.get("current_finding"))
         files_touched = detail_data.get("files_touched")
         last_gate = _nonempty_str(detail_data.get("last_gate_result"))
