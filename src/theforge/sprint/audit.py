@@ -66,6 +66,14 @@ def _upsert_into_substrate(project_root: Path, record: dict) -> None:
         _log(f"warning: failed to update audit substrate: {exc}")
 
 
+def _replace_canonical_run_file(run_file: Path, record: dict) -> None:
+    """Atomically replace a canonical per-run JSON file."""
+    tmp_path = run_file.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(record, f, default=str, indent=2)
+    tmp_path.replace(run_file)
+
+
 def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
     """Write the canonical per-story run JSON and mirror it into the substrate."""
     run_id = audit_data.get("run_id")
@@ -97,13 +105,22 @@ def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.json"
         if not run_file.exists():
-            with open(run_file, "w", encoding="utf-8") as f:
-                json.dump(redacted, f, default=str, indent=2)
+            _replace_canonical_run_file(run_file, redacted)
             persisted = redacted
         else:
-            with open(run_file, encoding="utf-8") as f:
-                persisted = json.load(f)
-            if not isinstance(persisted, dict):
+            should_repair = False
+            try:
+                with open(run_file, encoding="utf-8") as f:
+                    persisted = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                persisted = redacted
+                should_repair = True
+            else:
+                if not isinstance(persisted, dict):
+                    persisted = redacted
+                    should_repair = True
+            if should_repair:
+                _replace_canonical_run_file(run_file, redacted)
                 persisted = redacted
 
         stat = run_file.stat()
@@ -122,7 +139,6 @@ def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
             conn.close()
     except Exception as exc:  # noqa: BLE001
         _log(f"warning: failed to write native story audit record: {exc}")
-        _upsert_into_substrate(project_root, audit_data)
 
 
 def _build_advisory_summary(config: ForgeConfig | None) -> dict | None:

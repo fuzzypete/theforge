@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -855,6 +856,67 @@ class TestSprintStoryAuditHistory:
         # Legacy jsonl path must NOT be written.
         history_path = tmp_path / ".forge" / "audits" / "history.jsonl"
         assert not history_path.exists()
+
+    def test_write_story_audit_repairs_malformed_existing_run_file(self, tmp_path: Path) -> None:
+        from theforge.sprint.audit import _write_story_audit
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        scenarios = {
+            "invalid-json": "not json{{{",
+            "non-object": "[1, 2, 3]",
+        }
+
+        for run_id, seeded in scenarios.items():
+            state = CoordinatorState()
+            state.log_dir = tmp_path / ".forge" / "logs" / task.slug
+            state.workspace_path = tmp_path / task.slug
+            state.workspace_path.mkdir(parents=True, exist_ok=True)
+            state.branch_name = f"forge/{task.slug}"
+            state.run_id = run_id
+            result = CoordinatorResult(
+                success=True,
+                phase=Phase.DONE,
+                state=state,
+                message="done",
+            )
+
+            run_file = audit_substrate.runs_dir(tmp_path) / f"{run_id}.json"
+            run_file.parent.mkdir(parents=True, exist_ok=True)
+            run_file.write_text(seeded, encoding="utf-8")
+
+            _write_story_audit(config, task, result)
+
+            persisted = json.loads(run_file.read_text(encoding="utf-8"))
+            assert isinstance(persisted, dict)
+            assert persisted["run_id"] == run_id
+            assert persisted["task"]["slug"] == task.slug
+
+            conn = audit_substrate.open_readonly(tmp_path)
+            try:
+                row = audit_substrate.latest_record_for(conn, run_id=run_id)
+            finally:
+                conn.close()
+            assert row is not None
+            assert row["task"]["slug"] == task.slug
+
+        summary = audit_substrate.rebuild_from_runs(tmp_path)
+        assert summary.failed == 0
+
+        for run_id in scenarios:
+            conn = audit_substrate.open_readonly(tmp_path)
+            try:
+                rebuilt = audit_substrate.latest_record_for(conn, run_id=run_id)
+                source_row = conn.execute(
+                    "SELECT source_path FROM audit_records WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            assert rebuilt is not None
+            assert rebuilt["task"]["slug"] == task.slug
+            assert source_row is not None
+            assert source_row["source_path"] == f".forge/audits/runs/{run_id}.json"
 
     def test_write_story_audit_logs_generate_failure(self, tmp_path: Path, capsys) -> None:
         from theforge.sprint.audit import _write_story_audit
