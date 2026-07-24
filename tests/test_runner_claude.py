@@ -38,6 +38,41 @@ def _result_line(**fields: object) -> str:
     return json.dumps({"type": "result", **fields}) + "\n"
 
 
+def _make_claude_profile(sandbox_mode: str = "workspace-write") -> ModelProfile:
+    return ModelProfile(
+        name="dev",
+        cli="claude",
+        model="sonnet",
+        budget_usd=2.0,
+        timeout_seconds=900,
+        allowed_tools=("Read", "Edit", "Write", "Bash"),
+        sandbox_mode=sandbox_mode,
+    )
+
+
+def _fake_wrap(cmd: list[str], working_dir: Path, **kwargs: object) -> list[str]:
+    """Deterministic sandbox wrapper stub — prefixes a marker so tests do not
+    depend on whether the host actually has sandbox-exec/bwrap available."""
+    return ["sandbox-exec", "-p", "PROFILE", *cmd]
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_sandbox_wrapper():
+    """Claude lifecycle tests (with mocked Popen) exercise streaming/cost/session
+    behavior, not sandbox containment (covered by TestClaudeSandboxWrapper and
+    test_runner_sandbox.py). Neutralize the host sandbox wrapper with a
+    deterministic sandbox-exec prefix so these tests do not fail closed on
+    hosts/CI where sandbox-exec/bwrap is unavailable (the gate scrub can hide
+    it). Real-subprocess tests (TestClaudeLifecycle) run with sandbox_mode=none
+    so they exec the fake CLI directly; tests that assert wrapping override this
+    with their own patch."""
+    with patch(
+        "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+        side_effect=_fake_wrap,
+    ):
+        yield
+
+
 class TestHybridRunner:
     @pytest.fixture
     def api_profile(self) -> ModelProfile:
@@ -578,20 +613,18 @@ class TestClaudePermissionMode:
         return mock_popen.call_args[0][0]
 
     def test_workspace_write_adds_permission_mode(self, tmp_path: Path) -> None:
-        """sandbox_mode=workspace-write → --permission-mode default in cmd."""
-        profile = ModelProfile(
-            name="dev",
-            cli="claude",
-            model="sonnet",
-            budget_usd=2.0,
-            timeout_seconds=900,
-            allowed_tools=("Read", "Edit", "Write", "Bash"),
-            sandbox_mode="workspace-write",
-        )
+        """sandbox_mode=workspace-write → --permission-mode default in the (wrapped) cmd."""
+        profile = _make_claude_profile("workspace-write")
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
-        with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_fake_wrap,
+            ),
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
+        ):
             run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" in cmd
@@ -603,21 +636,19 @@ class TestClaudePermissionMode:
         mechanically enforced by Claude CLI."""
         import theforge.runners.runner_claude as _mod
 
-        profile = ModelProfile(
-            name="dev",
-            cli="claude",
-            model="sonnet",
-            budget_usd=2.0,
-            timeout_seconds=900,
-            allowed_tools=("Read", "Edit", "Write", "Bash"),
-            sandbox_mode="read-only",
-        )
+        profile = _make_claude_profile("read-only")
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
-        with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            with patch.object(_mod, "_log") as mock_log:
-                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_fake_wrap,
+            ),
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
+            patch.object(_mod, "_log") as mock_log,
+        ):
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" in cmd
         # A warning must be logged explaining that read-only is not mechanically enforced
@@ -627,23 +658,115 @@ class TestClaudePermissionMode:
         )
 
     def test_none_omits_permission_mode(self, tmp_path: Path) -> None:
-        """sandbox_mode=none → no --permission-mode flag in cmd."""
-        profile = ModelProfile(
-            name="dev",
-            cli="claude",
-            model="sonnet",
-            budget_usd=2.0,
-            timeout_seconds=900,
-            allowed_tools=("Read", "Edit", "Write", "Bash"),
-            sandbox_mode="none",
-        )
+        """sandbox_mode=none → no --permission-mode flag, and no sandbox wrapping."""
+        profile = _make_claude_profile("none")
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
-        with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_fake_wrap,
+            ) as mock_wrap,
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
+        ):
             run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" not in cmd
+        mock_wrap.assert_not_called()
+        assert cmd[0] == "claude"
+
+
+class TestClaudeSandboxWrapper:
+    """Assert the Claude CLI is mechanically wrapped / fails closed (#1907)."""
+
+    def test_workspace_write_wraps_command(self, tmp_path: Path) -> None:
+        """sandbox_mode != none → the raw claude argv is wrapped, not passed to Popen directly."""
+        profile = _make_claude_profile("workspace-write")
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_fake_wrap,
+            ) as mock_wrap,
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
+        ):
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_wrap.assert_called_once()
+        cmd = mock_popen.call_args[0][0]
+        # Contained mode: Popen receives the wrapper, NOT the bare claude argv.
+        assert cmd[0] == "sandbox-exec"
+        assert cmd[0] != "claude"
+        assert "claude" in cmd
+
+    def test_wrapper_receives_credential_services_and_claude_state_roots(
+        self, tmp_path: Path
+    ) -> None:
+        """The wrap grants keychain auth + ~/.claude writes so containment does not break auth."""
+        profile = _make_claude_profile("workspace-write")
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_fake_wrap,
+            ) as mock_wrap,
+            patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc),
+        ):
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        _, kwargs = mock_wrap.call_args
+        assert kwargs["allow_credential_services"] is True
+        write_roots = [str(p) for p in kwargs["extra_write_roots"]]
+        assert any(p.endswith("/.claude") for p in write_roots)
+
+    def test_read_only_also_wraps(self, tmp_path: Path) -> None:
+        """read-only still gets host-wrapped for write containment to the worktree."""
+        profile = _make_claude_profile("read-only")
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_fake_wrap,
+            ) as mock_wrap,
+            patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc),
+        ):
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_wrap.assert_called_once()
+
+    def test_sandbox_unavailable_fails_closed(self, tmp_path: Path) -> None:
+        """Host sandbox unavailable → runner fails closed without launching claude."""
+        profile = _make_claude_profile("workspace-write")
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=lambda cmd, wd, **kw: list(cmd),
+            ),
+            patch("theforge.runners.runner_claude.subprocess.Popen") as mock_popen,
+        ):
+            result = _run_claude(prompt="test", profile=profile, working_dir=tmp_path)
+        # Claude must NOT be launched — we fail before Popen.
+        mock_popen.assert_not_called()
+        assert result.success is False
+        assert result.startup_failure is True
+        assert result.exit_code == -1
+        assert "SANDBOX_UNAVAILABLE" in result.output
+
+    def test_none_mode_runs_unwrapped(self, tmp_path: Path) -> None:
+        """sandbox_mode=none → no wrapping; the bare claude argv is launched."""
+        profile = _make_claude_profile("none")
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with (
+            patch("theforge.runners.runner_claude.workspace_effect_sandbox_command") as mock_wrap,
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
+        ):
+            result = _run_claude(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_wrap.assert_not_called()
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][0] == "claude"
+        assert result.success is True
 
 
 class TestClaudeSessionIdHelper:
@@ -958,12 +1081,18 @@ class TestRunAgentUnknownCli:
         assert result.profile_name == "dev"
 
 
-def test_claude_launcher_invokes_cmd_directly(dev_profile: ModelProfile, tmp_path: Path) -> None:
+def test_claude_launcher_invokes_cmd_directly_when_sandbox_none(tmp_path: Path) -> None:
+    """sandbox_mode=none is the only mode that launches the bare claude argv (#1907).
+
+    With containment requested the launcher is wrapped instead — see
+    TestClaudeSandboxWrapper.
+    """
+    profile = _make_claude_profile("none")
     mock_proc = _make_stream_mock([_result_line(result="done")])
     with patch(
         "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
     ) as mock_popen:
-        run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        run_agent(prompt="test", profile=profile, working_dir=tmp_path)
     cmd = mock_popen.call_args[0][0]
     assert cmd[0] == "claude"
 
@@ -1010,6 +1139,9 @@ class TestClaudeLifecycle:
         monkeypatch.setattr("theforge.runners.runner_claude.build_workspace_env", _build)
 
     def _make_profile(self, timeout_seconds: int = 10, **kwargs: object) -> ModelProfile:
+        # sandbox_mode=none: these real-subprocess tests exec the fake CLI
+        # directly. Host sandbox wrapping is covered by TestClaudeSandboxWrapper.
+        kwargs.setdefault("sandbox_mode", "none")
         return ModelProfile(
             name="dev",
             cli="claude",

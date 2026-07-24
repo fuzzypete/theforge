@@ -1081,11 +1081,7 @@ def _apply_preflight_config(
         return config
 
     from theforge.assignment import (  # noqa: I001, PLC0415
-        PHASE_TIER as _PHASE_TIER,
-        _check_promotion as _chk_prom,
         _normalize_complexity as _norm_complexity,
-        _pick_agent as _pick_agt,
-        _promote_tier as _prom_tier,
         assign_models as _assign_models,
     )
     from theforge.config import (  # noqa: I001, PLC0415
@@ -1173,7 +1169,6 @@ def _apply_preflight_config(
             complexity_score=complexity_score,
             escalation_history=_esc_history,
             explicit_profiles=_explicit if _explicit else None,
-            sprint_promotions=state.sprint_promotions,
             secrets=config.secrets,
             model_profiles=_model_profiles,
             unhealthy_models=_unhealthy if _unhealthy else None,
@@ -1391,24 +1386,10 @@ def _apply_preflight_config(
         **({"config_model_routing": _existing_routing_audit} if _existing_routing_audit else {}),
     }
 
-    _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-    _dev_agent = _pick_agt(config.agents, _dev_base_tier, config.secrets)
-    _dev_name = _dev_agent.name if _dev_agent else ""
-    if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
-        _prom = _chk_prom(
-            _norm_complexity(complexity),
-            _dev_name,
-            _esc_history,
-            state.sprint_promotions,
-        )
-        if _prom is not None:
-            _promoted_tier = _prom_tier(_dev_base_tier)
-            state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
-            _log_verbose(
-                f"[adaptive] {_norm_complexity(complexity)} dev promoted "
-                f"{_dev_name} -> tier {_promoted_tier} (sticky for sprint)"
-            )
-
+    # Profile-backed dev pre-promotion (#158) is decided entirely inside
+    # assign_models from the recency-weighted profile signal and is already
+    # reflected in _decision.rationale / routing_decision below; the router is the
+    # single authoritative driver, so preflight keeps no separate promotion cache.
     _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
     for _phase, _rsn in _decision.rationale.items():
         _log_verbose(f"[adaptive] {_phase}: {_rsn}")

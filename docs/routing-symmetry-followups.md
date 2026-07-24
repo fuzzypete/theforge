@@ -20,19 +20,7 @@ mechanisms land.
 
 ## Open asymmetries
 
-### 1. Escalation-history decay for dev-tier promotion — #1879
-
-- **Promotion path:** `assignment.py:_check_promotion` — 2+ `ESCALATE` outcomes in
-  the last 10 matching records bump a story's dev tier upward.
-- **Gap:** the matching slice is recency-bounded (last 10) but never *decays*. A
-  single outlier escalation persists in that window for a long time on infrequent
-  complexity bands, keeping the tier promoted after subsequent runs succeed
-  cleanly.
-- **Proposed inverse:** exclude escalation records older than N records or M days
-  from `_check_promotion` matching, so stale escalations stop holding the tier up.
-- **Tracked issue:** #1879 (back-links #1389; companion to #1387).
-
-### 2. Reviewer re-inclusion path (inverse of #1388 completion-rate deprioritization) — #1880
+### Reviewer re-inclusion path (inverse of #1388 completion-rate deprioritization) — #1880
 
 - **Deprioritization path:** `assignment.py:_reviewer_completion_check` (#1388) —
   a reviewer with a poor attempt-completion history is reranked down.
@@ -46,6 +34,23 @@ mechanisms land.
 - **Tracked issue:** #1880 (back-links #1389; companion to #1388).
 
 ## Resolved / not open
+
+### Escalation-history decay for dev-tier promotion — RESOLVED (#158)
+
+The dev-tier promotion no longer counts `ESCALATE` outcomes over a fixed last-10
+window. `assignment.py:_check_promotion` now reads the selected dev model's
+**recency-weighted** success rate at the story's complexity band from the
+capability profiles (`model_profiles.get_dev_signal`, #1392) and pre-promotes only
+when that rate is below the configured threshold over the sample floor
+(`assignment.dev_promotion_threshold` / `dev_promotion_min_runs`). The stale-outlier
+gap #1879 described is closed *by construction*: the paired return path is the
+passive **recency recovery** (ADR-0006 clause 2.4/5) — as old failures age out of
+the weighted ring the rate climbs back to/above threshold and pre-promotion stops
+firing while admissible samples remain. That non-firing is recorded in the dev
+`demotion_check` block (`_dev_recency_demotion_check`, clause 7) and registered as
+the dev-promotion pair's demotion in `ROUTING_SYMMETRY_REGISTRY`
+(`MECHANISM_DEV_RECENCY_RECOVERY`). #1879 is superseded by #158; no separate decay
+mechanism is needed.
 
 ### Recency-weighted dev success rate — RESOLVED (#1392)
 

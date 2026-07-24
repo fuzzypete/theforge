@@ -32,6 +32,22 @@ def _result_line(**fields: object) -> str:
     return json.dumps({"type": "result", **fields}) + "\n"
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_claude_sandbox_wrapper():
+    """These pool tests patch ``runner_claude.subprocess.Popen`` (which mutates
+    the shared ``subprocess`` module) and drive the Claude runner with default
+    workspace-write profiles. That would make the sandbox probe — which calls
+    ``subprocess.run`` — see the mocked Popen and report the host sandbox
+    unavailable, causing a spurious fail-closed. Neutralize the wrapper so pool
+    orchestration is what's under test; containment is covered in
+    test_runner_claude.py / test_runner_sandbox.py."""
+    with patch(
+        "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+        side_effect=lambda cmd, working_dir, **kwargs: ["sandbox-exec", "-p", "P", *cmd],
+    ):
+        yield
+
+
 class TestRunAgentPool:
     """Test pool runner."""
 
@@ -81,6 +97,73 @@ class TestRunAgentPool:
         assert results[0].profile_name == "reviewer-a"
         assert results[1].output == "Review B output"
         assert results[1].profile_name == "reviewer-b"
+
+    def test_pool_populates_durations_out(self, tmp_path: Path) -> None:
+        """durations_out is filled with one wall-clock per profile, in order (#1443)."""
+        profiles = [
+            ModelProfile(
+                name="reviewer-a",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="reviewer-b",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+
+        def mock_run_agent(**kwargs):
+            return AgentResult(
+                success=True,
+                output="ok",
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name=kwargs["profile"].name,
+            )
+
+        durations: list[float] = []
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
+            results = run_agent_pool(
+                prompt="review this",
+                profiles=profiles,
+                working_dir=tmp_path,
+                durations_out=durations,
+            )
+
+        assert len(results) == 2
+        assert len(durations) == 2  # index-aligned to profiles
+        assert all(isinstance(d, float) and d >= 0.0 for d in durations)
+
+    def test_pool_of_one_populates_durations_out(self, tmp_path: Path) -> None:
+        """The single-profile fast path also fills durations_out (#1443)."""
+        profile = ModelProfile(
+            name="solo",
+            cli="claude",
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        mock_proc = _make_stream_mock([_result_line(result="solo review", total_cost_usd=0.20)])
+        durations: list[float] = []
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+            run_agent_pool(
+                prompt="review this",
+                profiles=[profile],
+                working_dir=tmp_path,
+                durations_out=durations,
+            )
+        assert len(durations) == 1
+        assert isinstance(durations[0], float) and durations[0] >= 0.0
 
     def test_pool_of_one(self, tmp_path: Path) -> None:
         """Pool with 1 profile returns a list of 1 result."""

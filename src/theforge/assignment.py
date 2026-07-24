@@ -25,7 +25,12 @@ from .config import (
 )
 from .config.auth import check_agent_auth
 from .config.models import price_tiebreak_signal
-from .routing import score_to_dev_tier
+from .routing import (
+    axis_decision,
+    score_to_dev_tier,
+    score_to_plan_tier,
+    score_to_reviewer_target,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +90,7 @@ ROUTING_RATIONALE_STATES: frozenset[str] = frozenset(
 # so the two never drift. Referenced by _dev_routing_rationale and
 # apply_post_plan_checkpoint.
 MECHANISM_DEV_PROMOTION = "_check_promotion"
+MECHANISM_DEV_RECENCY_RECOVERY = "dev_recency_recovery"
 MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
 MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
 MECHANISM_PERSISTENT_P1_DEV_ESCALATION = "persistent_p1_dev_escalation"
@@ -139,9 +145,17 @@ class RoutingSymmetryPair:
 # demotion or a catalogued open_followup fails the enforcement test — that is the
 # architectural backstop this story lands (#1389).
 ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
-    # Dev-tier promotion (2+ recent ESCALATE outcomes bump the tier up) is paired
-    # with the post-plan checkpoint demotion (clean plan-review on a medium story
-    # steps the tier back down) — the first concrete inverse (#1387).
+    # Dev-tier pre-promotion (#158): the selected dev model's recency-weighted
+    # success rate at the story's complexity band falls below the configured
+    # threshold over the sample floor, so the tier is bumped up before the first
+    # iteration. Its PAIRED return path is the passive recency recovery
+    # (ADR-0006 clause 2.4/5): as old failures age out of the weighted ring the
+    # rate climbs back to/above threshold and pre-promotion stops firing while
+    # admissible samples remain — recorded in the dev demotion_check block
+    # (clause 7). This is the cross-run inverse the clause-5 CI gate requires
+    # (#1389). The post-plan checkpoint (#1387) remains a separate, independently
+    # tested in-run demotion, but the recovery condition is the registered
+    # inverse of THIS promotion.
     RoutingSymmetryPair(
         promotion=RoutingMechanism(
             name=MECHANISM_DEV_PROMOTION,
@@ -149,12 +163,13 @@ ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
             audit_label=ROUTING_RATIONALE_PROMOTED,
         ),
         demotion=RoutingMechanism(
-            name=MECHANISM_POST_PLAN_DEMOTION,
-            symbol="theforge.assignment.apply_post_plan_checkpoint",
-            audit_label=ROUTING_RATIONALE_DEMOTED,
+            name=MECHANISM_DEV_RECENCY_RECOVERY,
+            symbol="theforge.assignment._dev_recency_demotion_check",
+            audit_label="recency_recovery",
         ),
         promotion_tests=("tests/test_assignment.py",),
-        demotion_tests=("tests/test_post_plan_checkpoint.py",),
+        demotion_tests=("tests/test_assignment.py",),
+        demotion_test_token="recency_recovery",
     ),
     # Reviewer completion-rate deprioritization (#1388): a reviewer with a poor
     # attempt-completion history is reranked down. The inverse — re-inclusion once
@@ -252,17 +267,6 @@ def _dev_routing_rationale(
         "from_tier": effective_tier,
         "to_tier": effective_tier,
     }
-
-
-def _agent_canonical_id(agent: AgentDef) -> str | None:
-    """Derive the canonical model ID (provider/model/transport) for an agent."""
-    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
-
-    return canonical_id_from_identity(
-        actual_model=agent.model,
-        provider=agent.provider,
-        cli=agent.cli,
-    )
 
 
 def _has_auth(agent: AgentDef, secrets: dict[str, str] | None = None) -> bool:
@@ -392,11 +396,16 @@ def _normalize_complexity_score(complexity_score: int | None) -> int | None:
 
 
 def _plan_tier_for_score(complexity: str, complexity_score: int | None) -> str:
-    """Return the planner tier, preferring score-driven routing when present."""
+    """Return the planner tier, preferring score-driven routing when present.
+
+    Score thresholds are owned by the canonical routing policy
+    (:func:`theforge.routing.score_to_plan_tier`); this is a thin adapter that
+    falls back to the legacy band when no numeric score is available.
+    """
     score = _normalize_complexity_score(complexity_score)
     if score is None:
         return PHASE_TIER["plan"][complexity]
-    return "mid" if score <= 5 else "strong"
+    return score_to_plan_tier(score)
 
 
 def _dev_tier_for_score(complexity: str, complexity_score: int | None) -> str:
@@ -413,13 +422,20 @@ def _reviewer_target_for_score(
     min_r: int,
     max_r: int,
 ) -> int:
-    """Return reviewer count, allowing same-band stories to diverge by score."""
+    """Return reviewer count, allowing same-band stories to diverge by score.
+
+    Bucket boundaries are owned by the canonical routing policy
+    (:func:`theforge.routing.score_to_reviewer_target`); this adapter resolves
+    the symbolic "min"/"mid"/"max" target against the configured reviewer
+    bounds. Falls back to the legacy band count when no numeric score exists.
+    """
     score = _normalize_complexity_score(complexity_score)
     if score is None:
         return _reviewer_count(complexity, min_r, max_r)
-    if score <= 4:
+    target = score_to_reviewer_target(score)
+    if target == "min":
         return min_r
-    if score >= 8:
+    if target == "max":
         return max_r
     return min_r + (max_r - min_r + 1) // 2
 
@@ -560,6 +576,70 @@ def _rerank_by_profiles(
     return domain_sorted
 
 
+def _rerank_single_by_reliability(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    role: str,
+    *,
+    threshold: float,
+    min_runs: int,
+    recency: object | None = None,
+    signals_out: dict[str, dict] | None = None,
+    audit: dict[str, object] | None = None,
+) -> list[AgentDef]:
+    """Stable sort-after a single-model role's low-reliability candidates (#1489).
+
+    The single-model (preflight / planner) analog of
+    :func:`_rerank_reviewers_by_completion`. A candidate whose recency-weighted
+    role reliability (attempt-completion rate) is below ``threshold`` — *and only
+    once it has accumulated ``min_runs`` admissible attempts* — is sorted **after**
+    every more-reliable candidate. This is a sort-after, not a filter-out: a
+    low-reliability model stays in the pool and is still selected when no better
+    candidate is available, so an operator-enabled agent is never locked out
+    (AC clause 5). Below the sample floor the signal is ``floor="fail"`` (cold
+    start), so ordering falls through to the incoming tier/budget order unchanged
+    (AC: cold-start ⇒ static policy). The sort is stable on the incoming index.
+    """
+    if not model_profiles or not candidates or not role:
+        return candidates
+    from theforge.model_profiles import get_role_reliability_signal  # noqa: PLC0415
+
+    rows: list[tuple[int, int, AgentDef]] = []
+    deprioritized: list[str] = []
+    for idx, agent in enumerate(candidates):
+        signal = get_role_reliability_signal(
+            model_profiles,
+            agent.name,
+            role,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+            recency=recency,
+        )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        rate = signal["rate"]
+        is_low = signal["floor"] == "pass" and rate is not None and rate < threshold
+        if is_low:
+            deprioritized.append(agent.name)
+        rows.append((1 if is_low else 0, idx, agent))
+
+    reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
+    if audit is not None:
+        original_order = [a.name for a in candidates]
+        final_order = [a.name for a in reranked]
+        audit["mechanism"] = "role_reliability"
+        audit["role"] = role
+        audit["threshold"] = threshold
+        audit["min_runs"] = min_runs
+        audit["applied"] = original_order != final_order
+        audit["deprioritized"] = deprioritized
+        audit["original_order"] = original_order
+        audit["final_order"] = final_order
+    return reranked
+
+
 def _pick_agent(
     agents: list[AgentDef],
     tier: str,
@@ -572,6 +652,11 @@ def _pick_agent(
     domain_signals_out: dict[str, dict] | None = None,
     rerank_audit: dict[str, object] | None = None,
     recency: object | None = None,
+    reliability_role: str | None = None,
+    reliability_threshold: float = 0.5,
+    reliability_min_runs: int = 5,
+    reliability_signals_out: dict[str, dict] | None = None,
+    reliability_audit: dict[str, object] | None = None,
 ) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
@@ -585,6 +670,12 @@ def _pick_agent(
     profile signals consulted during reranking are recorded into them (keyed by
     agent name) for the routing explainability block — no extra profile reads
     beyond this pass.
+
+    When ``reliability_role`` is set (a non-dev single-model role: ``"preflight"``
+    / ``"planner"``) and ``model_profiles`` is provided, low-reliability candidates
+    are additionally sorted **after** more-reliable ones (#1489). This runs on top
+    of the budget/tier ordering as a pure sort-after; a cold-start role falls
+    through unchanged.
     """
     candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
     candidates = _rerank_by_profiles(
@@ -598,6 +689,17 @@ def _pick_agent(
         rerank_audit=rerank_audit,
         recency=recency,
     )
+    if reliability_role:
+        candidates = _rerank_single_by_reliability(
+            candidates,
+            model_profiles,
+            reliability_role,
+            threshold=reliability_threshold,
+            min_runs=reliability_min_runs,
+            recency=recency,
+            signals_out=reliability_signals_out,
+            audit=reliability_audit,
+        )
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
@@ -739,6 +841,73 @@ def _rerank_reviewers_by_completion(
     return reranked
 
 
+def _rerank_reviewers_by_value(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    *,
+    uniqueness_threshold: float,
+    min_runs: int,
+    complexity: str | None = None,
+    recency: object | None = None,
+    signals_out: dict[str, dict] | None = None,
+    audit: dict[str, object] | None = None,
+) -> list[AgentDef]:
+    """Stable sort-after plan reviewers below the P1-uniqueness floor (#1443).
+
+    The value analog of :func:`_rerank_reviewers_by_completion`. A plan reviewer
+    whose recency-weighted P1-uniqueness rate at the story's complexity band is
+    below ``uniqueness_threshold`` — *and only once it has accumulated ``min_runs``
+    admissible (non-tainted, P1-bearing) samples* — is sorted **after** every
+    higher-uniqueness candidate. This is a sort-after, not a filter-out: a
+    redundant reviewer stays in the pool and is still selected when no better
+    candidate is available, so it is never permanently locked out.
+
+    Below the sample floor a reviewer's signal is ``floor="fail"`` (cold start), so
+    it is not deprioritized and ordering falls through unchanged. The sort is
+    stable on the incoming index, so every non-deprioritized reviewer keeps the
+    ordering it arrived with (i.e. the completion/tier/health order).
+    """
+    if not model_profiles or not candidates:
+        return candidates
+    from theforge.reviewer_value import get_reviewer_value_signal  # noqa: PLC0415
+
+    rows: list[tuple[int, int, AgentDef]] = []
+    deprioritized: list[str] = []
+    for idx, agent in enumerate(candidates):
+        signal = get_reviewer_value_signal(
+            model_profiles,
+            agent.name,
+            complexity,
+            min_runs,
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+            recency=recency,
+        )
+        if signals_out is not None:
+            signals_out[agent.name] = signal
+        uniq = signal["uniqueness_rate"]
+        rate = uniq["rate"]
+        is_low = uniq["floor"] == "pass" and rate is not None and rate < uniqueness_threshold
+        if is_low:
+            deprioritized.append(agent.name)
+        rows.append((1 if is_low else 0, idx, agent))
+
+    reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
+    if audit is not None:
+        original_order = [a.name for a in candidates]
+        final_order = [a.name for a in reranked]
+        audit["mechanism"] = "reviewer_value"
+        audit["uniqueness_threshold"] = uniqueness_threshold
+        audit["min_runs"] = min_runs
+        audit["complexity"] = complexity
+        audit["applied"] = original_order != final_order
+        audit["deprioritized"] = deprioritized
+        audit["original_order"] = original_order
+        audit["final_order"] = final_order
+    return reranked
+
+
 def _select_reviewers(
     agents: list[AgentDef],
     tier: str,
@@ -754,6 +923,12 @@ def _select_reviewers(
     recency: object | None = None,
     completion_signals_out: dict[str, dict] | None = None,
     completion_audit: dict[str, object] | None = None,
+    value_enabled: bool = False,
+    value_uniqueness_threshold: float = 0.34,
+    value_min_runs: int = 5,
+    value_complexity: str | None = None,
+    value_signals_out: dict[str, dict] | None = None,
+    value_audit: dict[str, object] | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -840,6 +1015,22 @@ def _select_reviewers(
         audit=completion_audit,
     )
 
+    # Plan-reviewer value rerank (#1443): opt-in, runs on top of the completion
+    # rerank. A reviewer whose admissible P1-uniqueness is below the floor is
+    # sorted after higher-value candidates within the same eligible pool. Only
+    # fires when the operator enabled it; explicit profile pins never reach here.
+    if value_enabled:
+        candidates = _rerank_reviewers_by_value(
+            candidates,
+            model_profiles,
+            uniqueness_threshold=value_uniqueness_threshold,
+            min_runs=value_min_runs,
+            complexity=value_complexity,
+            recency=recency,
+            signals_out=value_signals_out,
+            audit=value_audit,
+        )
+
     if not prefer_cross_provider:
         return candidates[:n]
 
@@ -869,43 +1060,203 @@ def _select_reviewers(
     return selected[:n]
 
 
+# Machine-queryable outcomes for the profile-backed dev pre-promotion check
+# (#158). Kept as a closed set so the routing_decision audit stays queryable.
+PROMOTION_OUTCOME_PROMOTED = "promoted_below_threshold"
+PROMOTION_OUTCOME_RECOVERED = "recovered_at_or_above_threshold"
+PROMOTION_OUTCOME_BELOW_FLOOR = "below_sample_floor"
+PROMOTION_OUTCOME_NO_SIGNAL = "no_profile_signal"
+
+
+@dataclass(frozen=True)
+class DevPromotionSignal:
+    """Outcome of the profile-backed dev pre-promotion check (#158).
+
+    Carries both the decision (``fired``) and the full evidence the router
+    weighed — model, complexity band, raw and recency-weighted success rate,
+    admissible sample size, taint exclusions, and the configured threshold /
+    sample floor — so the routing_decision audit block (clause 7) is built from
+    ONE profile read, never a second re-scan.
+    """
+
+    fired: bool
+    outcome: str
+    model: str
+    complexity: str
+    raw: float | None
+    weighted: float | None
+    runs: int
+    tainted_runs: int
+    threshold: float
+    min_runs: int
+    floor: str
+
+
 def _check_promotion(
     complexity: str,
-    dev_agent_name: str,
-    history: list[EscalationRecord],
-    sprint_promotions: dict[str, str] | None,
+    dev_agent: AgentDef | None,
+    profiles: dict | None,
     *,
-    dev_canonical_id: str | None = None,
-) -> str | None:
-    """Return promoted tier string if promotion is warranted, else None.
+    threshold: float,
+    min_runs: int,
+    recency: object | None = None,
+) -> DevPromotionSignal:
+    """Profile-backed dev pre-promotion signal (#158, ADR-0006 clauses 2.3/2.4/4/5/7).
 
-    Checks sprint_promotions cache first (sticky within sprint).
-    Looks at last 10 records matching complexity and dev model identity.
-    Records are matched against ``dev_canonical_id`` when provided (so
-    canonicalized history records still match the agent), and against the
-    legacy ``dev_agent_name`` as a fallback for unmigrated history.
-    Promotes if 2+ have outcome=ESCALATE.
+    Reads the selected dev model's **recency-weighted** success rate at the
+    story's complexity band from the in-memory capability profiles (the shared
+    #1392 mechanism via :func:`model_profiles.get_dev_signal`, which already
+    excludes tainted runs — clause 4). Fires a one-step tier promotion only when
+    the admissible sample size meets ``min_runs`` (clause 2.3) AND the weighted
+    rate is below ``threshold``. Below the sample floor no promotion fires and
+    routing falls through to the static tier. When admissible samples remain but
+    the weighted rate has recovered to/above ``threshold`` the promotion does not
+    fire — the passive recency-recovery return path (clause 2.4/5); the caller
+    records that non-firing in the dev demotion_check (clause 7).
+
+    The profile signal is the SOLE authoritative driver: a promotion never fires
+    without admissible profile evidence meeting the sample floor, so the audit
+    can never report a fired pre-promotion with a null rate or a zero sample size
+    (the sample-floor contract holds on every path). Determinism (same profile
+    data + same complexity → same decision) makes a same-sprint promotion cache
+    unnecessary — repeated same-band stories re-derive the identical decision,
+    and a genuinely updated profile legitimately re-decides. Pure: no I/O, no LLM
+    call.
     """
-    if sprint_promotions and complexity in sprint_promotions:
-        return sprint_promotions[complexity]
+    model_name = dev_agent.name if dev_agent else ""
 
-    def _matches(r: EscalationRecord) -> bool:
-        if r.complexity != complexity:
-            return False
-        if dev_canonical_id and r.dev_model == dev_canonical_id:
-            return True
-        return r.dev_model == dev_agent_name
+    if dev_agent is None or not profiles:
+        return DevPromotionSignal(
+            fired=False,
+            outcome=PROMOTION_OUTCOME_NO_SIGNAL,
+            model=model_name,
+            complexity=complexity,
+            raw=None,
+            weighted=None,
+            runs=0,
+            tainted_runs=0,
+            threshold=threshold,
+            min_runs=min_runs,
+            floor="fail",
+        )
 
-    # Filter to last 10 matching records
-    matching = [r for r in history if _matches(r)][-10:]
+    from theforge.model_profiles import get_dev_signal  # noqa: PLC0415
 
-    if not matching:
-        return None
+    signal = get_dev_signal(
+        profiles,
+        model_name,
+        complexity,
+        min_runs,
+        actual_model=dev_agent.model,
+        provider=dev_agent.provider,
+        cli=dev_agent.cli,
+        recency=recency,
+    )
+    raw = signal["raw"]
+    weighted = signal["weighted"]
+    runs = int(signal["runs"])
+    tainted = int(signal["tainted_runs"])
+    floor = signal["floor"]
+    rate = signal["rate"]  # weighted, gated by the sample floor; None below it
 
-    escalation_count = sum(1 for r in matching if r.outcome == "ESCALATE")
-    if escalation_count >= 2:
-        return "promoted"  # signal to caller to promote
-    return None
+    def _signal(fired: bool, outcome: str) -> DevPromotionSignal:
+        return DevPromotionSignal(
+            fired=fired,
+            outcome=outcome,
+            model=model_name,
+            complexity=complexity,
+            raw=raw,
+            weighted=weighted,
+            runs=runs,
+            tainted_runs=tainted,
+            threshold=threshold,
+            min_runs=min_runs,
+            floor=floor,
+        )
+
+    # Below the sample floor (clause 2.3): no promotion, fall through to static.
+    if rate is None or floor != "pass":
+        return _signal(False, PROMOTION_OUTCOME_BELOW_FLOOR)
+
+    # Sample floor met — the weighted rate decides.
+    if rate < threshold:
+        return _signal(True, PROMOTION_OUTCOME_PROMOTED)
+    # Admissible samples remain but the weighted rate recovered to/above the
+    # threshold: the passive return path (clause 2.4). Promotion could have fired
+    # but didn't; the caller records this in the dev demotion_check (clause 7).
+    return _signal(False, PROMOTION_OUTCOME_RECOVERED)
+
+
+def _promotion_check_block(signal: DevPromotionSignal, resulting_tier: str) -> dict[str, object]:
+    """Build the ``dev.promotion_check`` audit block from a promotion signal (#158).
+
+    Records the mechanism firing, the evidence (model, complexity band, raw AND
+    recency-weighted success rate, admissible sample size, taint exclusions), the
+    configured threshold / sample floor, and the resulting tier (ADR-0006 clause
+    7 / #1391). Pure assembly from the single :func:`_check_promotion` read.
+    """
+    return {
+        "mechanism": MECHANISM_DEV_PROMOTION,
+        "fired": signal.fired,
+        "outcome": signal.outcome,
+        "model": signal.model,
+        "complexity": signal.complexity,
+        "raw_success_rate": signal.raw,
+        "weighted_success_rate": signal.weighted,
+        "sample_size": signal.runs,
+        "tainted_runs": signal.tainted_runs,
+        "threshold": signal.threshold,
+        "min_runs": signal.min_runs,
+        "floor": signal.floor,
+        "resulting_tier": resulting_tier,
+    }
+
+
+def _dev_recency_demotion_check(promotion_block: dict[str, object]) -> dict[str, object]:
+    """Dev-tier recency-recovery return path audit block (#158, ADR-0006 clause 5/7).
+
+    The paired inverse of the dev pre-promotion is the passive recency recovery
+    (clause 2.4): as old failures age out of the weighted ring the rate climbs
+    back to/above threshold and pre-promotion stops firing. This records that
+    return path per clause 7 — firing when the recovery condition holds
+    (admissible samples remain, weighted rate recovered) and recording the
+    checked-but-didn't-fire outcome otherwise, so the demotion is always
+    reconstructable from the audit (never a silent gap).
+    """
+    outcome = promotion_block.get("outcome")
+    checked = {
+        "weighted_success_rate": promotion_block.get("weighted_success_rate"),
+        "threshold": promotion_block.get("threshold"),
+        "sample_size": promotion_block.get("sample_size"),
+        "min_runs": promotion_block.get("min_runs"),
+    }
+    if outcome == PROMOTION_OUTCOME_RECOVERED:
+        return {
+            "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
+            "applicable": True,
+            "fired": True,
+            "checked": checked,
+            "reason": "weighted_rate_recovered_to_or_above_threshold",
+        }
+    if promotion_block.get("fired"):
+        # Promotion is active this run — the recovery return path has NOT yet
+        # reversed it (weighted rate still below threshold).
+        return {
+            "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
+            "applicable": True,
+            "fired": False,
+            "checked": checked,
+            "reason": "promotion_active_weighted_rate_below_threshold",
+        }
+    # No promotion fired and no recovery to record (below the sample floor, or no
+    # profile signal): the return path is not applicable this run.
+    return {
+        "mechanism": MECHANISM_DEV_RECENCY_RECOVERY,
+        "applicable": False,
+        "fired": False,
+        "checked": checked,
+        "reason": "no_admissible_promotion_signal",
+    }
 
 
 def _enforce_budget(
@@ -1410,6 +1761,132 @@ def _reviewer_completion_check(
     return block
 
 
+def _reviewer_value_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+    selected_names: set[str],
+) -> dict[str, object]:
+    """Build the plan-reviewer value_check block (#1443, ADR-0006 clause 7).
+
+    Records the P1-uniqueness rerank so the routing_decision explains when (and
+    how) mechanical reviewer-value history shaped the plan-reviewer ordering. For
+    every reviewer weighed it surfaces the consulted uniqueness rate and
+    latency-per-P1 (raw + recency-weighted), the sample count, the sample-floor
+    status, and the taint-excluded count — enough for an operator to answer "is
+    this reviewer earning its wall-clock cost?" without grepping logs. Returns an
+    empty dict when the mechanism was not consulted (disabled / no profiles), which
+    the caller omits.
+    """
+    if not signals and not audit:
+        return {}
+    fired = bool(audit and audit.get("applied"))
+    per_candidate: dict[str, object] = {}
+    for name, sig in (signals or {}).items():
+        uniq = sig.get("uniqueness_rate") or {}
+        latency = sig.get("latency_per_p1") or {}
+        per_candidate[name] = {
+            "runs": sig.get("runs"),
+            "tainted_runs": sig.get("tainted_runs"),
+            "uniqueness_rate": {
+                "raw": uniq.get("raw"),
+                "weighted": uniq.get("weighted"),
+                "rate": uniq.get("rate"),
+                "floor": uniq.get("floor"),
+            },
+            "latency_per_p1": {
+                "raw": latency.get("raw"),
+                "weighted": latency.get("weighted"),
+                "rate": latency.get("rate"),
+                "floor": latency.get("floor"),
+            },
+            "selected": name in selected_names,
+        }
+    block: dict[str, object] = {
+        "mechanism": "reviewer_value",
+        "fired": fired,
+        "uniqueness_threshold": audit.get("uniqueness_threshold") if audit else None,
+        "min_runs": audit.get("min_runs") if audit else None,
+        "complexity": audit.get("complexity") if audit else None,
+        "deprioritized": (audit.get("deprioritized") if audit else None) or [],
+        "signals": per_candidate,
+    }
+    if fired and audit:
+        block["original_order"] = audit.get("original_order")
+        block["final_order"] = audit.get("final_order")
+    return block
+
+
+def _role_reliability_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+    selected_name: str,
+) -> dict[str, object]:
+    """Build the preflight/planner reliability_check block (#1489, ADR-0006 c7).
+
+    The single-model analog of :func:`_reviewer_completion_check`. Records the role
+    reliability rerank so the routing_decision explains when (and how) a role's
+    attempt-completion history shaped selection. For every candidate weighed it
+    surfaces the consulted attempt/complete counts, raw + recency-weighted rate, the
+    sample-floor status, schema compatibility, and the taint-excluded count — enough
+    for an operator to see why a model was deprioritized (or why the check did not
+    fire). Returns an empty dict when no profile was consulted (static routing / no
+    profiles), which the caller omits.
+    """
+    if not signals and not audit:
+        return {}
+    fired = bool(audit and audit.get("applied"))
+    per_candidate: dict[str, object] = {}
+    for name, sig in (signals or {}).items():
+        per_candidate[name] = {
+            "attempted": sig.get("attempted"),
+            "completed": sig.get("completed"),
+            "raw": sig.get("raw"),
+            "weighted": sig.get("weighted"),
+            "rate": sig.get("rate"),
+            "floor": sig.get("floor"),
+            "schema_ok": sig.get("schema_ok"),
+            "tainted_runs": sig.get("tainted_runs"),
+            "selected": name == selected_name,
+        }
+    block: dict[str, object] = {
+        "mechanism": "role_reliability",
+        "fired": fired,
+        "threshold": audit.get("threshold") if audit else None,
+        "min_runs": audit.get("min_runs") if audit else None,
+        "deprioritized": (audit.get("deprioritized") if audit else None) or [],
+        "signals": per_candidate,
+    }
+    if fired and audit:
+        block["original_order"] = audit.get("original_order")
+        block["final_order"] = audit.get("final_order")
+    return block
+
+
+def _reviewer_count_policy(
+    score: int | None, min_r: int, max_r: int, seated: int
+) -> dict[str, object]:
+    """Reviewer-count axis decision augmented with the resolved concrete count.
+
+    :func:`theforge.routing.axis_decision` records the policy view (bucket,
+    thresholds, "min"/"mid"/"max" target); this resolves that symbolic target
+    against the configured reviewer bounds and records the number of reviewers
+    actually seated so a shortfall (candidate-pool exhaustion / budget drop) is
+    visible next to the policy target.
+    """
+    block = dict(axis_decision("reviewer_count", score))
+    if block.get("applied"):
+        target = str(block.get("output"))
+        block["resolved_count"] = {"min": min_r, "max": max_r}.get(
+            target, min_r + (max_r - min_r + 1) // 2
+        )
+    else:
+        block["resolved_count"] = None
+    block["min_reviewers"] = min_r
+    block["max_reviewers"] = max_r
+    block["seated_count"] = seated
+    return block
+
+
 def _build_routing_decision(
     decision: AssignmentDecision,
     agents: list[AgentDef],
@@ -1436,6 +1913,14 @@ def _build_routing_decision(
     pr_completion_audit: dict[str, object] | None = None,
     cr_completion_signals: dict[str, dict] | None = None,
     cr_completion_audit: dict[str, object] | None = None,
+    pr_value_signals: dict[str, dict] | None = None,
+    pr_value_audit: dict[str, object] | None = None,
+    preflight_reliability_signals: dict[str, dict] | None = None,
+    preflight_reliability_audit: dict[str, object] | None = None,
+    planner_reliability_signals: dict[str, dict] | None = None,
+    planner_reliability_audit: dict[str, object] | None = None,
+    min_reviewers: int = 1,
+    max_reviewers: int = 1,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
@@ -1514,6 +1999,19 @@ def _build_routing_decision(
     cr_completion_block = _reviewer_completion_check(
         cr_completion_signals, cr_completion_audit, cr_selected
     )
+    # Plan-reviewer value rerank (#1443) explanation. Only the plan-review role has
+    # a value signal (this story is plan-review-specific).
+    pr_value_block = _reviewer_value_check(pr_value_signals, pr_value_audit, pr_selected)
+
+    # Non-dev single-model reliability rerank (#1489) explanation for the preflight
+    # and planner roles. Empty (and omitted) when the mechanism was not consulted
+    # (static routing / cold-start with no profile), keeping the block additive.
+    preflight_reliability_block = _role_reliability_check(
+        preflight_reliability_signals, preflight_reliability_audit, decision.preflight.name
+    )
+    planner_reliability_block = _role_reliability_check(
+        planner_reliability_signals, planner_reliability_audit, decision.planner.name
+    )
 
     return {
         "origin": origin,
@@ -1524,6 +2022,12 @@ def _build_routing_decision(
         # discounted for taint before any per-role explanation. The runs remain in
         # the substrate (ADR-0002 refusal-to-forget); this is a read-time count.
         "excluded_for_taint": int(excluded_for_taint),
+        # Score-to-routing policy axis not tied to a single role: reasoning_effort
+        # is intentionally NOT score-controlled (config/override field only). Recorded
+        # top-level so its exclusion from score routing is explicit, never silent
+        # (#1019). The per-role score_policy blocks below cover the axes the score
+        # DOES control (dev tier, plan tier, reviewer count).
+        "reasoning_effort": axis_decision("reasoning_effort", score),
         "preflight": {
             "candidate_pool": _single_model_pool(
                 agents,
@@ -1533,6 +2037,11 @@ def _build_routing_decision(
                 secrets,
             ),
             "exploration": dict(exploration),
+            **(
+                {"reliability_check": preflight_reliability_block}
+                if preflight_reliability_block
+                else {}
+            ),
             "final": {
                 "model": decision.preflight.model,
                 "tier": _selected_tier(agents, decision.preflight.name, preflight_tier),
@@ -1540,6 +2049,8 @@ def _build_routing_decision(
             },
         },
         "planner": {
+            # Canonical plan-tier score policy (#1019).
+            "score_policy": {"plan_tier": axis_decision("plan_tier", score)},
             "candidate_pool": _single_model_pool(
                 agents,
                 planner_tier,
@@ -1548,6 +2059,11 @@ def _build_routing_decision(
                 secrets,
             ),
             "exploration": dict(exploration),
+            **(
+                {"reliability_check": planner_reliability_block}
+                if planner_reliability_block
+                else {}
+            ),
             "final": {
                 "model": decision.planner.model,
                 "tier": _selected_tier(agents, decision.planner.name, planner_tier),
@@ -1557,6 +2073,9 @@ def _build_routing_decision(
         "dev": {
             "score": score,
             "base_tier_from_score": dev_base_tier,
+            # Canonical dev-tier score policy (#1019): bucket, thresholds, covering
+            # range, selected tier, and rationale, sourced from theforge.routing.
+            "score_policy": {"dev_tier": axis_decision("dev_tier", score)},
             "candidate_pool": dev_pool,
             # Domain preference (#155): the story's tags, the matching profile
             # slice per candidate (on each pool entry's ``signals.domain``), and
@@ -1573,18 +2092,14 @@ def _build_routing_decision(
             "routing_rationale": _dev_routing_rationale(
                 promotion_block, dev_base_tier, dev_effective_tier
             ),
-            # Dev-tier demotion/recovery (ADR-0006 clause 5 tier-demotion) is a
-            # future enforcement (#1389) — no dev-tier demotion runs in v1, so this
-            # records "no such mechanism ran" (a complete explanation, not a gap).
-            # Provider-health demotion is reviewer-only; see each reviewer role's
-            # own demotion_check for that live mechanism's outcome.
-            "demotion_check": {
-                "mechanism": "dev_tier_demotion",
-                "applicable": False,
-                "fired": False,
-                "checked": None,
-                "reason": "no_dev_tier_demotion_mechanism_v1",
-            },
+            # Dev-tier recency-recovery return path (#158, ADR-0006 clause 5/7):
+            # the paired inverse of the profile-backed pre-promotion. Records when
+            # the passive recovery fired (admissible samples remain, weighted rate
+            # recovered to/above threshold so pre-promotion held) or the
+            # checked-but-didn't-fire outcome — so the demotion is always
+            # reconstructable from the audit. Provider-health demotion is
+            # reviewer-only; see each reviewer role's own demotion_check.
+            "demotion_check": _dev_recency_demotion_check(promotion_block),
             # Post-plan dev-tier checkpoint (#1387). Preflight records the
             # not-yet-run sentinel; apply_post_plan_checkpoint() overwrites this
             # block with the real decision after plan-review completes.
@@ -1605,6 +2120,15 @@ def _build_routing_decision(
             },
         },
         "plan_review": {
+            # Two score-derived outputs for a reviewer role (#1019): the reviewer
+            # MODEL tier (plan_tier axis) and the reviewer COUNT (reviewer_count
+            # axis, resolved against min/max_reviewers).
+            "score_policy": {
+                "reviewer_tier": axis_decision("plan_tier", score),
+                "reviewer_count": _reviewer_count_policy(
+                    score, min_reviewers, max_reviewers, len(decision.plan_reviewers)
+                ),
+            },
             "candidate_pool": _reviewer_candidate_pool(
                 agents,
                 pr_selected,
@@ -1617,6 +2141,7 @@ def _build_routing_decision(
                 pr_fired, pr_depri, pr_fellback, unhealthy_models
             ),
             **({"completion_check": pr_completion_block} if pr_completion_block else {}),
+            **({"value_check": pr_value_block} if pr_value_block else {}),
             "exploration": dict(exploration),
             "final": {
                 "models": [p.model for p in decision.plan_reviewers],
@@ -1624,6 +2149,12 @@ def _build_routing_decision(
             },
         },
         "code_review": {
+            "score_policy": {
+                "reviewer_tier": axis_decision("plan_tier", score),
+                "reviewer_count": _reviewer_count_policy(
+                    score, min_reviewers, max_reviewers, len(decision.code_reviewers)
+                ),
+            },
             "candidate_pool": _reviewer_candidate_pool(
                 agents,
                 cr_selected,
@@ -2057,7 +2588,6 @@ def assign_models(
     complexity_score: int | None = None,
     escalation_history: list[EscalationRecord] | None = None,
     explicit_profiles: dict[str, ModelProfile] | None = None,
-    sprint_promotions: dict[str, str] | None = None,
     secrets: dict[str, str] | None = None,
     model_profiles: dict | None = None,
     unhealthy_models: set[str] | None = None,
@@ -2082,7 +2612,12 @@ def assign_models(
         raise ValueError("assign_models requires a non-empty agents pool")
 
     explicit_profiles = explicit_profiles or {}
-    history = escalation_history or []
+    # ``escalation_history`` is retained for call-site compatibility but no longer
+    # drives dev promotion: cross-run escalation/success signal now flows through
+    # the capability profiles (#158), which are seeded/backfilled from that same
+    # history (model_profiles.backfill_from_history) and consulted with recency
+    # weighting + taint exclusion. Kept a no-op read so callers need not change.
+    _ = escalation_history
 
     norm_complexity = _normalize_complexity(complexity)
     rationale: dict[str, str] = {}
@@ -2104,6 +2639,20 @@ def assign_models(
     _pr_completion_audit: dict[str, object] = {}
     _cr_completion_signals: dict[str, dict] = {}
     _cr_completion_audit: dict[str, object] = {}
+    # Plan-reviewer value rerank accumulators (#1443). Populated by
+    # _select_reviewers when reviewer_value_enabled and consumed by
+    # _build_routing_decision so the routing_decision records the consulted
+    # uniqueness / latency-per-P1 signals and the ranking effect.
+    _pr_value_signals: dict[str, dict] = {}
+    _pr_value_audit: dict[str, object] = {}
+    # Non-dev single-model reliability rerank accumulators (#1489), per role.
+    # Populated by _pick_agent when preflight/planner selection consults role
+    # reliability history and consumed by _build_routing_decision so the block
+    # records the consulted signal, sample/floor status, and ranking effect.
+    _preflight_reliability_signals: dict[str, dict] = {}
+    _preflight_reliability_audit: dict[str, object] = {}
+    _planner_reliability_signals: dict[str, dict] = {}
+    _planner_reliability_audit: dict[str, object] = {}
     _preflight_tier: str | None = None
     _dev_effective_tier: str = "cheap"
     # Challenger-sampling exploration block for the dev role (#325). None until
@@ -2113,18 +2662,28 @@ def assign_models(
     # challenger mode so the run spends from the challenger's envelope (clause 8).
     _dev_exploration: dict[str, object] | None = None
     _dev_budget_floor: str | None = None
+    # Default dev promotion_check block: overwritten by _promotion_check_block once
+    # the profile-backed pre-promotion (#158) runs. The "not_checked" outcome
+    # stands for explicit-override / static-mode dev where the check never fires.
     _promotion_block: dict[str, object] = {
+        "mechanism": MECHANISM_DEV_PROMOTION,
         "fired": False,
-        "matching_records": 0,
-        "escalations": 0,
         "outcome": "not_checked",
+        "model": "",
+        "complexity": None,
+        "raw_success_rate": None,
+        "weighted_success_rate": None,
+        "sample_size": 0,
+        "tainted_runs": 0,
+        "threshold": assignment_config.dev_promotion_threshold,
+        "min_runs": assignment_config.dev_promotion_min_runs,
+        "floor": "not_checked",
+        "resulting_tier": None,
     }
     adaptive_enabled = assignment_config.adaptive_enabled
     # In static mode, ignore the numeric score, capability profiles, and
     # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
     score = _normalize_complexity_score(complexity_score) if adaptive_enabled else None
-    effective_history = history if adaptive_enabled else []
-    effective_promotions = sprint_promotions if adaptive_enabled else None
     effective_profiles = model_profiles if adaptive_enabled else None
     # Recency-weighting params (#1392): the dev signal ranks on the decayed view
     # of admissible history. Only consulted under adaptive routing (static mode
@@ -2161,55 +2720,46 @@ def assign_models(
             recency=effective_recency,
         )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
-        dev_canonical = _agent_canonical_id(dev_agent_for_check) if dev_agent_for_check else None
-        promoted = _check_promotion(
+        # Profile-backed dev pre-promotion (#158): the selected dev model's
+        # recency-weighted success rate at this band drives the decision — not an
+        # ESCALATE-outcome count. Tainted runs are already excluded by the profile
+        # reader (clause 4). One read serves both the decision and the audit.
+        promo_signal = _check_promotion(
             norm_complexity,
-            dev_model_name,
-            effective_history,
-            effective_promotions,
-            dev_canonical_id=dev_canonical,
+            dev_agent_for_check,
+            effective_profiles,
+            threshold=assignment_config.dev_promotion_threshold,
+            min_runs=assignment_config.dev_promotion_min_runs,
+            recency=effective_recency,
         )
         effective_dev_tier = dev_base_tier
-        # Capture the promotion-check outcome for the routing_decision block
-        # regardless of whether it fired — a checked-but-didn't-fire path is
-        # part of the explanation. Uses the same matching slice _check_promotion
-        # consulted, so no additional history scan drives selection.
-        _promo_matching = [
-            r
-            for r in effective_history
-            if r.complexity == norm_complexity
-            and (r.dev_model == dev_model_name or (dev_canonical and r.dev_model == dev_canonical))
-        ][-10:]
-        _promo_escalations = sum(1 for r in _promo_matching if r.outcome == "ESCALATE")
-        if promoted is not None:
+        if promo_signal.fired:
+            # A fired promotion always carries admissible evidence: the only firing
+            # outcome is PROMOTION_OUTCOME_PROMOTED, which requires the sample floor
+            # met AND a non-None weighted rate below threshold.
             effective_dev_tier = _promote_tier(dev_base_tier)
-            _promotion_block = {
-                "fired": True,
-                "matching_records": len(_promo_matching),
-                "escalations": _promo_escalations,
-                "outcome": f"promoted_to_{effective_dev_tier}",
-            }
-            # Use filtered matching records (same slice as _check_promotion uses)
-            _matching = _promo_matching
-            escalation_cnt = _promo_escalations
+            _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
             rationale["dev"] = (
-                f"{norm_complexity} dev promoted {dev_model_name} "
+                f"{norm_complexity} dev pre-promoted {dev_model_name} "
                 f"(tier {dev_base_tier} → {effective_dev_tier}) — "
-                f"{escalation_cnt}/10 recent {norm_complexity} stories escalated"
+                f"weighted success_rate {promo_signal.weighted:.2f} < "
+                f"threshold {promo_signal.threshold:.2f} over {promo_signal.runs} "
+                f"admissible {norm_complexity} runs"
             )
         else:
-            _promotion_block = {
-                "fired": False,
-                "matching_records": len(_promo_matching),
-                "escalations": _promo_escalations,
-                "outcome": "no_promotion",
-            }
+            _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
             if score is not None:
                 rationale["dev"] = (
                     f"complexity score {score} ({norm_complexity}) → tier {effective_dev_tier}"
                 )
             else:
                 rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
+            if promo_signal.outcome == PROMOTION_OUTCOME_RECOVERED:
+                rationale["dev"] += (
+                    f" (recency recovery: weighted success_rate "
+                    f"{promo_signal.weighted:.2f} ≥ threshold {promo_signal.threshold:.2f} "
+                    f"over {promo_signal.runs} admissible runs — pre-promotion held)"
+                )
 
         _dev_effective_tier = effective_dev_tier
         dev_agent = _pick_agent(
@@ -2345,7 +2895,18 @@ def assign_models(
     else:
         tier = PHASE_TIER["preflight"][norm_complexity]
         _preflight_tier = tier
-        agent = _pick_agent(agents, tier, secrets)
+        agent = _pick_agent(
+            agents,
+            tier,
+            secrets,
+            model_profiles=effective_profiles,
+            recency=effective_recency,
+            reliability_role="preflight",
+            reliability_threshold=assignment_config.reviewer_completion_threshold,
+            reliability_min_runs=assignment_config.reviewer_completion_min_runs,
+            reliability_signals_out=_preflight_reliability_signals,
+            reliability_audit=_preflight_reliability_audit,
+        )
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: a.budget_usd)[0]
@@ -2368,7 +2929,18 @@ def assign_models(
             else PHASE_TIER["plan"][norm_complexity]
         )
         planner_target_tier = tier
-        agent = _pick_agent(agents, tier, secrets)
+        agent = _pick_agent(
+            agents,
+            tier,
+            secrets,
+            model_profiles=effective_profiles,
+            recency=effective_recency,
+            reliability_role="planner",
+            reliability_threshold=assignment_config.reviewer_completion_threshold,
+            reliability_min_runs=assignment_config.reviewer_completion_min_runs,
+            reliability_signals_out=_planner_reliability_signals,
+            reliability_audit=_planner_reliability_audit,
+        )
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
@@ -2419,6 +2991,12 @@ def assign_models(
             recency=effective_recency,
             completion_signals_out=_pr_completion_signals,
             completion_audit=_pr_completion_audit,
+            value_enabled=assignment_config.reviewer_value_enabled,
+            value_uniqueness_threshold=assignment_config.reviewer_value_uniqueness_threshold,
+            value_min_runs=assignment_config.reviewer_value_min_runs,
+            value_complexity=norm_complexity,
+            value_signals_out=_pr_value_signals,
+            value_audit=_pr_value_audit,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -2520,6 +3098,8 @@ def assign_models(
             dev_effective_tier=_dev_effective_tier,
             preflight_tier=_preflight_tier,
             planner_tier=planner_target_tier,
+            min_reviewers=assignment_config.min_reviewers,
+            max_reviewers=assignment_config.max_reviewers,
             dev_signals=_dev_signals,
             promotion_block=_promotion_block,
             planner_model=dec.planner.model,
@@ -2536,6 +3116,12 @@ def assign_models(
             pr_completion_audit=_pr_completion_audit,
             cr_completion_signals=_cr_completion_signals,
             cr_completion_audit=_cr_completion_audit,
+            pr_value_signals=_pr_value_signals,
+            pr_value_audit=_pr_value_audit,
+            preflight_reliability_signals=_preflight_reliability_signals,
+            preflight_reliability_audit=_preflight_reliability_audit,
+            planner_reliability_signals=_planner_reliability_signals,
+            planner_reliability_audit=_planner_reliability_audit,
         )
         return _dc_replace(dec, routing_decision=block)
 

@@ -49,7 +49,7 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-ROLES = ("dev", "review", "preflight")
+ROLES = ("dev", "review", "preflight", "planner")
 COMPLEXITY_BANDS = ("small", "medium", "large")
 
 # Per-domain recency window (issue #155 / ADR-0006 clause 2.4). Per-domain dev
@@ -119,6 +119,31 @@ class ReviewerAttempt:
 
 
 @dataclass
+class RoleAttempt:
+    """One non-dev single-model invocation outcome, recorded per attempt (#1489).
+
+    The preflight/planner analog of :class:`ReviewerAttempt`. A role that retries
+    (preflight parse-retry) or falls back to a different model (preflight fallback)
+    or is retried at transport (planner) produces *several* native invocations in a
+    single run; each is one ``RoleAttempt`` so the derived reliability rate is
+    complete over attempts (ADR-0006 clause 2) and each attempt is attributed to the
+    model that actually ran it — a failed primary followed by a healthy fallback
+    must not improve the primary's completion history.
+
+    ``completed`` is the single load-bearing boolean: did this invocation return a
+    usable, parseable result? Identity fields key the fold under the same canonical
+    model ID the router looks the role up by.
+    """
+
+    name: str
+    completed: bool
+    actual_model: str | None = None
+    provider: str | None = None
+    cli: str | None = None
+    cost_usd: float | None = None
+
+
+@dataclass
 class RunOutcome:
     """Everything ``update_from_run`` needs about one coordinator run.
 
@@ -160,6 +185,28 @@ class RunOutcome:
     preflight_provider: str | None = None
     preflight_cli: str | None = None
     preflight_cost_usd: float | None = None  # None = cost unmeasured
+    # Preflight reliability, one entry per native preflight invocation (#1489).
+    # Unlike a single collapsed boolean, this carries a ``RoleAttempt`` for every
+    # attempt the phase ran — the primary, any same-profile parse-retry, and a
+    # fallback model — each attributed to the model that actually ran it, so a
+    # failed primary followed by a healthy fallback records a failure for the
+    # primary and a success for the fallback (never a spurious primary success).
+    # Empty ⇒ no admissible preflight attempt to record (cached / preflight
+    # skipped), so the completion counters are left untouched. Mirrors the reviewer
+    # attempt-completion signal (#1388).
+    preflight_attempts: list[RoleAttempt] = field(default_factory=list)
+    # Planner role identity + reliability (#1489). ``planner_model``/cost feed the
+    # per-phase cost aggregate; ``planner_attempts`` carries one ``RoleAttempt`` per
+    # native plan-generation invocation — including transport-retry failures that a
+    # later successful plan output would otherwise hide — so the completion signal
+    # is complete over attempts. Empty ⇒ planning did not run (or produced no
+    # attempt) this run, so nothing is folded.
+    planner_model: str | None = None
+    planner_actual_model: str | None = None
+    planner_provider: str | None = None
+    planner_cli: str | None = None
+    planner_cost_usd: float | None = None  # None = cost unmeasured
+    planner_attempts: list[RoleAttempt] = field(default_factory=list)
     reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
     # Every reviewer invocation this run, including failures (#1388). Unlike
     # ``reviewers`` (which is survivorship-biased — only reviewers that returned a
@@ -167,6 +214,13 @@ class RunOutcome:
     # derived completion rate is complete over attempts. Folded into the review
     # section's ``_attempted_count`` / ``_completed_count`` / ``completion_rate``.
     reviewer_attempts: list[ReviewerAttempt] = field(default_factory=list)
+    # Per-plan-reviewer mechanical value samples for this run (#1443): one
+    # :class:`theforge.reviewer_value.PlanReviewerValueSample` per (reviewer, plan-
+    # review pool attempt) that raised ≥1 P1. Folded into the ``plan_review_value``
+    # profile section (uniqueness rate + latency-per-P1 rings) under the same taint
+    # gate as every other capability aggregate. Typed as ``list`` to avoid an
+    # import cycle; :func:`apply_run` reads each sample's attributes.
+    plan_reviewer_values: list = field(default_factory=list)
     # Domain tags for this run (issue #155), from the fixed taxonomy recorded by
     # preflight. The dev outcome is folded into a per-domain slice for each tag so
     # per-domain success rate can be aggregated deterministically. Empty = the run
@@ -677,17 +731,41 @@ def _update_review(
     _fold_cost(rev, cost_usd, unknown_count=cycles)
 
 
+def _fold_completion_counters(section: dict, completed: bool) -> None:
+    """Fold one attempt-completion outcome into ``section``'s completion counters.
+
+    The shared body of every role's attempt-completion signal (reviewer #1388,
+    preflight/planner #1489). Records ``_attempted_count`` (every invocation) and
+    ``_completed_count`` (invocations that returned a usable, parseable result) as
+    running totals so ``completion_rate`` is always recomputable from the two
+    authoritative counters. A bounded ``_completion_recent`` ring of ``0/1``
+    outcomes feeds the shared recency-weighting mechanism (#1392) at read time,
+    mirroring the dev bucket's ``_recent`` ring.
+
+    Callers own the taint gate: a tainted run is tallied under ``tainted_runs`` and
+    never reaches this helper (ADR-0006 clause 4), so this only ever folds an
+    admissible outcome.
+    """
+    attempted = int(section.get("_attempted_count", 0)) + 1
+    completed_count = int(section.get("_completed_count", 0)) + (1 if completed else 0)
+    section["_attempted_count"] = attempted
+    section["_completed_count"] = completed_count
+    section["completion_rate"] = round(completed_count / attempted, 4) if attempted > 0 else 0.0
+    ring = section.setdefault("_completion_recent", [])
+    if not isinstance(ring, list):
+        ring = []
+        section["_completion_recent"] = ring
+    ring.append(1 if completed else 0)
+    if len(ring) > CAPABILITY_RECENCY_WINDOW:
+        del ring[:-CAPABILITY_RECENCY_WINDOW]
+
+
 def _update_review_completion(entry: dict, completed: bool, tainted: bool = False) -> None:
     """Fold one reviewer attempt-completion outcome into the review section (#1388).
 
-    Records ``_attempted_count`` (every invocation) and ``_completed_count``
-    (invocations that returned a parseable verdict) as running totals so
-    ``completion_rate`` is always recomputable from the two authoritative
-    counters. A bounded ``_completion_recent`` ring of ``0/1`` outcomes feeds the
-    shared recency-weighting mechanism (#1392) at read time, mirroring the dev
-    bucket's ``_recent`` ring. This is a separate fold from :func:`_update_review`
-    (findings/cost) because it must record *failed* attempts too — a reviewer that
-    timed out or emitted unparseable output never reaches the findings/cost path.
+    This is a separate fold from :func:`_update_review` (findings/cost) because it
+    must record *failed* attempts too — a reviewer that timed out or emitted
+    unparseable output never reaches the findings/cost path.
 
     Taint gate (ADR-0006 clause 4): a tainted run "doesn't teach", so its reviewer
     attempts are kept out of the completion aggregate and tallied under
@@ -697,24 +775,37 @@ def _update_review_completion(entry: dict, completed: bool, tainted: bool = Fals
     if tainted:
         rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + 1
         return
-    attempted = int(rev.get("_attempted_count", 0)) + 1
-    completed_count = int(rev.get("_completed_count", 0)) + (1 if completed else 0)
-    rev["_attempted_count"] = attempted
-    rev["_completed_count"] = completed_count
-    rev["completion_rate"] = round(completed_count / attempted, 4) if attempted > 0 else 0.0
-    ring = rev.setdefault("_completion_recent", [])
-    if not isinstance(ring, list):
-        ring = []
-        rev["_completion_recent"] = ring
-    ring.append(1 if completed else 0)
-    if len(ring) > CAPABILITY_RECENCY_WINDOW:
-        del ring[:-CAPABILITY_RECENCY_WINDOW]
+    _fold_completion_counters(rev, completed)
+
+
+def _update_role_completion(
+    entry: dict, role: str, completed: bool, tainted: bool = False
+) -> None:
+    """Fold one non-dev single-model invocation's completion into ``entry[role]``.
+
+    The per-attempt reliability fold for preflight/planner (#1489), invoked once per
+    :class:`RoleAttempt` so retries and fallbacks each land under the model that ran
+    them. Decoupled from the phase-level runs/cost fold (:func:`_update_preflight` /
+    :func:`_update_planner`): the completion signal is complete over *attempts*
+    while cost is aggregated per *phase*, so the two counters are independent.
+
+    Taint gate (ADR-0006 clause 4): a tainted run "doesn't teach", so its attempt is
+    kept out of the completion aggregate. The ``tainted_runs`` tally is owned by the
+    per-phase fold (:func:`_update_preflight` / :func:`_update_planner`) so a single
+    tainted run is counted once, not once per attempt — this fold only skips.
+    """
+    if tainted:
+        return
+    section = entry.setdefault(role, {})
+    _fold_completion_counters(section, completed)
 
 
 def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
     pf = entry.setdefault("preflight", {})
-    # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the
-    # preflight capability aggregate and tallied under ``tainted_runs`` instead.
+    # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the preflight
+    # capability aggregate and tallied under ``tainted_runs`` instead. This
+    # per-phase fold owns the single tainted-run tally (the per-attempt completion
+    # fold only skips) so one tainted run is counted once.
     if tainted:
         pf["tainted_runs"] = int(pf.get("tainted_runs", 0)) + 1
         return
@@ -727,6 +818,29 @@ def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False
     runs = int(pf.get("runs", 0)) + 1
     pf["runs"] = runs
     _fold_cost(pf, cost_usd)
+
+
+def _update_planner(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
+    """Fold one planner phase's runs + cost into the ``planner`` section (#1489).
+
+    Parallel to :func:`_update_preflight`. Per-attempt reliability is folded
+    separately by :func:`_update_role_completion`. Same taint gate as every other
+    capability aggregate (ADR-0006 clause 4).
+    """
+    pl = entry.setdefault("planner", {})
+    # Per-phase taint tally (owns the single count; the per-attempt fold only skips).
+    if tainted:
+        pl["tainted_runs"] = int(pl.get("tainted_runs", 0)) + 1
+        return
+    if cost_usd is None:
+        log.warning(
+            "[model_profiles] Planner run recorded cost-unmeasured (NOT $0.00): "
+            "model=%s — transport reported no cost.",
+            _entry_model_label(entry),
+        )
+    runs = int(pl.get("runs", 0)) + 1
+    pl["runs"] = runs
+    _fold_cost(pl, cost_usd)
 
 
 def _zero_dev_bucket(bucket: dict) -> None:
@@ -772,6 +886,22 @@ def _zero_preflight_section(section: dict) -> None:
     section["_cost_sum"] = 0.0
     section["_cost_unknown_runs"] = 0
     section["avg_cost_usd"] = 0.0
+    # Reliability completion counters (#1489), mirroring the review section.
+    section["_attempted_count"] = 0
+    section["_completed_count"] = 0
+    section["completion_rate"] = 0.0
+    section["_completion_recent"] = []
+
+
+def _zero_planner_section(section: dict) -> None:
+    section["runs"] = 0
+    section["_cost_sum"] = 0.0
+    section["_cost_unknown_runs"] = 0
+    section["avg_cost_usd"] = 0.0
+    section["_attempted_count"] = 0
+    section["_completed_count"] = 0
+    section["completion_rate"] = 0.0
+    section["_completion_recent"] = []
 
 
 def _recompute_dev_section(section: dict) -> None:
@@ -881,6 +1011,34 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             cli=outcome.preflight_cli,
         )
         _update_preflight(pf_entry, outcome.preflight_cost_usd, tainted=outcome.dev_tainted)
+    # Preflight reliability telemetry (#1489): fold one completion outcome per
+    # native preflight invocation under the model that actually ran it, so a
+    # parse-retry or fallback is attributed correctly (never collapsed onto the
+    # configured primary). Decoupled from the per-phase cost fold above.
+    for att in outcome.preflight_attempts:
+        att_entry = _ensure_model(
+            data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
+        )
+        _update_role_completion(att_entry, "preflight", att.completed, tainted=outcome.dev_tainted)
+    # Planner cost telemetry (#1489): fold the planner phase's runs + cost under its
+    # canonical model ID. Per-attempt reliability is folded separately below.
+    if outcome.planner_model:
+        pl_entry = _ensure_model(
+            data,
+            outcome.planner_model,
+            actual_model=outcome.planner_actual_model,
+            provider=outcome.planner_provider,
+            cli=outcome.planner_cli,
+        )
+        _update_planner(pl_entry, outcome.planner_cost_usd, tainted=outcome.dev_tainted)
+    # Planner reliability telemetry (#1489): one completion outcome per native
+    # plan-generation invocation, so transport-retry failures contribute failed
+    # attempts rather than being hidden by a later successful plan output.
+    for att in outcome.planner_attempts:
+        att_entry = _ensure_model(
+            data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
+        )
+        _update_role_completion(att_entry, "planner", att.completed, tainted=outcome.dev_tainted)
     # Reviewer identity from the attempt records (#1388) lets findings/cost and
     # completion telemetry fold under the SAME canonical model ID the router looks
     # a reviewer up by — otherwise findings would key by bare profile name while
@@ -901,6 +1059,21 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         _update_review_completion(
             rev_entry, att.completed_parseable_verdict, tainted=outcome.dev_tainted
         )
+    # Plan-reviewer mechanical value telemetry (#1443): fold each per-attempt
+    # uniqueness / latency-per-P1 sample under the reviewer's canonical model ID,
+    # gated by the same run-level taint marker.
+    if outcome.plan_reviewer_values:
+        from theforge.reviewer_value import fold_plan_reviewer_value  # noqa: PLC0415
+
+        for sample in outcome.plan_reviewer_values:
+            rev_entry = _ensure_model(
+                data,
+                sample.name,
+                actual_model=sample.actual_model,
+                provider=sample.provider,
+                cli=sample.cli,
+            )
+            fold_plan_reviewer_value(rev_entry, sample, tainted=outcome.dev_tainted)
     return data
 
 
@@ -986,7 +1159,7 @@ def _recency_params(recency: Any | None) -> tuple[str, float, int]:
 
 
 def _weighted_rate(
-    recent: list[int],
+    recent: list[float],
     *,
     fallback: float | None,
     mode: str = DEFAULT_RECENCY_MODE,
@@ -994,13 +1167,17 @@ def _weighted_rate(
     window: int = DEFAULT_RECENCY_WINDOW,
     min_samples: int = 0,
 ) -> float | None:
-    """Recency-weight a bounded ring of ``0/1`` dev outcomes (ADR-0006 clause 2.4).
+    """Recency-weight a bounded ring of numeric outcomes (ADR-0006 clause 2.4).
 
     This is the single weighting path every profile-derived rate flows through
     (#1392): the per-complexity dev signal, the per-domain dev signal (via
-    :func:`_windowed_rate`), and any future reviewer completion-rate signal.
-    ``recent`` is an ordered outcome ring (oldest first, newest last), already
-    bounded per bucket. Modes:
+    :func:`_windowed_rate`), the reviewer completion-rate signal, and the
+    plan-reviewer value signals (:mod:`theforge.reviewer_value`). ``recent`` is an
+    ordered outcome ring (oldest first, newest last), already bounded per bucket.
+    Entries are ``0/1`` for the boolean signals (success / completion) and
+    arbitrary floats for continuous ones (uniqueness rate, latency-per-P1); the
+    weighted mean below is identical for the ``0/1`` case, so this generalization
+    is behavior-preserving for every existing caller. Modes:
 
     - ``"exponential"`` (default): weight run at age ``a`` (0 = newest) by
       ``0.5 ** (a / half_life_runs)``, so a run decays to half its weight every
@@ -1037,7 +1214,7 @@ def _weighted_rate(
     den = 0.0
     for i, outcome in enumerate(capped):
         weight = decay ** (n - 1 - i)  # newest outcome → age 0 → weight 1.0
-        num += weight * int(outcome)
+        num += weight * float(outcome)
         den += weight
     return round(num / den, 4) if den > 0 else fallback
 
@@ -1247,6 +1424,99 @@ def get_review_signal(
         "attempted": attempted,
         "completed": completed,
         "tainted_runs": tainted,
+        "floor": "pass" if floor_ok else "fail",
+        "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
+        "rate": weighted if floor_ok else None,
+    }
+
+
+def get_role_reliability_signal(
+    profiles: dict,
+    model: str,
+    role: str,
+    min_runs: int = 5,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+    recency: Any | None = None,
+) -> dict:
+    """Return a structured role reliability signal for a non-dev role (#1489).
+
+    Generalizes the reviewer *completion* signal (:func:`get_review_signal`, #1388)
+    to any role whose section carries the shared attempt-completion counters —
+    today ``preflight`` and ``planner``. Reads only the in-memory ``profiles`` dict
+    (no disk, no LLM); the authoritative evidence is the native per-phase telemetry
+    the counters are deterministically folded from (ADR-0002 / ADR-0006 clause 2).
+
+    ``role`` is the profile section key (``"preflight"`` / ``"planner"``) so the
+    signal is strictly per-role-scoped: a planner's history never leaks into a
+    preflight decision. The returned shape matches :func:`get_review_signal` with an
+    added ``role`` field so an audit can name the consulted signal:
+
+    - ``rate``: the ``min_runs``-gated **recency-weighted** completion rate;
+      ``None`` below the sample floor (cold start), so a role with too little
+      admissible history falls through to the existing tier/budget ordering rather
+      than being penalized (AC: cold-start ⇒ static policy).
+    - ``raw``: the ungated lifetime ``_completed_count / _attempted_count`` ratio.
+    - ``weighted``: the recency-weighted value over the ``_completion_recent`` ring.
+    - ``attempted`` / ``completed``: running totals consulted (tainted runs already
+      excluded upstream and surfaced under ``tainted_runs``).
+    - ``floor``: ``"pass"`` when ``attempted >= min_runs`` (and ``> 0``), else
+      ``"fail"``.
+    - ``schema_ok``: whether the section carried recognizable completion counters —
+      ``False`` for a legacy/foreign section shape, which forces a cold-start
+      result (schema stability, ADR-0006 clause 2).
+    """
+    mode, half_life, window = _recency_params(recency)
+    matching = _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    )
+    attempted = 0
+    completed = 0
+    tainted = 0
+    schema_ok = True
+    recent: list[int] = []
+    for _, entry in matching:
+        section = entry.get(role)
+        if not isinstance(section, dict):
+            continue
+        tainted += int(section.get("tainted_runs", 0))
+        # A section that carries runs/cost but no completion counters is an older
+        # schema that predates #1489: it cannot answer the reliability question, so
+        # it must not silently read as 0% completion. Mark it schema-incompatible
+        # and let the floor force a cold-start result.
+        if "_attempted_count" not in section and "completion_rate" not in section:
+            if int(section.get("runs", 0)) > 0:
+                schema_ok = False
+            continue
+        attempted += int(section.get("_attempted_count", 0))
+        completed += int(section.get("_completed_count", 0))
+        ring = section.get("_completion_recent")
+        if isinstance(ring, list):
+            recent.extend(int(v) for v in ring)
+    raw = round(completed / attempted, 4) if attempted > 0 else None
+    weighted = _weighted_rate(
+        recent,
+        fallback=raw,
+        mode=mode,
+        half_life_runs=half_life,
+        window=window,
+        min_samples=min_runs,
+    )
+    floor_ok = schema_ok and attempted >= min_runs and attempted > 0
+    return {
+        "role": role,
+        "raw": raw,
+        "weighted": weighted,
+        "attempted": attempted,
+        "completed": completed,
+        "tainted_runs": tainted,
+        "schema_ok": schema_ok,
         "floor": "pass" if floor_ok else "fail",
         "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
@@ -1737,6 +2007,8 @@ def reset_profile_data(
             _zero_review_section(entry.setdefault("review", {}))
         elif current_role == "preflight":
             _zero_preflight_section(entry.setdefault("preflight", {}))
+        elif current_role == "planner":
+            _zero_planner_section(entry.setdefault("planner", {}))
 
     return updated, pre_reset
 
@@ -2269,6 +2541,17 @@ def _merge_review(target: dict, src: dict) -> None:
     # Attempt-completion counters (#1388): sum the two running totals, recompute
     # the rate, and concatenate the recency rings (oldest first is preserved
     # across both sources; the tail cap keeps the ring bounded).
+    _merge_completion(target, src)
+    _merge_tainted_runs(target, src)
+
+
+def _merge_completion(target: dict, src: dict) -> None:
+    """Merge the shared attempt-completion counters of two sections (#1388/#1489).
+
+    Sums the running totals, recomputes the rate, and concatenates the bounded
+    recency rings. Shared by the review, preflight, and planner mergers so every
+    role's reliability signal survives a cross-shard profile merge identically.
+    """
     attempted = int(target.get("_attempted_count", 0)) + int(src.get("_attempted_count", 0))
     completed = int(target.get("_completed_count", 0)) + int(src.get("_completed_count", 0))
     if attempted > 0:
@@ -2283,10 +2566,10 @@ def _merge_review(target: dict, src: dict) -> None:
         if len(merged_ring) > CAPABILITY_RECENCY_WINDOW:
             merged_ring = merged_ring[-CAPABILITY_RECENCY_WINDOW:]
         target["_completion_recent"] = merged_ring
-    _merge_tainted_runs(target, src)
 
 
-def _merge_preflight(target: dict, src: dict) -> None:
+def _merge_cost_section(target: dict, src: dict) -> None:
+    """Merge the runs + cost accumulators shared by preflight and planner."""
     runs = int(target.get("runs", 0)) + int(src.get("runs", 0))
     cost_sum = float(target.get("_cost_sum", 0.0)) + float(
         src.get("_cost_sum", float(src.get("avg_cost_usd", 0.0)) * int(src.get("runs", 0)))
@@ -2298,6 +2581,17 @@ def _merge_preflight(target: dict, src: dict) -> None:
     if runs > 0:
         measured = runs - cost_unknown
         target["avg_cost_usd"] = round(cost_sum / measured, 6) if measured > 0 else 0.0
+
+
+def _merge_preflight(target: dict, src: dict) -> None:
+    _merge_cost_section(target, src)
+    _merge_completion(target, src)
+    _merge_tainted_runs(target, src)
+
+
+def _merge_planner(target: dict, src: dict) -> None:
+    _merge_cost_section(target, src)
+    _merge_completion(target, src)
     _merge_tainted_runs(target, src)
 
 
@@ -2308,6 +2602,7 @@ def _merge_entry(target: dict, src: dict) -> None:
         ("dev", _merge_dev),
         ("review", _merge_review),
         ("preflight", _merge_preflight),
+        ("planner", _merge_planner),
     ):
         sec = src.get(role)
         if not isinstance(sec, dict):

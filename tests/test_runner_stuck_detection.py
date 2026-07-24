@@ -803,6 +803,9 @@ class TestClaudeCliStuckDetection:
             allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
             phase="dev",
             stuck_detection=cfg,
+            # These real-subprocess tests exec the fake CLI directly; host
+            # sandbox wrapping is covered in test_runner_claude.py.
+            sandbox_mode="none",
         )
 
     def _build_stream(self, n_iterations: int) -> list[str]:
