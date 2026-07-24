@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import yaml
 from pathlib import Path
 
+import yaml
+
 from theforge.sprint.state_writer import write_bootstrap_state
-from theforge.sprint.story_state import SprintStoryState
 
 
 def test_write_bootstrap_state_does_not_overwrite_existing_sprint_id(tmp_path: Path) -> None:
@@ -37,8 +37,8 @@ def test_write_bootstrap_state_does_not_overwrite_existing_sprint_id(tmp_path: P
         run_id="test-run",
         project_root=tmp_path,
         sprint_name="different-sprint",  # Different name
-        sprint_phase="shape-gate",       # Different phase
-        issues=[{"number": 2}],          # Different issue
+        sprint_phase="shape-gate",  # Different phase
+        issues=[{"number": 2}],  # Different issue
     )
 
     # Should return the same path without overwriting
@@ -135,8 +135,10 @@ def test_write_bootstrap_state_allows_initial_write_when_no_state_file(tmp_path:
     assert current_data["stories"][0]["status"] == "waiting"
 
 
-def test_write_bootstrap_state_allows_overwrite_when_all_waiting_and_no_sprint_id(tmp_path: Path) -> None:
-    """Bootstrap write should proceed when state file exists but has no sprint_id and all stories waiting."""
+def test_write_bootstrap_state_allows_overwrite_when_all_waiting_and_no_sprint_id(
+    tmp_path: Path,
+) -> None:
+    """Bootstrap write proceeds when state exists with no sprint_id and all stories waiting."""
     # Create a state file that looks like a bootstrap state (no sprint_id, all waiting)
     state_dir = tmp_path / ".forge" / "runs"
     state_dir.mkdir(parents=True)
