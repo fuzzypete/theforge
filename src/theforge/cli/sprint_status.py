@@ -433,24 +433,7 @@ def _detail_column_width(indent: int) -> int:
     terminal_width = shutil.get_terminal_size((140, 20)).columns
     stage_width = 20
     fixed_width = (
-        indent
-        + 2
-        + 28
-        + 2
-        + 8
-        + 2
-        + 12
-        + 2
-        + 24
-        + 2
-        + stage_width
-        + 2
-        + 10
-        + 2
-        + 7
-        + 2
-        + 7
-        + 2
+        indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 24 + 2 + stage_width + 2 + 10 + 2 + 7 + 2 + 7 + 2
     )
     return max(20, terminal_width - fixed_width)
 
