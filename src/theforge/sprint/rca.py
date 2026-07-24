@@ -41,7 +41,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 1
+RULESET_VERSION = 2
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -304,6 +304,7 @@ class _TextSource:
 
     source: str
     text: str
+    kind: str
 
 
 # ── Public engine surface ─────────────────────────────────────────────────────
@@ -489,8 +490,9 @@ def _classify_story(
         story, slug, audit, summary_path, sprint_log_dir, logs_root, run_id
     )
 
-    # (rule_id, source, excerpt, matched_pattern) tuples in deterministic order.
-    hits: list[tuple[str, str, str, str | None]] = []
+    # (rule_id, source, excerpt, matched_pattern, source_kind) tuples in
+    # deterministic order.
+    hits: list[tuple[str, str, str, str | None, str]] = []
     hits.extend(_text_rule_hits(text_sources))
     hits.extend(_signal_rule_hits(story, audit, summary_path, sprint_log_dir, logs_root))
 
@@ -499,6 +501,7 @@ def _classify_story(
     # "429"): the incidental match is still recorded as evidence but must not drive
     # primary classification or operator remediation when it is uncorroborated.
     captured_error_text = _captured_error_text(story, audit)
+    structured_run_text = _structured_run_text(story, audit)
 
     # Baseline evidence so an entry is never evidence-empty (AC: unknown stories
     # surface at least the captured outcome). Cite the *resolved* summary file
@@ -512,9 +515,10 @@ def _classify_story(
     # Deduplicate by rule_id, keeping first (most authoritative) evidence.
     seen_rules: set[str] = set()
     evidence: list[dict] = []
-    primary_classes: list[str] = []
+    structured_primary_classes: list[str] = []
+    text_primary_classes: list[str] = []
     contributing_classes: list[str] = []
-    for rule_id, source, excerpt, matched_pattern in hits:
+    for rule_id, source, excerpt, matched_pattern, source_kind in hits:
         if rule_id in seen_rules:
             continue
         rule = RULES_BY_ID.get(rule_id)
@@ -523,11 +527,20 @@ def _classify_story(
         seen_rules.add(rule_id)
         evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
         if rule.role == "primary":
-            if _is_ambiguous_primary(rule, matched_pattern, captured_error_text):
+            if _is_ambiguous_primary(
+                rule,
+                matched_pattern,
+                captured_error_text,
+                structured_run_text,
+                source_kind,
+            ):
                 # Uncorroborated ambiguous hit: keep the evidence for the trace but
                 # do not let it classify — the captured non-provider outcome wins.
                 continue
-            primary_classes.append(rule.failure_class)
+            if source_kind == "structured":
+                structured_primary_classes.append(rule.failure_class)
+            else:
+                text_primary_classes.append(rule.failure_class)
         elif rule.role == "contributing":
             contributing_classes.append(rule.failure_class)
 
@@ -540,7 +553,7 @@ def _classify_story(
         }
     )
 
-    primary = _select_primary(primary_classes)
+    primary = _select_primary(structured_primary_classes, text_primary_classes)
     if primary is None:
         primary = UNKNOWN_CLASS
 
@@ -591,7 +604,7 @@ def _collect_text_sources(
         ]
         audit_text = "\n".join(p for p in audit_text_parts if p)
         if audit_text.strip():
-            sources.append(_TextSource(audit_rel, audit_text))
+            sources.append(_TextSource(audit_rel, audit_text, "structured"))
 
     summary_text_parts = [
         str(story.get("error") or ""),
@@ -603,7 +616,7 @@ def _collect_text_sources(
     ]
     summary_text = "\n".join(p for p in summary_text_parts if p)
     if summary_text.strip():
-        sources.append(_TextSource(summary_rel, summary_text))
+        sources.append(_TextSource(summary_rel, summary_text, "structured"))
 
     # Per-story log directory: scan every readable text file (dev/review
     # iteration logs, captured agent output yaml, etc.).
@@ -614,13 +627,17 @@ def _collect_text_sources(
                 continue
             if path.suffix.lower() not in {".log", ".txt", ".yaml", ".yml", ".md", ".json"}:
                 continue
+            if path.name == "audit.yaml":
+                continue
             # Strip numeric telemetry lines (cost/duration/token values) so a
             # coincidental digit run inside a float cannot feed context-free
             # pattern matching — e.g. `cost_usd: 0.6659942999999999` containing
             # the substring `429`. Error/message prose is untouched.
             text = _strip_telemetry(_read_text(path))
             if text:
-                sources.append(_TextSource(_rel(path, logs_root), text))
+                sources.append(
+                    _TextSource(_rel(path, logs_root), text, _text_source_kind_for_path(path))
+                )
 
     # Sprint run log: attribute only lines that reference this story so we never
     # fabricate cross-story attribution from a shared log.
@@ -633,7 +650,7 @@ def _collect_text_sources(
             if any(ref in line for ref in refs)
         ]
         if matched_lines:
-            sources.append(_TextSource(_rel(run_log, logs_root), "\n".join(matched_lines)))
+            sources.append(_TextSource(_rel(run_log, logs_root), "\n".join(matched_lines), "log"))
 
     return sources
 
@@ -651,14 +668,14 @@ def _pattern_matches(pattern: str, lowered: str) -> bool:
     return pattern in lowered
 
 
-def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str | None]]:
+def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str | None, str]]:
     """Fire every text rule whose pattern appears in any source.
 
     Each hit carries the concrete pattern that matched so classification can tell
     an unambiguous provider phrase (``usage limit``) apart from an ambiguous bare
     status code (``429``) when deciding precedence.
     """
-    hits: list[tuple[str, str, str, str | None]] = []
+    hits: list[tuple[str, str, str, str | None, str]] = []
     for rule in RULES:
         if not rule.patterns:
             continue
@@ -673,7 +690,7 @@ def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str
             # would wrongly demote a genuinely-corroborated provider-limit hit.
             matched_pattern = next((p for p in matched if not p.isdigit()), matched[0])
             excerpt = _first_matching_line(src.text, rule.patterns)
-            hits.append((rule.rule_id, src.source, excerpt, matched_pattern))
+            hits.append((rule.rule_id, src.source, excerpt, matched_pattern, src.kind))
             break  # one evidence per rule is enough
     return hits
 
@@ -684,7 +701,7 @@ def _signal_rule_hits(
     summary_path: Path,
     sprint_log_dir: Path,
     logs_root: Path,
-) -> list[tuple[str, str, str, str | None]]:
+) -> list[tuple[str, str, str, str | None, str]]:
     """Fire field-derived (signal) rules from summary/audit structured fields.
 
     Signal hits carry ``None`` as the matched pattern — they are field-derived,
@@ -803,18 +820,31 @@ def _signal_rule_hits(
             )
         )
 
-    return [(rule_id, source, excerpt, None) for rule_id, source, excerpt in hits]
+    return [(rule_id, source, excerpt, None, "structured") for rule_id, source, excerpt in hits]
 
 
-def _select_primary(primary_classes: list[str]) -> str | None:
-    """Choose the winning primary failure class by declared priority."""
-    present = set(primary_classes)
+def _select_primary(
+    structured_primary_classes: list[str], text_primary_classes: list[str]
+) -> str | None:
+    """Choose the winning primary failure class by declared priority.
+
+    Structured fields from the current run outrank broad text scans. Text scans
+    remain valuable fallback evidence, but they must not override the run's own
+    recorded terminal state.
+    """
+    present = set(structured_primary_classes)
+    for cls in _PRIMARY_PRIORITY:
+        if cls in present:
+            return cls
+    if structured_primary_classes:
+        return structured_primary_classes[0]
+    present = set(text_primary_classes)
     for cls in _PRIMARY_PRIORITY:
         if cls in present:
             return cls
     # A primary rule fired but its class is not in the priority list — return
     # the first seen so we never lose a real classification.
-    return primary_classes[0] if primary_classes else None
+    return text_primary_classes[0] if text_primary_classes else None
 
 
 def _detect_partial_value(story: dict, audit: dict) -> list[str]:
@@ -1024,8 +1054,47 @@ def _captured_error_text(story: dict, audit: dict) -> str:
     return "\n".join(p for p in parts if p).lower()
 
 
+def _structured_run_text(story: dict, audit: dict) -> str:
+    """Structured current-run fields that can corroborate or veto text hits."""
+    parts = [
+        _nonempty(story.get("error")),
+        _nonempty(story.get("drop_reason")),
+        _nonempty(story.get("error_type")),
+        _nonempty(story.get("outcome_code")),
+        _nonempty(story.get("preflight")),
+        _nonempty(story.get("preflight_original_verdict")),
+    ]
+    intake = story.get("intake") if isinstance(story.get("intake"), dict) else {}
+    parts.extend(
+        [
+            _nonempty(intake.get("kind")),
+            _nonempty(intake.get("problem")),
+        ]
+    )
+    if isinstance(audit, dict):
+        outcome_block = audit.get("outcome") if isinstance(audit.get("outcome"), dict) else {}
+        preflight_block = (
+            audit.get("preflight") if isinstance(audit.get("preflight"), dict) else {}
+        )
+        parts.extend(
+            [
+                _nonempty(audit.get("error")),
+                _nonempty(outcome_block.get("message")),
+                _nonempty(outcome_block.get("error_type")),
+                _nonempty(preflight_block.get("verdict")),
+                _nonempty(preflight_block.get("original_verdict")),
+                _nonempty(preflight_block.get("failure_action")),
+            ]
+        )
+    return "\n".join(p for p in parts if p).lower()
+
+
 def _is_ambiguous_primary(
-    rule: RcaRule, matched_pattern: str | None, captured_error_text: str
+    rule: RcaRule,
+    matched_pattern: str | None,
+    captured_error_text: str,
+    structured_run_text: str,
+    source_kind: str,
 ) -> bool:
     """Return True when a primary text-rule fired only on an ambiguous token.
 
@@ -1037,7 +1106,15 @@ def _is_ambiguous_primary(
     and when there is no captured error to contradict it a standalone status code
     still classifies.
     """
-    if matched_pattern is None or not matched_pattern.isdigit():
+    if matched_pattern is None:
+        return False
+    if rule.failure_class == "intake_shape":
+        if source_kind == "structured":
+            return False
+        if not structured_run_text:
+            return True
+        return not any(_pattern_matches(pattern, structured_run_text) for pattern in rule.patterns)
+    if not matched_pattern.isdigit():
         return False
     if not captured_error_text:
         return False
@@ -1045,6 +1122,16 @@ def _is_ambiguous_primary(
     if any(_pattern_matches(p, captured_error_text) for p in strong_patterns):
         return False
     return True
+
+
+def _text_source_kind_for_path(path: Path) -> str:
+    """Classify scanned files by how trustworthy they are as primary evidence."""
+    lowered = path.name.lower()
+    if lowered.endswith(".md"):
+        return "authored"
+    if lowered.startswith("preflight"):
+        return "authored"
+    return "log"
 
 
 def _truncate(text: str) -> str:
