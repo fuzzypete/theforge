@@ -450,6 +450,7 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "files_changed_count": item.files_changed_count,
             "tests_fixed_count": item.tests_fixed_count,
             "sandboxed": item.sandboxed,
+            "containment": item.containment,
             "agent_exit_code": item.agent_exit_code,
             "runner_failure_code": item.runner_failure_code,
             "runner_failure_summary": item.runner_failure_summary,

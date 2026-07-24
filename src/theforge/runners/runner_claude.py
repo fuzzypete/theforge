@@ -22,6 +22,7 @@ from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
+from .sandbox import workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -38,6 +39,19 @@ def _log_verbose(msg: str) -> None:
 
 
 # ── Argv builder ──────────────────────────────────────────────────────
+
+
+def _claude_state_write_roots() -> tuple[Path, ...]:
+    """Home paths the Claude CLI must write to under sandbox containment.
+
+    Claude persists session transcripts, todos, telemetry, and config under
+    ``~/.claude`` (and legacy ``~/.claude.json``). Granting write access to
+    just these keeps session persistence working while leaving the worktree the
+    only project-side writable root — the containment boundary is not widened to
+    the project root or sibling worktrees.
+    """
+    home = Path.home()
+    return (home / ".claude", home / ".claude.json")
 
 
 def build_argv(
@@ -624,16 +638,61 @@ def _run_claude(
 ) -> AgentResult:
     """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
     # NOTE: Claude CLI has no mechanically-enforced read-only mode. When
-    # sandbox_mode == "read-only" we apply --permission-mode default (set by
-    # build_argv) and log a warning so operators know the read-only constraint
-    # is not syscall-enforced.
+    # sandbox_mode == "read-only" the host wrapper still confines *writes* to
+    # the worktree (see below), but it does not enforce read-only; we log a
+    # warning so operators know that constraint is not syscall-enforced.
     if profile.sandbox_mode == "read-only":
         _log(
             "  WARNING: sandbox_mode=read-only is not mechanically enforced by Claude CLI; "
-            "applying --permission-mode default (writes require permission approval). "
+            "writes are contained to the worktree but reads are not restricted. "
             "Use a provider/API profile for true read-only enforcement."
         )
     cmd: list[str] = build_argv(profile=profile, session_id=session_id)
+
+    # Mechanical write containment: wrap the Claude CLI in the host sandbox
+    # (macOS sandbox-exec / Linux bwrap) so absolute-path writes and commits
+    # cannot escape the story worktree (#1907). Claude's native --permission-mode
+    # (added by build_argv) is retained as cooperative defense-in-depth, but it
+    # is NOT the containment boundary — a dev agent bypasses it with absolute
+    # paths, which is exactly how #1443 committed to the release checkout.
+    #
+    # Fail closed like runner_gemini: if the host sandbox is unavailable and
+    # sandbox_mode is not "none", refuse to run rather than fall back to
+    # prompt-only discipline. The earlier attempt (#920) was reverted (#925)
+    # because the sandbox blocked Claude's macOS Keychain auth ("Not logged
+    # in"); allow_credential_services now grants the securityd mach-lookup +
+    # keychain reads, and ~/.claude stays writable, so auth and session
+    # persistence survive containment.
+    if profile.sandbox_mode != "none":
+        sandboxed_cmd = workspace_effect_sandbox_command(
+            cmd,
+            working_dir,
+            extra_write_roots=_claude_state_write_roots(),
+            allow_credential_services=True,
+        )
+        if sandboxed_cmd[0] == cmd[0]:
+            _log(
+                f"✗ claude: sandbox_mode={profile.sandbox_mode!r} requested but platform "
+                "sandbox (sandbox-exec/bwrap) is unavailable — refusing to run unsandboxed. "
+                "Set sandbox_mode: none to explicitly opt out of write containment."
+            )
+            return AgentResult(
+                success=False,
+                output=(
+                    f"SANDBOX_UNAVAILABLE: sandbox_mode={profile.sandbox_mode!r} is set but "
+                    "the platform sandbox (sandbox-exec on macOS, bwrap on Linux) is not "
+                    "available on this host. Claude CLI relies on OS sandboxing for "
+                    "mechanical write containment. Set sandbox_mode: none to run without "
+                    "write containment."
+                ),
+                session_id=None,
+                cost_usd=None,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+                startup_failure=True,
+            )
+        cmd = sandboxed_cmd
 
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
     env = build_workspace_env(working_dir, extra=secrets)

@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from theforge.config import ForgeConfig, apply_model_info
-from theforge.config.auth import sandbox_available_for_profile
+from theforge.config.auth import sandbox_available_for_profile, sandbox_containment_mode
 from theforge.config.types import StuckDetectionConfig
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import append_convention_retry_findings
@@ -486,6 +486,7 @@ def record_dev_iteration_telemetry(
             tests_fixed_count=tests_fixed_count,
             meaningful_progress=meaningful_progress,
             sandboxed=state.sandboxed,
+            containment=state.dev_containment,
             agent_exit_code=dev_result.exit_code,
             runner_failure_code=dev_result.failure_code,
             runner_failure_summary=runner_failure_summary,
@@ -615,12 +616,22 @@ def _run_dev_phase(
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
     # Probe sandbox availability once per run (lru_cache-backed — cheap on repeat calls).
+    # `sandboxed` is the mechanical-containment bool; `dev_containment` records the
+    # richer mode so audit/status distinguishes a wrapped run from a prompt-only one.
     state.sandboxed = sandbox_available_for_profile(config.dev_profile)
+    state.dev_containment = sandbox_containment_mode(config.dev_profile)
     if config.dev_profile.mode == "cli" and config.dev_profile.sandbox_mode == "none":
         _log(
             "  WARNING: sandbox_mode: none — dev agent runs without write containment. "
             "Use for debugging only."
         )
+    elif state.dev_containment == "unavailable":
+        _log(
+            "  WARNING: sandbox_mode requested but the host sandbox (sandbox-exec/bwrap) "
+            "is unavailable — dev run will fail closed rather than run prompt-only."
+        )
+    elif state.dev_containment == "mechanical":
+        _log("  dev write containment: mechanical (host sandbox wrapper)")
     _preserve_error_type = state.error_type == "max_iterations_no_submit"
     if not _preserve_error_type:
         state.error_type = None

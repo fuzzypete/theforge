@@ -203,6 +203,10 @@ class DevIterationTelemetry:
     tests_fixed_count: int = 0
     meaningful_progress: bool | None = None
     sandboxed: bool = True
+    # How writes were contained this iteration: "mechanical" (host sandbox
+    # wrapper), "native" (provider --sandbox flag), "unavailable" (fail-closed),
+    # or "none". Distinguishes real containment from prompt-only runs (#1907).
+    containment: str = "none"
     agent_exit_code: int | None = None
     runner_failure_code: str | None = None
     runner_failure_summary: str | None = None
@@ -477,7 +481,11 @@ class CoordinatorState:
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
     error_type: str | None = None
-    sandboxed: bool = False  # True if sandbox isolation was available at dev-phase entry
+    sandboxed: bool = False  # True if mechanical containment was available at dev-phase entry
+    # Containment classification for the dev run: "mechanical" | "native" |
+    # "unavailable" | "none". Surfaced in audit/status so a prompt-only run is
+    # never reported as mechanically contained (#1907).
+    dev_containment: str = "none"
     dev_escalated: bool = False  # True once model escalation has occurred this run
     timeout_escalation_used: bool = (
         False  # True once a timeout escalation has fired this sprint; gates re-escalation

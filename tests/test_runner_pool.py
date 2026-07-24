@@ -32,6 +32,22 @@ def _result_line(**fields: object) -> str:
     return json.dumps({"type": "result", **fields}) + "\n"
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_claude_sandbox_wrapper():
+    """These pool tests patch ``runner_claude.subprocess.Popen`` (which mutates
+    the shared ``subprocess`` module) and drive the Claude runner with default
+    workspace-write profiles. That would make the sandbox probe — which calls
+    ``subprocess.run`` — see the mocked Popen and report the host sandbox
+    unavailable, causing a spurious fail-closed. Neutralize the wrapper so pool
+    orchestration is what's under test; containment is covered in
+    test_runner_claude.py / test_runner_sandbox.py."""
+    with patch(
+        "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+        side_effect=lambda cmd, working_dir, **kwargs: ["sandbox-exec", "-p", "P", *cmd],
+    ):
+        yield
+
+
 class TestRunAgentPool:
     """Test pool runner."""
 

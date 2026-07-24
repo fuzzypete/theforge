@@ -148,6 +148,87 @@ class TestStateAndAuditSandboxed:
             assert iteration["sandboxed"] is True
 
 
+class TestStateAndAuditContainment:
+    """Test that dev containment mode is recorded in state and audit (#1907)."""
+
+    @patch(
+        "theforge.coordinator.dev_phase.sandbox_containment_mode",
+        return_value="mechanical",
+    )
+    @patch("theforge.coordinator.dev_phase.sandbox_available_for_profile", return_value=True)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_containment_mode_recorded_in_state_and_audit(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight_agent,
+        mock_pool,
+        mock_sandbox_probe,
+        mock_containment,
+        tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        _write_handoff(workspace)
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        mock_dev_agent.return_value = _make_agent_result()
+        mock_preflight_agent.return_value = _PREFLIGHT_RESULT
+        mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW)]
+
+        result = run_task(config, task)
+
+        assert result.state.dev_containment == "mechanical"
+        assert result.state.dev_iteration_telemetry, "Expected at least one dev iteration"
+        for item in result.state.dev_iteration_telemetry:
+            assert item.containment == "mechanical"
+
+        log = generate_audit_log(config, task, result)
+        for iteration in log["iterations"]["dev_loop"]:
+            assert iteration["containment"] == "mechanical"
+
+
+class TestReviewPromptContainment:
+    """Reviewer prompt distinguishes mechanical containment from prompt-only (#1907)."""
+
+    def _prompt(self, **kwargs: object) -> str:
+        from theforge.task import TaskStory
+
+        task = TaskStory(name="T", story_path=Path("/fake/spec.md"), slug="t")
+        return build_review_prompt(
+            task,
+            story_content="Implement X.",
+            commit_log="abc123 feat: x",
+            commit_diffs="diff --git ...",
+            workspace_path="/tmp/ws",
+            branch="feat/t",
+            handoff_content="gate_decision: PASS",
+            **kwargs,
+        )
+
+    def test_mechanical_containment_labeled(self) -> None:
+        prompt = self._prompt(sandboxed=True, containment="mechanical")
+        assert "Sandbox isolation: MECHANICAL" in prompt
+
+    def test_native_containment_labeled(self) -> None:
+        prompt = self._prompt(sandboxed=True, containment="native")
+        assert "Sandbox isolation: NATIVE" in prompt
+
+    def test_unavailable_containment_labeled_disabled(self) -> None:
+        prompt = self._prompt(sandboxed=False, containment="unavailable")
+        assert "Sandbox isolation: DISABLED" in prompt
+
+    def test_none_containment_labeled_disabled(self) -> None:
+        prompt = self._prompt(sandboxed=False, containment="none")
+        assert "Sandbox isolation: DISABLED" in prompt
+
+
 class TestReviewPromptSandboxStatus:
     """Test that build_review_prompt surfaces sandbox status correctly."""
 
