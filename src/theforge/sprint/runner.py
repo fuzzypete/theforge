@@ -123,7 +123,7 @@ def _commit_story_run_audits(project_root: Path) -> None:
         raise RuntimeError(f"Failed to stage story run audits: {add_out}")
 
     ok_commit, commit_out = _cu._run_shell(
-        'git commit -m "chore(audit): record sprint run audits"',
+        'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs',
         project_root,
     )
     if not ok_commit:
@@ -3558,10 +3558,13 @@ def run_sprint(
         except Exception as _rca_exc:  # noqa: BLE001 — RCA is best-effort
             _log(f"Warning: sprint RCA generation failed: {_rca_exc}")
 
-    _commit_story_run_audits(config.project_root)
-
     if _state_writer is not None:
         _state_writer.remove()
+
+    try:
+        _commit_story_run_audits(config.project_root)
+    except RuntimeError as exc:
+        _log(f"Warning: canonical story run audit commit failed: {exc}")
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
