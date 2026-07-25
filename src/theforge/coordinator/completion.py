@@ -853,6 +853,22 @@ def _step_cleanup(
     delete_remote_branch: bool,
 ) -> None:
     """Best-effort local cleanup after a successful remote PR merge."""
+
+    def _warn_base_sync_failure(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> None:
+        err = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
+        cmd_str = shlex.join(cmd)
+        _log(
+            "Warning: local base branch sync after merge failed for "
+            f"`{cmd_str}` (exit {proc.returncode}): {err}"
+        )
+        _pr_log.warning(
+            "local base_branch fast-forward command failed in %s: cmd=%s exit=%d err=%s",
+            project_root,
+            cmd,
+            proc.returncode,
+            err,
+        )
+
     try:
         branch_proc = subprocess.run(
             ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -888,20 +904,27 @@ def _step_cleanup(
                 base_branch,
             )
         else:
-            subprocess.run(
-                ["git", "fetch", "origin"],
+            fetch_cmd = ["git", "fetch", "origin"]
+            fetch_proc = subprocess.run(
+                fetch_cmd,
                 capture_output=True,
                 text=True,
                 cwd=str(project_root),
                 timeout=60,
             )
-            subprocess.run(
-                ["git", "merge", "--ff-only", f"origin/{base_branch}"],
-                capture_output=True,
-                text=True,
-                cwd=str(project_root),
-                timeout=30,
-            )
+            if fetch_proc.returncode != 0:
+                _warn_base_sync_failure(fetch_cmd, fetch_proc)
+            else:
+                merge_cmd = ["git", "merge", "--ff-only", f"origin/{base_branch}"]
+                merge_proc = subprocess.run(
+                    merge_cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=str(project_root),
+                    timeout=30,
+                )
+                if merge_proc.returncode != 0:
+                    _warn_base_sync_failure(merge_cmd, merge_proc)
     except Exception as exc:
         _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
 
