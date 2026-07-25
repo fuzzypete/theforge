@@ -132,6 +132,36 @@ run() {
     fi
 }
 
+resolve_rc_build_python() {
+    local repo_root="$1"
+    local override="${FORGE_RC_PYTHON:-}"
+    local candidate=""
+
+    if [[ -n "$override" ]]; then
+        candidate="$override"
+    elif [[ -x "${repo_root}/.venv/bin/python" ]]; then
+        candidate="${repo_root}/.venv/bin/python"
+    elif [[ -x "${repo_root}/.venv/bin/python3" ]]; then
+        candidate="${repo_root}/.venv/bin/python3"
+    fi
+
+    if [[ -z "$candidate" ]]; then
+        echo "Error: could not locate the pinned interpreter for the RC env build." >&2
+        echo "       Expected the project venv interpreter at ${repo_root}/.venv/bin/python" >&2
+        echo "       (or ${repo_root}/.venv/bin/python3), or set FORGE_RC_PYTHON." >&2
+        echo "       Refusing to fall back to an unqualified python3 lookup." >&2
+        exit 1
+    fi
+
+    if [[ ! -x "$candidate" ]]; then
+        echo "Error: pinned RC interpreter is not executable: $candidate" >&2
+        echo "       Fix the project venv or set FORGE_RC_PYTHON to the pinned interpreter." >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$candidate"
+}
+
 # --- 1. Print milestone state (informational, do not block) ---
 echo "==> Milestone v$VERSION state (informational)..."
 OPEN_ISSUES=$(gh issue list --repo fuzzypete/theforge --milestone "v$VERSION" --state open --json number --jq 'length')
@@ -260,6 +290,7 @@ RC_ENV_DIR="$(git rev-parse --show-toplevel)/.forge/rc-envs/${RC_TAG}"
 RC_ENV_FORGE="${RC_ENV_DIR}/bin/forge"
 RC_ENV_PIP="${RC_ENV_DIR}/bin/pip"
 RC_ENV_PYTHON="${RC_ENV_DIR}/bin/python"
+RC_BUILD_PYTHON="$(resolve_rc_build_python "$(git rev-parse --show-toplevel)")"
 
 MANAGED_LAUNCHER="${FORGE_MANAGED_LAUNCHER:-${HOME}/.local/bin/forge}"
 MANAGED_LAUNCHER_DIR="$(dirname "$MANAGED_LAUNCHER")"
@@ -272,7 +303,8 @@ if [[ "$NO_INSTALL" == false ]]; then
         fi
         mkdir -p "$(dirname "$RC_ENV_DIR")"
     fi
-    run python3 -m venv "$RC_ENV_DIR"
+    echo "    pinned build python: $RC_BUILD_PYTHON"
+    run "$RC_BUILD_PYTHON" -m venv "$RC_ENV_DIR"
     run "$RC_ENV_PIP" install --upgrade pip
     run "$RC_ENV_PIP" install "theforge[all] @ git+https://github.com/fuzzypete/theforge.git@${RC_TAG}"
     if [[ "$DRY_RUN" == false ]]; then
@@ -471,7 +503,7 @@ if [[ "$NO_INSTALL" == false ]]; then
 else
     echo "==> Skipping verification install (--no-install)."
     echo "    To verify manually in an isolated venv:"
-    echo "      python3 -m venv \"$RC_ENV_DIR\""
+    echo "      \"$RC_BUILD_PYTHON\" -m venv \"$RC_ENV_DIR\""
     echo "      \"$RC_ENV_PIP\" install \"theforge[all] @ git+https://github.com/fuzzypete/theforge.git@${RC_TAG}\""
     echo "      \"$RC_ENV_FORGE\" version"
     echo "      ln -snf \"$RC_ENV_FORGE\" \"$MANAGED_LAUNCHER\""
