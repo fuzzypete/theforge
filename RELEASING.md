@@ -43,6 +43,14 @@ silently undo the cut-RC binding) and prints guidance.
 The simplest setup: ensure your shell's PATH puts `~/.local/bin` before any
 project venv `bin/`, or deactivate the venv before running `cut-rc.sh`.
 
+`cut-rc.sh` also seeds the isolated RC env from the project's pinned
+interpreter: by default `./.venv/bin/python` (falling back to
+`./.venv/bin/python3` if present). If the project venv is missing or you need a
+different pinned interpreter, set `FORGE_RC_PYTHON=/abs/path/to/python` before
+running the cut. The script refuses to fall back to an unqualified `python3`
+lookup, because that can silently bind the RC runtime to an unrelated system
+Python that happened to appear on `PATH`.
+
 ### 1. Cut an RC
 
 ```bash
