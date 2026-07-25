@@ -186,6 +186,48 @@ class SprintStateWriter:
                 pass
 
 
+def _load_existing_state(state_path: Path) -> dict | None:
+    """Read an existing state file when possible."""
+    if not state_path.exists():
+        return None
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _has_accumulated_live_state(data: dict | None) -> bool:
+    """Return True once the bootstrap file has been superseded by live state.
+
+    Bootstrap writes are only allowed while the on-disk file is still the seed
+    view: unresolved sprint id and story rows that have not advanced beyond the
+    initial waiting/skipped placeholders. Once the live writer has resolved the
+    sprint id or moved any story forward, a later bootstrap invocation must stay
+    inert so watch-mode data cannot regress.
+    """
+    if not isinstance(data, dict):
+        return False
+    if data.get("sprint_id") is not None:
+        return True
+
+    stories = data.get("stories")
+    if not isinstance(stories, list):
+        return False
+
+    seed_outcomes = {"waiting", "skipped"}
+    for story in stories:
+        if not isinstance(story, dict):
+            continue
+        outcome = story.get("outcome", story.get("status"))
+        if outcome not in seed_outcomes:
+            return True
+        if float(story.get("cost_usd", 0.0) or 0.0) > 0.0:
+            return True
+    return False
+
+
 def write_bootstrap_state(
     run_id: str,
     project_root: Path,
@@ -212,6 +254,10 @@ def write_bootstrap_state(
     """
     state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
     state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_state = _load_existing_state(state_path)
+    if _has_accumulated_live_state(existing_state):
+        return state_path
 
     stories: list[dict] = []
     seen_slugs: set[str] = set()
