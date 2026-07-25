@@ -577,6 +577,27 @@ criteria_checked:
 ```
 """
 
+_PREFLIGHT_BUG_SMALL_NEEDS_PLANNING_DEGRADED = """\
+```yaml
+verdict: MAYBE
+complexity: small
+complexity_score: 3
+reason: "Status display reads wrong field — single-area bug fix."
+work_type: bug
+sufficiency: needs_planning
+sufficiency_reason: "Spec lacks Notes section."
+contract_change: false
+spec_issues: []
+warnings: []
+likely_files:
+  - src/foo.py
+criteria_checked:
+  - criterion: "Status displays the right field"
+    satisfied: false
+    evidence: "Reads stale value"
+```
+"""
+
 _PREFLIGHT_FEATURE_SMALL_NEEDS_PLANNING = """\
 ```yaml
 verdict: PROCEED
@@ -739,6 +760,42 @@ class TestBoundedBugPlanSkip:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
+    def test_bounded_bug_degraded_path_is_unaffected(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Parse-degraded bounded bugs still skip planning when contract_change=false."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=_PREFLIGHT_BUG_SMALL_NEEDS_PLANNING_DEGRADED, cost_usd=0.05
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        mock_preflight.return_value = preflight_result
+        mock_dev_agent.return_value = dev_result
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_sufficiency == "implementation_ready"
+        assert result.state.preflight_complexity == "small"
+        assert result.state.preflight_complexity_score == 3
+        assert mock_plan_agent.call_count == 0
+        assert mock_dev_agent.call_count == 1
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
     def test_contract_change_bug_keeps_planning(
         self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
@@ -793,9 +850,75 @@ criteria_checked:
         result = run_task(config, task)
 
         assert result.success is True
-        # contract_change forces needs_planning AND upgrades complexity to medium.
-        # The bounded-bug override does not fire because complexity is no longer small.
+        # contract_change forces needs_planning and raises the authoritative score.
+        # The bounded-bug override does not fire because the derived band is no longer small.
         assert result.state.preflight_sufficiency == "needs_planning"
+        assert result.state.preflight_complexity_score == 5
+        assert result.state.preflight_complexity == "medium"
+        assert mock_dev_agent.call_count == 2
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_contract_change_bug_keeps_planning_when_preflight_is_degraded(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Contract-change escalation routes the same on the parse-degraded path."""
+        contract_bug_yaml = """\
+```yaml
+verdict: MAYBE
+complexity: small
+complexity_score: 3
+reason: "Bug fix that renames a shared field."
+work_type: bug
+sufficiency: needs_planning
+sufficiency_reason: "Field rename across coordinator."
+contract_change: true
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "Field renamed"
+    satisfied: false
+    evidence: "Old name still in use"
+```
+"""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=contract_bug_yaml, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(
+            success=True, output="# Plan\n\nStep 1: enumerate.", cost_usd=0.10
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        mock_preflight.return_value = preflight_result
+        results = [plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_dev_agent
+        mock_dev_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_sufficiency == "needs_planning"
+        assert result.state.preflight_complexity_score == 5
         assert result.state.preflight_complexity == "medium"
         assert mock_dev_agent.call_count == 2
 
