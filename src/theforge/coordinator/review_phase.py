@@ -1878,6 +1878,7 @@ def _run_review_only_phase(
         assembled_context=review_context,
         sandboxed=state.sandboxed,
         containment=state.dev_containment,
+        p2_policy=config.dev.p2_policy,
     )
 
     meta = ReviewCycleMetadata(

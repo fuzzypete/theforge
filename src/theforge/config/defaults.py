@@ -91,6 +91,9 @@ models:
 
 budget_usd: 50.0
 
+dev:
+  p2_policy: in_scope           # "in_scope" | "all" | "p1_only"
+
 retry:
   max_dev_iterations: 3    # retries within a review cycle
   max_dev_transport_retries: 1  # retry one transient dev provider failure

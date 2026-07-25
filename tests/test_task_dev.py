@@ -61,6 +61,45 @@ class TestBuildDevPrompt:
 class TestBuildFixPrompt:
     """Tests for the minimal fix prompt used on iteration 2+."""
 
+    def test_default_fix_prompt_uses_in_scope_p2_policy(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "## Dev P2 Policy" in prompt
+        assert "Active mode: `in_scope`." in prompt
+        assert "adjacent code relevant to that work" in prompt
+
+    def test_fix_prompt_all_policy_expands_scope(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            p2_policy="all",
+        )
+        assert "Active mode: `all`." in prompt
+        assert "every open P2 you encounter in the repo" in prompt
+
+    def test_fix_prompt_p1_only_policy_marks_p2s_advisory(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            p2_policy="p1_only",
+        )
+        assert "Active mode: `p1_only`." in prompt
+        assert "P2 findings are advisory" in prompt
+
     def test_contains_workspace_info(self, tmp_path):
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"

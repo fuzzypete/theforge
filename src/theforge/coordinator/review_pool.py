@@ -703,6 +703,7 @@ def _run_review_pool(
                     sandboxed=state.sandboxed,
                     containment=state.dev_containment,
                     fix_claim_flags=fix_claim_flags,
+                    p2_policy=config.dev.p2_policy,
                 )
                 for p in pool
             ]
@@ -727,6 +728,7 @@ def _run_review_pool(
                 sandboxed=state.sandboxed,
                 containment=state.dev_containment,
                 fix_claim_flags=fix_claim_flags,
+                p2_policy=config.dev.p2_policy,
             )
         )
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in pool]}")
