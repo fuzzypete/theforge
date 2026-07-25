@@ -88,12 +88,6 @@ REQUIRED_DIAGNOSIS_COMPONENTS: tuple[DiagnosisComponent, ...] = (
         example="run id `1ff6b0bb7992`, story #1102 — resume log shows the false skip.",
     ),
     DiagnosisComponent(
-        key="ruled_out",
-        label="Ruled out",
-        satisfies="bolded bullet lead-in or heading listing eliminated hypotheses",
-        example="workspace creation actually succeeds (verified in logs) — not the cause.",
-    ),
-    DiagnosisComponent(
         key="confirmed_cause",
         label="Confirmed cause",
         satisfies=(

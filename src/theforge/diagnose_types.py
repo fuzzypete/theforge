@@ -128,8 +128,8 @@ class DiagnosisArtifact:
     """Structured diagnosis output from an investigative agent.
 
     All fields required by the diagnose AC: observed symptom, reproduction or
-    evidence, hypotheses tested and ruled out, confirmed cause, affected code
-    path, and fix-success criterion.
+    evidence, hypotheses tested, confirmed cause, affected code path, and
+    fix-success criterion.
     """
 
     issue_number: int
@@ -259,7 +259,7 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     """Render a DiagnosisArtifact as a Markdown ``## Diagnosis`` section.
 
     Output format intentionally matches the headings expected by the shape gate
-    (DIAGNOSIS_HEADING_PATTERN / DIAGNOSIS_REQUIRED_COMPONENTS in shape_check)
+    (DIAGNOSIS_HEADING_PATTERN / required Diagnosis labels in shape_check)
     so a landed artifact makes the issue fix-ready.
 
     Raises ``ValueError`` when the artifact carries no substantive content.
@@ -308,8 +308,7 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     )
     if artifact.hypotheses:
         for h in artifact.hypotheses:
-            # Underscore→space so the rendered section contains the literal
-            # tokens the sprint shape gate scans for ("ruled out" etc.).
+            # Underscore→space so status values render as readable prose.
             display_status = h.status.replace("_", " ")
             lines.append(f"- **[{display_status}]** {h.statement.strip()}")
             if h.evidence.strip():

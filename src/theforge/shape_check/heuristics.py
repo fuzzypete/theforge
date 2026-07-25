@@ -445,12 +445,10 @@ _UNRESOLVED_CAUSE_RE = re.compile(
     r"(?:not\s+yet\s+identified|unknown|tbd|investigating|n/?a)\b",
     re.IGNORECASE,
 )
-_RULED_OUT_RE = re.compile(r"ruled\s+out", re.IGNORECASE)
 
 
 def _diagnosis_cause_unknown(body: str) -> bool:
-    """Return True when the Diagnosis section documents ruled-out hypotheses
-    but the confirmed cause is explicitly still open.
+    """Return True when the Diagnosis section's confirmed cause is still open.
 
     This is the admissible "investigation-ready" state: the bug is not
     malformed (it has been investigated), but it is not implementation-runnable
@@ -458,8 +456,6 @@ def _diagnosis_cause_unknown(body: str) -> bool:
     """
     section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
     if section is None:
-        return False
-    if not _RULED_OUT_RE.search(section):
         return False
     return bool(_UNRESOLVED_CAUSE_RE.search(section))
 
@@ -470,27 +466,26 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
     - No Diagnosis section → BLOCKING ``needs_diagnosis``: the body is
       symptom-only and would let an implementer hypothesize a cause that
       reviewers cannot verify against. This is the original failure mode.
-    - Diagnosis section present, hypotheses ruled out, but confirmed cause
-      explicitly unresolved → ADVISORY ``diagnosis_cause_unknown``. The
-      issue is admissible (well-formed) but the verdict-derivation layer
-      lifts it to its own verdict so the sprint gate keeps it out of
-      implementation runs.
+    - Diagnosis section present and complete, but confirmed cause explicitly
+      unresolved → ADVISORY ``diagnosis_cause_unknown``. The issue is
+      admissible (well-formed) but the verdict-derivation layer lifts it to
+      its own verdict so the sprint gate keeps it out of implementation runs.
     - Complete Diagnosis section → no Reason; bug is implementation-runnable.
     """
     if not is_bug_format_issue(body, labels):
         return None
     ok, missing = diagnosis_completeness(body)
     if ok:
-        # All six tokens present, but the confirmed cause line may still be
-        # explicitly unresolved ("not yet identified", etc.) — that's the
-        # admissible-but-not-runnable state.
+        # All required Diagnosis labels are present, but the confirmed-cause
+        # line may still be explicitly unresolved ("not yet identified",
+        # etc.) — that's the admissible-but-not-runnable state.
         if _diagnosis_cause_unknown(body):
             return Reason(
                 code="diagnosis_cause_unknown",
                 severity=Severity.ADVISORY,
                 detail=(
-                    "Bug Diagnosis section documents ruled-out hypotheses but no "
-                    "confirmed cause — investigation-ready but not "
+                    "Bug Diagnosis section is complete but no confirmed cause is "
+                    "asserted — investigation-ready but not "
                     "implementation-runnable."
                 ),
             )
@@ -519,8 +514,8 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
             code="diagnosis_cause_unknown",
             severity=Severity.ADVISORY,
             detail=(
-                "Bug Diagnosis section documents ruled-out hypotheses but no confirmed "
-                "cause — investigation-ready but not implementation-runnable."
+                "Bug Diagnosis section is complete but no confirmed cause is asserted "
+                "— investigation-ready but not implementation-runnable."
             ),
         )
     return Reason(
