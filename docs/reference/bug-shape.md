@@ -24,11 +24,6 @@ Each component is written as a bolded bullet lead-in under the
 - Satisfies: bolded bullet lead-in or heading inside "## Diagnosis"
 - Example: - **Evidence:** run id `1ff6b0bb7992`, story #1102 — resume log shows the false skip.
 
-### Ruled out
-
-- Satisfies: bolded bullet lead-in or heading listing eliminated hypotheses
-- Example: - **Ruled out:** workspace creation actually succeeds (verified in logs) — not the cause.
-
 ### Confirmed cause
 
 - Satisfies: bolded bullet lead-in or heading; its value may be a specific claim or an honest non-assertion ("unknown", "not yet identified")
@@ -54,7 +49,6 @@ that starts from this skeleton passes the shape gate by construction.
 
 - **Observed symptom:** sprint resume false-skips zero-delta APPROVE stories, reporting them merged when no commit landed.
 - **Evidence:** run id `1ff6b0bb7992`, story #1102 — resume log shows the false skip.
-- **Ruled out:** workspace creation actually succeeds (verified in logs) — not the cause.
 - **Confirmed cause:** `_is_already_merged` requires at least one commit ahead, so a zero-delta APPROVE is misclassified as unmerged.
 - **Affected code path:** `sprint.runner._is_already_merged`.
 - **Fix-success criterion:** resume identifies a zero-delta APPROVE story as already merged.

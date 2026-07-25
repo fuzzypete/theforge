@@ -32,7 +32,6 @@ DIAGNOSIS_BODY = textwrap.dedent(
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
     - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
-    - **Ruled out.** Workspace creation actually succeeds (verified in logs).
     - **Confirmed cause.** `_is_already_merged` requires at least one commit ahead.
     - **Affected code path.** sprint.runner._is_already_merged.
     - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.
@@ -64,7 +63,6 @@ class TestDiagnosisCompleteness:
         assert ok is False
         # Partial section flags the specific missing tokens, not the whole section.
         expected_missing = (
-            "ruled out",
             "confirmed cause",
             "affected code path",
             "fix-success criterion",
@@ -92,7 +90,6 @@ class TestCheckBugMissingDiagnosis:
         assert reason is not None
         # The detail now names the exact literal labels a producer must hit,
         # each with its example, and links the full shape reference (#1629 AC3).
-        assert "**Ruled out:**" in reason.detail
         assert "**Confirmed cause:**" in reason.detail
         assert "**Affected code path:**" in reason.detail
         assert "docs/reference/bug-shape.md" in reason.detail
@@ -159,7 +156,6 @@ def _investigation_ready_body(cause_value: str) -> str:
 
         - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
         - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
-        - **Ruled out.** Workspace creation actually succeeds (verified in logs).
         - **Confirmed cause.** {cause_value}
         - **Affected code path.** sprint.runner._is_already_merged.
         - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.
