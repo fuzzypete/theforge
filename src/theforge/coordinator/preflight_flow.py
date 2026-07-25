@@ -456,7 +456,13 @@ def _run_preflight_phase(
                 "phase": "PREFLIGHT",
                 "iteration": 0,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                # Fired before the parse step computes preflight_complexity_score,
+                # so the score may still be None. live_complexity_fields omits the
+                # key in that case, preserving any score an earlier phase set on a
+                # mid-sprint re-run instead of clearing it.
+                **_cu.live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "current_model": preflight_profile.model,
                 "detail": {
                     "preflight_verdict": verdict,
@@ -825,7 +831,12 @@ def _run_preflight_phase(
                 "phase": "PREFLIGHT",
                 "iteration": 0,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                # Fired after the parse step; by now preflight_complexity_score is
+                # set whenever the agent emitted a numeric score, so the score
+                # reaches live state immediately for stories that never enter DEV.
+                **_cu.live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "detail": {
                     "preflight_verdict": state.preflight_verdict,
                     "preflight_sufficiency": state.preflight_sufficiency,

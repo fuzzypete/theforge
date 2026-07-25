@@ -37,6 +37,29 @@ DEFAULT_TIMEOUT_HEADROOM_FACTOR = 1.5
 MEDIUM_HEADROOM_FACTOR = DEFAULT_TIMEOUT_HEADROOM_FACTOR
 LARGE_HEADROOM_FACTOR = DEFAULT_TIMEOUT_HEADROOM_FACTOR
 
+
+# ── Live-state complexity payload ─────────────────────────────────────
+
+
+def live_complexity_fields(complexity: object, complexity_score: "int | None") -> dict:
+    """Build the complexity portion of a live-state ``state_update_fn`` payload.
+
+    Always emits the band under ``complexity``. Emits ``complexity_score`` only
+    when a numeric score is known. This centralizes the hazard rule: the sprint
+    state writer (``SprintStoryState.transition``) treats an *absent*
+    ``complexity_score`` key as "preserve the established score" but an explicit
+    ``complexity_score: None`` as "clear it". A ``None`` score means the score
+    has not been computed yet (e.g. the first preflight payload, fired before
+    the parse step), so we omit the key rather than wipe a score an earlier
+    phase already recorded. Once a numeric score exists, every phase's payload
+    carries it so the live display's numeric form holds uniformly.
+    """
+    fields: dict = {"complexity": complexity}
+    if complexity_score is not None:
+        fields["complexity_score"] = complexity_score
+    return fields
+
+
 # ── Log level ─────────────────────────────────────────────────────────
 
 _LOG_LEVEL: LogLevel = LogLevel.PROGRESS
