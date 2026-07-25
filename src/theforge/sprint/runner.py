@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -89,6 +90,10 @@ from .story_state import (
 )
 
 _UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
+_STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
+_STORY_RUN_AUDIT_COMMIT_CMD = (
+    f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
+)
 run_agent = None
 log_agent_result = None
 
@@ -97,6 +102,34 @@ def _log(msg: str) -> None:
     # Worker-slug prefixing (parallel attribution) is applied centrally by
     # ``_log_line``; do not prepend it here or it would double-tag.
     _log_line("[sprint]", msg)
+
+
+def _commit_story_run_audits(project_root: Path) -> None:
+    """Commit canonical per-run audit JSON emitted during sprint execution."""
+    from ..coordinator import util as _cu  # noqa: PLC0415
+
+    if not (project_root / ".git").exists():
+        return
+
+    audit_dir = Path(_STORY_RUN_AUDIT_DIR)
+    quoted_audit_dir = shlex.quote(audit_dir.as_posix())
+    ok_status, status_out = _cu._run_shell(
+        f"git status --porcelain -- {quoted_audit_dir}",
+        project_root,
+    )
+    if not ok_status:
+        raise RuntimeError(f"Failed to inspect story run audits: {status_out}")
+    if not status_out.strip():
+        return
+
+    ok_add, add_out = _cu._run_shell(f"git add -- {quoted_audit_dir}", project_root)
+    if not ok_add:
+        raise RuntimeError(f"Failed to stage story run audits: {add_out}")
+
+    ok_commit, commit_out = _cu._run_shell(_STORY_RUN_AUDIT_COMMIT_CMD, project_root)
+    if not ok_commit:
+        raise RuntimeError(f"Failed to commit story run audits: {commit_out}")
+    _log("Committed canonical story run audit records to the base branch checkout.")
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
@@ -3528,6 +3561,11 @@ def run_sprint(
 
     if _state_writer is not None:
         _state_writer.remove()
+
+    try:
+        _commit_story_run_audits(config.project_root)
+    except RuntimeError as exc:
+        _log(f"Warning: canonical story run audit commit failed: {exc}")
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
