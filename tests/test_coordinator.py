@@ -20,6 +20,7 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    DevConfig,
     ForgeConfig,
     LogConfig,
     ModelProfile,
@@ -279,6 +280,41 @@ class TestCoordinatorHybridRunner:
         # The first call to build_review_prompt is what we want to check
         call_args = mock_prompt_builder.call_args_list[0]
         assert call_args.kwargs["mode"] == "api"
+        assert call_args.kwargs["p2_policy"] == "in_scope"
+
+    @patch("theforge.coordinator.review_pool.build_review_prompt")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_review_prompt_receives_configured_p2_policy(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_prompt_builder,
+        tmp_path,
+        api_profile,
+    ):
+        config = replace(
+            _make_pool_config(tmp_path, [api_profile], None),
+            dev=DevConfig(p2_policy="all"),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, structured_data=APPROVE_REVIEW_JSON)
+        ]
+
+        run_task(config, task)
+
+        assert mock_prompt_builder.call_args_list[0].kwargs["p2_policy"] == "all"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

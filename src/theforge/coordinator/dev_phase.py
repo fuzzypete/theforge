@@ -740,6 +740,7 @@ def _run_dev_phase(
                 surviving_families=None,
                 conventions=config.conventions_soft,
                 advisory_p2_only=True,
+                p2_policy=config.dev.p2_policy,
             )
             state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             state.dev_prompt_injected_finding_ids.append([])
@@ -766,6 +767,7 @@ def _run_dev_phase(
                 classified_p1s=current_cycle_p1s or None,
                 surviving_families=state.surviving_families or None,
                 conventions=config.conventions_soft,
+                p2_policy=config.dev.p2_policy,
             )
             state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
@@ -806,6 +808,7 @@ def _run_dev_phase(
                 contract_change=state.preflight_contract_change,
                 conventions=config.conventions_soft,
                 assembled_context=dev_context,
+                p2_policy=config.dev.p2_policy,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
@@ -851,6 +854,7 @@ def _run_dev_phase(
                 contract_change=state.preflight_contract_change,
                 conventions=config.conventions_soft,
                 assembled_context=dev_context,
+                p2_policy=config.dev.p2_policy,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None  # consumed

@@ -464,7 +464,9 @@ def _setup_resume_entry(
         specs=[str(task.story_path)],
         budget_usd=config.dev_profile.budget_usd,
         resume=True,
+        p2_policy=config.dev.p2_policy,
     )
+    _cu._log(f"  Dev P2 policy: {config.dev.p2_policy}")
 
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE

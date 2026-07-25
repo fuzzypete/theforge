@@ -28,6 +28,7 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    DevConfig,
     ForgeConfig,
     LogConfig,
     RetryPolicy,
@@ -98,6 +99,38 @@ class TestCoordinatorPromptRouting:
         assert len(classified) == 1
         assert classified[0].description == "Off by one"
         assert result.state.dev_prompt_injected_finding_ids == [[], [classified[0].finding_id]]
+
+    @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_dev_p2_policy_reaches_build_dev_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        tmp_path,
+    ):
+        config = dataclasses.replace(_make_config(tmp_path), dev=DevConfig(p2_policy="all"))
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_dev_prompt.return_value = "dev prompt"
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_dev_prompt.call_args.kwargs["p2_policy"] == "all"
 
     def test_carry_forward_excludes_findings_first_seen_in_current_review_cycle(self):
         """Only unresolved P1s from earlier cycles are injected as carry-forward context."""
@@ -214,6 +247,45 @@ test_coverage:
         assert injected_ids[0] == []
         assert len(injected_ids[1]) == 1
         assert injected_ids[1][0] == result.state.finding_registry[0].finding_id
+
+    @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_dev_p2_policy_reaches_build_fix_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        config = dataclasses.replace(_make_config(tmp_path), dev=DevConfig(p2_policy="p1_only"))
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=REQUEST_CHANGES_REVIEW,
+                    profile_name="review",
+                )
+            ],
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_fix_prompt.call_args.kwargs["p2_policy"] == "p1_only"
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)

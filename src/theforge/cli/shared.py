@@ -393,6 +393,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
         story_content=story_content,
         gate_command=config.validation.gate_command,
         conventions=config.conventions_soft,
+        p2_policy=config.dev.p2_policy,
     )
     review_prompt = build_review_prompt(
         task,
@@ -402,6 +403,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
         branch=branch_name,
         handoff_content="(dry run — no handoff available)",
         conventions=config.conventions_soft,
+        p2_policy=config.dev.p2_policy,
         **hard_convention_review_kwargs(config),
     )
 

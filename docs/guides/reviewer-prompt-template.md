@@ -160,5 +160,7 @@ matters. If you found nothing blocking, say so plainly and cite the
 - [`src/theforge/task/review_prompts.py`](../../src/theforge/task/review_prompts.py)
   — the automated dev-cycle review prompt, with its own tree-state grounding and
   AC-level `VERIFIED / PARTIAL / NOT_VERIFIED` scheme.
+- [Dev/Review guide](dev-review.md) — current expectations for how dev and
+  review handle P1/P2 findings inside the normal story loop.
 - [Authoring guide](authoring.md) — how to shape the specs reviewers verify
   against.

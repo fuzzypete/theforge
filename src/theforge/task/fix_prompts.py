@@ -7,8 +7,50 @@ from .conventions import render_conventions_block
 from .story import TaskStory
 
 
+def _render_fix_p2_policy_section(p2_policy: str, *, advisory_p2_only: bool) -> str:
+    if advisory_p2_only:
+        return dedent("""\
+
+            ## Dev P2 Policy
+
+            Active mode: advisory cleanup after APPROVE.
+
+            This pass is intentionally narrower than ordinary review-fix work:
+            improve clearly worthwhile P2s without redesigning the implementation.
+        """)
+    if p2_policy == "all":
+        body = (
+            "Active mode: `all`.\n\n"
+            "P1 findings remain mandatory. Treat every open P2 you encounter in the repo as "
+            "in-scope for this run, not just P2s adjacent to the current fix."
+        )
+    elif p2_policy == "p1_only":
+        body = (
+            "Active mode: `p1_only`.\n\n"
+            "P1 findings remain mandatory. P2 findings are advisory unless fixing one is "
+            "required to complete the story safely or avoid a regression."
+        )
+    else:
+        body = (
+            "Active mode: `in_scope`.\n\n"
+            "P1 findings remain mandatory. P2 findings touching the code you modify, or adjacent "
+            "code relevant to that work, are in-scope for this run and should be fixed now rather "
+            "than deferred."
+        )
+    return dedent(
+        f"""\
+
+            ## Dev P2 Policy
+
+            {body}
+        """
+    )
+
+
 def _build_task_framing(
     surviving_families: list[dict] | None,
+    *,
+    p2_policy: str,
     advisory_p2_only: bool = False,
 ) -> tuple[str, int]:
     """Build the first numbered task item(s) for the 'Your Task' section.
@@ -46,10 +88,41 @@ def _build_task_framing(
             f"({family_labels}). "
             "Step back and address the underlying design tension rather than applying "
             "another incremental fix.\n"
-            "2. Fix remaining new P1 findings. Address P2 findings if feasible."
+            f"2. {_surviving_family_follow_up_item(p2_policy)}"
         )
         return text, 3
-    return "1. Fix each P1 finding. Address P2 findings if feasible.", 2
+    return f"1. {_task_item_for_p2_policy(p2_policy)}", 2
+
+
+def _task_item_for_p2_policy(p2_policy: str) -> str:
+    if p2_policy == "all":
+        return "Fix each P1 finding and every open P2 you encounter in the repo."
+    if p2_policy == "p1_only":
+        return (
+            "Fix each P1 finding. Treat P2 findings as advisory unless one "
+            "must be fixed to complete the story safely."
+        )
+    return (
+        "Fix each P1 finding. Also fix any P2 finding that touches the code you modify, or "
+        "adjacent code relevant to that change."
+    )
+
+
+def _surviving_family_follow_up_item(p2_policy: str) -> str:
+    if p2_policy == "all":
+        return (
+            "Address remaining new P1 findings, then clean up every open P2 "
+            "you encounter in the repo."
+        )
+    if p2_policy == "p1_only":
+        return (
+            "Address remaining new P1 findings. Treat P2 findings as advisory unless one must be "
+            "fixed to complete the story safely."
+        )
+    return (
+        "Address remaining new P1 findings. Also fix any P2 finding that touches the code you "
+        "modify, or adjacent code relevant to that work."
+    )
 
 
 def build_fix_prompt(
@@ -71,6 +144,7 @@ def build_fix_prompt(
     surviving_families: list[dict] | None = None,
     conventions: list[str] | None = None,
     advisory_p2_only: bool = False,
+    p2_policy: str = "in_scope",
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -186,6 +260,8 @@ def build_fix_prompt(
 
         """) + "\n".join(history_lines)
 
+    context_sections += _render_fix_p2_policy_section(p2_policy, advisory_p2_only=advisory_p2_only)
+
     _conventions_block = render_conventions_block(conventions)
     if _conventions_block:
         context_sections += _conventions_block
@@ -258,7 +334,9 @@ def build_fix_prompt(
             {review_findings}""")
 
     _task_framing, _commit_step = _build_task_framing(
-        surviving_families, advisory_p2_only=advisory_p2_only
+        surviving_families,
+        p2_policy=p2_policy,
+        advisory_p2_only=advisory_p2_only,
     )
     _handoff_step = _commit_step + 1
 

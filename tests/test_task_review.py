@@ -608,6 +608,13 @@ class TestReviewPromptEvidenceRules:
         assert "Developer notes are claims, not" in prompt
         assert "verify technical claims" in prompt
 
+    def test_review_prompt_forbids_binding_pre_existing_skip_language(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, p2_policy="in_scope")
+        assert "Do NOT use phrases like `pre-existing`, `out of scope`" in prompt
+        assert "active P2 policy (`in_scope`)" in prompt
+
 
 class TestNotesConventionInReviewPrompt:
     """Verify review prompt includes Notes guidance."""

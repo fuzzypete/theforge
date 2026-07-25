@@ -594,6 +594,13 @@ class FindingClassifierConfig:
 
 
 @dataclass(frozen=True)
+class DevConfig:
+    """Non-model behavior controls for the DEV phase."""
+
+    p2_policy: str = "in_scope"  # "in_scope" | "all" | "p1_only"
+
+
+@dataclass(frozen=True)
 class SprintConfig:
     """Project-level sprint defaults from forge.yaml."""
 
@@ -725,6 +732,7 @@ class ForgeConfig:
     plan_agent_review: PlanAgentReviewConfig = field(default_factory=PlanAgentReviewConfig)
     log: LogConfig = field(default_factory=LogConfig)
     hooks: HooksConfig | None = None
+    dev: DevConfig = field(default_factory=DevConfig)
     sprint: SprintConfig = field(default_factory=SprintConfig)
     shape_check: ShapeCheckConfig = field(default_factory=ShapeCheckConfig)
     intake: IntakeConfig = field(default_factory=IntakeConfig)
