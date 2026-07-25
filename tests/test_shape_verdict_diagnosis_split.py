@@ -4,7 +4,7 @@ Drives three bug bodies through ``apply_shape_gate`` to assert the verdict
 each lands on per ADR-0001:
 
 1. No Diagnosis section → ``needs_diagnosis`` (skipped, blocking).
-2. Diagnosis with hypotheses ruled out but cause unknown →
+2. Diagnosis with complete required labels but cause unknown →
    ``diagnosis_cause_unknown`` (skipped from implementation sprints, but
    admissible — not malformed).
 3. Complete Diagnosis with confirmed cause → ``runnable``.
@@ -40,7 +40,6 @@ CAUSE_UNKNOWN_BODY = textwrap.dedent(
 
     - **Observed symptom.** Exit code flips between 0 and 1.
     - **Evidence.** Run id `abcd1234`, log lines 42-55.
-    - **Ruled out.** Network flake (verified offline), gate cache (cleared).
     - **Confirmed cause.** Not yet identified — investigating provider retry path.
     - **Affected code path.** unknown; suspected coordinator/runner.py.
     - **Fix-success criterion.** Exit code is deterministic across 100 runs.
@@ -59,7 +58,6 @@ COMPLETE_DIAGNOSIS_BODY = textwrap.dedent(
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
     - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
-    - **Ruled out.** Workspace creation actually succeeds (verified in logs).
     - **Confirmed cause.** `_is_already_merged` requires at least one commit ahead.
     - **Affected code path.** sprint.runner._is_already_merged.
     - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.

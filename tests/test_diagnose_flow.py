@@ -35,22 +35,41 @@ from theforge.task.diagnose_prompts import (
 )
 
 
-def _agent_yaml_output(*, confirmed: bool = True, partial: bool = False) -> str:
+def _agent_yaml_output(
+    *, hypothesis_statuses: tuple[str, ...] = ("ruled_out", "confirmed")
+) -> str:
+    confirmed = "confirmed" in hypothesis_statuses
+    hypotheses = []
+    template = (
+        (
+            "DAG scheduler skips dependents when blocker fails",
+            "Logs show no failed blockers in this run",
+        ),
+        (
+            "Worker pool size off-by-one",
+            "scheduler.py:142 reserves N-1 slots when N requested",
+        ),
+    )
+    for idx, status in enumerate(hypothesis_statuses):
+        statement, evidence = (
+            template[idx]
+            if idx < len(template)
+            else (
+                f"Hypothesis {idx + 1}",
+                f"evidence {idx + 1}",
+            )
+        )
+        hypotheses.append(
+            {
+                "statement": statement,
+                "status": status,
+                "evidence": evidence,
+            }
+        )
     payload = {
         "observed_symptom": "Sprint flow drops the third story silently",
         "reproduction_or_evidence": "Run forge sprint --issues 1,2,3 — story 3 never starts",
-        "hypotheses": [
-            {
-                "statement": "DAG scheduler skips dependents when blocker fails",
-                "status": "ruled_out",
-                "evidence": "Logs show no failed blockers in this run",
-            },
-            {
-                "statement": "Worker pool size off-by-one",
-                "status": "confirmed" if confirmed else "inconclusive",
-                "evidence": "scheduler.py:142 reserves N-1 slots when N requested",
-            },
-        ],
+        "hypotheses": hypotheses,
         "confirmed_cause": (
             "Worker pool reserves N-1 slots in scheduler.py:142" if confirmed else ""
         ),
@@ -160,7 +179,9 @@ class TestParseDiagnoseOutput:
 
     def test_partial_flag_propagates(self):
         artifact = parse_diagnose_output(
-            _agent_yaml_output(confirmed=False), issue_number=1, partial=True
+            _agent_yaml_output(hypothesis_statuses=("ruled_out", "inconclusive")),
+            issue_number=1,
+            partial=True,
         )
         assert artifact is not None
         assert artifact.partial is True
@@ -385,7 +406,9 @@ class TestDiagnoseFlow:
             "body": "y",
             "state": "OPEN",
         }
-        mock_agent.return_value = _fake_agent_result(_agent_yaml_output(confirmed=False))
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(hypothesis_statuses=("ruled_out", "inconclusive"))
+        )
         mock_post.return_value = "https://example/comment"
 
         from theforge.coordinator.diagnose_flow import run_diagnose_flow
@@ -456,7 +479,9 @@ class TestDiagnoseFlow:
             "body": original_body,
             "state": "OPEN",
         }
-        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(hypothesis_statuses=("confirmed",))
+        )
 
         # No explicit output_destination — exercise the default contract.
         result = run_diagnose_flow(

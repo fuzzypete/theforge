@@ -38,7 +38,6 @@ _COMPLIANT_BODY = textwrap.dedent(
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
     - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
-    - **Ruled out.** Workspace creation actually succeeds (verified in logs).
     - **Confirmed cause.** `_is_already_merged` requires at least one commit ahead.
     - **Affected code path.** sprint.runner._is_already_merged.
     - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.
@@ -54,7 +53,6 @@ _LABEL_MISMATCH_BODY = textwrap.dedent(
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
     - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
-    - **Ruled out.** Workspace creation actually succeeds (verified in logs).
     - **Root cause.** `_is_already_merged` requires at least one commit ahead.
     - **Affected code path.** sprint.runner._is_already_merged.
     - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.

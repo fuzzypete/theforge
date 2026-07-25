@@ -4,9 +4,9 @@ Operates on a single typed issue (bug, enhancement/task, etc.) and produces
 a proposed body restructure that satisfies the shape gate for its type.
 
 Enforces the three-state bug invariant from ADR-0001: bugs without a
-diagnosis are refused; bugs whose diagnosis documents ruled-out hypotheses
-but lacks a confirmed cause may be normalized but MUST NOT transition to
-the ``ready`` label; only bugs with a confirmed cause are eligible for
+diagnosis are refused; bugs whose diagnosis is complete but lacks an
+asserted confirmed cause may be normalized but MUST NOT transition to the
+``ready`` label; only bugs with a confirmed cause are eligible for
 ``ready``.
 
 Stdlib + ``shape_check``/``intake`` modules only — no provider SDK imports.
