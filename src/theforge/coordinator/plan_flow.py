@@ -679,7 +679,9 @@ def _run_plan_phase(
                 "phase": "PLAN",
                 "iteration": 0,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                **_cu.live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "detail": {
                     "plan_attempt": state.plan_regen_count + 1,
                     "plan_max_attempts": config.retry.max_plan_regen_attempts,
@@ -738,7 +740,9 @@ def _run_plan_phase(
                 "phase": "PLAN",
                 "iteration": 0,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                **_cu.live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "current_model": plan_profile.model,
                 "detail": {
                     "plan_attempt": state.plan_regen_count + 1,
@@ -1013,6 +1017,7 @@ def _run_plan_agent_review(
             iteration=_attempt,
             cost_usd=state.total_cost,
             complexity=state.preflight_complexity,
+            complexity_score=state.preflight_complexity_score,
             state_update_fn=state_update_fn,
         )
         # Capture per-reviewer wall-clock from the initial pool fan-out so the

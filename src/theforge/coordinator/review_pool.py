@@ -745,6 +745,7 @@ def _run_review_pool(
         iteration=state.review_cycle + 1,
         cost_usd=state.total_cost,
         complexity=state.preflight_complexity,
+        complexity_score=state.preflight_complexity_score,
         state_update_fn=state_update_fn,
     )
     pool_results = run_agent_pool(

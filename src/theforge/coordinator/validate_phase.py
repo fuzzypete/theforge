@@ -586,7 +586,9 @@ def _run_validate_phase(
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                **_cu.live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "detail": {"gate_status": gate_decision},
             }
         )
