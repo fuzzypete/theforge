@@ -34,6 +34,7 @@ from theforge.coordinator.preflight import (
     _parse_preflight_complexity,
     _parse_preflight_warnings,
 )
+from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState, Phase
 
 # ── Preflight phase tests ─────────────────────────────────────────────
@@ -922,6 +923,7 @@ criteria_checked: []
             "worktree_head": "OK",
             "evaluation_base_branch": "main",
             "evaluation_base_branch_head": "OK",
+            "story_content_hash": _story_content_hash(task.story_path.read_text(encoding="utf-8")),
         }
 
         with (

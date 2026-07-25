@@ -961,6 +961,7 @@ def run_task(
                 cached_preflight_state,
                 config=config,
                 workspace_path=workspace_path,
+                story_content=story_content,
             )
             state.preflight_cache_validation = cache_validation
             if cache_valid:
@@ -1273,6 +1274,7 @@ def _run_resume_coordinator(
             cached_preflight_state,
             config=config,
             workspace_path=workspace_path,
+            story_content=story_content,
         )
         state.preflight_cache_validation = cache_validation
         if cache_valid:

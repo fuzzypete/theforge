@@ -22,8 +22,11 @@ from coord_test_helpers import (
 )
 
 from theforge.coordinator.engine import run_from_dev, run_from_review, run_task
+from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState
 from theforge.task import TaskStory
+
+_STORY_CONTENT_HASH = _story_content_hash("# Test\n\nDo the thing.")
 
 
 def _make_cached_state(
@@ -44,6 +47,7 @@ def _make_cached_state(
         "worktree_head": "OK",
         "evaluation_base_branch": "main",
         "evaluation_base_branch_head": "OK",
+        "story_content_hash": _STORY_CONTENT_HASH,
     }
     state.run_id = "prior-run-id"
     return state

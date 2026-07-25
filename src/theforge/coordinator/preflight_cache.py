@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,12 +20,22 @@ def _git_rev_parse(cwd: Path, rev: str) -> str | None:
     return value or None
 
 
+def _story_content_hash(story_content: str) -> str:
+    return hashlib.sha256(story_content.encode("utf-8")).hexdigest()
+
+
 def capture_preflight_cache_snapshot(
     *,
     config: "ForgeConfig",
     workspace_path: Path,
+    story_content: str,
 ) -> dict[str, str]:
-    """Return the git-state fingerprint that makes a preflight verdict reusable."""
+    """Return the fingerprint that makes a preflight verdict reusable.
+
+    A preflight verdict is a judgement about a specific story text evaluated
+    against a specific tree state, so both must be captured for the cached
+    verdict to be validly reusable.
+    """
     snapshot: dict[str, str] = {}
 
     worktree_head = _git_rev_parse(workspace_path, "HEAD")
@@ -37,6 +48,8 @@ def capture_preflight_cache_snapshot(
     if base_branch_head is not None:
         snapshot["evaluation_base_branch_head"] = base_branch_head
 
+    snapshot["story_content_hash"] = _story_content_hash(story_content)
+
     return snapshot
 
 
@@ -45,12 +58,14 @@ def validate_preflight_cache(
     *,
     config: "ForgeConfig",
     workspace_path: Path,
+    story_content: str,
 ) -> tuple[bool, dict[str, Any]]:
-    """Return whether cached preflight can be reused for the current git state."""
+    """Return whether cached preflight can be reused for the current state."""
     snapshot = dict(getattr(cached_state, "preflight_cache_snapshot", {}) or {})
     current_worktree_head = _git_rev_parse(workspace_path, "HEAD")
     current_base_branch = config.workspace.base_branch
     current_base_branch_head = _git_rev_parse(config.project_root, current_base_branch)
+    current_story_content_hash = _story_content_hash(story_content)
 
     validation: dict[str, Any] = {
         "cached": bool(snapshot),
@@ -60,6 +75,8 @@ def validate_preflight_cache(
         "current_evaluation_base_branch": current_base_branch,
         "cached_evaluation_base_branch_head": snapshot.get("evaluation_base_branch_head"),
         "current_evaluation_base_branch_head": current_base_branch_head,
+        "cached_story_content_hash": snapshot.get("story_content_hash"),
+        "current_story_content_hash": current_story_content_hash,
     }
 
     if not snapshot:
@@ -71,6 +88,7 @@ def validate_preflight_cache(
         snapshot.get("worktree_head"),
         snapshot.get("evaluation_base_branch"),
         snapshot.get("evaluation_base_branch_head"),
+        snapshot.get("story_content_hash"),
         current_worktree_head,
         current_base_branch_head,
     )
@@ -92,6 +110,11 @@ def validate_preflight_cache(
     if snapshot["evaluation_base_branch_head"] != current_base_branch_head:
         validation["status"] = "invalidated"
         validation["reason"] = "evaluation_base_branch_head_changed"
+        return False, validation
+
+    if snapshot["story_content_hash"] != current_story_content_hash:
+        validation["status"] = "invalidated"
+        validation["reason"] = "story_content_changed"
         return False, validation
 
     validation["status"] = "accepted"
