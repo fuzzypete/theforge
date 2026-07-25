@@ -79,7 +79,14 @@ from .state import (
     ReviewCycleMetadata,
     ReviewIterationTelemetry,
 )
-from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_shell
+from .util import (
+    _fmt_duration,
+    _log,
+    _log_phase,
+    _log_verbose,
+    _run_shell,
+    live_complexity_fields,
+)
 
 
 def _perform_dev_model_escalation(
@@ -977,7 +984,9 @@ def _run_review_phase(
                 "phase": "REVIEW",
                 "iteration": state.review_cycle + 1,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                **live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "current_model": f"panel({len(config.review_pool)})",
                 # Populate detail on REVIEW entry so STAGE renders cycle=N/M and
                 # the stale prior-phase detail (e.g. GATE/VALIDATE gate_status) is
@@ -1260,7 +1269,9 @@ def _run_review_phase(
                 "phase": "REVIEW",
                 "iteration": state.review_cycle,
                 "cost_usd": state.total_cost,
-                "complexity": state.preflight_complexity,
+                **live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
                 "detail": {
                     # Re-include cycle context so the wholesale detail replace at
                     # story_state.transition does not wipe STAGE after a cycle

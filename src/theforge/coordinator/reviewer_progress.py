@@ -27,6 +27,8 @@ import threading
 import time
 from typing import Callable
 
+from .util import live_complexity_fields
+
 
 class ReviewerProgressChannel:
     """Thread-safe aggregator of per-reviewer progress events.
@@ -45,11 +47,13 @@ class ReviewerProgressChannel:
         cost_usd: float,
         complexity: object,
         state_update_fn: "Callable[[dict], None] | None",
+        complexity_score: "int | None" = None,
     ) -> None:
         self._phase = phase
         self._iteration = iteration
         self._cost_usd = cost_usd
         self._complexity = complexity
+        self._complexity_score = complexity_score
         self._state_update_fn = state_update_fn
         self._lock = threading.Lock()
         self._progress: dict[str, dict] = {
@@ -138,7 +142,11 @@ class ReviewerProgressChannel:
                     "phase": self._phase,
                     "iteration": self._iteration,
                     "cost_usd": self._cost_usd,
-                    "complexity": self._complexity,
+                    # Carry the numeric score alongside the band so a progress
+                    # frame cannot overwrite a numeric live display with band-only
+                    # state. When no score is known the key is omitted, preserving
+                    # any score prior phases established (never clearing it).
+                    **live_complexity_fields(self._complexity, self._complexity_score),
                     "detail": detail,
                 }
             )
