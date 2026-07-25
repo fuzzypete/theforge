@@ -172,6 +172,7 @@ def build_review_prompt(
     sandboxed: bool = True,
     containment: str | None = None,
     fix_claim_flags: list[str] | None = None,
+    p2_policy: str = "in_scope",
 ) -> str:
     """Build the review agent prompt.
 
@@ -231,6 +232,13 @@ def build_review_prompt(
             changes in these commits. Pre-existing issues in code not modified
             by these commits are P2, not P1, regardless of severity.
             Do NOT escalate speculative or style concerns to P1 in this section.
+
+            When reporting a P2, do NOT frame it as "pre-existing, so skip it"
+            or "out of scope" in a way that creates binding permission for the
+            next dev agent to ignore it. Describe the defect and why it matters;
+            the dev agent decides whether that P2 is in-scope for the current
+            run under the active P2 policy (`{p2_policy}`) and its proximity to
+            the code being changed.
 
         """)
 
@@ -508,6 +516,11 @@ def build_review_prompt(
           REQUEST_CHANGES is far better than discovering new issues across
           review cycles.
         - Do NOT invent issues. Only report problems you can find in the source.
+        - Do NOT use phrases like `pre-existing`, `out of scope`, or similar
+          as binding permission for the next dev agent to skip a P2. Report the
+          defect and why it matters; the dev agent decides whether that P2 is
+          in-scope for the current run under the active P2 policy (`{p2_policy}`)
+          and its proximity to the code being changed.
         - Do NOT flag the same issue that was already flagged and fixed in a
           previous review cycle.
         - `findings[]` is only for defects in the current code under review.

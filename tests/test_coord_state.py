@@ -277,6 +277,8 @@ class TestStructuredLoggingIntegration:
         # All events share the same run_id
         run_ids = {_json.loads(line)["run_id"] for line in lines}
         assert len(run_ids) == 1
+        run_start = next(entry for entry in entries if entry["event"] == "run_start")
+        assert run_start["p2_policy"] == "in_scope"
 
         preflight_phase_end = next(
             entry

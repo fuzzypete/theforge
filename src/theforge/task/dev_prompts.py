@@ -9,6 +9,57 @@ from .plan_parser import PlanData
 from .story import TaskStory
 
 
+def _render_dev_p2_policy_section(p2_policy: str) -> str:
+    if p2_policy == "all":
+        body = (
+            "Active mode: `all`.\n\n"
+            "P1 findings remain mandatory. Treat every open P2 you encounter in the repo as "
+            "in-scope for this run, even when it is not adjacent to the current story work. "
+            "Do not defer a discovered P2 just because it is labeled P2."
+        )
+    elif p2_policy == "p1_only":
+        body = (
+            "Active mode: `p1_only`.\n\n"
+            "P1 findings remain mandatory. Treat P2 findings as advisory unless fixing one is "
+            "required to complete the story correctly or avoid a regression."
+        )
+    else:
+        body = (
+            "Active mode: `in_scope`.\n\n"
+            "P1 findings remain mandatory. P2 findings touching the code you modify, or adjacent "
+            "code you must reason about to complete the change safely, are in-scope for this run. "
+            "Fix those P2s now instead of deferring them. Review labels like `pre-existing` or "
+            "`out of scope` are advisory only; you must evaluate proximity and relevance against "
+            "the current change yourself."
+        )
+    return dedent(
+        f"""\
+
+            ## Dev P2 Policy
+
+            {body}
+        """
+    )
+
+
+def _review_findings_instruction(p2_policy: str) -> str:
+    if p2_policy == "all":
+        return (
+            "You MUST address ALL P1 findings and ALL P2 findings before considering your work "
+            "complete."
+        )
+    if p2_policy == "p1_only":
+        return (
+            "You MUST address ALL P1 findings before considering your work complete. P2 findings "
+            "are advisory unless one must be fixed to complete the story safely."
+        )
+    return (
+        "You MUST address ALL P1 findings before considering your work complete. Any P2 finding "
+        "that touches the code you modified, or adjacent code relevant to that change, is "
+        "in-scope for this run and must be fixed now rather than deferred."
+    )
+
+
 def build_dev_prompt(
     task: TaskStory,
     *,
@@ -31,6 +82,7 @@ def build_dev_prompt(
     contract_change: bool = False,
     conventions: list[str] | None = None,
     assembled_context: ContextPack | None = None,
+    p2_policy: str = "in_scope",
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -103,9 +155,8 @@ def build_dev_prompt(
 
             ## CRITICAL: Review Findings from Previous Iteration
 
-            The following findings were identified by the code reviewer. You MUST address
-            ALL P1 findings before considering your work complete. P2 findings should be
-            addressed if feasible.
+            The following findings were identified by the code reviewer.
+            {_review_findings_instruction(p2_policy)}
 
             {review_findings}
 
@@ -196,6 +247,8 @@ def build_dev_prompt(
 
             {assembled_context.content}
         """)
+
+    policy_section = _render_dev_p2_policy_section(p2_policy)
 
     if test_command and test_command != gate_command:
         test_section = dedent(f"""\
@@ -293,7 +346,7 @@ def build_dev_prompt(
         > most reasonable interpretation and flag the ambiguity in `dev_notes`.
 
         {story_content}
-        {feedback_section}{preflight_section}{context_section}{test_section}{
+        {feedback_section}{preflight_section}{context_section}{policy_section}{test_section}{
         render_conventions_block(conventions)
     }
         {webfetch_section}
