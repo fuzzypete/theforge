@@ -537,20 +537,18 @@ def _run_preflight_phase(
                 "(blast radius enumeration required)"
             )
         # Also ensure planning actually runs — plan phase is gated on medium/large.
-        if contract_change and complexity == "small":
-            complexity = "medium"
-            state.preflight_complexity = complexity
-            # Also bump the score so downstream consumers that read the raw
-            # number see the upgrade, not just the enum.
-            if (
-                state.preflight_complexity_score is not None
-                and state.preflight_complexity_score < 4
-            ):
+        # The score is authoritative; the legacy enum is derived from that floor.
+        if contract_change:
+            implementation_score = state.preflight_complexity_score
+            if implementation_score is None or implementation_score < 5:
                 state.preflight_complexity_score = 5
-            _log(
-                "  ↑ contract_change=true: upgrading complexity small→medium "
-                "(cross-cutting blast radius)"
-            )
+                complexity = score_to_band(state.preflight_complexity_score)
+                state.preflight_complexity = complexity
+                _log(
+                    "  ↑ contract_change=true: raising implementation "
+                    "complexity_score to 5 "
+                    f"(legacy band={complexity}; cross-cutting blast radius)"
+                )
 
         # Bug stories describe symptom context (what went wrong, what was expected),
         # not fix scope. The keyword patterns match domain vocabulary in the bug
