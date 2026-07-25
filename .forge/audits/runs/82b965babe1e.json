@@ -1,0 +1,1944 @@
+{
+  "schema_version": 9,
+  "run_id": "82b965babe1e",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "forge diagnose emits a Diagnosis section the intake gate rejects when no hypothesis is ruled out",
+    "slug": "issue-1904",
+    "story_path": null,
+    "story_text": "Depends on: #1910\n\n## What happened\n\n`forge diagnose` renders its `## Diagnosis` artifact so that the sprint intake shape gate accepts the issue as fix-ready. That contract holds only when the diagnose run happened to record at least one hypothesis with status `ruled_out`.\n\nThe rendered section acquires the literal token `ruled out` from exactly one place: a per-hypothesis status string lowered inside the \"Hypotheses tested\" list. A run that goes straight to a confirmed cause, that records only `confirmed` / `inconclusive` hypotheses, or that records none at all, emits a structurally complete Diagnosis section which the gate then rejects as missing a required component. The issue is left not fix-ready and the next sprint refuses it at intake.\n\nReproduced on `release/v0.13` (`f1e8e38`) by rendering one artifact with identical content and only the hypothesis statuses varied:\n\n| hypotheses recorded | gate complete | missing | fix_ready |\n| --- | --- | --- | --- |\n| one `ruled_out` + one `confirmed` | yes | \u2014 | true |\n| only `confirmed` | no | `ruled out` | false |\n| `confirmed` + `inconclusive` | no | `ruled out` | false |\n| none recorded | no | `ruled out` | false |\n\n## Diagnosis\n\n- **Observed symptom:** a `forge diagnose` run that lands a complete-looking `## Diagnosis` section on an issue can still leave that issue not fix-ready, so the next `forge sprint` refuses it at intake.\n- **Evidence:** rendering a diagnosis artifact with identical content and only hypothesis statuses varied flips the completeness check from `(True, [])` to `(False, ['ruled out'])` and fix-readiness from `True` to `False` (table above, executed against `f1e8e38`). The seam test that asserts this producer/consumer contract passes only because its fixture hardcodes a `ruled_out` hypothesis.\n- **Ruled out:** a format mismatch between the `###` subsection headings diagnose emits and a bold-bullet shape the gate supposedly demands \u2014 the gate is a case-insensitive substring scan over the section text, has behaved that way since before the required-component spec was centralized, and is present in the `v0.13.0rc2` tag the original report ran against, so headings satisfy it. Also ruled out: version skew between the diagnose writer and the sprint reader, since both behaviours ship in that same tag.\n- **Confirmed cause:** the renderer's satisfaction of the gate is conditional on run content rather than structural. The `ruled out` token appears in the output only as a side effect of some hypothesis carrying that status, while the gate treats that component as unconditionally required.\n- **Affected code path:** `src/theforge/diagnose_types.py` (`render_artifact_markdown`, hypotheses loop) against `src/theforge/shape_check/heuristics.py` (`diagnosis_completeness`, `derive_fix_ready`) and the required-component spec in `src/theforge/shape_check/diagnosis_spec.py`; contract test at `tests/test_diagnose_flow.py::test_default_destination_lands_in_body_and_satisfies_shape_gate`.\n- **Fix-success criterion:** a diagnose run that records no ruled-out hypothesis yields an issue body intake accepts as fix-ready, and the diagnose-to-intake contract test no longer passes solely for fixtures that happen to include a ruled-out hypothesis.\n\n## Expected\n\nA producer and a consumer that share a required-shape contract must agree on that shape unconditionally. When one component renders an artifact specifically so another component's gate will accept it, acceptance cannot depend on which optional content a particular run happened to produce: every path that emits the artifact has to satisfy every component the gate requires, or the gate must stop requiring a component the producer cannot always supply. Contract tests spanning such a seam have to exercise the content-poor paths as well, because a fixture that always carries the optional content proves the contract holds only where it was never at risk.\n\n## Unresolved evidence\n\nThe original downstream report that opened this issue is not explained by the cause above, and is retained here as open evidence rather than closed out.\n\nOn that host, intake reported the bugs as having no Diagnosis section at all. That is a distinct gate branch, reached only when the `## Diagnosis` heading is not found in the body \u2014 not the missing-component branch reproduced above. Both issue bodies visibly contained a diagnose-produced section at the time.\n\nSettling it needs the exact issue body text that intake actually read for issues 226 and 227 on that host \u2014 the per-story artifacts from that sprint run, not the issue bodies as they stand now.\n",
+    "github_issue": 1904,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'forge diagnose emits a Diagnosis section the intake gate rejects when no hypothesis is ruled out' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-1904",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-25T19:22:47.736998+00:00",
+    "finished_at": "2026-07-25T19:32:25.293844+00:00",
+    "duration_seconds": 577.556846
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1904",
+    "branch": "feat/issue-1904"
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": null,
+        "duration_s": 267.47,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/reference/bug-shape.md",
+          "src/theforge/diagnose_types.py",
+          "src/theforge/intake/groom_flow.py",
+          "src/theforge/shape_check/diagnosis_spec.py",
+          "src/theforge/shape_check/heuristics.py",
+          "tests/test_diagnose_flow.py",
+          "tests/test_diagnosis_spec.py",
+          "tests/test_fix_readiness.py",
+          "tests/test_shape_verdict_diagnosis_split.py"
+        ],
+        "files_changed_count": 9,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 0.988414,
+        "duration_s": 92.04
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 6,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "openai-gpt-5.4",
+      "model_actual": "gpt-5.4",
+      "model_provider": null,
+      "model_cli": "codex",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 6,
+      "base_review": 5,
+      "profile_history_runs": 54,
+      "profile_avg_iterations": 1.1481,
+      "profile_avg_cost_usd": 0.0,
+      "profile_raw_dev_max": 1.7221,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 656.48,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 985,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": false,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 1350,
+      "chosen_dev_cost_estimate_usd": 0.01,
+      "review_history_sample_size": 17,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 54 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout scaled from static per-iteration baseline. review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-25T19:25:43.305582+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": null,
+    "review_usd": null,
+    "dev_invocations": 1,
+    "review_invocations": 2,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": null,
+        "duration_seconds": 267.46601875009947,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 45.94638460397255,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "claude-opus",
+        "cost_usd": 0.9884139999999999,
+        "duration_seconds": 45.94638460397255,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.016297
+          },
+          {
+            "model": "claude-opus-4-8",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.9721169999999999
+          }
+        ],
+        "model_used": "opus"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed the diagnosed cause with direct code evidence: diagnosis_spec.py's REQUIRED_DIAGNOSIS_COMPONENTS unconditionally requires a 'ruled out' token, but diagnose_types.py's render_artifact_markdown only emits that literal token as a side effect of a per-hypothesis 'ruled_out' status, so runs without one fail the gate. Fixing this requires coordinating the shared spec (diagnosis_spec.py) with its four derived consumers (shape-gate validator, finding messages, remediation prompt, generated bug-shape.md doc) plus the renderer and the existing contract test.",
+    "complexity": "medium",
+    "complexity_score": 6,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 3,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "3 operator-visible surfaces enumerated in acceptance criteria: forge diagnose, forge sprint, ruled out",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "cli"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.7787904999999999,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "6d16895f6651",
+    "cache_snapshot": {
+      "worktree_head": "828655a8cc9c1790762d27bf63b2c2ede53c1124",
+      "evaluation_base_branch": "main",
+      "evaluation_base_branch_head": "828655a8cc9c1790762d27bf63b2c2ede53c1124"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "828655a8cc9c1790762d27bf63b2c2ede53c1124",
+      "current_worktree_head": "828655a8cc9c1790762d27bf63b2c2ede53c1124",
+      "cached_evaluation_base_branch": "main",
+      "current_evaluation_base_branch": "main",
+      "cached_evaluation_base_branch_head": "828655a8cc9c1790762d27bf63b2c2ede53c1124",
+      "current_evaluation_base_branch_head": "828655a8cc9c1790762d27bf63b2c2ede53c1124",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "cost_usd": 0.5030973000000001,
+        "duration_s": 60.62,
+        "success": true,
+        "exit_code": 0
+      },
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "cost_usd": 0.7787904999999999,
+        "duration_s": 61.56,
+        "success": true,
+        "exit_code": 0
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 6,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "gpt-5.4",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 6 (MEDIUM) \u2192 tier mid (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 6; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "gpt-5.4",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 6,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1904/iter_1.yaml",
+      "handoff": {
+        "summary": "Removed the unconditional `Ruled out` requirement from the shared Diagnosis spec, updated dependent gate/advisory/docs copy to the new five-component contract, preserved diagnose rendering as structural-only, and strengthened the diagnose-to-intake seam coverage with a confirmed-only hypothesis fixture so fix-readiness now succeeds without a ruled-out hypothesis.",
+        "commits": [
+          {
+            "sha": "78e151a",
+            "message": "fix(shape): accept diagnosis without ruled-out hypothesis"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A diagnose run that records no ruled-out hypothesis yields an issue body intake accepts as fix-ready.",
+            "status": "MET",
+            "notes": "The required Diagnosis token set no longer includes `ruled out`, `diagnosis_completeness` accepts the rendered section without that token, and the diagnose flow seam test now exercises a confirmed-only hypothesis artifact."
+          },
+          {
+            "criterion": "The diagnose-to-intake contract test no longer passes solely for fixtures that happen to include a ruled-out hypothesis.",
+            "status": "MET",
+            "notes": "Updated `tests/test_diagnose_flow.py::test_default_destination_lands_in_body_and_satisfies_shape_gate` to use a confirmed-only hypothesis fixture, and adjusted related contract tests/docs to the five-component Diagnosis shape."
+          }
+        ],
+        "gate_result": "PASS",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "claude-opus"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "claude-opus"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "claude-opus": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The change removes the unconditional ruled-out token from the shared Diagnosis contract and verifies the diagnose-to-shape-gate seam with a no-ruled-out artifact. | [claude-opus] Removes the conditionally-supplied ruled out component from the shared Diagnosis spec so diagnose output is unconditionally fix-ready; single-source derivation, docs regeneration, and the strengthened confirmed-only seam test all hold up.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A diagnose run that records no ruled-out hypothesis yields an issue body intake accepts as fix-ready.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/shape_check/diagnosis_spec.py:74 defines the required Diagnosis components without a ruled-out entry, src/theforge/shape_check/heuristics.py:322 consumes that derived token set in diagnosis_completeness, and src/theforge/shape_check/heuristics.py:371 uses the same check in derive_fix_ready for bug readiness. tests/test_diagnose_flow.py:482 feeds a confirmed-only hypothesis fixture with no ruled-out status, and tests/test_diagnose_flow.py:501 asserts the edited issue body satisfies diagnosis_completeness; the targeted pytest run for this seam and related readiness tests passed."
+        },
+        {
+          "criterion": "The diagnose-to-intake contract test no longer passes solely for fixtures that happen to include a ruled-out hypothesis.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_diagnose_flow.py:461 keeps the default-destination diagnose-to-shape-gate seam test, tests/test_diagnose_flow.py:482 changes its fixture to hypothesis_statuses=(\"confirmed\",), and tests/test_diagnose_flow.py:501 checks the resulting body against diagnosis_completeness. src/theforge/diagnose_types.py:309 still renders hypothesis statuses as optional content rather than a required ruled-out structural label."
+        },
+        {
+          "criterion": "Symptom resolution: a forge diagnose run that lands a complete-looking Diagnosis section can still leave the issue not fix-ready when no hypothesis was ruled out, so the next sprint refuses it at intake.",
+          "status": "VERIFIED",
+          "evidence": "Root cause removed structurally: shape_check/diagnosis_spec.py deletes the ruled_out DiagnosisComponent, and required_diagnosis_tokens() (heuristics.py:223, 340) derives the validator token set from that list, so diagnosis_completeness no longer requires the ruled out token that render_artifact_markdown only emitted as a side effect of a hypothesis status. The producer/consumer seam is now exercised on the content-poor path: tests/test_diagnose_flow.py test_default_destination_lands_in_body_and_satisfies_shape_gate drives run_diagnose_flow with hypothesis_statuses=(\"confirmed\",), edits the issue body, and asserts diagnosis_completeness(new_body) is complete \u2014 this fixture would have failed before the fix. 134 tests pass across the four touched test files; 65 shape/doc tests confirm docs/reference/bug-shape.md regenerates without drift."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-opus",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] The plan's test file list is limited to tests/test_diagnose_flow.py, but changing REQUIRED_DIAGNOSIS_COMPONENTS will foreseeably break golden/contract tests that assert on the required-component set or generated doc: tests/test_diagnosis_spec.py, tests/test_diagnose_types.py, tests/test_fix_readiness.py, and tests/test_shape_verdict_diagnosis_split.py all reference the ruled-out requirement.\n  Suggestion: Dev should run the full suite after Step 1 and update these tests (and the regenerated docs/reference/bug-shape.md golden) to reflect the five-component contract.\n- [P2] [claude-opus] Stale comments/docstrings still assert the old count/requirement: heuristics.py:484 ('All six tokens present'), heuristics.py check_bug_missing_diagnosis docstring, and diagnose_types.py:130-132 ('hypotheses tested and ruled out') describe ruled-out as required. The _diagnosis_cause_unknown advisory (heuristics.py:451-464) uses its own _RULED_OUT_RE and is unaffected functionally, but its surrounding prose implies ruled-out is part of the required set.\n  Suggestion: Update the comments to match the new five-component contract; no logic change needed for the advisory branch.\n- [P1-impl] [google-gemini-3.5-flash] In src/theforge/shape_check/heuristics.py, _diagnosis_cause_unknown checks for _RULED_OUT_RE.search(section). If ruled out is no longer required for completeness, a complete Diagnosis section without ruled out but with confirmed cause: unknown would return False from _diagnosis_cause_unknown, causing it to be incorrectly classified as implementation-runnable instead of investigation-ready.\n- [P2] [google-gemini-3.5-flash] In tests/test_fix_readiness.py, test_partial_section asserts that 'ruled out' is in the list of missing tokens. This test will fail once 'ruled_out' is removed from REQUIRED_DIAGNOSIS_COMPONENTS.",
+    "cost_usd": null,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.588749
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "The plan's test file list is limited to tests/test_diagnose_flow.py, but changing REQUIRED_DIAGNOSIS_COMPONENTS will foreseeably break golden/contract tests that assert on the required-component set or generated doc: tests/test_diagnosis_spec.py, tests/test_diagnose_types.py, tests/test_fix_readiness.py, and tests/test_shape_verdict_diagnosis_split.py all reference the ruled-out requirement.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Stale comments/docstrings still assert the old count/requirement: heuristics.py:484 ('All six tokens present'), heuristics.py check_bug_missing_diagnosis docstring, and diagnose_types.py:130-132 ('hypotheses tested and ruled out') describe ruled-out as required. The _diagnosis_cause_unknown advisory (heuristics.py:451-464) uses its own _RULED_OUT_RE and is unaffected functionally, but its surrounding prose implies ruled-out is part of the required set.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "In src/theforge/shape_check/heuristics.py, _diagnosis_cause_unknown checks for _RULED_OUT_RE.search(section). If ruled out is no longer required for completeness, a complete Diagnosis section without ruled out but with confirmed cause: unknown would return False from _diagnosis_cause_unknown, causing it to be incorrectly classified as implementation-runnable instead of investigation-ready.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "In tests/test_fix_readiness.py, test_partial_section asserts that 'ruled out' is in the list of missing tokens. This test will fail once 'ruled_out' is removed from REQUIRED_DIAGNOSIS_COMPONENTS.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1926",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1904",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1926",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1926",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-25T19:32:25.293844+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "PASS",
+    "cost_usd": null,
+    "duration_s": 12.916531875031069,
+    "findings": []
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1283 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1353 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 768 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 907 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2166 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1581 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1410 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1595 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1808 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1055 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2004 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1100 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 840 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 929 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 872 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 816 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 982 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1222 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1201 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 3613 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 964 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1489 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1244 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1009 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 1811 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1165 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1084 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1376 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1476 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 2838 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1127 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1268 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1413 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 2,
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 6,
+      "base_tier_from_score": "mid",
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8333,
+              "weighted": 1.0,
+              "runs": 54,
+              "tainted_runs": 3,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 1.0
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 5,
+              "tainted_runs": 4,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 1.0,
+              "by_domain": {
+                "backend": {
+                  "runs": 3,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 3
+                },
+                "cli": {
+                  "runs": 2,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4",
+        "domain_head": "openai-gpt-5.4",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "cli"
+          ],
+          "raw": 1.0,
+          "weighted": 1.0,
+          "runs": 5,
+          "tainted_runs": 4,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 1.0,
+          "by_domain": {
+            "backend": {
+              "runs": 3,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 3
+            },
+            "cli": {
+              "runs": 2,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 1
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "fired": false,
+        "matching_records": 2,
+        "escalations": 0,
+        "outcome": "no_promotion"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "mid",
+        "to_tier": "mid"
+      },
+      "demotion_check": {
+        "mechanism": "dev_tier_demotion",
+        "applicable": false,
+        "fired": false,
+        "checked": null,
+        "reason": "no_dev_tier_demotion_mechanism_v1"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "mid",
+        "final_tier": "mid",
+        "plan_present": true,
+        "rationale": "plan_review_p2_exceeded"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+cli",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "openai-gpt-5.4",
+        "winner": "openai-gpt-5.4",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend",
+          "cli"
+        ]
+      },
+      "final": {
+        "model": "gpt-5.4",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 6 (MEDIUM) \u2192 tier mid (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 12,
+            "completed": 11,
+            "raw": 0.9167,
+            "weighted": 0.9218,
+            "rate": 0.9218,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 17,
+            "completed": 17,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 12,
+            "completed": 11,
+            "raw": 0.9167,
+            "weighted": 0.9218,
+            "rate": 0.9218,
+            "floor": "pass",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 6; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [
+    {
+      "check": "reviewer_tree_currency",
+      "result": "pass",
+      "producer": "coordinator.review_context.reviewer_tree_currency",
+      "evidence": {
+        "base_branch": "main",
+        "expected_commits": [
+          "78e151a fix(shape): accept diagnosis without ruled-out hypothesis"
+        ],
+        "actual_commits": [
+          "78e151a fix(shape): accept diagnosis without ruled-out hypothesis"
+        ],
+        "missing_from_branch": [],
+        "omitted_from_handoff": []
+      }
+    }
+  ],
+  "trust_status": "trusted",
+  "phases": {
+    "preflight": {
+      "cost_usd": 1.281888,
+      "duration_s": 122.18,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": null,
+      "duration_s": 19.7,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Make the shared Diagnosis contract unconditional by removing the required `ruled out` component from the gate-facing spec, then update derived guidance/docs and strengthen the diagnose-to-intake contract test so content-poor diagnosis artifacts are accepted. Leave the unrelated 'no Diagnosis section found' evidence explicitly out of scope.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Update the centralized required Diagnosis component contract",
+            "files": [
+              "src/theforge/shape_check/diagnosis_spec.py"
+            ],
+            "action": "modify",
+            "details": "Remove or demote the `ruled_out` DiagnosisComponent from `REQUIRED_DIAGNOSIS_COMPONENTS` so `required_diagnosis_tokens()` no longer makes the literal token `ruled out` mandatory for completeness. Keep the remaining required components aligned with content the diagnose renderer can always emit structurally."
+          },
+          {
+            "id": 2,
+            "description": "Adjust consumer-facing copy derived from the Diagnosis component contract",
+            "files": [
+              "src/theforge/shape_check/heuristics.py",
+              "src/theforge/intake/agent_rewrite.py",
+              "docs/reference/bug-shape.md"
+            ],
+            "action": "modify",
+            "details": "Update any findings, remediation prompt text, and generated or checked-in bug shape documentation that still describes `ruled out` as an unconditional required Diagnosis component. Preserve the existing validator behavior of scanning centralized required tokens; do not add special-case acceptance logic in the gate.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Keep diagnose artifact rendering structural and contract-aware",
+            "files": [
+              "src/theforge/diagnose_types.py"
+            ],
+            "action": "modify",
+            "details": "Review `render_artifact_markdown` after the contract change and remove any stale comment or coupling that says hypothesis status text exists to satisfy required gate tokens. Do not fabricate a fake ruled-out hypothesis or placeholder `ruled out` text; the renderer should continue rendering actual recorded hypotheses.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Strengthen the diagnose-to-intake seam test",
+            "files": [
+              "tests/test_diagnose_flow.py"
+            ],
+            "action": "modify",
+            "details": "Extend the existing diagnose artifact to intake shape-gate test coverage so it exercises at least one path with no `ruled_out` hypothesis, preferably a confirmed-only or no-hypotheses artifact, and asserts `diagnosis_completeness` and fix-readiness succeed. Keep the existing ruled-out fixture only if it still adds value beyond the new content-poor case.",
+            "depends_on": [
+              1,
+              3
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "A diagnose run that records no ruled-out hypothesis yields an issue body intake accepts as fix-ready.",
+            "steps": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          {
+            "criterion": "The diagnose-to-intake contract test no longer passes solely for fixtures that happen to include a ruled-out hypothesis.",
+            "steps": [
+              4
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The required-component spec appears to feed validator behavior, user-facing findings, rewrite prompts, and documentation; changing only the validator would create a producer/consumer/documentation mismatch.",
+            "mitigation": "Make the spec the source of truth and update derived text/docs in the same change; avoid local exceptions in `heuristics.py`."
+          },
+          {
+            "description": "Removing `ruled out` as required may be mistaken for removing support for ruled-out hypotheses entirely.",
+            "mitigation": "Keep rendering actual `ruled_out` hypotheses unchanged; only stop requiring that optional evidence category for completeness."
+          },
+          {
+            "description": "The unresolved downstream report about intake not finding a Diagnosis section is a distinct branch from this bug.",
+            "mitigation": "Do not broaden this fix to heading detection or issue body retrieval; mention in tests or commit notes that this story addresses only missing required-component rejection."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": null,
+      "duration_s": 133.09,
+      "iterations": 2,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.588749
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": null,
+      "duration_s": 267.47,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 33.82,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 91.89,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-opus": {
+          "cost": 0.988414,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 668.14,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "625cc48167e8",
+  "sprint_name": "issues-1904"
+}
