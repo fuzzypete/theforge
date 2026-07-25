@@ -71,14 +71,21 @@ class TestRunShellTimeout:
 
 def test_run_shell_defaults_to_workspace_venv_env(tmp_path: Path) -> None:
     venv_bin = tmp_path / ".venv" / "bin"
-    venv_bin.mkdir(parents=True)
+    venv_bin.mkdir(parents=True, exist_ok=True)
+    expected_env = {
+        "PATH": os.pathsep.join([str(venv_bin), "/usr/bin"]),
+        "VIRTUAL_ENV": str(tmp_path / ".venv"),
+    }
     proc = MagicMock()
     proc.communicate.return_value = ("ok\n", "")
     proc.returncode = 0
     proc.stdout = MagicMock()
     proc.stderr = MagicMock()
 
-    with patch("theforge.coordinator.util.subprocess.Popen", return_value=proc) as mock_popen:
+    with (
+        patch("theforge.coordinator.util.build_workspace_env", return_value=expected_env),
+        patch("theforge.coordinator.util.subprocess.Popen", return_value=proc) as mock_popen,
+    ):
         ok, output = coord_util._run_shell("python -V", tmp_path)
 
     env_passed = mock_popen.call_args[1]["env"]

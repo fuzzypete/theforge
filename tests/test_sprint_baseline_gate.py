@@ -94,6 +94,7 @@ def _init_repo(tmp_path: Path) -> tuple[ForgeConfig, ResolvedSprint, str]:
     _git(tmp_path, "init", "-b", "main")
     _git(tmp_path, "config", "user.name", "Test User")
     _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / ".python-version").write_text("3.12.12\n", encoding="utf-8")
     (tmp_path / "baseline.txt").write_text("BASELINE\n", encoding="utf-8")
     base_commit = _commit_all(tmp_path, "base")
     _git(tmp_path, "checkout", "-b", "feat/test")

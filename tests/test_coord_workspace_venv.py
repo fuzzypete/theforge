@@ -8,8 +8,13 @@ from coord_test_helpers import _make_config, _make_task
 from theforge.coordinator.workspace import _FORGE_ARTIFACTS, _create_workspace, _run_setup_split
 
 
+def _write_workspace_pin(workspace_path) -> None:
+    (workspace_path / ".python-version").write_text("3.12.12\n", encoding="utf-8")
+
+
 class TestRunSetupSplitVenvBehavior:
     def test_template_guard_always_runs_install_even_when_venv_exists(self, tmp_path):
+        _write_workspace_pin(tmp_path)
         cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e '.[all]')"
         calls = []
 
@@ -26,6 +31,7 @@ class TestRunSetupSplitVenvBehavior:
         assert calls[1] == "pip install -e '.[all]'"
 
     def test_legacy_guard_always_runs_install_even_when_venv_exists(self, tmp_path):
+        _write_workspace_pin(tmp_path)
         cmd = "test -d .venv || (python -m venv .venv && pip install -e '.[all]')"
         calls = []
 
@@ -41,11 +47,43 @@ class TestRunSetupSplitVenvBehavior:
         assert calls[0] == "test -d .venv || python -m venv .venv"
         assert calls[1] == "pip install -e '.[all]'"
 
+    def test_template_guard_reprovisions_stale_venv(self, tmp_path):
+        _write_workspace_pin(tmp_path)
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+            "\n".join(
+                [
+                    "home = /Users/example/.pyenv/versions/3.11.9/bin",
+                    "include-system-site-packages = false",
+                    "version = 3.11.9",
+                    "executable = /Users/example/.pyenv/versions/3.11.9/bin/python3.11",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e '.[all]')"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kwargs):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert not (tmp_path / ".venv" / "pyvenv.cfg").exists()
+        assert len(calls) == 2
+        assert "python3.12" in calls[0]
+
 
 class TestRunSetupSplitCommandTracking:
     @patch("theforge.coordinator.workspace._cu._log")
     @patch("theforge.coordinator.workspace._cu._run_shell")
     def test_logs_and_records_changed_setup_command(self, mock_shell, mock_log, tmp_path):
+        _write_workspace_pin(tmp_path)
         forge_dir = tmp_path / ".forge"
         forge_dir.mkdir()
         (forge_dir / "last_setup_command").write_text("pip install -e .", encoding="utf-8")
@@ -61,6 +99,7 @@ class TestRunSetupSplitCommandTracking:
     @patch("theforge.coordinator.workspace._cu._log")
     @patch("theforge.coordinator.workspace._cu._run_shell")
     def test_no_log_when_setup_command_unchanged(self, mock_shell, mock_log, tmp_path):
+        _write_workspace_pin(tmp_path)
         forge_dir = tmp_path / ".forge"
         forge_dir.mkdir()
         cmd = "pip install -e '.[all]'"

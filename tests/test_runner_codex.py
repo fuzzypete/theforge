@@ -12,6 +12,7 @@ import pytest
 
 from theforge.config import ModelProfile
 from theforge.runners.runner_codex import _run_codex
+from theforge.workspace_env import resolve_workspace_python
 
 # Spawn seam patched by the argv-construction tests below.
 _RUN_TARGET = "theforge.runners.runner_codex.process_group.run_in_process_group"
@@ -44,6 +45,25 @@ def _make_subprocess_mock(returncode: int = 0) -> MagicMock:
 def _extract_codex_cmd(mock_run: MagicMock) -> list[str]:
     """Return the cmd list from the process_group.run_in_process_group call."""
     return mock_run.call_args[0][0]
+
+
+def _write_matching_workspace_venv(tmp_path: Path) -> None:
+    (tmp_path / ".python-version").write_text("3.12.12\n", encoding="utf-8")
+    resolved = resolve_workspace_python(tmp_path)
+    cfg = tmp_path / ".venv" / "pyvenv.cfg"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        "\n".join(
+            [
+                f"home = {resolved.executable.parent}",
+                "include-system-site-packages = false",
+                f"version = {resolved.version}",
+                f"executable = {resolved.executable}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 class TestCodexSandboxFlag:
@@ -159,8 +179,9 @@ class TestCodexSandboxFlag:
     def test_uses_workspace_venv_env(self, tmp_path: Path) -> None:
         """Codex subprocess env prefers the worktree virtualenv."""
         profile = _make_profile(sandbox_mode="none")
+        _write_matching_workspace_venv(tmp_path)
         venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
+        venv_bin.mkdir(parents=True, exist_ok=True)
         mock_proc = _make_subprocess_mock()
 
         with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):

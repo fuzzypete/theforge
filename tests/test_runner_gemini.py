@@ -140,12 +140,21 @@ class TestGeminiSandboxWrapper:
         """Gemini subprocess env prefers the worktree virtualenv."""
         profile = _make_profile(sandbox_mode="none")
         venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
+        venv_bin.mkdir(parents=True, exist_ok=True)
+        expected_env = {
+            "PATH": os.pathsep.join([str(venv_bin), "/usr/bin"]),
+            "VIRTUAL_ENV": str(tmp_path / ".venv"),
+            "GOOGLE_API_KEY": "secret",
+        }
         mock_proc = _make_subprocess_mock()
 
-        with patch(
-            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with (
+            patch("theforge.runners.runner_gemini.build_workspace_env", return_value=expected_env),
+            patch(
+                "theforge.runners.runner_gemini.subprocess.run",
+                return_value=mock_proc,
+            ) as mock_run,
+        ):
             _run_gemini(
                 prompt="debug run",
                 profile=profile,

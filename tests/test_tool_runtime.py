@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from unittest.mock import patch
 
 from theforge.runners.tool_runtime import (
     MAX_TOOL_OUTPUT_BYTES,
@@ -153,7 +154,11 @@ class TestBash:
 
     def test_bash_uses_workspace_venv_env(self, tmp_path, monkeypatch):
         venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
+        venv_bin.mkdir(parents=True, exist_ok=True)
+        expected_env = {
+            "PATH": os.pathsep.join([str(venv_bin), "/usr/bin"]),
+            "VIRTUAL_ENV": str(tmp_path / ".venv"),
+        }
         captured_env = {}
 
         def fake_run(*args, **kwargs):
@@ -163,8 +168,8 @@ class TestBash:
             )
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-
-        result = _handle_bash(command="python -V", working_dir=tmp_path)
+        with patch("theforge.runners.tool_runtime.build_workspace_env", return_value=expected_env):
+            result = _handle_bash(command="python -V", working_dir=tmp_path)
 
         assert "Exit code: 0" in result
         assert captured_env["PATH"].split(os.pathsep)[0] == str(venv_bin)

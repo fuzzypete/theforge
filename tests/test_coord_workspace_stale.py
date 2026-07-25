@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from coord_test_helpers import (
@@ -34,6 +35,7 @@ from theforge.config import (
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase
 from theforge.coordinator.workspace import _create_workspace, _is_stale_worktree, _remove_worktree
+from theforge.workspace_env import resolve_workspace_python
 
 # ── Shared helper ─────────────────────────────────────────────────
 
@@ -57,6 +59,10 @@ def _make_stale_config(tmp_path: Path, stale_worktree_days: int = 1) -> ForgeCon
         synthesis_profile=None,
         retry=RetryPolicy(),
     )
+
+
+def _write_workspace_pin(workspace_path: Path) -> None:
+    (workspace_path / ".python-version").write_text("3.12.12\n", encoding="utf-8")
 
 
 # ── Stale worktree tests ──────────────────────────────────────────
@@ -924,6 +930,7 @@ class TestRunSetupSplit:
         """When command doesn't match the venv guard pattern, runs it verbatim."""
         from theforge.coordinator.workspace import _run_setup_split
 
+        _write_workspace_pin(tmp_path)
         calls = []
 
         def fake_shell(cmd, cwd, **kw):
@@ -940,6 +947,7 @@ class TestRunSetupSplit:
         """When command matches venv guard, venv creation and install run separately."""
         from theforge.coordinator.workspace import _run_setup_split
 
+        _write_workspace_pin(tmp_path)
         cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
         calls = []
 
@@ -962,6 +970,7 @@ class TestRunSetupSplit:
         """If venv creation fails, the install command is not run."""
         from theforge.coordinator.workspace import _run_setup_split
 
+        _write_workspace_pin(tmp_path)
         cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
         calls = []
 
@@ -976,12 +985,11 @@ class TestRunSetupSplit:
         assert out == "venv error"
         assert len(calls) == 1  # install was not called
 
-    def test_forge_python_placeholder_replaced_with_sys_executable(self, tmp_path):
-        """{forge_python} in setup_command is replaced with sys.executable before running."""
-        import sys
-
+    def test_forge_python_placeholder_replaced_with_workspace_pin(self, tmp_path):
+        """{forge_python} in setup_command is replaced with the pinned workspace Python."""
         from theforge.coordinator.workspace import _run_setup_split
 
+        _write_workspace_pin(tmp_path)
         cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e .)"
         calls = []
 
@@ -994,29 +1002,32 @@ class TestRunSetupSplit:
 
         assert ok is True
         assert len(calls) == 2
-        # venv creation uses sys.executable, not the literal placeholder
-        assert sys.executable in calls[0]
+        assert str(resolve_workspace_python(tmp_path).executable) in calls[0]
         assert "{forge_python}" not in calls[0]
 
-    def test_resolve_setup_command_replaces_placeholder(self):
-        """_resolve_setup_command swaps {forge_python} for the absolute interpreter path."""
-        import sys
+    def test_resolve_setup_command_replaces_placeholder(self, tmp_path):
+        """_resolve_setup_command swaps {forge_python} for the pinned interpreter path."""
 
         from theforge.coordinator.workspace import _resolve_setup_command
 
-        result = _resolve_setup_command("test -d .venv || ({forge_python} -m venv .venv)")
-        assert sys.executable in result
+        _write_workspace_pin(tmp_path)
+        result = _resolve_setup_command(
+            "test -d .venv || ({forge_python} -m venv .venv)",
+            tmp_path,
+        )
+        assert str(resolve_workspace_python(tmp_path).executable) in result
         assert "{forge_python}" not in result
 
-    def test_resolve_setup_command_noop_without_placeholder(self):
+    def test_resolve_setup_command_noop_without_placeholder(self, tmp_path):
         """_resolve_setup_command is a no-op when {forge_python} is absent."""
         from theforge.coordinator.workspace import _resolve_setup_command
 
         cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
-        assert _resolve_setup_command(cmd) == cmd
+        _write_workspace_pin(tmp_path)
+        assert _resolve_setup_command(cmd, tmp_path) == cmd
 
     def test_forge_python_with_spaces_in_path_is_shell_quoted(self, tmp_path):
-        """sys.executable with spaces is shell-quoted; command is still split (not verbatim)."""
+        """Pinned interpreter with spaces is shell-quoted; command is still split."""
         from theforge.coordinator.workspace import _run_setup_split
 
         spaced_exe = "/home/my user/.pyenv/versions/3.12.12/bin/python3.12"
@@ -1028,10 +1039,10 @@ class TestRunSetupSplit:
             return (True, "ok")
 
         with (
-            patch("theforge.coordinator.workspace.sys") as mock_sys,
+            patch("theforge.coordinator.workspace.resolve_workspace_python") as mock_resolve,
             patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
         ):
-            mock_sys.executable = spaced_exe
+            mock_resolve.return_value = SimpleNamespace(executable=Path(spaced_exe))
             ok, out = _run_setup_split(cmd, tmp_path)
 
         assert ok is True
@@ -1059,10 +1070,10 @@ class TestRunSetupSplit:
             return (True, "ok")
 
         with (
-            patch("theforge.coordinator.workspace.sys") as mock_sys,
+            patch("theforge.coordinator.workspace.resolve_workspace_python") as mock_resolve,
             patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
         ):
-            mock_sys.executable = tricky_exe
+            mock_resolve.return_value = SimpleNamespace(executable=Path(tricky_exe))
             ok, out = _run_setup_split(cmd, tmp_path)
 
         assert ok is True
@@ -1076,9 +1087,9 @@ class TestRunSetupSplit:
         from theforge.coordinator.workspace import _resolve_setup_command
 
         spaced_exe = "/home/my user/.pyenv/bin/python3"
-        with patch("theforge.coordinator.workspace.sys") as mock_sys:
-            mock_sys.executable = spaced_exe
-            result = _resolve_setup_command("{forge_python} -m venv .venv")
+        with patch("theforge.coordinator.workspace.resolve_workspace_python") as mock_resolve:
+            mock_resolve.return_value = SimpleNamespace(executable=Path(spaced_exe))
+            result = _resolve_setup_command("{forge_python} -m venv .venv", Path("/tmp/workspace"))
 
         assert "'/home/my user/.pyenv/bin/python3'" in result
         assert "{forge_python}" not in result

@@ -15,6 +15,7 @@ from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
+from theforge.workspace_env import resolve_workspace_python, workspace_venv_matches_python
 
 from . import util as _cu
 from .gate import _run_gate
@@ -90,13 +91,14 @@ def _propagate_claude_memory(project_root: Path, workspace_path: Path) -> None:
         _cu._log(f"⚠ WORKSPACE  failed to propagate Claude memory: {exc}")
 
 
-def _resolve_setup_command(cmd: str) -> str:
-    """Replace {forge_python} with the shell-safe path to the running interpreter.
+def _resolve_setup_command(cmd: str, workspace_path: Path) -> str:
+    """Replace {forge_python} with the shell-safe path to the pinned interpreter.
 
     Uses shlex.quote so that paths containing spaces or shell-sensitive characters
     do not break shell=True invocations.
     """
-    return cmd.replace("{forge_python}", shlex.quote(sys.executable))
+    resolved = resolve_workspace_python(workspace_path)
+    return cmd.replace("{forge_python}", shlex.quote(str(resolved.executable)))
 
 
 def _read_last_setup_command(workspace_path: Path) -> str | None:
@@ -128,7 +130,13 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
     m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
     if m:
         install_cmd = m.group(1).strip()
-        python_exe = shlex.quote(sys.executable)
+        resolved_python = resolve_workspace_python(workspace_path)
+        python_exe = shlex.quote(str(resolved_python.executable))
+        if (workspace_path / ".venv").exists() and not workspace_venv_matches_python(
+            workspace_path, resolved_python
+        ):
+            _cu._log("⚠ WORKSPACE  removing stale .venv pinned to a different Python")
+            shutil.rmtree(workspace_path / ".venv")
         ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
         if not ok:
             return ok, out
@@ -137,7 +145,7 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
 
-    cmd = _resolve_setup_command(setup_command)
+    cmd = _resolve_setup_command(setup_command, workspace_path)
     m = _VENV_GUARD_RE.search(cmd)
     if not m:
         ok, out = _cu._run_shell(cmd, workspace_path)
@@ -146,6 +154,12 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
         return ok, out
     python_exe = m.group(1)
     install_cmd = m.group(2).strip()
+    resolved_python = resolve_workspace_python(workspace_path)
+    if (workspace_path / ".venv").exists() and not workspace_venv_matches_python(
+        workspace_path, resolved_python
+    ):
+        _cu._log("⚠ WORKSPACE  removing stale .venv pinned to a different Python")
+        shutil.rmtree(workspace_path / ".venv")
     ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
     if not ok:
         return ok, out

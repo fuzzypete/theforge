@@ -276,12 +276,21 @@ class TestRunAgentClaude:
     def test_uses_workspace_venv_env(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """Claude subprocess env prefers the worktree virtualenv."""
         venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
+        venv_bin.mkdir(parents=True, exist_ok=True)
+        expected_env = {
+            "PATH": os.pathsep.join([str(venv_bin), "/usr/bin"]),
+            "VIRTUAL_ENV": str(tmp_path / ".venv"),
+            "API_KEY": "secret",
+        }
         mock_proc = _make_stream_mock([_result_line(result="done")])
 
-        with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
+        with (
+            patch("theforge.runners.runner_claude.build_workspace_env", return_value=expected_env),
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen",
+                return_value=mock_proc,
+            ) as mock_popen,
+        ):
             run_agent(
                 prompt="test",
                 profile=dev_profile,
