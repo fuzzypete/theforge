@@ -21,8 +21,11 @@ from unittest.mock import patch
 from coord_test_helpers import _make_agent_result, _make_config, patch_gate_shell
 
 from theforge.coordinator.engine import run_from_dev, run_from_review
+from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.task import TaskStory
+
+_STORY_CONTENT_HASH = _story_content_hash("# Test\n\nDo the thing.")
 
 
 def _make_already_done_cached_state() -> CoordinatorState:
@@ -40,6 +43,7 @@ def _make_already_done_cached_state() -> CoordinatorState:
         "worktree_head": "OK",
         "evaluation_base_branch": "main",
         "evaluation_base_branch_head": "OK",
+        "story_content_hash": _STORY_CONTENT_HASH,
     }
     state.run_id = "prior-run-id"
     return state

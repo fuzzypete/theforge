@@ -34,7 +34,10 @@ from theforge.config import (  # noqa: E402
     AssignmentConfig,
 )
 from theforge.coordinator.engine import run_task  # noqa: E402
+from theforge.coordinator.preflight_cache import _story_content_hash  # noqa: E402
 from theforge.coordinator.state import CoordinatorState  # noqa: E402
+
+_STORY_CONTENT_HASH = _story_content_hash("# Test Spec\n\nImplement the thing.")
 
 
 def _cached_proceed_state_with_complexity(complexity: str = "medium") -> CoordinatorState:
@@ -49,6 +52,7 @@ def _cached_proceed_state_with_complexity(complexity: str = "medium") -> Coordin
         "worktree_head": "OK",
         "evaluation_base_branch": "main",
         "evaluation_base_branch_head": "OK",
+        "story_content_hash": _STORY_CONTENT_HASH,
     }
     return state
 

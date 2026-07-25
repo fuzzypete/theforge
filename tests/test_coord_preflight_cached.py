@@ -15,7 +15,10 @@ import pytest
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
 from theforge.coordinator.engine import run_from_dev, run_task
+from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState, Phase
+
+_TEST_STORY_CONTENT_HASH = _story_content_hash("# Test Spec\n\nImplement the thing.")
 
 
 def _with_cache_snapshot(state: CoordinatorState) -> CoordinatorState:
@@ -23,6 +26,7 @@ def _with_cache_snapshot(state: CoordinatorState) -> CoordinatorState:
         "worktree_head": "OK",
         "evaluation_base_branch": "main",
         "evaluation_base_branch_head": "OK",
+        "story_content_hash": _TEST_STORY_CONTENT_HASH,
     }
     return state
 
@@ -207,6 +211,7 @@ class TestCachedPreflightVerdictDispatch:
                 "worktree_head": "old-head",
                 "evaluation_base_branch": "main",
                 "evaluation_base_branch_head": "base-head",
+                "story_content_hash": _TEST_STORY_CONTENT_HASH,
             },
         )
 
@@ -256,6 +261,73 @@ criteria_checked: []
         assert result.state.preflight_cache_validation["status"] == "invalidated"
         assert result.state.preflight_cache_validation["reason"] == "worktree_head_changed"
 
+    def test_rewritten_story_body_invalidates_cache_despite_unchanged_git_state(self, tmp_path):
+        """A re-scoped story must not reuse a preflight verdict from its old text.
+
+        Regression for the issue #1904 near miss: git state alone (worktree head,
+        base branch, base branch head) matched a cached ALREADY_DONE verdict while
+        the story body had been rewritten. The cache must invalidate on content
+        change even when neither branch head has moved.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        # Re-scope the story after the cached verdict was recorded.
+        task.story_path.write_text(
+            "# Test Spec\n\nImplement a completely different thing.", encoding="utf-8"
+        )
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="ALREADY_DONE",
+            preflight_reason="Stale cached verdict from superseded story text.",
+            preflight_complexity="medium",
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+            preflight_cache_snapshot={
+                "worktree_head": "OK",
+                "evaluation_base_branch": "main",
+                "evaluation_base_branch_head": "OK",
+                "story_content_hash": _TEST_STORY_CONTENT_HASH,
+            },
+        )
+
+        fresh_preflight = _make_agent_result(
+            output="""\
+```yaml
+verdict: PROCEED
+complexity: small
+sufficiency: implementation_ready
+work_type: bug
+reason: "Story rewritten; reevaluated."
+criteria_checked: []
+```
+""",
+            profile_name="preflight",
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_matching_cache),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                return_value=fresh_preflight,
+            ) as mock_preflight,
+        ):
+            result = run_task(
+                config,
+                task,
+                cached_preflight_state=cached_state,
+                stop_phase=Phase.PREFLIGHT,
+            )
+
+        assert result.success is True
+        assert mock_preflight.call_count == 1
+        assert result.state.preflight_cached is False
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_cache_validation["status"] == "invalidated"
+        assert result.state.preflight_cache_validation["reason"] == "story_content_changed"
+
 
 class TestResumeStaleCacheRerunsPreflight:
     """Regression: resume path must re-run preflight when the cache is invalid.
@@ -285,6 +357,7 @@ class TestResumeStaleCacheRerunsPreflight:
                 "worktree_head": "old-head",
                 "evaluation_base_branch": "main",
                 "evaluation_base_branch_head": "old-base-head",
+                "story_content_hash": _TEST_STORY_CONTENT_HASH,
             },
         )
 

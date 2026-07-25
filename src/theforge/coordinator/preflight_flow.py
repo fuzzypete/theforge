@@ -877,6 +877,7 @@ def _run_preflight_phase(
         "cache_snapshot": capture_preflight_cache_snapshot(
             config=config,
             workspace_path=workspace_path,
+            story_content=story_content,
         ),
         "criteria_checked": state.preflight_criteria_checked,
         "symptom_verification": dict(state.preflight_symptom_verification or {}),

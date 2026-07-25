@@ -31,11 +31,14 @@ from theforge.coordinator.preflight import (
     _escalate_dev_model,
     _has_persistent_p1,
 )
+from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.review import ReviewFinding
 from theforge.task import TaskStory
 
 # ── Dev model escalation tests ────────────────────────────────────────
+
+_STORY_CONTENT_HASH = _story_content_hash("# Test Spec\n\nImplement the thing.")
 
 
 def _make_review_finding(
@@ -54,6 +57,7 @@ def _with_cache_snapshot(state: CoordinatorState) -> CoordinatorState:
         "worktree_head": "OK",
         "evaluation_base_branch": "main",
         "evaluation_base_branch_head": "OK",
+        "story_content_hash": _STORY_CONTENT_HASH,
     }
     return state
 
