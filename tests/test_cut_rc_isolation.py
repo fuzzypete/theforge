@@ -48,6 +48,44 @@ def _provision_apply_branch_protection_sibling(script_copy: Path) -> None:
     sibling.chmod(0o755)
 
 
+def _provision_repo_pinned_python(repo: Path, pip_log: Path) -> Path:
+    """Provision the project-pinned RC build interpreter at ``repo/.venv/bin/python``."""
+    repo_venv = repo / ".venv" / "bin"
+    repo_venv.mkdir(parents=True)
+    repo_python = repo_venv / "python"
+    repo_python.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+                VENV="$3"
+                mkdir -p "$VENV/bin"
+                : > "$VENV/pyvenv.cfg"
+                cat > "$VENV/bin/pip" <<'PIP'
+            #!/bin/sh
+            echo "$@" >> "{pip_log}"
+            exit 0
+            PIP
+                chmod +x "$VENV/bin/pip"
+                cat > "$VENV/bin/forge" <<'FORGE'
+            #!/bin/sh
+            if [ "$1" = "version" ]; then
+                echo "TheForge v0.99.0rc0"
+            fi
+            FORGE
+                chmod +x "$VENV/bin/forge"
+                : > "$VENV/bin/python"
+                chmod +x "$VENV/bin/python"
+                exit 0
+            fi
+            exit 0
+            """
+        )
+    )
+    repo_python.chmod(0o755)
+    return repo_python
+
+
 def test_script_does_not_pip_install_into_operator_default_env() -> None:
     """All executed installs must go through the isolated venv's pip; the
     historical bare ``pip install ...`` line that mutated the active env is
@@ -75,7 +113,20 @@ def test_script_does_not_pip_install_into_operator_default_env() -> None:
 def test_script_creates_isolated_rc_env() -> None:
     body = SCRIPT.read_text(encoding="utf-8")
     assert ".forge/rc-envs/" in body, "cut-rc.sh must reference .forge/rc-envs/<tag>/"
-    assert "python3 -m venv" in body, "cut-rc.sh must create an isolated venv"
+    assert 'run "$RC_BUILD_PYTHON" -m venv "$RC_ENV_DIR"' in body, (
+        "cut-rc.sh must create the isolated venv with the pinned RC build interpreter"
+    )
+    assert "resolve_rc_build_python" in body, (
+        "cut-rc.sh must resolve the RC venv builder from a pinned interpreter source"
+    )
+
+
+def test_script_refuses_unqualified_python3_fallback_for_rc_env() -> None:
+    body = SCRIPT.read_text(encoding="utf-8")
+    assert 'run python3 -m venv "$RC_ENV_DIR"' not in body, (
+        "cut-rc.sh must not seed the RC env from an unqualified python3 lookup"
+    )
+    assert "Refusing to fall back to an unqualified python3 lookup." in body
 
 
 def test_script_repoints_managed_launcher_at_isolated_venv() -> None:
@@ -209,39 +260,19 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
     git_shim.chmod(0o755)
 
     pip_log = tmp_path / "pip_calls.log"
-    py_shim = bin_dir / "python3"
-    py_shim.write_text(
+    _provision_repo_pinned_python(repo, pip_log)
+    path_python_log = tmp_path / "path_python_calls.log"
+    path_python = bin_dir / "python3"
+    path_python.write_text(
         textwrap.dedent(
             f"""\
             #!/bin/sh
-            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
-                VENV="$3"
-                mkdir -p "$VENV/bin"
-                # Mark the dir as a real venv so the script's refuse-to-clobber
-                # heuristic would correctly identify it (defence-in-depth).
-                : > "$VENV/pyvenv.cfg"
-                cat > "$VENV/bin/pip" <<'PIP'
-            #!/bin/sh
-            echo "$@" >> "{pip_log}"
-            exit 0
-            PIP
-                chmod +x "$VENV/bin/pip"
-                cat > "$VENV/bin/forge" <<'FORGE'
-            #!/bin/sh
-            if [ "$1" = "version" ]; then
-                echo "TheForge v0.99.0rc0"
-            fi
-            FORGE
-                chmod +x "$VENV/bin/forge"
-                : > "$VENV/bin/python"
-                chmod +x "$VENV/bin/python"
-                exit 0
-            fi
-            exit 0
+            echo "$@" >> "{path_python_log}"
+            exit 91
             """
         )
     )
-    py_shim.chmod(0o755)
+    path_python.chmod(0o755)
 
     # Isolated HOME so the script's ~/.local/bin/forge symlink lands in tmp,
     # not in the developer's real home directory.
@@ -340,6 +371,9 @@ def test_full_execution_repoints_managed_launcher_and_does_not_mutate_operator_e
         assert "git+https://github.com/fuzzypete/theforge.git@v0.99.0rc0" in log, (
             f"Isolated venv pip was not invoked with the RC tag. pip log:\n{log}"
         )
+    assert not path_python_log.exists(), (
+        "cut-rc.sh must not consult PATH python3 when building the isolated RC env"
+    )
 
 
 @pytest.mark.network_integration
@@ -399,37 +433,10 @@ def test_full_execution_refuses_to_clobber_venv_resident_forge(tmp_path: Path) -
     venv_forge_pre_bytes = venv_forge.read_bytes()
 
     pip_log = tmp_path / "pip_calls.log"
-    py_shim = bin_dir / "python3"
-    py_shim.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/bin/sh
-            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
-                VENV="$3"
-                mkdir -p "$VENV/bin"
-                : > "$VENV/pyvenv.cfg"
-                cat > "$VENV/bin/pip" <<'PIP'
-            #!/bin/sh
-            echo "$@" >> "{pip_log}"
-            exit 0
-            PIP
-                chmod +x "$VENV/bin/pip"
-                cat > "$VENV/bin/forge" <<'FORGE'
-            #!/bin/sh
-            if [ "$1" = "version" ]; then
-                echo "TheForge v0.99.0rc0"
-            fi
-            FORGE
-                chmod +x "$VENV/bin/forge"
-                : > "$VENV/bin/python"
-                chmod +x "$VENV/bin/python"
-                exit 0
-            fi
-            exit 0
-            """
-        )
-    )
-    py_shim.chmod(0o755)
+    _provision_repo_pinned_python(repo, pip_log)
+    path_python = bin_dir / "python3"
+    path_python.write_text("#!/bin/sh\nexit 91\n")
+    path_python.chmod(0o755)
 
     fake_home = tmp_path / "home"
     (fake_home / ".local" / "bin").mkdir(parents=True)
@@ -530,37 +537,19 @@ def _build_cut_rc_fixture(
     git_shim.chmod(0o755)
 
     pip_log = tmp_path / "pip_calls.log"
-    py_shim = bin_dir / "python3"
-    py_shim.write_text(
+    path_python_log = tmp_path / "path_python_calls.log"
+    path_python = bin_dir / "python3"
+    path_python.write_text(
         textwrap.dedent(
             f"""\
             #!/bin/sh
-            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
-                VENV="$3"
-                mkdir -p "$VENV/bin"
-                : > "$VENV/pyvenv.cfg"
-                cat > "$VENV/bin/pip" <<'PIP'
-            #!/bin/sh
-            echo "$@" >> "{pip_log}"
-            exit 0
-            PIP
-                chmod +x "$VENV/bin/pip"
-                cat > "$VENV/bin/forge" <<'FORGE'
-            #!/bin/sh
-            if [ "$1" = "version" ]; then
-                echo "TheForge v0.99.0rc0"
-            fi
-            FORGE
-                chmod +x "$VENV/bin/forge"
-                : > "$VENV/bin/python"
-                chmod +x "$VENV/bin/python"
-                exit 0
-            fi
-            exit 0
+            echo "$@" >> "{path_python_log}"
+            exit 91
             """
         )
     )
-    py_shim.chmod(0o755)
+    path_python.chmod(0o755)
+    _provision_repo_pinned_python(repo, pip_log)
 
     # Fake operator venv. Its bin/python answers importlib.metadata if
     # installed_theforge_version is provided; otherwise the probe fails.
@@ -1251,37 +1240,10 @@ def test_resume_skips_mutating_steps_and_reaches_install(tmp_path: Path) -> None
     git_shim.chmod(0o755)
 
     pip_log = tmp_path / "pip_calls.log"
-    py_shim = bin_dir / "python3"
-    py_shim.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/bin/sh
-            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
-                VENV="$3"
-                mkdir -p "$VENV/bin"
-                : > "$VENV/pyvenv.cfg"
-                cat > "$VENV/bin/pip" <<'PIP'
-            #!/bin/sh
-            echo "$@" >> "{pip_log}"
-            exit 0
-            PIP
-                chmod +x "$VENV/bin/pip"
-                cat > "$VENV/bin/forge" <<'FORGE'
-            #!/bin/sh
-            if [ "$1" = "version" ]; then
-                echo "TheForge v0.99.0rc0"
-            fi
-            FORGE
-                chmod +x "$VENV/bin/forge"
-                : > "$VENV/bin/python"
-                chmod +x "$VENV/bin/python"
-                exit 0
-            fi
-            exit 0
-            """
-        )
-    )
-    py_shim.chmod(0o755)
+    _provision_repo_pinned_python(repo, pip_log)
+    path_python = bin_dir / "python3"
+    path_python.write_text("#!/bin/sh\nexit 91\n")
+    path_python.chmod(0o755)
 
     fake_home = tmp_path / "home"
     (fake_home / ".local" / "bin").mkdir(parents=True)
@@ -1417,6 +1379,106 @@ def test_resume_fails_loud_when_tag_not_on_origin(tmp_path: Path) -> None:
     assert "--resume requires" in combined
 
 
+@pytest.mark.network_integration
+@pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="cut-rc.sh not present",
+)
+def test_cut_fails_loud_when_pinned_rc_build_python_is_missing(tmp_path: Path) -> None:
+    """The cut must not fall back to PATH python3 when the project-pinned
+    interpreter is absent; it must fail before creating the RC env.
+    """
+    repo = tmp_path / "fake_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "pyproject.toml").write_text('version = "0.99.0"\n')
+    (repo / "Makefile").write_text("gate:\n\t@true\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+
+    real_git = subprocess.run(
+        ["bash", "-c", "command -v git"], capture_output=True, text=True
+    ).stdout.strip()
+
+    bin_dir = tmp_path / "shim_bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "gh").chmod(0o755)
+    (bin_dir / "make").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "make").chmod(0o755)
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            case "$1" in
+                push) exit 0 ;;
+                ls-remote) exit 0 ;;
+                pull) exit 0 ;;
+            esac
+            exec {real_git} "$@"
+            """
+        )
+    )
+    git_shim.chmod(0o755)
+
+    path_python_log = tmp_path / "path_python_calls.log"
+    path_python = bin_dir / "python3"
+    path_python.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            echo "$@" >> "{path_python_log}"
+            exit 91
+            """
+        )
+    )
+    path_python.chmod(0o755)
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".local" / "bin").mkdir(parents=True)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{fake_home}/.local/bin:{bin_dir}:/usr/bin:/bin"
+    env.pop("VIRTUAL_ENV", None)
+
+    script_copy = tmp_path / "cut-rc.sh"
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    script_text = re.sub(
+        r"^export PATH=\"/opt/homebrew/bin:\$PATH\"\s*$",
+        ": # PATH override stripped for hermetic test",
+        script_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    script_copy.write_text(script_text)
+    script_copy.chmod(0o755)
+    _provision_apply_branch_protection_sibling(script_copy)
+
+    proc = subprocess.run(
+        ["bash", str(script_copy), "0.99.0", "0"],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, (
+        f"cut-rc.sh must fail when the pinned RC build interpreter is absent. Output:\n{combined}"
+    )
+    assert "could not locate the pinned interpreter" in combined
+    assert "Refusing to fall back to an unqualified python3 lookup." in combined
+    assert not path_python_log.exists(), (
+        "cut-rc.sh must fail before consulting PATH python3 when the project pin is missing"
+    )
+    assert not (repo / ".forge" / "rc-envs" / "v0.99.0rc0").exists()
+
+
 @pytest.mark.skipif(
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",
@@ -1455,6 +1517,7 @@ def test_dry_run_does_not_emit_default_env_pip_install(tmp_path: Path) -> None:
     )
     gh_shim.chmod(0o755)
     env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    _provision_repo_pinned_python(repo, tmp_path / "pip_calls.log")
 
     proc = subprocess.run(
         ["bash", str(SCRIPT), "--dry-run", "0.99.0", "0"],
