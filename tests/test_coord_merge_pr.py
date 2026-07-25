@@ -1706,6 +1706,14 @@ class TestFastForwardAfterMerge:
         ff_calls: list[list[str]] = []
 
         def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd == [
+                "git",
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ]:
+                return _make_subprocess_result(0, stdout="main\n")
             if isinstance(cmd, list) and "fetch" in cmd and "merge" not in cmd:
                 if cmd == ["git", "fetch", "origin"]:
                     ff_calls.append(cmd)
@@ -1777,6 +1785,117 @@ class TestFastForwardAfterMerge:
             result = _merge_pr(config, task, "forge/test-task", review, state)
 
         assert result["merged"] is True
+        assert any(cmd[:4] == ["git", "worktree", "remove", "--force"] for cmd in cleanup_calls)
+        assert any(cmd[:3] == ["git", "branch", "-D"] for cmd in cleanup_calls)
+        assert any(cmd[:4] == ["git", "push", "origin", "--delete"] for cmd in cleanup_calls)
+
+    def test_cleanup_fast_forwards_local_base_only_when_project_root_is_on_base(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        ff_calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd == [
+                "git",
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ]:
+                return _make_subprocess_result(0, stdout="main\n")
+            if isinstance(cmd, list) and (
+                cmd == ["git", "fetch", "origin"]
+                or cmd == ["git", "merge", "--ff-only", "origin/main"]
+            ):
+                ff_calls.append(cmd)
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _make_subprocess_result(0, stdout="MERGED")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/x/y/pull/8",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["merged"] is True
+        assert ["git", "fetch", "origin"] in ff_calls
+        assert ["git", "merge", "--ff-only", "origin/main"] in ff_calls
+
+    def test_cleanup_skips_base_fast_forward_when_project_root_is_on_different_branch(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        cleanup_calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd == [
+                "git",
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ]:
+                return _make_subprocess_result(0, stdout="release/v0.13\n")
+            if isinstance(cmd, list) and (
+                cmd[:4] == ["git", "worktree", "remove", "--force"]
+                or cmd[:3] == ["git", "branch", "-D"]
+                or cmd[:4] == ["git", "push", "origin", "--delete"]
+            ):
+                cleanup_calls.append(cmd)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _make_subprocess_result(0, stdout="MERGED")
+            if isinstance(cmd, list) and (
+                cmd == ["git", "fetch", "origin"]
+                or cmd == ["git", "merge", "--ff-only", "origin/main"]
+            ):
+                raise AssertionError(f"unexpected base sync command: {cmd}")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch("theforge.coordinator.completion._log") as mock_log,
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/x/y/pull/8",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["merged"] is True
+        mock_log.assert_any_call(
+            "Warning: skipped local base branch sync after merge because checked-out "
+            "branch 'release/v0.13' does not match configured base 'main'"
+        )
         assert any(cmd[:4] == ["git", "worktree", "remove", "--force"] for cmd in cleanup_calls)
         assert any(cmd[:3] == ["git", "branch", "-D"] for cmd in cleanup_calls)
         assert any(cmd[:4] == ["git", "push", "origin", "--delete"] for cmd in cleanup_calls)

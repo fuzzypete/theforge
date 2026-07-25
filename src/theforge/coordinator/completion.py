@@ -854,20 +854,54 @@ def _step_cleanup(
 ) -> None:
     """Best-effort local cleanup after a successful remote PR merge."""
     try:
-        subprocess.run(
-            ["git", "fetch", "origin"],
+        branch_proc = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
             capture_output=True,
             text=True,
             cwd=str(project_root),
-            timeout=60,
+            timeout=15,
         )
-        subprocess.run(
-            ["git", "merge", "--ff-only", f"origin/{base_branch}"],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root),
-            timeout=30,
-        )
+        current_branch = branch_proc.stdout.strip()
+        if branch_proc.returncode != 0 or not current_branch:
+            err = (
+                branch_proc.stderr.strip() or branch_proc.stdout.strip() or "unknown branch state"
+            )
+            _log(
+                "Warning: skipped local base branch sync after merge because forge "
+                f"could not determine the checked-out branch in {project_root}: {err}"
+            )
+            _pr_log.warning(
+                "local base_branch fast-forward skipped: could not determine checked-out "
+                "branch in %s: %s",
+                project_root,
+                err,
+            )
+        elif current_branch != base_branch:
+            _log(
+                "Warning: skipped local base branch sync after merge because checked-out "
+                f"branch '{current_branch}' does not match configured base '{base_branch}'"
+            )
+            _pr_log.warning(
+                "local base_branch fast-forward skipped: checked-out branch %s does not "
+                "match configured base %s",
+                current_branch,
+                base_branch,
+            )
+        else:
+            subprocess.run(
+                ["git", "fetch", "origin"],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                timeout=60,
+            )
+            subprocess.run(
+                ["git", "merge", "--ff-only", f"origin/{base_branch}"],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                timeout=30,
+            )
     except Exception as exc:
         _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
 
