@@ -2620,6 +2620,98 @@ class TestImmediateIntegrationLanding:
         assert result.landing_status == "failed"
 
 
+class TestSprintRunAuditCommit:
+    def test_run_sprint_commits_story_run_audits_from_project_root(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_config(tmp_path)
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge", "pending": True}
+        shell_calls: list[tuple[str, Path]] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            shell_calls.append((cmd, Path(cwd)))
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            if cmd == "git add -- .forge/audits/runs":
+                return (True, "")
+            if cmd == 'git commit -m "chore(audit): record sprint run audits"':
+                return (True, "")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "success": True, "action": "merge"},
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 1
+        audit_shell_calls = [
+            call
+            for call in shell_calls
+            if ".forge/audits/runs" in call[0] or "chore(audit)" in call[0]
+        ]
+        assert audit_shell_calls == [
+            ("git status --porcelain -- .forge/audits/runs", tmp_path),
+            ("git add -- .forge/audits/runs", tmp_path),
+            ('git commit -m "chore(audit): record sprint run audits"', tmp_path),
+        ]
+
+    def test_run_sprint_skips_audit_commit_when_project_root_is_clean(
+        self, tmp_path: Path
+    ) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_config(tmp_path)
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge", "pending": True}
+        shell_calls: list[tuple[str, Path]] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            shell_calls.append((cmd, Path(cwd)))
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "success": True, "action": "merge"},
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 1
+        audit_shell_calls = [
+            call
+            for call in shell_calls
+            if ".forge/audits/runs" in call[0] or "chore(audit)" in call[0]
+        ]
+        assert audit_shell_calls == [("git status --porcelain -- .forge/audits/runs", tmp_path)]
+
+
 def test_integration_lock_serializes(tmp_path: Path) -> None:
     entered: list[str] = []
     overlap = [False]
