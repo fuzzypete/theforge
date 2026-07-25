@@ -90,6 +90,10 @@ from .story_state import (
 )
 
 _UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
+_STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
+_STORY_RUN_AUDIT_COMMIT_CMD = (
+    f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
+)
 run_agent = None
 log_agent_result = None
 
@@ -107,7 +111,7 @@ def _commit_story_run_audits(project_root: Path) -> None:
     if not (project_root / ".git").exists():
         return
 
-    audit_dir = Path(".forge/audits/runs")
+    audit_dir = Path(_STORY_RUN_AUDIT_DIR)
     quoted_audit_dir = shlex.quote(audit_dir.as_posix())
     ok_status, status_out = _cu._run_shell(
         f"git status --porcelain -- {quoted_audit_dir}",
@@ -122,10 +126,7 @@ def _commit_story_run_audits(project_root: Path) -> None:
     if not ok_add:
         raise RuntimeError(f"Failed to stage story run audits: {add_out}")
 
-    ok_commit, commit_out = _cu._run_shell(
-        'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs',
-        project_root,
-    )
+    ok_commit, commit_out = _cu._run_shell(_STORY_RUN_AUDIT_COMMIT_CMD, project_root)
     if not ok_commit:
         raise RuntimeError(f"Failed to commit story run audits: {commit_out}")
     _log("Committed canonical story run audit records to the base branch checkout.")

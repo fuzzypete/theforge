@@ -2635,6 +2635,7 @@ class TestSprintRunAuditCommit:
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
         result.merge = {"action": "merge", "pending": True}
+        commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
         shell_calls: list[tuple[str, Path]] = []
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
@@ -2643,7 +2644,7 @@ class TestSprintRunAuditCommit:
                 return (True, "?? .forge/audits/runs/run-123.json")
             if cmd == "git add -- .forge/audits/runs":
                 return (True, "")
-            if cmd == 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs':
+            if cmd == commit_cmd:
                 return (True, "")
             return (True, "")
 
@@ -2666,10 +2667,7 @@ class TestSprintRunAuditCommit:
         assert audit_shell_calls == [
             ("git status --porcelain -- .forge/audits/runs", tmp_path),
             ("git add -- .forge/audits/runs", tmp_path),
-            (
-                'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs',
-                tmp_path,
-            ),
+            (commit_cmd, tmp_path),
         ]
 
     def test_run_sprint_skips_audit_commit_when_project_root_is_clean(
@@ -2730,6 +2728,7 @@ class TestSprintRunAuditCommit:
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
         result.merge = {"action": "merge", "pending": True}
+        commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
         shell_calls: list[tuple[str, Path]] = []
         warnings: list[str] = []
 
@@ -2739,7 +2738,7 @@ class TestSprintRunAuditCommit:
                 return (True, "?? .forge/audits/runs/run-123.json")
             if cmd == "git add -- .forge/audits/runs":
                 return (True, "")
-            if cmd == 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs':
+            if cmd == commit_cmd:
                 return (False, "commit failed")
             return (True, "")
 
@@ -2757,10 +2756,7 @@ class TestSprintRunAuditCommit:
         assert sprint.specs_succeeded == 1
         assert not any((tmp_path / ".forge" / "runs").glob("*.state"))
         assert any("canonical story run audit commit failed" in warning for warning in warnings)
-        assert (
-            'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs',
-            tmp_path,
-        ) in shell_calls
+        assert (commit_cmd, tmp_path) in shell_calls
 
 
 def test_integration_lock_serializes(tmp_path: Path) -> None:
