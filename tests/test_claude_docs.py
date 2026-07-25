@@ -29,24 +29,27 @@ def test_subsystem_claude_docs_point_to_conventions() -> None:
 
 
 def test_root_agent_docs_point_to_conventions() -> None:
-    for filename, notes_heading in (
-        ("CLAUDE.md", "## Claude-specific notes"),
-        ("AGENTS.md", "## Codex-specific notes"),
-    ):
-        text = (ROOT / filename).read_text()
-        assert (
-            "See `CONVENTIONS.md` for all project conventions, architecture, testing "
-            "rules, and workflow." in text
-        )
-        assert (
-            "Directory-level `CONVENTIONS.md` files under `src/theforge/` provide "
-            "subsystem-local guidance." in text
-        )
-        assert notes_heading in text
-        assert (
-            "Do not modify `CLAUDE.md` or `AGENTS.md` unless the story explicitly "
-            "requires it." in text
-        )
+    # AGENTS.md is the AI-agnostic master; CLAUDE.md and GEMINI.md redirect to it.
+    def _norm(name: str) -> str:
+        return " ".join((ROOT / name).read_text().split())
+
+    agents = _norm("AGENTS.md")
+    assert "CONVENTIONS.md" in agents
+    assert (
+        "Directory-level `CONVENTIONS.md` files under `src/theforge/` provide "
+        "subsystem-local guidance." in agents
+    )
+    assert "docs/guides/controller-runbook.md" in agents
+    assert (
+        "Do not modify `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md` unless the task "
+        "explicitly requires it." in agents
+    )
+
+    for filename in ("CLAUDE.md", "GEMINI.md"):
+        text = _norm(filename)
+        assert "`AGENTS.md`" in text, f"{filename} must redirect to AGENTS.md"
+        assert "CONVENTIONS.md" in text
+        assert "docs/guides/controller-runbook.md" in text
 
 
 def test_root_conventions_doc_exists_and_records_shared_guidance() -> None:
