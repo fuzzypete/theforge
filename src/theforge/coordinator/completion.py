@@ -853,21 +853,78 @@ def _step_cleanup(
     delete_remote_branch: bool,
 ) -> None:
     """Best-effort local cleanup after a successful remote PR merge."""
+
+    def _warn_base_sync_failure(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> None:
+        err = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
+        cmd_str = shlex.join(cmd)
+        _log(
+            "Warning: local base branch sync after merge failed for "
+            f"`{cmd_str}` (exit {proc.returncode}): {err}"
+        )
+        _pr_log.warning(
+            "local base_branch fast-forward command failed in %s: cmd=%s exit=%d err=%s",
+            project_root,
+            cmd,
+            proc.returncode,
+            err,
+        )
+
     try:
-        subprocess.run(
-            ["git", "fetch", "origin"],
+        branch_proc = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
             capture_output=True,
             text=True,
             cwd=str(project_root),
-            timeout=60,
+            timeout=15,
         )
-        subprocess.run(
-            ["git", "merge", "--ff-only", f"origin/{base_branch}"],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root),
-            timeout=30,
-        )
+        current_branch = branch_proc.stdout.strip()
+        if branch_proc.returncode != 0 or not current_branch:
+            err = (
+                branch_proc.stderr.strip() or branch_proc.stdout.strip() or "unknown branch state"
+            )
+            _log(
+                "Warning: skipped local base branch sync after merge because forge "
+                f"could not determine the checked-out branch in {project_root}: {err}"
+            )
+            _pr_log.warning(
+                "local base_branch fast-forward skipped: could not determine checked-out "
+                "branch in %s: %s",
+                project_root,
+                err,
+            )
+        elif current_branch != base_branch:
+            _log(
+                "Warning: skipped local base branch sync after merge because checked-out "
+                f"branch '{current_branch}' does not match configured base '{base_branch}'"
+            )
+            _pr_log.warning(
+                "local base_branch fast-forward skipped: checked-out branch %s does not "
+                "match configured base %s",
+                current_branch,
+                base_branch,
+            )
+        else:
+            fetch_cmd = ["git", "fetch", "origin"]
+            fetch_proc = subprocess.run(
+                fetch_cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                timeout=60,
+            )
+            if fetch_proc.returncode != 0:
+                _warn_base_sync_failure(fetch_cmd, fetch_proc)
+            else:
+                merge_cmd = ["git", "merge", "--ff-only", f"origin/{base_branch}"]
+                merge_proc = subprocess.run(
+                    merge_cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=str(project_root),
+                    timeout=30,
+                )
+                if merge_proc.returncode != 0:
+                    _warn_base_sync_failure(merge_cmd, merge_proc)
     except Exception as exc:
         _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
 
