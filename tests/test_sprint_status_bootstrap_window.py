@@ -148,6 +148,68 @@ def test_sprint_state_writer_inherits_bootstrap_metadata(tmp_path: Path) -> None
     assert data["max_parallel"] == 4
 
 
+def test_bootstrap_reentry_preserves_accumulated_live_state(tmp_path: Path) -> None:
+    """A later bootstrap call must not blank an already-live sprint state file."""
+    from theforge.sprint.state_writer import SprintStateWriter, write_bootstrap_state
+
+    run_id = "run-reseed-guard"
+    write_bootstrap_state(
+        run_id,
+        tmp_path,
+        sprint_name="my-sprint",
+        sprint_phase="starting",
+        base_branch="main",
+        budget_usd=42.0,
+        max_parallel=2,
+        issues=[{"number": 7}, {"number": 8}],
+    )
+
+    writer = SprintStateWriter(
+        run_id,
+        tmp_path,
+        "my-sprint",
+        sprint_id="sprint-123",
+        sprint_phase="executing",
+        base_branch="main",
+        budget_usd=42.0,
+        max_parallel=2,
+    )
+    writer.init(
+        [
+            {"slug": "issue-7", "path": "Issue #7", "status": "running"},
+            {"slug": "issue-8", "path": "Issue #8", "status": "waiting"},
+        ]
+    )
+    writer.update(
+        "issue-7",
+        status="done",
+        cost_usd=32.45,
+        detail={"merged_pr": 1795},
+    )
+
+    write_bootstrap_state(
+        run_id,
+        tmp_path,
+        sprint_name="my-sprint",
+        sprint_phase="starting",
+        base_branch="main",
+        budget_usd=42.0,
+        max_parallel=2,
+        issues=[{"number": 7}, {"number": 8}],
+    )
+
+    state_path = tmp_path / ".forge" / "runs" / f"{run_id}.state"
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    stories_by_slug = {story["slug"]: story for story in data["stories"]}
+
+    assert data["sprint_id"] == "sprint-123"
+    assert data["sprint_phase"] == "executing"
+    assert stories_by_slug["issue-7"]["status"] == "done"
+    assert stories_by_slug["issue-7"]["cost_usd"] == 32.45
+    assert stories_by_slug["issue-7"]["detail"]["merged_pr"] == 1795
+    assert stories_by_slug["issue-8"]["status"] == "waiting"
+
+
 def test_display_sprint_status_renders_bootstrap_window(tmp_path: Path) -> None:
     """display_sprint_status renders issue rows + phase + base_branch + budget
     + parallel from a bootstrap state file alone (no preflight, no per-story
