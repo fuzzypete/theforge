@@ -53,6 +53,7 @@ from .types import (
     AdvisoryIssueFilingConfig,
     ApiFallbackConfig,
     ContextConfig,
+    DevConfig,
     DiagnoseConfig,
     FindingClassifierConfig,
     ForgeConfig,
@@ -73,6 +74,23 @@ from .types import (
 )
 
 log = logging.getLogger("theforge.config")
+_VALID_DEV_P2_POLICIES = frozenset({"in_scope", "all", "p1_only"})
+
+
+def _parse_dev_config(dev_raw: Any) -> DevConfig:
+    """Parse top-level DEV behavior settings from forge.yaml."""
+    if dev_raw is None:
+        return DevConfig()
+    if not isinstance(dev_raw, dict):
+        raise ValueError(
+            "forge.yaml 'dev' section must be a mapping when present, "
+            f"got {type(dev_raw).__name__}"
+        )
+    p2_policy = str(dev_raw.get("p2_policy", DevConfig.p2_policy))
+    if p2_policy not in _VALID_DEV_P2_POLICIES:
+        allowed = ", ".join(sorted(_VALID_DEV_P2_POLICIES))
+        raise ValueError(f"dev.p2_policy must be one of {allowed}; got {p2_policy!r}")
+    return DevConfig(p2_policy=p2_policy)
 
 
 def _parse_models_section(
@@ -818,6 +836,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     )
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)
+    dev_cfg = _parse_dev_config(raw.get("dev"))
 
     github_data = raw.get("github", {})
     github_cfg = GithubConfig(enabled=bool(github_data.get("enabled", False)))
@@ -1327,6 +1346,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         plan_agent_review=plan_agent_review_cfg,
         log=log_cfg,
         hooks=hooks_cfg,
+        dev=dev_cfg,
         sprint=sprint_cfg,
         shape_check=shape_check_cfg,
         intake=intake_cfg,

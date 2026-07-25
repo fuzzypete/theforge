@@ -805,6 +805,7 @@ def run_task(
         specs=[str(task.story_path)],
         budget_usd=config.dev_profile.budget_usd,
         resume=False,
+        p2_policy=config.dev.p2_policy,
     )
 
     # ── Per-story log directory ───────────────────────────────────
@@ -813,6 +814,7 @@ def run_task(
 
     # ── Per-run log tee + SIGTERM handler ────────────────────────────
     with _run_log_context(config, logger, task, state, _task_start):
+        _log(f"  Dev P2 policy: {config.dev.p2_policy}")
         # ── Smart config display ───────────────────────────────────────
         if config.models is not None:
             models_str = ", ".join(config.models)
@@ -1556,7 +1558,9 @@ def run_review_only(
         specs=[str(task.story_path)],
         budget_usd=config.dev_profile.budget_usd,
         resume=True,
+        p2_policy=config.dev.p2_policy,
     )
+    _log(f"  Dev P2 policy: {config.dev.p2_policy}")
 
     # ── Verify workspace exists ───────────────────────────────────────
     if not workspace_path.exists():

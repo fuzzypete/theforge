@@ -267,6 +267,10 @@ models:
 
 budget_usd: 50.0                   # budget used to derive per-role ceilings
 
+# ── Dev-phase policy knobs ────────────────────────────────
+dev:
+  p2_policy: in_scope              # "in_scope" (default) | "all" | "p1_only"
+
 # Optional targeted changes to derived roles. Do not mix top-level profiles:,
 # smart_config_models:, or agents: with models:.
 overrides:
@@ -458,6 +462,16 @@ remediation-to-runnable cost ratio is queryable per milestone.
 | `intake.auto_fix_mode` | `comment` | `comment` posts the candidate and drops the story; `edit` rewrites the issue body in place and reruns the gate once. |
 
 Canonical design: **ADR-0001 — Intake Readiness Workflow**
+
+### Dev P2 policy (`dev.p2_policy`)
+
+Controls how the dev agent treats P2 review findings during the current run.
+
+| Value | Behavior |
+|-------|----------|
+| `in_scope` | Default. Fix P2s that touch the code being modified, or adjacent code relevant to that change, in the same run. |
+| `all` | Fix every open P2 the dev agent encounters in the repo during the run. |
+| `p1_only` | Legacy behavior. Only P1s are required unless a P2 must be fixed to complete the story safely or avoid a regression. |
 (`docs/adr/0001-intake-readiness-workflow.md`), "Inline intake remediation
 posture". `forge init` and generated templates emit no `intake.grooming` line
 (so it resolves to `false`); there is no migration path.

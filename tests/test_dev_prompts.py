@@ -293,6 +293,53 @@ def test_dev_prompt_includes_webfetch_framing_when_tool_allowed(tmp_path):
     assert "--help" in prompt
 
 
+def test_dev_prompt_defaults_to_in_scope_p2_policy(tmp_path):
+    task = _make_task(tmp_path)
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        story_content="# Spec",
+        gate_command="make gate",
+    )
+
+    assert "## Dev P2 Policy" in prompt
+    assert "Active mode: `in_scope`." in prompt
+    assert "Fix those P2s now instead of deferring them" in prompt
+
+
+def test_dev_prompt_all_policy_requires_all_p2s(tmp_path):
+    task = _make_task(tmp_path)
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        story_content="# Spec",
+        gate_command="make gate",
+        review_findings="- severity: P2",
+        p2_policy="all",
+    )
+
+    assert "Active mode: `all`." in prompt
+    assert "ALL P1 findings and ALL P2 findings" in prompt
+
+
+def test_dev_prompt_p1_only_policy_keeps_p2s_advisory(tmp_path):
+    task = _make_task(tmp_path)
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        story_content="# Spec",
+        gate_command="make gate",
+        review_findings="- severity: P2",
+        p2_policy="p1_only",
+    )
+
+    assert "Active mode: `p1_only`." in prompt
+    assert "P2 findings are advisory" in prompt
+
+
 class TestContractChangeTestRule:
     """Verify that the test-editing rule is conditional on contract_change."""
 
