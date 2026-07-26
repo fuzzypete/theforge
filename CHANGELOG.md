@@ -22,17 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Base-branch audit commits are published, not left local (#1950):** the
-  sprint now pushes its `chore(audit): record sprint run audits` commit to
-  `origin/<base_branch>` and verifies the base branch is no longer ahead;
-  failure raises instead of logging a warning, so the sprint exits nonzero
-  rather than reporting success over divergent state. Workspace preparation
-  also fails closed when the base branch carries commits absent from origin —
-  on the fresh, reused, reattach, and resume paths alike — because a worktree
-  cut from such a checkout makes GitHub attribute that content to whichever
-  story happens to be running. The purely informational `_check_behind_origin`
-  helper is gone; the ahead-only case it could not detect is exactly the one
-  that contaminated PR diffs.
+- **Base-branch audit commits are published, not left local (#1950):** with
+  `workspace.auto_push` on, the sprint now pushes its `chore(audit): record
+  sprint run audits` commit to `origin/<base_branch>` and verifies the base
+  branch is no longer ahead; failure raises instead of logging a warning, so
+  the sprint exits nonzero rather than reporting success over divergent state.
+  Workspace preparation also fails closed when the base branch carries commits
+  absent from origin — on the fresh, reused, reattach, and resume paths alike —
+  because a worktree cut from such a checkout makes GitHub attribute that
+  content to whichever story happens to be running. Both behaviors are scoped
+  to `auto_push`: without it, `on_approve: merge` lands stories into the local
+  base checkout by design, so the branch is expected to run ahead of origin and
+  the sprint warns that the audit records stay local rather than pushing them
+  (a branch push would carry those local merges too). The purely informational
+  `_check_behind_origin` helper is gone; the ahead-only case it could not
+  detect is exactly the one that contaminated PR diffs.
 
 - **Failing-test extraction no longer silently assumes pytest (#1738):** the
   gate-failure retry path extracted failing-test identifiers using pytest's

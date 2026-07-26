@@ -4,8 +4,10 @@ Covers:
 - Fresh workspace: pull succeeds before worktree creation
 - Fresh workspace: pull fails (diverged) -> hard abort, workspace NOT created, error returned
 - Fresh workspace: pull fails (offline/unreachable) -> hard abort, workspace NOT created
-- Base branch ahead of origin (ahead-only) -> hard abort on fresh, reused, and
-  reattach paths, even though `git pull --ff-only` succeeds in that state
+- Base branch ahead of origin (ahead-only) under auto_push -> hard abort on
+  fresh, reused, and reattach paths, even though `git pull --ff-only` succeeds
+- Base branch ahead of origin without auto_push -> allowed; local merges land
+  there by design and must not block subsequent stories in a sprint
 - no_pull=True: no pull attempted on fresh path
 - no_pull=True: no base-branch sync on resume path
 - Daemon sprint_args dict includes no_pull; _execute_sprint passes it to run_sprint
@@ -14,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import _make_config, _make_task
@@ -304,6 +307,19 @@ def _ahead_only_shell(ahead: str = "2", behind: str = "0", *, recorder=None):
     return shell_side_effect
 
 
+def _make_pushing_config(tmp_path):
+    """_make_config with auto_push on: the base branch is expected to track origin.
+
+    With auto_push off, `_merge_branch` lands stories locally without pushing,
+    so an ahead-only base branch is the configured steady state and the guard
+    deliberately stands down — see TestLocalMergeWorkflowNotBlocked.
+    """
+    config = _make_config(tmp_path)
+    return dataclasses.replace(
+        config, workspace=dataclasses.replace(config.workspace, auto_push=True)
+    )
+
+
 class TestBaseBranchAheadOnlyGuard:
     """An ahead-only base branch must block worktree use, not just log."""
 
@@ -311,7 +327,7 @@ class TestBaseBranchAheadOnlyGuard:
     @patch("theforge.coordinator.workspace._cu._log")
     def test_pull_base_branch_raises_when_ahead_only(self, mock_log, mock_shell, tmp_path):
         """Successful pull + ahead>0/behind==0 still aborts."""
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
         mock_shell.side_effect = _ahead_only_shell(ahead="2", behind="0")
 
         try:
@@ -325,7 +341,7 @@ class TestBaseBranchAheadOnlyGuard:
     @patch("theforge.coordinator.workspace._cu._log")
     def test_pull_base_branch_passes_when_in_sync(self, mock_log, mock_shell, tmp_path):
         """ahead == 0 is the normal case and must not raise."""
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
         mock_shell.side_effect = _ahead_only_shell(ahead="0", behind="0")
 
         assert pull_base_branch(config) is True
@@ -334,7 +350,7 @@ class TestBaseBranchAheadOnlyGuard:
     @patch("theforge.coordinator.workspace._cu._log")
     def test_fresh_workspace_aborts_before_worktree_add(self, mock_log, mock_shell, tmp_path):
         """The fresh path returns an error and never runs the create command."""
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
         task = _make_task(tmp_path)
         calls: list[str] = []
         mock_shell.side_effect = _ahead_only_shell(recorder=calls)
@@ -352,7 +368,7 @@ class TestBaseBranchAheadOnlyGuard:
         self, mock_log, mock_shell, mock_rebase, tmp_path
     ):
         """The reused-worktree path blocks too — it used to only log behind-origin."""
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
         task = _make_task(tmp_path)
         (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
         mock_shell.side_effect = _ahead_only_shell()
@@ -370,7 +386,7 @@ class TestBaseBranchAheadOnlyGuard:
         self, mock_log, mock_shell, mock_rebase, tmp_path
     ):
         """Branch-collision reattach blocks before `git worktree add`."""
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
         task = _make_task(tmp_path)
         calls: list[str] = []
         base_shell = _ahead_only_shell(ahead="0", behind="0", recorder=calls)
@@ -400,6 +416,78 @@ class TestBaseBranchAheadOnlyGuard:
         assert error is not None and "not on origin/main" in error
         assert not any("worktree add" in cmd for cmd in calls)
         mock_rebase.assert_not_called()
+
+
+class TestLocalMergeWorkflowNotBlocked:
+    """auto_push=false leaves the base branch ahead by design — do not abort.
+
+    `_merge_branch` merges each landed story into the project-root base branch
+    and only pushes when workspace.auto_push is set. Under the default, the
+    branch is legitimately ahead of origin from the first landing onward, so a
+    guard that fired on ahead>0 unconditionally would abort every subsequent
+    story in a multi-story sprint.
+    """
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_pull_base_branch_allows_ahead_when_auto_push_off(
+        self, mock_log, mock_shell, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        assert config.workspace.auto_push is False
+        mock_shell.side_effect = _ahead_only_shell(ahead="3", behind="0")
+
+        assert pull_base_branch(config) is True
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_second_story_workspace_created_after_local_only_merge(
+        self, mock_log, mock_shell, tmp_path
+    ):
+        """The scenario the unconditional guard broke: story N+1 after a local merge."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        calls: list[str] = []
+        base_shell = _ahead_only_shell(ahead="3", behind="0", recorder=calls)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if cmd.startswith("mkdir -p "):
+                calls.append(cmd)
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return base_shell(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = shell_side_effect
+
+        path, branch, error = _create_workspace(config, task, no_pull=False)
+
+        assert error is None
+        assert path == tmp_path / task.slug
+        assert any(cmd.startswith("mkdir -p ") for cmd in calls)
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_diverged_abort_still_applies_when_auto_push_off(self, mock_log, mock_shell, tmp_path):
+        """Standing down on ahead-only must not disable the pre-existing divergence abort."""
+        config = _make_config(tmp_path)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "main")
+            if "pull --ff-only" in cmd:
+                return (False, "fatal: Not possible to fast-forward, aborting.")
+            if "rev-list --count" in cmd:
+                return (True, "2\n")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        try:
+            pull_base_branch(config)
+        except RuntimeError as exc:
+            assert "diverged" in str(exc)
+        else:
+            raise AssertionError("divergence must still abort regardless of auto_push")
 
 
 class TestResumeNoPull:

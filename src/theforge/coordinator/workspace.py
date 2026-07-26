@@ -590,6 +590,20 @@ def _branch_sync_delta(config: ForgeConfig, base_branch: str) -> tuple[int | Non
     return None, None
 
 
+def _base_branch_tracks_origin(config: ForgeConfig) -> bool:
+    """Whether the project-root base branch is expected to match origin.
+
+    ``workspace.auto_push`` is the operator's declaration on this. With it off,
+    ``_merge_branch`` lands stories by merging into the local base checkout and
+    deliberately does not push (see the ``auto_push`` guard there), so the
+    branch running ahead of origin is the configured steady state — treating it
+    as drift would abort every multi-story sprint after the first landing.
+    With it on — which ``on_approve: merge-pr`` requires at config load — every
+    landing reaches the remote, so local-only commits are unowned state.
+    """
+    return config.workspace.auto_push
+
+
 def _assert_base_branch_published(config: ForgeConfig, base_branch: str) -> None:
     """Fail closed when the local base branch carries commits absent from origin.
 
@@ -599,7 +613,14 @@ def _assert_base_branch_published(config: ForgeConfig, base_branch: str) -> None
     commit-based review is the evaluation mechanism, that is a correctness
     failure, not a cosmetic one. ``git pull --ff-only`` succeeds trivially in
     this state, so the delta has to be checked explicitly.
+
+    Only applies when the base branch is supposed to track origin — see
+    ``_base_branch_tracks_origin``. Under a local-merge workflow with pushing
+    disabled, an ahead-only base branch is the configured steady state, and
+    aborting on it would break every multi-story sprint.
     """
+    if not _base_branch_tracks_origin(config):
+        return
     ahead, _behind = _branch_sync_delta(config, base_branch)
     if ahead is None or ahead <= 0:
         return

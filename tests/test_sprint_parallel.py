@@ -2620,6 +2620,14 @@ class TestImmediateIntegrationLanding:
         assert result.landing_status == "failed"
 
 
+def _make_pushing_config(tmp_path: Path):
+    """_make_config with auto_push on — the base branch is expected to track origin."""
+    config = _make_config(tmp_path)
+    return dataclasses.replace(
+        config, workspace=dataclasses.replace(config.workspace, auto_push=True)
+    )
+
+
 class TestSprintRunAuditCommit:
     def test_run_sprint_commits_story_run_audits_from_project_root(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
@@ -2630,7 +2638,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2683,7 +2691,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2725,7 +2733,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2773,7 +2781,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2800,6 +2808,52 @@ class TestSprintRunAuditCommit:
             run_sprint(config, manifest_path, auto_merge=True)
 
         assert any("canonical story run audit publish failed" in warning for warning in warnings)
+
+    def test_run_sprint_commits_without_push_when_auto_push_off(self, tmp_path: Path) -> None:
+        """auto_push=false: pushing the base would publish local merges the operator declined.
+
+        A branch push carries all its ancestors, so the audit commit cannot be
+        published in isolation. The records stay local and the sprint warns.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_config(tmp_path)
+        assert config.workspace.auto_push is False
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge", "pending": True}
+        commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
+        shell_calls: list[str] = []
+        logs: list[str] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "success": True, "action": "merge"},
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+            patch("theforge.sprint.runner._log", side_effect=logs.append),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 1
+        assert commit_cmd in shell_calls
+        assert "git push origin main" not in shell_calls
+        assert any("remain local" in line and "auto_push is off" in line for line in logs)
 
 
 def test_integration_lock_serializes(tmp_path: Path) -> None:

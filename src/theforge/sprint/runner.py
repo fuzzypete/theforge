@@ -104,7 +104,7 @@ def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
 
 
-def _commit_story_run_audits(project_root: Path, base_branch: str) -> None:
+def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: bool) -> None:
     """Commit and publish canonical per-run audit JSON emitted during a sprint.
 
     The sprint writes these records to the project-root base-branch checkout on
@@ -113,6 +113,11 @@ def _commit_story_run_audits(project_root: Path, base_branch: str) -> None:
     JSON to whichever story happens to be running. So the commit is only half
     the operation — this pushes it to origin and verifies the base branch is no
     longer ahead, raising loudly if either step fails.
+
+    ``publish`` mirrors ``workspace.auto_push``. Pushing a branch publishes all
+    of its ancestors, so with auto_push off a push here would also publish the
+    local story merges the operator opted out of sending to the remote. In that
+    configuration the commit stays local and the fact is warned about instead.
     """
     from ..coordinator import util as _cu  # noqa: PLC0415
 
@@ -138,6 +143,14 @@ def _commit_story_run_audits(project_root: Path, base_branch: str) -> None:
     if not ok_commit:
         raise RuntimeError(f"Failed to commit story run audits: {commit_out}")
     _log("Committed canonical story run audit records to the base branch checkout.")
+
+    if not publish:
+        _log(
+            f"⚠ SPRINT  story run audit records remain local: workspace.auto_push is off, so "
+            f"'{base_branch}' is not pushed. Publish it before cutting worktrees from a clone "
+            f"that expects origin/{base_branch} to be current."
+        )
+        return
 
     quoted_base = shlex.quote(base_branch)
     ok_push, push_out = _cu._run_shell(
@@ -3606,8 +3619,14 @@ def run_sprint(
     # but the failure is NOT swallowed: a local-only audit commit contaminates
     # every later story PR cut from this checkout, so the sprint must exit
     # nonzero rather than report success over divergent base-branch state.
+    from ..coordinator.workspace import _base_branch_tracks_origin
+
     try:
-        _commit_story_run_audits(config.project_root, config.workspace.base_branch)
+        _commit_story_run_audits(
+            config.project_root,
+            config.workspace.base_branch,
+            publish=_base_branch_tracks_origin(config),
+        )
     except RuntimeError as exc:
         _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}")
         raise
