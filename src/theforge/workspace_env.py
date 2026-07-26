@@ -45,6 +45,11 @@ def _read_workspace_python_pin(workspace_path: Path) -> str | None:
     raise ValueError(f"Workspace {workspace_path} has an empty .python-version pin.")
 
 
+def workspace_has_python_pin(workspace_path: Path) -> bool:
+    """Return True when the workspace declares a .python-version pin."""
+    return _read_workspace_python_pin(workspace_path) is not None
+
+
 def _candidate_python_names(pin: str) -> list[str]:
     version_parts = pin.split(".")
     candidates = [f"python{pin}"]
@@ -177,9 +182,12 @@ def workspace_venv_is_usable(
     if not cfg:
         return False
 
-    resolved = resolved_python if resolved_python is not None else maybe_resolve_workspace_python(
-        workspace_path
-    )
+    if resolved_python is not None:
+        resolved = resolved_python
+    elif workspace_has_python_pin(workspace_path):
+        resolved = resolve_workspace_python(workspace_path)
+    else:
+        resolved = None
     if resolved is None:
         return True
     return workspace_venv_matches_python(workspace_path, resolved)
