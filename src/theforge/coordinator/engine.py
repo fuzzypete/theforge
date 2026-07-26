@@ -82,6 +82,7 @@ from .util import (
     _log_phase,
     _log_verbose,
     _round_cost,
+    live_complexity_fields,
 )
 from .workspace import _base_branch_lands_locally, _create_workspace, pull_base_branch
 from .workspace_scrub import _scrub_forge_history
@@ -430,8 +431,9 @@ def _coordinator_loop(
                         "phase": "DEV",
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost_measured,
-                        "complexity": state.preflight_complexity,
-                        "complexity_score": state.preflight_complexity_score,
+                        **live_complexity_fields(
+                            state.preflight_complexity, state.preflight_complexity_score
+                        ),
                         "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,
@@ -476,8 +478,9 @@ def _coordinator_loop(
                         "phase": "DEV",
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost_measured,
-                        "complexity": state.preflight_complexity,
-                        "complexity_score": state.preflight_complexity_score,
+                        **live_complexity_fields(
+                            state.preflight_complexity, state.preflight_complexity_score
+                        ),
                         "current_model": config.dev_profile.model,
                         "detail": {
                             "review_cycle": state.review_cycle,
