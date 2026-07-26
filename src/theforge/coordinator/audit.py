@@ -11,6 +11,7 @@ from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
 
+from .agent_failure import NO_JUDGMENT
 from .audit_render import build_agent_entries, build_reviews
 from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
@@ -228,6 +229,19 @@ def _build_plan_reviewer_value(state: CoordinatorState) -> list[dict]:
     return out
 
 
+def _preflight_no_judgment_run(state: CoordinatorState) -> bool:
+    """True when PREFLIGHT ran but obtained no model output at all (#1951).
+
+    Such a run records no verdict — there is none to record — so every audit
+    gate keyed on ``preflight_verdict is not None`` would silently drop the
+    phase. This predicate keeps it visible and labelled for what it is.
+    """
+    return (
+        state.preflight_verdict is None
+        and (state.infrastructure_failure or {}).get("phase") == "PREFLIGHT"
+    )
+
+
 def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     """Build the phases + totals block for the audit log.
 
@@ -237,13 +251,20 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     """
     # ── preflight ─────────────────────────────────────────────────────────────
     preflight_block: dict | None = None
-    if state.preflight_verdict is not None:
+    # A preflight that produced no model output records no verdict (#1951) but
+    # still ran and still cost money — emit the phase with an explicit
+    # ``no_judgment`` outcome rather than dropping it, which would read as
+    # "preflight never ran".
+    _preflight_no_judgment = _preflight_no_judgment_run(state)
+    if state.preflight_verdict is not None or _preflight_no_judgment:
         preflight_block = {
             "cost_usd": _round_cost(state.total_preflight_cost_measured),
             "duration_s": round(state.preflight_duration_s, 2)
             if state.preflight_duration_s is not None
             else None,
-            "outcome": state.preflight_verdict.lower() if state.preflight_verdict else None,
+            "outcome": (
+                state.preflight_verdict.lower() if state.preflight_verdict else "no_judgment"
+            ),
         }
 
     # ── plan ──────────────────────────────────────────────────────────────────
@@ -266,7 +287,11 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 
     # ── plan_review ───────────────────────────────────────────────────────────
     plan_review_block: dict | None = None
-    if state.plan_review_decision is not None:
+    # A plan review that ran but obtained too few model judgments records no
+    # decision (#1951) — it did not reject the plan. Keep the phase in the audit
+    # with an explicit ``no_judgment`` outcome so the reviewers that DID answer,
+    # and the ones that did not, both stay inspectable.
+    if state.plan_review_decision is not None or state.plan_review_results:
         _per_reviewer = _build_plan_review_per_reviewer(state, config)
         plan_review_block = {
             "cost_usd": _round_cost(state.total_plan_review_cost_measured),
@@ -274,7 +299,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             if state.plan_review_durations
             else None,
             "iterations": len(state.plan_review_results),
-            "outcome": state.plan_review_decision,
+            "outcome": state.plan_review_decision or "no_judgment",
             **({"per_reviewer": _per_reviewer} if _per_reviewer else {}),
         }
 
@@ -589,6 +614,20 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "fix_ready": task.fix_ready,
             "readiness_warnings": list(task.readiness_warnings),
         },
+        # ── No-judgment invocation telemetry (#1951) ──────────────────────
+        # Whether a model actually spoke is a property of the run that every
+        # consumer of its verdicts needs: an outcome produced without any model
+        # output is not evidence about the story. Recorded as native structured
+        # telemetry alongside the outcome it explains, never inferred from prose.
+        "agent_invocation": {
+            # Non-null when the RUN ended because no judgment could be obtained.
+            "infrastructure_failure": state.infrastructure_failure,
+            # Every invocation this run that produced no model output, whether
+            # or not the phase recovered from it.
+            "no_judgment_failures": list(state.agent_invocation_failures),
+            # Pools that completed with members lost to the substrate.
+            "degraded_pools": list(state.degraded_pools),
+        },
         "outcome": {
             "success": result.success,
             "final_phase": result.phase.name,
@@ -647,7 +686,16 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         },
         "preflight": (
             {
-                "verdict": ("cached" if state.preflight_cached else state.preflight_verdict),
+                "verdict": (
+                    "cached"
+                    if state.preflight_cached
+                    else (
+                        state.preflight_verdict
+                        # Explicit marker beats a null an operator would read as
+                        # "not recorded" (#1951).
+                        or (NO_JUDGMENT if _preflight_no_judgment_run(state) else None)
+                    )
+                ),
                 "reason": state.preflight_reason,
                 "complexity": state.preflight_complexity,
                 "complexity_score": state.preflight_complexity_score,
@@ -686,7 +734,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                     else {}
                 ),
             }
-            if state.preflight_verdict is not None
+            if state.preflight_verdict is not None or _preflight_no_judgment_run(state)
             else None
         ),
         "context_manifests": context_manifests,
@@ -780,7 +828,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                     else {}
                 ),
             }
-            if state.plan_review_decision is not None
+            # A plan review that ran but obtained too few model judgments records
+            # no decision (#1951). Keep the block — with a null decision — so the
+            # reviewer failures that explain it stay inspectable.
+            if state.plan_review_decision is not None or state.plan_review_results
             else None
         ),
         "plan_validation": (

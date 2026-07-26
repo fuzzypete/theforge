@@ -362,6 +362,22 @@ def _load_story_summary_entry_from_audit(
     }
 
 
+def _preflight_fallback(state: object) -> str:
+    """Rendering for a run whose state carries no preflight verdict.
+
+    ``PROCEED`` is the historical default and stays correct for runs that
+    genuinely proceeded without recording one. A run whose preflight produced no
+    model output records no verdict on purpose (#1951) — report that explicitly
+    instead of inventing the decision the phase would have made.
+    """
+    from ..coordinator.agent_failure import NO_JUDGMENT  # noqa: PLC0415
+
+    failure = getattr(state, "infrastructure_failure", None)
+    if isinstance(failure, dict) and failure.get("phase") == "PREFLIGHT":
+        return NO_JUDGMENT
+    return "PROCEED"
+
+
 def _parse_summary_timestamp(value: object) -> datetime.datetime | None:
     """Parse sprint-summary timestamps of the form 2026-04-25T12:05:00Z."""
     if not isinstance(value, str) or not value:
@@ -462,7 +478,10 @@ def _write_sprint_audit(
             preflight = (
                 "cached"
                 if getattr(res.state, "preflight_cached", False)
-                else (res.state.preflight_verdict or "PROCEED")
+                # An unset verdict is not a PROCEED. A run whose preflight
+                # obtained no model output recorded no verdict at all (#1951);
+                # defaulting it to PROCEED reports a decision no agent made.
+                else (res.state.preflight_verdict or _preflight_fallback(res.state))
             )
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
 
@@ -789,7 +808,10 @@ def _write_sprint_summary(
             preflight = (
                 "cached"
                 if getattr(res.state, "preflight_cached", False)
-                else (res.state.preflight_verdict or "PROCEED")
+                # An unset verdict is not a PROCEED. A run whose preflight
+                # obtained no model output recorded no verdict at all (#1951);
+                # defaulting it to PROCEED reports a decision no agent made.
+                else (res.state.preflight_verdict or _preflight_fallback(res.state))
             )
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
             last_verdict = ""

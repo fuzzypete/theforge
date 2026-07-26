@@ -33,6 +33,14 @@ from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
 
 from . import util as _cu
+from .agent_failure import (
+    CATEGORY_PROCESS,
+    NO_JUDGMENT,
+    AgentInvocationFailure,
+    classify_agent_failure,
+    mark_infrastructure_abort,
+    record_invocation_failure,
+)
 from .audit import has_review_approve
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
@@ -397,6 +405,9 @@ def _run_preflight_phase(
                 f"{len(_partial_evidence.tool_calls)} tool call(s)"
             )
 
+    # Set when this preflight produced no model output at all (#1951); drives
+    # the infrastructure-abort dispatch instead of a manufactured verdict.
+    _invocation_failure = None
     if preflight_result.success:
         verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
         if _parse_degraded:
@@ -409,46 +420,85 @@ def _run_preflight_phase(
     else:
         # Preflight agent failed (timeout, SIGKILL, non-zero exit).
         _preserve_partial_evidence()
-        # Whether it is safe to fall through to a conservative PROCEED depends on
-        # whether preflight was a confidence boost or the load-bearing check
-        # that catches contract drift. Detect risk signals deterministically
-        # from local state — no extra agent calls — and escalate when any
-        # signal indicates the story may be stale relative to the codebase.
-        risk_signals = _detect_preflight_risk_signals(
-            story_content,
-            config.project_root,
-            branch_name,
-            config.workspace.base_branch,
+        # ── No model output at all (#1951) ──────────────────────────────
+        # Before weighing risk signals, ask whether a model spoke. When the
+        # invocation died at the substrate — credential rejected, transport
+        # dropped, process never started — there is no analysis to be confident
+        # or unconfident about. "No risk signals detected" then means "nothing
+        # looked", not "nothing is risky", and turning that into PROCEED
+        # manufactures a story verdict no agent ever formed. Abort the run as an
+        # infrastructure failure instead; the run makes no statement about the
+        # story and teaches nothing.
+        _invocation_failure = classify_agent_failure(
+            preflight_result,
+            phase="PREFLIGHT",
+            profile_name=preflight_profile.name,
         )
-        state.preflight_risk_signals = risk_signals
-        state.preflight_degraded = True
-        if risk_signals:
-            verdict = "BLOCKED"
+        if _invocation_failure is not None:
+            record_invocation_failure(state, _invocation_failure)
+            state.preflight_degraded = True
+            state.preflight_degraded_reason = f"no_model_output_{_invocation_failure.category}"
+            state.preflight_failure_action = "infrastructure_abort"
+            verdict = NO_JUDGMENT
             reason = (
-                f"Preflight agent failed (exit={preflight_result.exit_code}); "
-                f"risk signals present ({', '.join(risk_signals)}) — escalating "
-                "rather than silently sprinting on an unverified contract."
+                f"Preflight agent produced no model output "
+                f"({_invocation_failure.summary()}) — no judgment was obtained about "
+                "this story; aborting as an infrastructure failure rather than "
+                "substituting a verdict."
             )
-            state.preflight_degraded_reason = "agent_failed_with_risk_signals"
-            state.preflight_failure_action = "escalate"
             _log(
-                f"  ✗ PREFLIGHT failed (exit={preflight_result.exit_code}) with "
-                f"risk signals [{', '.join(risk_signals)}] — escalating"
+                f"  ✗ PREFLIGHT   no model output "
+                f"({_invocation_failure.summary()}) — infrastructure abort "
+                "(no verdict recorded)"
             )
         else:
-            verdict, reason = (
-                "PROCEED",
-                f"Preflight agent failed (exit={preflight_result.exit_code}); "
-                "no risk signals detected — falling back to conservative PROCEED.",
+            # A model DID speak (partial output / tool trace salvaged from the
+            # failed run) — the pre-existing risk-signal policy applies.
+            # Whether it is safe to fall through to a conservative PROCEED depends
+            # on whether preflight was a confidence boost or the load-bearing check
+            # that catches contract drift. Detect risk signals deterministically
+            # from local state — no extra agent calls — and escalate when any
+            # signal indicates the story may be stale relative to the codebase.
+            risk_signals = _detect_preflight_risk_signals(
+                story_content,
+                config.project_root,
+                branch_name,
+                config.workspace.base_branch,
             )
-            state.preflight_degraded_reason = "timeout_no_verdict"
-            state.preflight_failure_action = "proceed"
-            _log(
-                f"  ⚠ PREFLIGHT failed (exit={preflight_result.exit_code}) — "
-                "no risk signals; fallback PROCEED (degraded)"
-            )
+            state.preflight_risk_signals = risk_signals
+            state.preflight_degraded = True
+            if risk_signals:
+                verdict = "BLOCKED"
+                reason = (
+                    f"Preflight agent failed (exit={preflight_result.exit_code}); "
+                    f"risk signals present ({', '.join(risk_signals)}) — escalating "
+                    "rather than silently sprinting on an unverified contract."
+                )
+                state.preflight_degraded_reason = "agent_failed_with_risk_signals"
+                state.preflight_failure_action = "escalate"
+                _log(
+                    f"  ✗ PREFLIGHT failed (exit={preflight_result.exit_code}) with "
+                    f"risk signals [{', '.join(risk_signals)}] — escalating"
+                )
+            else:
+                verdict, reason = (
+                    "PROCEED",
+                    f"Preflight agent failed (exit={preflight_result.exit_code}); "
+                    "no risk signals detected — falling back to conservative PROCEED.",
+                )
+                state.preflight_degraded_reason = "timeout_no_verdict"
+                state.preflight_failure_action = "proceed"
+                _log(
+                    f"  ⚠ PREFLIGHT failed (exit={preflight_result.exit_code}) — "
+                    "no risk signals; fallback PROCEED (degraded)"
+                )
 
-    state.preflight_verdict = verdict
+    # NO_JUDGMENT is not a verdict: leave state.preflight_verdict unset so no
+    # consumer can read a story-level judgment that no model produced (#1951).
+    # The local ``verdict`` still carries the marker so the audit artifact, the
+    # live-status detail, and the terminal dispatch below all say explicitly
+    # that no judgment was obtained.
+    state.preflight_verdict = None if verdict == NO_JUDGMENT else verdict
     state.preflight_reason = reason
     if state_update_fn is not None:
         state_update_fn(
@@ -836,7 +886,9 @@ def _run_preflight_phase(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
                 "detail": {
-                    "preflight_verdict": state.preflight_verdict,
+                    # Surface the explicit no-judgment marker rather than a null
+                    # that an operator would read as "not run yet" (#1951).
+                    "preflight_verdict": state.preflight_verdict or verdict,
                     "preflight_sufficiency": state.preflight_sufficiency,
                 },
             }
@@ -846,7 +898,7 @@ def _run_preflight_phase(
         config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
     )
 
-    _log(f"  ✓ PREFLIGHT   {verdict}")
+    _log(f"  {'✗' if verdict == NO_JUDGMENT else '✓'} PREFLIGHT   {verdict}")
     _log_verbose(f"  Reason: {reason}")
     if logger:
         logger._safe_emit(
@@ -895,6 +947,10 @@ def _run_preflight_phase(
         "risk_signals": list(state.preflight_risk_signals),
         "failure_action": state.preflight_failure_action,
         "partial_evidence": state.preflight_partial_evidence,
+        # Invocations that produced no model output at all (#1951). Present in
+        # the artifact so "no judgment obtained" is inspectable next to the
+        # verdict field rather than inferred from a missing one.
+        "agent_invocation_failures": list(state.agent_invocation_failures),
         "attempts": attempts,
     }
     state.preflight_cache_snapshot = dict(_preflight_artifact["cache_snapshot"])
@@ -939,6 +995,7 @@ def _run_preflight_phase(
         logger=logger,
         task_start=task_start,
         branch_merged=branch_merged,
+        invocation_failure=_invocation_failure,
     )
 
 
@@ -954,6 +1011,7 @@ def _handle_preflight_verdict(
     logger: "StructuredLogger | None",
     task_start: float,
     branch_merged: bool | None = None,
+    invocation_failure: "AgentInvocationFailure | None" = None,
 ) -> tuple[ForgeConfig, CoordinatorResult | None, bool]:
     """Dispatch on a preflight verdict and return the standard 3-tuple.
 
@@ -965,6 +1023,48 @@ def _handle_preflight_verdict(
     - ``result is None, already_done_loop is False`` — PROCEED; caller
       continues to ``_run_plan_phase``.
     """
+    # ── NO_JUDGMENT (infrastructure abort, #1951) ─────────────────────
+    # The preflight invocation produced no model output, so there is no verdict
+    # to dispatch on. End the run as an infrastructure failure: the terminal
+    # phase stays ESCALATE (the state machine has one terminal failure state),
+    # but the run is marked so no consumer reads it as a story-level judgment
+    # and the taint marker keeps it out of every routing aggregate.
+    if verdict == NO_JUDGMENT:
+        _failure = invocation_failure or AgentInvocationFailure(
+            phase="PREFLIGHT", category=CATEGORY_PROCESS
+        )
+        state.phase = Phase.ESCALATE
+        state.error = reason or "Preflight produced no model output."
+        mark_infrastructure_abort(state, _failure, message=state.error)
+        _log(f"✗ ABORT   infrastructure failure: {state.error}")
+        if logger:
+            logger._safe_emit(
+                "infrastructure_abort",
+                phase="PREFLIGHT",
+                reason=state.error,
+                category=_failure.category,
+            )
+            logger._safe_emit(
+                "run_end",
+                outcome="infrastructure_abort",
+                total_cost_usd=round(state.total_cost, 6),
+                total_duration_s=round(time.monotonic() - task_start, 2),
+            )
+        # No _escalate_notify: an escalation notification asserts that the story
+        # needs human judgment about its framing. Nothing was learned about the
+        # story here — only that the substrate is down.
+        return (
+            config,
+            CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+                infrastructure_failure=True,
+            ),
+            False,
+        )
+
     # ── ALREADY_DONE ──────────────────────────────────────────────────
     if verdict == "ALREADY_DONE":
         branch_merged = (
