@@ -53,6 +53,14 @@ from theforge.task import (
 from theforge.traces import write_trace
 
 from . import util as _cu
+from .agent_failure import (
+    NO_JUDGMENT,
+    AgentInvocationFailure,
+    classify_agent_failure,
+    mark_infrastructure_abort,
+    record_degraded_pool,
+    record_invocation_failure,
+)
 from .log_tee import _write_log_artifact
 from .notify import (
     _escalate_notify,
@@ -1069,16 +1077,37 @@ def _run_plan_agent_review(
         )
 
         _parsed_prs: list[PlanReviewResult] = []
+        # Reviewers lost to the substrate this attempt: they produced no model
+        # output, so they cast no vote of any kind (#1951).
+        _no_judgment_reviewers: list[str] = []
+        _no_judgment_failures: list[AgentInvocationFailure] = []
         for _prof, _res in zip(par_profiles, pr_results):
             _transport_failure = _is_transient_plan_review_failure(_res)
             if not _res.success:
                 _failure_summary = _summarize_plan_review_failure(_res)
-                _log(
-                    f"  ✗ PLAN_REVIEW   {_prof.name} failed "
-                    f"({_failure_summary}) — treating as REJECT"
+                # A reviewer that never answered has not rejected the plan. It
+                # is excluded from the merge either way (parse_errors do that),
+                # but recording "REJECT" here put a manufactured reviewer verdict
+                # into the audit trail and shrank the pool silently. Mark it as
+                # NO_JUDGMENT and keep the pool loss as first-class metadata.
+                _no_judgment = classify_agent_failure(
+                    _res, phase="PLAN_REVIEW", profile_name=_prof.name
                 )
+                if _no_judgment is not None:
+                    record_invocation_failure(state, _no_judgment)
+                    _no_judgment_reviewers.append(_prof.name)
+                    _no_judgment_failures.append(_no_judgment)
+                    _log(
+                        f"  ✗ PLAN_REVIEW   {_prof.name} produced no model output "
+                        f"({_no_judgment.summary()}) — no judgment (dropped from pool)"
+                    )
+                else:
+                    _log(
+                        f"  ✗ PLAN_REVIEW   {_prof.name} failed "
+                        f"({_failure_summary}) — unparseable, excluded from merge"
+                    )
                 _parsed = PlanReviewResult(
-                    verdict="REJECT",
+                    verdict=NO_JUDGMENT,
                     findings=[],
                     parse_errors=[f"Transport failure: {_failure_summary}"],
                 )
@@ -1115,17 +1144,25 @@ def _run_plan_agent_review(
                         "failure_kind": _failure_kind,
                         "retry_count": _retry_count,
                         "retryable": _transport_failure,
+                        # Whether a model spoke at all (#1951). A reviewer whose
+                        # output was unparseable still judged the plan; one that
+                        # never answered did not, and reviewer-reliability
+                        # consumers must be able to tell those apart.
+                        "produced_model_output": _prof.name not in _no_judgment_reviewers,
                         "errors": list(_parsed.parse_errors),
                     }
                 )
 
             _p1_count = sum(1 for f in _parsed.findings if f.severity in ("P0", "P1"))
             _p2_count = sum(1 for f in _parsed.findings if f.severity == "P2")
-            _log(
-                f"  {'✓' if _p1_count == 0 else '✗'} PLAN_REVIEW   {_prof.name} "
-                f"({'no blockers' if _p1_count == 0 else f'{_p1_count} P1'}"
-                f"{f', {_p2_count} P2' if _p2_count else ''})"
-            )
+            # A reviewer that never answered has zero findings — rendering that
+            # as "no blockers" would read as a clean pass it never gave (#1951).
+            if _prof.name not in _no_judgment_reviewers:
+                _log(
+                    f"  {'✓' if _p1_count == 0 else '✗'} PLAN_REVIEW   {_prof.name} "
+                    f"({'no blockers' if _p1_count == 0 else f'{_p1_count} P1'}"
+                    f"{f', {_p2_count} P2' if _p2_count else ''})"
+                )
             # persist raw output regardless of approve/reject outcome
             _write_log_artifact(
                 state.log_dir,
@@ -1173,7 +1210,64 @@ def _run_plan_agent_review(
         _failed_this_attempt = sum(1 for _p in _parsed_prs if _p.parse_errors)
         _successful_count = len(par_profiles) - _failed_this_attempt
         _min_reviewers = config.plan_agent_review.min_reviewers
+        # ── Degraded pool (#1951) ─────────────────────────────────────────
+        # The pool completed, but with fewer members than it was configured
+        # with because the substrate ate some of them. A degraded-pool result
+        # is not the same kind of result as a full-pool one; preserve the loss
+        # so downstream consumers can tell them apart instead of seeing a
+        # smaller pool that looks intact.
+        if _no_judgment_reviewers and _successful_count >= _min_reviewers:
+            record_degraded_pool(
+                state,
+                phase="PLAN_REVIEW",
+                pool_size=len(par_profiles),
+                lost=_no_judgment_reviewers,
+                failures=_no_judgment_failures,
+            )
+            _log(
+                f"  ⚠ PLAN_REVIEW   degraded pool: "
+                f"{len(_no_judgment_reviewers)}/{len(par_profiles)} reviewer(s) produced "
+                f"no model output ({', '.join(_no_judgment_reviewers)}); continuing with "
+                f"{_successful_count}"
+            )
         if _successful_count < _min_reviewers:
+            # Infrastructure abort vs. genuine review failure: when every
+            # reviewer that fell short did so without producing any model
+            # output, no reviewer judged this plan and the shortfall is a
+            # statement about the substrate. Escalating it as a plan-review
+            # rejection would record a story-level verdict no model formed.
+            if _no_judgment_reviewers and len(_no_judgment_reviewers) >= _failed_this_attempt:
+                _failure = _no_judgment_failures[0]
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"{len(_no_judgment_reviewers)}/{len(par_profiles)} plan reviewer(s) "
+                    f"produced no model output ({', '.join(_no_judgment_reviewers)}); "
+                    f"fewer than the required {_min_reviewers} reviewer(s) judged the plan "
+                    "— aborting as an infrastructure failure, not a plan rejection."
+                )
+                record_degraded_pool(
+                    state,
+                    phase="PLAN_REVIEW",
+                    pool_size=len(par_profiles),
+                    lost=_no_judgment_reviewers,
+                    failures=_no_judgment_failures,
+                )
+                mark_infrastructure_abort(state, _failure, message=state.error)
+                _log(f"  ✗ ABORT   infrastructure failure: {state.error}")
+                if logger:
+                    logger._safe_emit(
+                        "infrastructure_abort",
+                        phase="PLAN_REVIEW",
+                        reason=state.error,
+                        category=_failure.category,
+                    )
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.error,
+                    infrastructure_failure=True,
+                )
             state.plan_review_decision = "reject"
             state.phase = Phase.ESCALATE
             state.error = (

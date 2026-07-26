@@ -1357,11 +1357,17 @@ class TestStartupFailureEscalation:
         assert result.phase == Phase.ESCALATE
         assert mock_dev_agent.call_count == 2
         telemetry = result.state.dev_iteration_telemetry[0]
-        assert telemetry.gate_result == "DEV_FAILURE"
+        # #1951: the dev agent never produced model output, so the zero-commit
+        # guard ends the run as an infrastructure abort rather than an ESCALATE
+        # (which would claim an agent judged this story's framing invalid).
+        assert telemetry.gate_result == "DEV_INFRA_FAILURE"
+        assert result.infrastructure_failure is True
+        assert result.state.infrastructure_failure["phase"] == "DEV"
+        assert result.state.infrastructure_failure["category"] == "transport"
         assert telemetry.transport_retry_count == 1
         assert len(result.state.dev_results) == 2
         assert result.state.total_dev_cost == pytest.approx(1.25)
-        assert "produced no commits ahead of base" in (result.message or "")
+        assert "no commits ahead of base" in (result.message or "")
 
     @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
     @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)

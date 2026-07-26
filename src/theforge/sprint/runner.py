@@ -3426,10 +3426,22 @@ def run_sprint(
                         except Exception as exc:
                             _log(f"WARN on_complete callback failed for {slug}: {exc}")
                     elif result.phase == Phase.ESCALATE:
-                        try:
-                            source.on_escalate(task, result.state, config)
-                        except Exception as exc:
-                            _log(f"WARN on_escalate callback failed for {slug}: {exc}")
+                        # An infrastructure abort is not an escalation (#1951):
+                        # no agent judged the story, so there is nothing to
+                        # report back to the story source about it. Firing
+                        # on_escalate would post a story-quality verdict — the
+                        # durable, externally visible kind — sourced from a dead
+                        # credential.
+                        if getattr(result, "infrastructure_failure", False):
+                            _log(
+                                f"INFO {slug}: infrastructure abort (no agent judgment) — "
+                                "skipping on_escalate; run contributes no story signal"
+                            )
+                        else:
+                            try:
+                                source.on_escalate(task, result.state, config)
+                            except Exception as exc:
+                                _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
                 _print_worker_status(active, worker_phases, dag, total)
 
