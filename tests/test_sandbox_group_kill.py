@@ -208,27 +208,67 @@ class TestTerminateProcessGroup:
                 proc.kill()
                 proc.wait(timeout=5)
 
+
+class TestSurvivorIsAbandonedNotAwaited:
+    """Deliberately outside TestTerminateProcessGroup's signalling guard.
+
+    Both kill seams are stubbed out, so nothing here needs signal delivery to
+    actually work — which means this runs on every host, including one that
+    denies signalling entirely. That matters: the skip that protects the tests
+    above is what hid a defect in this very test from a local run.
+    """
+
     def test_survivor_is_logged_not_waited_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When nothing lands, give up loudly instead of blocking forever."""
+        """When nothing lands, give up loudly instead of blocking forever.
+
+        Patches the two kill *seams* rather than ``os.kill`` itself. Replacing
+        ``os.kill`` would replace it for everything in the process — including
+        this test's own cleanup below, which would then be refused and leave the
+        teardown blocking on a sleeper it could not kill.
+        """
         from theforge import process_group
 
         logged: list[str] = []
         monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
+        monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
         monkeypatch.setattr(process_group, "_log", logged.append)
-        monkeypatch.setattr(process_group.os, "kill", _refuse)
 
-        proc = self._spawn_sleeper()
+        proc = _spawn_sleeper()
         try:
+            start = time.monotonic()
             process_group.terminate_process_group(proc, grace_seconds=0.2)
+            elapsed = time.monotonic() - start
+
             assert proc.poll() is None, "sleeper should still be alive — every kill was refused"
             assert any("survived teardown" in msg for msg in logged), logged
+            assert elapsed < 5, (
+                f"teardown took {elapsed:.1f}s with both kills refused — it waited on "
+                "signals that were never delivered (#1959)"
+            )
         finally:
-            proc.kill()
-            proc.wait(timeout=5)
+            # Tolerant: on a host that denies signalling, cleanup cannot succeed
+            # and the sleeper exits on its own. Failing here would report the
+            # host's restrictions as a defect in the code under test.
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
 
-def _refuse(*_args: object, **_kwargs: object) -> None:
-    raise PermissionError(os.strerror(1))
+class TestKillPidGuard:
+    """The direct-pid escalation needs the same guard killpg has (#1793)."""
+
+    def test_refuses_targets_that_are_not_a_spawned_child(self) -> None:
+        """``os.kill(0, …)`` signals our own group; ``os.kill(1, …)`` targets init.
+
+        Pure — no process is spawned, so this pins the guard on every host,
+        including ones where signalling is denied outright.
+        """
+        from theforge import process_group
+
+        for bogus in (0, 1, -1, None, "4321"):
+            assert process_group._kill_pid(bogus) is False, f"{bogus!r} must not be signalled"
 
 
 class TestGateTimeoutBoundsItsOwnCleanup:

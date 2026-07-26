@@ -119,6 +119,27 @@ def _killpg_for(pid: int) -> bool:
         return False
 
 
+def _kill_pid(pid: int) -> bool:
+    """Best-effort ``SIGKILL`` of a single process; twin of `_killpg_for`.
+
+    Returns True when the process is gone or the signal was delivered. The same
+    guard applies as for a pgid, and for the same reason (#1793): a real spawned
+    child always has pid > 1, while ``os.kill(0, …)`` signals the caller's own
+    process group and ``os.kill(1, …)`` targets init.
+    """
+    if not is_killable_pgid(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        # Already gone — the state we wanted, not a failure.
+        return True
+    except OSError as exc:
+        _log(f"  ⚠ direct kill of pid={pid} refused: {exc}")
+        return False
+    return True
+
+
 def _wait_bounded(proc: subprocess.Popen[Any], timeout: float) -> bool:
     """True if *proc* exited within *timeout* seconds."""
     try:
@@ -152,21 +173,9 @@ def terminate_process_group(
         return
     # The group kill did not reach the child. Signalling the direct pid is a
     # weaker guarantee (grandchildren may survive) but it is the one thing a
-    # sandbox that denies cross-group signalling still permits. The same guard
-    # applies as for a pgid, and for the same reason (#1793): a real spawned
-    # child always has pid > 1, while ``os.kill(0, …)`` signals the caller's own
-    # process group and ``os.kill(1, …)`` targets init.
-    if not is_killable_pgid(proc.pid):
+    # sandbox that denies cross-group signalling still permits.
+    if _kill_pid(proc.pid) and _wait_bounded(proc, grace_seconds):
         return
-    try:
-        os.kill(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
-    except OSError as exc:
-        _log(f"  ⚠ direct kill of pid={proc.pid} refused: {exc}")
-    else:
-        if _wait_bounded(proc, grace_seconds):
-            return
     _log(f"  ⚠ pid={proc.pid} survived teardown; abandoning it rather than blocking on it")
 
 
