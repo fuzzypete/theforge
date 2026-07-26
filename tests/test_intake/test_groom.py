@@ -106,6 +106,16 @@ def test_groom_still_flags_bare_strong_tokens():
     assert findings[0].code == "groom_how_shaped_ac"
 
 
+def test_groom_still_flags_punctuation_ended_strong_token():
+    """Regression: the 'implementation:' strong token must still flag even
+    with no nearby code construct — word-boundary anchoring for other tokens
+    must not accidentally suppress this punctuation-ended one."""
+    body = "## Acceptance criteria\n\n- Implementation: use the BatchEmitter module\n"
+    findings = groom_check("Title", body, ["enhancement"])
+    assert len(findings) == 1
+    assert findings[0].code == "groom_how_shaped_ac"
+
+
 def test_groom_ignores_yaml_example_block_under_example_heading_in_ac():
     body = (
         "## Acceptance criteria\n\n"

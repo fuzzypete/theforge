@@ -48,8 +48,18 @@ _STRONG_HOW_TOKENS: tuple[str, ...] = (
     "subclass",
 )
 
+def _bounded_token_pattern(tok: str) -> str:
+    """Anchor a token to whole-word boundaries only where the token itself ends
+    in a word character. A trailing \\b after punctuation (e.g. "implementation:")
+    is a no-op that fails to match, since \\b requires a word/non-word transition
+    and punctuation already provides that separation from following text."""
+    left = r"\b" if tok[0].isalnum() or tok[0] == "_" else ""
+    right = r"\b" if tok[-1].isalnum() or tok[-1] == "_" else ""
+    return left + re.escape(tok) + right
+
+
 _STRONG_HOW_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(tok) for tok in _STRONG_HOW_TOKENS) + r")\b",
+    "|".join(_bounded_token_pattern(tok) for tok in _STRONG_HOW_TOKENS),
     re.IGNORECASE,
 )
 
