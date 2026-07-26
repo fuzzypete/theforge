@@ -1,6 +1,11 @@
 """Tests for preflight fallback and conservative PROCEED scenarios.
 
 Covers fallback retry behavior plus existing degraded PROCEED handling.
+
+Since #1951 the degraded-PROCEED / risk-signal-BLOCKED policy applies only when
+the failed preflight still produced *some* model output (salvaged partial text
+or a tool trace). A preflight that produced nothing at all is an infrastructure
+failure, not a story verdict, and aborts the run instead.
 """
 
 from __future__ import annotations
@@ -20,6 +25,27 @@ from theforge.config.types import ModelProfile
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase
 from theforge.runners import AgentResult
+
+
+def _crashed_with_salvaged_output(*, exit_code: int = 1, cost_usd: float = 0.0) -> AgentResult:
+    """A failed preflight that still left real model output behind.
+
+    The agent explored the codebase and reached a partial conclusion before it
+    died — paid-for model judgment exists, so the degraded-verdict fallback
+    policy (#332) applies rather than the no-judgment abort path (#1951).
+    """
+    return AgentResult(
+        success=False,
+        output="",
+        session_id=None,
+        cost_usd=cost_usd,
+        exit_code=exit_code,
+        raw={},
+        profile_name="preflight",
+        tool_trace=({"tool": "Read", "target": "src/theforge/coordinator/engine.py"},),
+        partial_output="The story targets the coordinator's escalation path.",
+    )
+
 
 # ── BLOCKED output with an ambiguous/verifiability reason ────────────────────
 
@@ -170,7 +196,8 @@ class TestPreflightFallbackRetry:
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.total_preflight_cost == 0.20
 
-    def test_both_fail_proceed_conservatively(self, tmp_path):
+    def test_both_fail_with_no_model_output_aborts_as_infrastructure(self, tmp_path):
+        """#1951: primary + fallback both silent ⇒ no verdict, infrastructure abort."""
         config = _make_config(tmp_path)
         fallback = ModelProfile(
             name="preflight_fallback",
@@ -206,6 +233,55 @@ class TestPreflightFallbackRetry:
 
             result = run_task(config, task)
 
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.infrastructure_failure is True
+        # The absence of a verdict is the point: nothing may read a PROCEED here.
+        assert result.state.preflight_verdict is None
+        assert result.state.preflight_failure_action == "infrastructure_abort"
+        assert result.state.infrastructure_failure["phase"] == "PREFLIGHT"
+        assert result.state.total_preflight_cost == 0.20
+        # Dev never ran — the run stopped at the substrate failure.
+        assert mock_dev.call_count == 0
+
+    def test_both_fail_proceed_conservatively(self, tmp_path):
+        config = _make_config(tmp_path)
+        fallback = ModelProfile(
+            name="preflight_fallback",
+            cli="gemini",
+            model="gemini-2.5-pro",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read", "Bash", "Glob", "Grep"),
+            phase="preflight",
+        )
+        config = config.__class__(**{**config.__dict__, "preflight_fallback_profile": fallback})
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch_gate_shell() as mock_shell,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        ):
+            mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+            # Both attempts crashed but salvaged real model output, so the
+            # conservative-PROCEED fallback still applies (#332).
+            mock_preflight.side_effect = [
+                _crashed_with_salvaged_output(cost_usd=0.07),
+                _crashed_with_salvaged_output(cost_usd=0.13),
+            ]
+            mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+            mock_plan_agent.side_effect = mock_dev
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+
+            result = run_task(config, task)
+
         assert result.success is True
         assert result.phase == Phase.DONE
         assert result.state.preflight_verdict == "PROCEED"
@@ -230,7 +306,7 @@ class TestPreflightConservativeFallback:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_preflight.return_value = _make_agent_result(success=False, output="", cost_usd=0.0)
+        mock_preflight.return_value = _crashed_with_salvaged_output()
         mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_plan_agent.side_effect = mock_dev
         mock_pool.return_value = [
@@ -247,6 +323,52 @@ class TestPreflightConservativeFallback:
         # Run should proceed to completion, not ESCALATE
         assert result.phase == Phase.DONE
         assert result.success is True
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_no_model_output_aborts_instead_of_degraded_proceed(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """#1951: a preflight that produced nothing records no verdict at all.
+
+        "No risk signals detected" after a substrate failure means nothing
+        looked, not that nothing is risky — so it may not become a PROCEED.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = AgentResult(
+            success=False,
+            output="Failed to authenticate. API Error: 401 OAuth access token has been revoked.",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="preflight",
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.infrastructure_failure is True
+        assert result.state.preflight_verdict is None
+        assert result.state.infrastructure_failure["category"] == "auth"
+        assert result.state.agent_invocation_failures[0]["phase"] == "PREFLIGHT"
+        # The run is tainted, so nothing downstream may learn from it.
+        assert result.state.trust_checks["agent_judgment_obtained"]["result"] == "fail"
+        assert mock_dev.call_count == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -314,7 +436,7 @@ class TestPreflightConservativeFallback:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_preflight.return_value = _make_agent_result(success=False, output="", cost_usd=0.0)
+        mock_preflight.return_value = _crashed_with_salvaged_output(exit_code=-9)
         mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_plan_agent.side_effect = mock_dev
         mock_pool.return_value = [
@@ -362,16 +484,9 @@ class TestPreflightConservativeFallback:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # exit_code=-9 simulates SIGKILL
-        mock_preflight.return_value = AgentResult(
-            success=False,
-            output="",
-            session_id=None,
-            cost_usd=0.04,
-            exit_code=-9,
-            raw={},
-            profile_name="preflight",
-        )
+        # exit_code=-9 simulates SIGKILL, with model output salvaged from the
+        # stream before the kill.
+        mock_preflight.return_value = _crashed_with_salvaged_output(exit_code=-9, cost_usd=0.04)
         mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_plan_agent.side_effect = mock_dev
         mock_pool.return_value = [
@@ -412,15 +527,7 @@ class TestPreflightConservativeFallback:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_preflight.return_value = AgentResult(
-            success=False,
-            output="",
-            session_id=None,
-            cost_usd=0.0,
-            exit_code=-9,
-            raw={},
-            profile_name="preflight",
-        )
+        mock_preflight.return_value = _crashed_with_salvaged_output(exit_code=-9)
         mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_plan_agent.side_effect = mock_dev
         mock_pool.return_value = [

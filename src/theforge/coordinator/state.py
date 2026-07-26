@@ -680,6 +680,25 @@ class CoordinatorState:
     # — any failed check taints the run (ADR-0006 clause 4); a run type with no
     # implemented check contributes no entry and stays "unchecked" (admissible).
     trust_checks: dict[str, dict] = field(default_factory=dict)
+    # ── No-judgment agent invocation failures (#1951) ──────────────────────────
+    # Every agent invocation this run that failed WITHOUT producing any model
+    # output (auth rejection, transport drop, startup failure, timeout before any
+    # text existed). Serialized AgentInvocationFailure dicts, appended by
+    # coordinator.agent_failure.record_invocation_failure. Present regardless of
+    # how the phase recovered, so the audit can answer "did a model actually
+    # judge this?" without re-deriving it from prose.
+    agent_invocation_failures: list[dict] = field(default_factory=list)
+    # Set when the RUN's terminal outcome is "no judgment was obtained" rather
+    # than any model verdict: the structured cause plus the operator message.
+    # None on every run whose outcome is backed by real model output. A run with
+    # this set carries a failed ``agent_judgment_obtained`` trust check, so it is
+    # tainted and teaches nothing (ADR-0006 clause 4).
+    infrastructure_failure: dict | None = None
+    # Phases that completed with a reviewer/agent pool shrunk by substrate
+    # failures. Each entry: phase, pool_size, lost (names), remaining, failures.
+    # A degraded-pool completion is not the same kind of result as a full-pool
+    # one and must stay distinguishable downstream.
+    degraded_pools: list[dict] = field(default_factory=list)
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.
@@ -846,3 +865,9 @@ class CoordinatorResult:
     message: str
     merge: dict | None = None
     landing_status: str | None = None
+    # True when the run ended because no agent judgment could be obtained
+    # (#1951). Distinguishes an infrastructure abort from a story-level
+    # ESCALATE for every caller that only sees the result: the terminal phase is
+    # still ESCALATE, but this run made no statement about the story and must
+    # not be reported, notified, or persisted as if it had.
+    infrastructure_failure: bool = False

@@ -50,6 +50,7 @@ from theforge.task import (
     parse_plan_output,
 )
 
+from .agent_failure import is_infrastructure_abort
 from .cancellation import StoryCancelled
 from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
@@ -244,6 +245,21 @@ from .review_phase import (  # noqa: E402
 )
 from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402,I001
 from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
+
+
+def _run_end_outcome(result: CoordinatorResult) -> str:
+    """Outcome label for the ``run_end`` structured-log event.
+
+    A run that ended because no agent judgment could be obtained is not an
+    escalation: nothing was learned about the story (#1951). Emitting the same
+    label for both would make the two indistinguishable in the event stream —
+    the exact conflation this distinction exists to prevent.
+    """
+    if result.success:
+        return "done"
+    if result.infrastructure_failure or is_infrastructure_abort(result.state):
+        return "infrastructure_abort"
+    return "escalate"
 
 
 def _cancelled_result(task: TaskStory, state: CoordinatorState) -> CoordinatorResult:
@@ -965,7 +981,7 @@ def run_task(
             _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
             logger._safe_emit(
                 "run_end",
-                outcome="done" if result.success else "escalate",
+                outcome=_run_end_outcome(result),
                 total_cost_usd=round(state.total_cost, 6),
                 total_duration_s=round(_total_elapsed, 2),
             )
@@ -1055,7 +1071,7 @@ def run_task(
                 return _cancelled_result(task, state)
             logger._safe_emit(
                 "run_end",
-                outcome="done" if result.success else "escalate",
+                outcome=_run_end_outcome(result),
                 total_cost_usd=round(state.total_cost, 6),
                 total_duration_s=round(time.monotonic() - _task_start, 2),
             )
@@ -1173,7 +1189,7 @@ def run_task(
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
         logger._safe_emit(
             "run_end",
-            outcome="done" if result.success else "escalate",
+            outcome=_run_end_outcome(result),
             total_cost_usd=round(state.total_cost, 6),
             total_duration_s=round(_total_elapsed, 2),
         )
@@ -1198,6 +1214,22 @@ def _record_run_memory(
     fresh run_task invocation. Changes to what we persist at run completion
     belong in this one function — not duplicated at each entry point.
     """
+    # ── No judgment obtained ⇒ nothing to learn (#1951) ────────────────
+    # Durable memory must be sourced only from invocations that actually
+    # produced model output. A run aborted because the substrate never answered
+    # made no statement about the story, and persisting its outcome would write
+    # a revoked credential into escalation history as evidence that this story
+    # escalates — indistinguishable from a real escalation once written, and
+    # biasing every later routing decision that reads it.
+    if is_infrastructure_abort(state):
+        _cause = state.infrastructure_failure or {}
+        _log_verbose(
+            "[adaptive] skipping memory persistence: no story judgment was obtained "
+            f"for story={task.slug} (infrastructure abort: "
+            f"phase={_cause.get('phase')} category={_cause.get('category')} "
+            f"exit={_cause.get('exit_code')})"
+        )
+        return
     if not state.preflight_complexity:
         _log_verbose(
             f"[model_profiles] skipping update: preflight_complexity unset for story={task.slug}"
@@ -1437,7 +1469,7 @@ def _run_resume_coordinator(
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
         logger._safe_emit(
             "run_end",
-            outcome="done" if result.success else "escalate",
+            outcome=_run_end_outcome(result),
             total_cost_usd=round(state.total_cost, 6),
             total_duration_s=round(_total_elapsed, 2),
         )
