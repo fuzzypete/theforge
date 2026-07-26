@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import re
 import subprocess
 import threading
@@ -14,6 +15,7 @@ import yaml
 
 from theforge.config import ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile, sandbox_containment_mode
+from theforge.config.sandbox_capabilities import SandboxCapabilityError, resolve_capabilities
 from theforge.config.types import StuckDetectionConfig
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import append_convention_retry_findings
@@ -487,6 +489,7 @@ def record_dev_iteration_telemetry(
             meaningful_progress=meaningful_progress,
             sandboxed=state.sandboxed,
             containment=state.dev_containment,
+            sandbox_capabilities=dict(state.dev_sandbox_capabilities),
             agent_exit_code=dev_result.exit_code,
             runner_failure_code=dev_result.failure_code,
             runner_failure_summary=runner_failure_summary,
@@ -595,6 +598,32 @@ def _capture_dev_handoff(
         return None
 
 
+def _resolve_dev_sandbox_capabilities(config: ForgeConfig) -> dict:
+    """Resolve the project's sandbox capability profile for audit + logging (#1947).
+
+    Returns the audit payload for the capabilities the dev run will be granted.
+    With no profile selected this is an explicit null/empty payload — default
+    containment, recorded rather than omitted.
+
+    A profile this host's sandbox backend cannot express resolves to *empty*
+    grants (the runner refuses the run), so the audit trail never claims a
+    capability that was not actually applied. The declared name is kept under
+    ``requested_profile`` so the refusal is diagnosable.
+    """
+    requested = config.sandbox.capability_profile
+    try:
+        return resolve_capabilities(requested, system=platform.system()).audit_payload()
+    except SandboxCapabilityError as exc:
+        _log(
+            f"  WARNING: sandbox capability profile {requested!r} is not usable on this "
+            f"host — the dev run will fail closed. {exc}"
+        )
+        payload = resolve_capabilities(None).audit_payload()
+        payload["requested_profile"] = requested
+        payload["unsupported_reason"] = str(exc)
+        return payload
+
+
 def _run_dev_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -620,6 +649,7 @@ def _run_dev_phase(
     # richer mode so audit/status distinguishes a wrapped run from a prompt-only one.
     state.sandboxed = sandbox_available_for_profile(config.dev_profile)
     state.dev_containment = sandbox_containment_mode(config.dev_profile)
+    state.dev_sandbox_capabilities = _resolve_dev_sandbox_capabilities(config)
     if config.dev_profile.mode == "cli" and config.dev_profile.sandbox_mode == "none":
         _log(
             "  WARNING: sandbox_mode: none — dev agent runs without write containment. "
@@ -632,6 +662,12 @@ def _run_dev_phase(
         )
     elif state.dev_containment == "mechanical":
         _log("  dev write containment: mechanical (host sandbox wrapper)")
+    if state.dev_sandbox_capabilities.get("profile"):
+        _log(
+            f"  sandbox capability profile: {state.dev_sandbox_capabilities['profile']} "
+            f"({len(state.dev_sandbox_capabilities['write_roots'])} extra write roots, "
+            f"{len(state.dev_sandbox_capabilities['mach_services'])} mach services)"
+        )
     _preserve_error_type = state.error_type == "max_iterations_no_submit"
     if not _preserve_error_type:
         state.error_type = None
@@ -909,6 +945,7 @@ def _run_dev_phase(
         timeout_seconds=_dev_timeout,
         max_iterations=state.adaptive_dev_max or config.dev_profile.max_iterations,
         stuck_detection=_scaled_stuck,
+        sandbox_capability_profile=config.sandbox.capability_profile,
     )
 
     _dev_total_start = time.monotonic()

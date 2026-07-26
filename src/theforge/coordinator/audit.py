@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from theforge.config import ForgeConfig
+from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
 
@@ -451,6 +452,12 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "tests_fixed_count": item.tests_fixed_count,
             "sandboxed": item.sandboxed,
             "containment": item.containment,
+            # Capability profile granted for this iteration (#1947). Falls back
+            # to the explicit default payload so an older/never-set record reads
+            # as "default containment", not "capability data missing".
+            "sandbox_capabilities": (
+                item.sandbox_capabilities or resolve_capabilities(None).audit_payload()
+            ),
             "agent_exit_code": item.agent_exit_code,
             "runner_failure_code": item.runner_failure_code,
             "runner_failure_summary": item.runner_failure_summary,
@@ -598,6 +605,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "workspace": {
             "path": str(state.workspace_path) if state.workspace_path else None,
             "branch": state.branch_name,
+            # Run-level substrate decision: which forge-owned sandbox capability
+            # profile widened containment, and to exactly what (#1947).
+            "sandbox_capabilities": (
+                state.dev_sandbox_capabilities or resolve_capabilities(None).audit_payload()
+            ),
         },
         "iterations": {
             "dev_attempts_total": len(state.dev_results),
