@@ -761,13 +761,20 @@ def _run_claude(
             startup_failure=True,
         )
 
+    # Flipped whenever a kill fails to reach the whole group, so the finally
+    # below knows the tree may have outlived us and keeps the reaper's record.
+    group_killed = True
+
     def _kill_group() -> None:
         # Kill the whole process group so node/tool grandchildren die too — a
         # bare proc.kill() reaches only the direct child. Fall back to the
         # direct child if the pgid is unknown or already gone.
+        nonlocal group_killed
         if pgid is not None:
-            process_group.kill_agent_group(pgid)
+            if not process_group.kill_agent_group(pgid):
+                group_killed = False
         else:
+            group_killed = False
             try:
                 proc.kill()
             except OSError:
@@ -869,17 +876,21 @@ def _run_claude(
         try:
             proc.wait(timeout=_EXIT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            process_group.terminate_process_group(proc)
+            if not process_group.terminate_process_group(proc):
+                group_killed = False
     except BaseException:
         # SIGTERM→SystemExit, KeyboardInterrupt, or any post-spawn error: kill the
         # whole group so it cannot outlive this process, then re-raise.
         _kill_group()
         raise
     finally:
-        # The group is dead by now (normal exit, an in-loop _kill_group, or the
-        # except above); drop its sidecar so the reaper doesn't chase a dead pgid.
+        # Normally the group is dead by now (clean exit, an in-loop _kill_group,
+        # or the except above) and dropping the sidecar keeps the reaper from
+        # chasing a dead pgid. But when a kill was refused the tree can outlive
+        # us, and the sidecar is the only thing that can still reach it — so
+        # release the record only once the group is actually gone.
         if pgid is not None:
-            process_group.unregister_agent_group(pgid)
+            process_group.release_group_record(pgid, group_killed=group_killed)
 
     if stuck_monitor.should_terminate:
         partial_output = "".join(lines)

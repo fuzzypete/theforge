@@ -96,6 +96,9 @@ def run_in_process_group(
         pgid = None
     if pgid is not None:
         register_agent_group(pgid, sandbox_dir=cwd)
+    # Normal completion implies the group went with the child; only a teardown
+    # that could not reach the group flips this.
+    group_killed = True
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
     except BaseException:
@@ -103,12 +106,29 @@ def run_in_process_group(
         # group, then wait for it *bounded*. An unbounded wait here blocks for
         # the child's full natural lifetime whenever the group kill did not land
         # (#1959), turning an enforced timeout into no timeout at all.
-        terminate_process_group(proc)
+        group_killed = terminate_process_group(proc)
         raise
     finally:
         if pgid is not None:
-            unregister_agent_group(pgid)
+            release_group_record(pgid, group_killed=group_killed)
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+def release_group_record(pgid: int, *, group_killed: bool) -> None:
+    """Drop the reaper's sidecar, but only once the group is really gone.
+
+    When teardown could reach only the direct child, that child exits while its
+    grandchildren keep running — and unregistering here would erase the one
+    record that lets `reap_orphan_agents` ever kill them. The sidecar is how a
+    surviving group stays reachable, so it outlives a partial teardown.
+    """
+    if not group_killed and group_is_alive(pgid):
+        _log(
+            f"  ⚠ keeping agent sidecar for pgid={pgid}: teardown reached only the "
+            "direct child and the group is still alive"
+        )
+        return
+    unregister_agent_group(pgid)
 
 
 def _killpg_for(pid: int) -> bool:
@@ -149,10 +169,34 @@ def _wait_bounded(proc: subprocess.Popen[Any], timeout: float) -> bool:
     return True
 
 
+def group_is_alive(pgid: int) -> bool:
+    """True while any process remains in *pgid*, using signal 0 as a probe.
+
+    Errs toward "alive" when the answer cannot be obtained (e.g. a sandbox that
+    refuses even a zero signal). The two mistakes are not symmetric: believing a
+    dead group is alive costs one stale sidecar and a no-op reap, while believing
+    a live group is dead drops the only record that can ever kill it.
+    """
+    if not is_killable_pgid(pgid):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def terminate_process_group(
     proc: subprocess.Popen[Any], *, grace_seconds: float = KILL_GRACE_SECONDS
-) -> None:
+) -> bool:
     """Kill the group led by *proc* and wait — bounded — for the tree to die.
+
+    Returns True when the kill reached the whole *group*, False when it reached
+    at most the direct child. That distinction is the caller's business, not a
+    detail: a false return means grandchildren may still be running, so the
+    group's reaper sidecar must be kept rather than dropped.
 
     Group kill is best-effort and can fail to land: the macOS seatbelt profile
     denies ``killpg`` unless it grants signalling descendants, and a group can
@@ -169,14 +213,21 @@ def terminate_process_group(
     # Only ever wait on a signal that was actually delivered. A refused kill
     # tells us up front that nothing will change, so waiting out the grace period
     # for it buys nothing but the latency this function exists to avoid.
-    if _killpg_for(proc.pid) and _wait_bounded(proc, grace_seconds):
-        return
-    # The group kill did not reach the child. Signalling the direct pid is a
-    # weaker guarantee (grandchildren may survive) but it is the one thing a
-    # sandbox that denies cross-group signalling still permits.
-    if _kill_pid(proc.pid) and _wait_bounded(proc, grace_seconds):
-        return
-    _log(f"  ⚠ pid={proc.pid} survived teardown; abandoning it rather than blocking on it")
+    if _killpg_for(proc.pid):
+        # SIGKILL reached the group and is uncatchable, so every member is dead
+        # or dying. The bounded wait only observes our own child being reaped.
+        if not _wait_bounded(proc, grace_seconds):
+            _log(f"  ⚠ pid={proc.pid} not reaped after its group was killed")
+        return True
+    # The group kill did not land. Signalling the direct pid is a strictly weaker
+    # guarantee — it cannot reach grandchildren — but it is the one thing a
+    # sandbox that denies cross-group signalling still permits. Report it as what
+    # it is so the caller keeps tracking whatever survived.
+    if _kill_pid(proc.pid):
+        _wait_bounded(proc, grace_seconds)
+    else:
+        _log(f"  ⚠ pid={proc.pid} survived teardown; abandoning it rather than blocking on it")
+    return False
 
 
 # ── pgid registry sidecars ───────────────────────────────────────────

@@ -177,8 +177,10 @@ def resolve_timeout_with_active(
     return base, False
 
 
-def _wait_bounded(proc: subprocess.Popen[str]) -> None:
+def _wait_bounded(proc: subprocess.Popen[str]) -> bool:
     """Wait for *proc*, but never longer than the teardown grace period.
+
+    Returns True if it exited within that window.
 
     An unbounded wait after a best-effort kill is only correct if the kill always
     lands. It does not: a platform sandbox can refuse signal delivery outright,
@@ -189,7 +191,8 @@ def _wait_bounded(proc: subprocess.Popen[str]) -> None:
     try:
         proc.wait(timeout=KILL_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        pass
+        return False
+    return True
 
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:
@@ -217,10 +220,24 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
         else:
             _wait_bounded(proc)
             return
+    # Each wait is guarded by whether the signal before it was actually
+    # delivered. Waiting on a refused signal is the #1959 mistake in miniature:
+    # it buys nothing and costs the grace period every time.
     try:
         proc.terminate()
     except OSError:
         pass
+    else:
+        if _wait_bounded(proc):
+            return
+    # SIGTERM is catchable, so a shell that ignores it survives — and a survivor
+    # holds the output pipes open, which is the read this function's caller then
+    # blocks on (#1959). Escalate to SIGKILL rather than leave that to chance;
+    # this matches process_group.terminate_process_group's escalation.
+    try:
+        proc.kill()
+    except OSError:
+        return
     _wait_bounded(proc)
 
 

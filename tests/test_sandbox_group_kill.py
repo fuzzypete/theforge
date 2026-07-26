@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -312,3 +313,134 @@ class TestGateTimeoutBoundsItsOwnCleanup:
                     proc.wait(timeout=5)
                 except OSError:
                     pass
+
+
+class TestSidecarSurvivesPartialTeardown:
+    """A group that outlives teardown must stay reachable by the orphan reaper.
+
+    When the group kill is refused but the direct child can be signalled, that
+    child dies while its grandchildren keep running. Dropping the pgid sidecar at
+    that moment erases the only record `reap_orphan_agents` could ever use to
+    kill them, so the survivors become permanently untracked — holding their
+    workspace-write sandbox grant with nothing left to reclaim it.
+
+    Both kill seams are stubbed, so none of this needs working signal delivery
+    and it runs on every host.
+    """
+
+    # Child spawns a grandchild, records its pid, then hangs — the npm→node→leaf
+    # shape the whole group-kill mechanism exists for, in miniature.
+    _SPAWNS_GRANDCHILD = (
+        "import subprocess,sys,time,pathlib;"
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(gc.pid));"
+        "time.sleep(20)"
+    )
+
+    def _sidecars(self, project_root: Path) -> list[Path]:
+        return sorted((project_root / ".forge" / "runs" / "agents").glob("*.json"))
+
+    def _run_until_timeout(
+        self, project_root: Path, pidfile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge import process_group
+
+        monkeypatch.setenv("FORGE_PROJECT_ROOT", str(project_root))
+        with pytest.raises(subprocess.TimeoutExpired):
+            process_group.run_in_process_group(
+                [sys.executable, "-c", self._SPAWNS_GRANDCHILD, str(pidfile)],
+                timeout=1.0,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_sidecar_kept_when_teardown_reached_only_the_direct_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge import process_group
+
+        # The exact defect state: killpg refused, direct-pid kill accepted.
+        monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
+        monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: True)
+
+        pidfile = tmp_path / "gc.pid"
+        try:
+            self._run_until_timeout(tmp_path, pidfile, monkeypatch)
+            assert self._sidecars(tmp_path), (
+                "sidecar was dropped while the group may still be alive — the "
+                "surviving tree is now invisible to reap_orphan_agents"
+            )
+        finally:
+            _reap_tree(pidfile)
+
+    def test_sidecar_released_when_the_group_kill_lands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half: a landed group kill must not leak sidecars.
+
+        Without this, "keep the record when unsure" quietly degrades into "never
+        clean up", and the reaper accumulates entries pointing at pgids the OS is
+        free to recycle.
+        """
+        from theforge import process_group
+
+        killed: list[int] = []
+
+        def _kill_group_for_real(pid: int) -> bool:
+            killed.append(pid)
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except OSError:
+                pass
+            return True  # report the group as killed, as a granted killpg would
+
+        monkeypatch.setattr(process_group, "_killpg_for", _kill_group_for_real)
+
+        pidfile = tmp_path / "gc.pid"
+        try:
+            self._run_until_timeout(tmp_path, pidfile, monkeypatch)
+            assert killed, "teardown never attempted the group kill"
+            assert not self._sidecars(tmp_path), (
+                "sidecar outlived a successful group kill — records would "
+                "accumulate pointing at pgids the OS can recycle"
+            )
+        finally:
+            _reap_tree(pidfile)
+
+    def test_normal_completion_releases_the_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No teardown at all is the common case and must not leak either."""
+        from theforge import process_group
+
+        monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+        result = process_group.run_in_process_group(
+            [sys.executable, "-c", "print('ok')"], capture_output=True, text=True
+        )
+        assert result.returncode == 0
+        assert not self._sidecars(tmp_path)
+
+
+class TestGroupIsAliveGuard:
+    def test_refuses_pgids_that_cannot_denote_a_real_group(self) -> None:
+        """Same #1793 guard: a probe on pgid 0/1 would ask about the wrong group."""
+        from theforge import process_group
+
+        for bogus in (0, 1, -1, None, "4321"):
+            assert process_group.group_is_alive(bogus) is False, f"{bogus!r} is not a group"
+
+
+def _reap_tree(pidfile: Path) -> None:
+    """Best-effort cleanup of a child/grandchild left alive by a stubbed kill.
+
+    Tolerant by design: on a host that denies signalling nothing here can
+    succeed, and the sleepers exit on their own well inside the suite's runtime.
+    """
+    try:
+        gc_pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        return
+    try:
+        os.kill(gc_pid, signal.SIGKILL)
+    except OSError:
+        pass
