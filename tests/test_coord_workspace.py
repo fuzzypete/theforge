@@ -4,10 +4,10 @@ Covers:
 - Fresh workspace: pull succeeds before worktree creation
 - Fresh workspace: pull fails (diverged) -> hard abort, workspace NOT created, error returned
 - Fresh workspace: pull fails (offline/unreachable) -> hard abort, workspace NOT created
-- Resume path (existing worktree): behind-origin check logs informational note
-- Resume path: rev-list fails -> silently skipped
+- Base branch ahead of origin (ahead-only) -> hard abort on fresh, reused, and
+  reattach paths, even though `git pull --ff-only` succeeds in that state
 - no_pull=True: no pull attempted on fresh path
-- no_pull=True: no behind-origin check on resume path
+- no_pull=True: no base-branch sync on resume path
 - Daemon sprint_args dict includes no_pull; _execute_sprint passes it to run_sprint
 - _deindex_forge_artifacts: runs git rm --cached --ignore-unmatch on all return paths
 """
@@ -20,9 +20,9 @@ from coord_test_helpers import _make_config, _make_task
 
 from theforge.coordinator.workspace import (
     _FORGE_ARTIFACTS,
-    _check_behind_origin,
     _create_workspace,
     _deindex_forge_artifacts,
+    pull_base_branch,
 )
 
 # ── Fresh workspace pull tests ────────────────────────────────────────
@@ -274,59 +274,140 @@ class TestFreshWorkspacePull:
         assert sync_called == [], "no pull/fetch should be called when no_pull=True"
 
 
-# ── Resume path behind-origin check tests ────────────────────────────
+# ── Base branch ahead-only guard tests ───────────────────────────────
 
 
-class TestBehindOriginCheck:
-    """_check_behind_origin logs when base is behind; silently skips on failure."""
+def _ahead_only_shell(ahead: str = "2", behind: str = "0", *, recorder=None):
+    """Shell stub where the base branch is `ahead` commits ahead of origin.
+
+    ``git pull --ff-only`` succeeds trivially in this state — that is precisely
+    what made the old guard miss it — so the stub returns success for the sync.
+    """
+
+    def shell_side_effect(cmd, cwd, **kwargs):
+        if recorder is not None:
+            recorder.append(cmd)
+        if "rev-list --count origin/" in cmd:
+            return (True, f"{ahead}\n")
+        if "rev-list --count" in cmd:
+            return (True, f"{behind}\n")
+        if "rev-parse --abbrev-ref HEAD" in cmd:
+            return (True, "main")
+        if "rev-parse HEAD:src/theforge" in cmd:
+            return (True, "treesha")
+        if "git log" in cmd and "--oneline" in cmd:
+            # Non-empty: keeps an existing worktree out of the stale-removal
+            # path and marks a collided branch as having commits to reattach.
+            return (True, "abc1234 a commit\n")
+        return (True, "")
+
+    return shell_side_effect
+
+
+class TestBaseBranchAheadOnlyGuard:
+    """An ahead-only base branch must block worktree use, not just log."""
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_behind_origin_logs_info(self, mock_log, mock_shell, tmp_path):
-        """When base_branch is N commits behind origin, log an info note."""
+    def test_pull_base_branch_raises_when_ahead_only(self, mock_log, mock_shell, tmp_path):
+        """Successful pull + ahead>0/behind==0 still aborts."""
         config = _make_config(tmp_path)
+        mock_shell.side_effect = _ahead_only_shell(ahead="2", behind="0")
 
-        mock_shell.return_value = (True, "3\n")
-
-        _check_behind_origin(config)
-
-        log_calls = [str(c) for c in mock_log.call_args_list]
-        assert any("3 commit" in c and "behind" in c for c in log_calls)
+        try:
+            pull_base_branch(config)
+        except RuntimeError as exc:
+            assert "2 local commit(s) not on origin/main" in str(exc)
+        else:
+            raise AssertionError("pull_base_branch must abort on an ahead-only base branch")
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_not_behind_no_log(self, mock_log, mock_shell, tmp_path):
-        """When base_branch is 0 commits behind, no info note logged."""
+    def test_pull_base_branch_passes_when_in_sync(self, mock_log, mock_shell, tmp_path):
+        """ahead == 0 is the normal case and must not raise."""
         config = _make_config(tmp_path)
+        mock_shell.side_effect = _ahead_only_shell(ahead="0", behind="0")
 
-        mock_shell.return_value = (True, "0\n")
-
-        _check_behind_origin(config)
-
-        log_calls = [str(c) for c in mock_log.call_args_list]
-        assert not any("behind" in c for c in log_calls)
+        assert pull_base_branch(config) is True
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_rev_list_fails_silent(self, mock_log, mock_shell, tmp_path):
-        """When rev-list command fails, silently skip — no error raised."""
+    def test_fresh_workspace_aborts_before_worktree_add(self, mock_log, mock_shell, tmp_path):
+        """The fresh path returns an error and never runs the create command."""
         config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        calls: list[str] = []
+        mock_shell.side_effect = _ahead_only_shell(recorder=calls)
 
-        mock_shell.return_value = (False, "fatal: ambiguous argument")
+        path, branch, error = _create_workspace(config, task, no_pull=False)
 
-        # Should not raise
-        _check_behind_origin(config)
+        assert path is None and branch is None
+        assert error is not None and "not on origin/main" in error
+        assert not any(cmd.startswith("mkdir -p ") for cmd in calls)
 
-        log_calls = [str(c) for c in mock_log.call_args_list]
-        assert not any("behind" in c for c in log_calls)
+    @patch("theforge.coordinator.workspace._rebase_reused_worktree")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_reused_worktree_aborts_before_rebase(
+        self, mock_log, mock_shell, mock_rebase, tmp_path
+    ):
+        """The reused-worktree path blocks too — it used to only log behind-origin."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+        mock_shell.side_effect = _ahead_only_shell()
+
+        path, branch, error = _create_workspace(config, task, no_pull=False)
+
+        assert path is None and branch is None
+        assert error is not None and "not on origin/main" in error
+        mock_rebase.assert_not_called()
+
+    @patch("theforge.coordinator.workspace._rebase_reused_worktree")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_reattach_path_aborts_before_worktree_add(
+        self, mock_log, mock_shell, mock_rebase, tmp_path
+    ):
+        """Branch-collision reattach blocks before `git worktree add`."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        calls: list[str] = []
+        base_shell = _ahead_only_shell(ahead="0", behind="0", recorder=calls)
+        # First sync succeeds (in-sync) so creation is attempted; the create
+        # command then collides with an existing branch that has commits, and
+        # by the time the reattach path re-syncs the base branch is ahead-only.
+        state = {"synced": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-list --count origin/" in cmd:
+                calls.append(cmd)
+                state["synced"] += 1
+                return (True, "0\n" if state["synced"] == 1 else "2\n")
+            if cmd.startswith("mkdir -p "):
+                calls.append(cmd)
+                return (False, "fatal: branch already exists")
+            if cmd.startswith("git branch --list"):
+                calls.append(cmd)
+                return (True, "  forge/test-task\n")
+            return base_shell(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = shell_side_effect
+
+        path, branch, error = _create_workspace(config, task, no_pull=False)
+
+        assert path is None and branch is None
+        assert error is not None and "not on origin/main" in error
+        assert not any("worktree add" in cmd for cmd in calls)
+        mock_rebase.assert_not_called()
 
 
 class TestResumeNoPull:
-    """On resume/reuse paths, no_pull=True suppresses the behind-origin check."""
+    """On resume/reuse paths, no_pull=True suppresses the base-branch sync."""
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_no_pull_skips_behind_origin_check_on_reuse(self, mock_log, mock_shell, tmp_path):
+    def test_no_pull_skips_base_sync_on_reuse(self, mock_log, mock_shell, tmp_path):
         """When no_pull=True and worktree exists (non-stale), no rev-list is run."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -354,8 +435,8 @@ class TestResumeNoPull:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_pull_false_runs_behind_origin_check_on_reuse(self, mock_log, mock_shell, tmp_path):
-        """When no_pull=False and worktree exists (non-stale), rev-list is run."""
+    def test_pull_false_runs_base_sync_on_reuse(self, mock_log, mock_shell, tmp_path):
+        """When no_pull=False and worktree exists (non-stale), the sync delta is measured."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
 

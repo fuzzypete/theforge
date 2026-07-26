@@ -104,8 +104,16 @@ def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
 
 
-def _commit_story_run_audits(project_root: Path) -> None:
-    """Commit canonical per-run audit JSON emitted during sprint execution."""
+def _commit_story_run_audits(project_root: Path, base_branch: str) -> None:
+    """Commit and publish canonical per-run audit JSON emitted during a sprint.
+
+    The sprint writes these records to the project-root base-branch checkout on
+    the operator's behalf. A commit that is never pushed is unowned state: later
+    story worktrees are cut from that checkout and GitHub attributes the audit
+    JSON to whichever story happens to be running. So the commit is only half
+    the operation — this pushes it to origin and verifies the base branch is no
+    longer ahead, raising loudly if either step fails.
+    """
     from ..coordinator import util as _cu  # noqa: PLC0415
 
     if not (project_root / ".git").exists():
@@ -130,6 +138,38 @@ def _commit_story_run_audits(project_root: Path) -> None:
     if not ok_commit:
         raise RuntimeError(f"Failed to commit story run audits: {commit_out}")
     _log("Committed canonical story run audit records to the base branch checkout.")
+
+    quoted_base = shlex.quote(base_branch)
+    ok_push, push_out = _cu._run_shell(
+        f"git push origin {quoted_base}",
+        project_root,
+    )
+    if not ok_push:
+        raise RuntimeError(
+            f"Failed to push story run audits to origin/{base_branch}: {push_out.strip()}"
+        )
+
+    ok_ahead, ahead_out = _cu._run_shell(
+        f"git rev-list --count origin/{quoted_base}..{quoted_base}",
+        project_root,
+    )
+    if not ok_ahead:
+        raise RuntimeError(
+            f"Failed to verify story run audits reached origin/{base_branch}: {ahead_out.strip()}"
+        )
+    try:
+        ahead = int(ahead_out.strip())
+    except ValueError:
+        raise RuntimeError(
+            f"Failed to verify story run audits reached origin/{base_branch}: "
+            f"unexpected rev-list output {ahead_out.strip()!r}"
+        ) from None
+    if ahead > 0:
+        raise RuntimeError(
+            f"Story run audits were committed but '{base_branch}' is still {ahead} commit(s) "
+            f"ahead of origin/{base_branch} after push. Publish or reset it before rerunning."
+        )
+    _log(f"Pushed canonical story run audit records to origin/{base_branch}.")
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
@@ -3562,10 +3602,15 @@ def run_sprint(
     if _state_writer is not None:
         _state_writer.remove()
 
+    # Runs after _state_writer.remove() so sprint state is cleaned up regardless,
+    # but the failure is NOT swallowed: a local-only audit commit contaminates
+    # every later story PR cut from this checkout, so the sprint must exit
+    # nonzero rather than report success over divergent base-branch state.
     try:
-        _commit_story_run_audits(config.project_root)
+        _commit_story_run_audits(config.project_root, config.workspace.base_branch)
     except RuntimeError as exc:
-        _log(f"Warning: canonical story run audit commit failed: {exc}")
+        _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}")
+        raise
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:

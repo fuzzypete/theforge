@@ -82,7 +82,7 @@ from .util import (
     _log_phase,
     _log_verbose,
 )
-from .workspace import _check_behind_origin, _create_workspace
+from .workspace import _create_workspace, pull_base_branch
 from .workspace_scrub import _scrub_forge_history
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
@@ -1245,7 +1245,10 @@ def _run_resume_coordinator(
     """
     _ensure_runners()
     if not no_pull:
-        _check_behind_origin(config)
+        # Blocking, unlike the informational behind-origin check this replaced:
+        # the reused worktree is about to be rebased onto the base branch, so an
+        # unpublished commit there would be absorbed into this story's diff.
+        pull_base_branch(config)
     setup = _setup_resume_entry(
         config,
         task,

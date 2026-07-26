@@ -388,7 +388,7 @@ criteria_checked: []
                 "theforge.coordinator.preflight_flow.run_agent",
                 return_value=fresh_preflight,
             ) as mock_preflight,
-            patch("theforge.coordinator.engine._check_behind_origin"),
+            patch("theforge.coordinator.engine.pull_base_branch"),
         ):
             result = run_from_dev(config, task, workspace, cached_preflight_state=cached_state)
 

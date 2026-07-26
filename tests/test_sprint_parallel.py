@@ -2646,6 +2646,8 @@ class TestSprintRunAuditCommit:
                 return (True, "")
             if cmd == commit_cmd:
                 return (True, "")
+            if cmd == "git rev-list --count origin/main..main":
+                return (True, "0\n")
             return (True, "")
 
         with (
@@ -2659,15 +2661,15 @@ class TestSprintRunAuditCommit:
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
-        audit_shell_calls = [
-            call
-            for call in shell_calls
-            if ".forge/audits/runs" in call[0] or "chore(audit)" in call[0]
-        ]
-        assert audit_shell_calls == [
+        # Slice from the audit status probe: the publish sequence is the tail of
+        # the run, and rev-list also appears earlier from workspace base sync.
+        start = shell_calls.index(("git status --porcelain -- .forge/audits/runs", tmp_path))
+        assert shell_calls[start:] == [
             ("git status --porcelain -- .forge/audits/runs", tmp_path),
             ("git add -- .forge/audits/runs", tmp_path),
             (commit_cmd, tmp_path),
+            ("git push origin main", tmp_path),
+            ("git rev-list --count origin/main..main", tmp_path),
         ]
 
     def test_run_sprint_skips_audit_commit_when_project_root_is_clean(
@@ -2712,7 +2714,7 @@ class TestSprintRunAuditCommit:
         ]
         assert audit_shell_calls == [("git status --porcelain -- .forge/audits/runs", tmp_path)]
 
-    def test_run_sprint_warns_when_audit_commit_fails_after_state_cleanup(
+    def test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup(
         self, tmp_path: Path
     ) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
@@ -2739,7 +2741,9 @@ class TestSprintRunAuditCommit:
             if cmd == "git add -- .forge/audits/runs":
                 return (True, "")
             if cmd == commit_cmd:
-                return (False, "commit failed")
+                return (True, "")
+            if cmd == "git push origin main":
+                return (False, "rejected: non-fast-forward")
             return (True, "")
 
         with (
@@ -2750,13 +2754,52 @@ class TestSprintRunAuditCommit:
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
             patch("theforge.sprint.runner._log", side_effect=warnings.append),
+            pytest.raises(RuntimeError, match="Failed to push story run audits"),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            run_sprint(config, manifest_path, auto_merge=True)
 
-        assert sprint.specs_succeeded == 1
+        # Cleanup still ran before the raise, but the sprint does not report success.
         assert not any((tmp_path / ".forge" / "runs").glob("*.state"))
-        assert any("canonical story run audit commit failed" in warning for warning in warnings)
-        assert (commit_cmd, tmp_path) in shell_calls
+        assert any("canonical story run audit publish failed" in warning for warning in warnings)
+        assert ("git push origin main", tmp_path) in shell_calls
+
+    def test_run_sprint_raises_when_base_still_ahead_after_push(self, tmp_path: Path) -> None:
+        """A push that reports success but leaves the base ahead is still a failure."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_config(tmp_path)
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge", "pending": True}
+        warnings: list[str] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            if cmd == "git rev-list --count origin/main..main":
+                return (True, "1\n")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "success": True, "action": "merge"},
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+            patch("theforge.sprint.runner._log", side_effect=warnings.append),
+            pytest.raises(RuntimeError, match="still 1 commit"),
+        ):
+            run_sprint(config, manifest_path, auto_merge=True)
+
+        assert any("canonical story run audit publish failed" in warning for warning in warnings)
 
 
 def test_integration_lock_serializes(tmp_path: Path) -> None:
