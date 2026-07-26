@@ -1,9 +1,12 @@
-"""Seam-level tests for the dev-phase unproven-completion guard (#927).
+"""Seam-level tests for coordinator-owned gate execution (#1944 / #823).
 
-A dev that exits successfully but hands off a completion claim (an acceptance
-criterion marked MET) without gate PASS evidence must be escalated at the dev
-seam — the coordinator catches what the dev should have declared as a blocking
-failure. A well-formed completion (MET + gate_result PASS) must pass the guard.
+Gate execution is coordinator-owned on every iteration: the dev agent runs
+inside a write-containment sandbox that denies the process/build operations many
+gates exercise, so it is never asked to run or prove the gate. A fresh completion
+claim (an acceptance criterion marked MET) without a self-reported gate PASS is
+therefore NOT escalated at the dev seam — it delegates to the coordinator, which
+runs the authoritative gate unsandboxed in VALIDATE and decides. VALIDATE remains
+the safety net: a real gate failure is caught there, never silently landed.
 """
 
 from __future__ import annotations
@@ -44,10 +47,12 @@ class TestUnprovenCompletionGuard:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_completion_without_gate_evidence_escalates(
+    def test_fresh_completion_without_agent_gate_proceeds_to_validate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """A successful dev claiming MET with no gate_result → ESCALATE at dev seam."""
+        """Fresh dev claiming MET with no self-reported gate → NOT escalated;
+        delegates to the coordinator's authoritative VALIDATE gate, which PASSes,
+        then review APPROVEs → success."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -67,32 +72,37 @@ class TestUnprovenCompletionGuard:
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "without gate PASS evidence" in result.message
-        # Escalated at the dev seam before any review cycle ran.
-        assert mock_pool.call_count == 0
+        assert result.success is True
+        assert result.phase != Phase.ESCALATE
+        assert "without gate PASS evidence" not in (result.message or "")
+        # The fresh first iteration delegated the gate to the coordinator...
+        assert result.state.gate_delegated_this_iteration is True
+        # ...which ran the authoritative gate in VALIDATE (PASS) and let review run.
+        assert result.state.gate_decisions == ["PASS"]
+        assert mock_pool.call_count >= 1
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_completion_with_gate_blocked_escalates(
+    def test_fresh_completion_gate_fail_is_caught_by_validate(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """MET + gate_result BLOCKED is still an unproven completion → ESCALATE."""
+        """Fresh dev claiming MET with no self-reported gate, but the coordinator's
+        authoritative gate FAILs: the completion is NOT silently landed — VALIDATE
+        catches the real failure, so the run never reaches a successful DONE."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "FAIL")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(
             success=True,
             output="Done.",
             profile_name="dev",
-            dev_handoff=_completion_handoff(gate_result="BLOCKED"),
+            dev_handoff=_completion_handoff(gate_result=None),
         )
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
@@ -100,9 +110,11 @@ class TestUnprovenCompletionGuard:
 
         result = run_task(config, task)
 
+        # The unproven completion did not land: the coordinator's authoritative
+        # gate ran and returned FAIL, so the run never reached a successful DONE.
         assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "without gate PASS evidence" in result.message
+        assert result.phase != Phase.DONE
+        assert "FAIL" in result.state.gate_decisions
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
