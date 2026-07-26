@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from .auth import check_agent_auth
 from .defaults import (
@@ -18,7 +19,67 @@ from .defaults import (
 from .models import AgentDef, AgentSpec, _resolve_model_info, price_tiebreak_signal
 from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .types import ForgeConfig
+
 _COST_RANK_TO_TIER = {1: "cheap", 2: "mid", 3: "strong"}
+
+
+def iter_config_profiles(config: "ForgeConfig") -> Iterator[tuple[str, ModelProfile]]:
+    """Yield ``(role_label, profile)`` for every ModelProfile a run/sprint uses.
+
+    Covers the dev profile, preflight (+ optional fallback), every reviewer in
+    the pool, the optional synthesis profile, and every agent-pool entry (each
+    projected to a ModelProfile). Plan/plan-review configs are validated
+    separately at load time and are not ModelProfiles; use
+    :func:`iter_plan_phase_profiles` for those.
+    """
+    yield ("dev", config.dev_profile)
+    yield ("preflight", config.preflight_profile)
+    if config.preflight_fallback_profile is not None:
+        yield ("preflight-fallback", config.preflight_fallback_profile)
+    for profile in config.review_pool:
+        yield ("review", profile)
+    if config.synthesis_profile is not None:
+        yield ("synthesis", config.synthesis_profile)
+    for agent in config.agents:
+        yield ("agent-pool", agent.to_model_profile())
+
+
+def iter_plan_phase_profiles(config: "ForgeConfig") -> Iterator[tuple[str, ModelProfile]]:
+    """Yield ``(role_label, profile)`` for the PLAN / PLAN_REVIEW agents.
+
+    These phases dispatch real agents and spend real budget, but their config
+    is not a ModelProfile — ``plan`` is scalar fields the coordinator projects
+    at dispatch time, and ``plan_agent_review`` carries either a pool or legacy
+    scalars. A caller asking "which credentials will this run present?" needs
+    them regardless, so this projects both into the same shape
+    :func:`iter_config_profiles` yields.
+
+    Only *enabled* phases are yielded: a disabled planner never dispatches, so
+    its credential is not a fact about this run. The projection mirrors
+    ``plan_flow``'s dispatch-time construction closely enough for auth
+    classification (``cli`` / ``provider`` / ``model``); timeouts and tool
+    surfaces are not modelled because no credential check reads them.
+    """
+    plan = getattr(config, "plan", None)
+    if plan is not None and getattr(plan, "enabled", False):
+        yield (
+            "plan",
+            ModelProfile(
+                name="plan",
+                cli=plan.cli,
+                provider=plan.provider,
+                model=plan.model,
+                budget_usd=plan.budget_usd,
+                timeout_seconds=plan.timeout,
+                allowed_tools=config.preflight_profile.allowed_tools,
+            ),
+        )
+    plan_agent_review = getattr(config, "plan_agent_review", None)
+    if plan_agent_review is not None and getattr(plan_agent_review, "enabled", False):
+        for profile in plan_agent_review.profiles:
+            yield ("plan-review", profile)
 
 
 def _agents_from_models(

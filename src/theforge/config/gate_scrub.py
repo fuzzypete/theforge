@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .auth import PROVIDER_API_KEY_MAP
+from .auth import CLAUDE_CLI_ENV_TOKENS, PROVIDER_API_KEY_MAP
 from .defaults import SUPPORTED_CLIS
 from .models import AGENT_REGISTRY
 
@@ -29,6 +29,11 @@ SCRUBBED_ENV_VARS: tuple[str, ...] = tuple(
         {
             *_PROVIDER_ENV_VARS,
             *_DOTENV_ENV_VARS,
+            # OAuth tokens that let the claude CLI authenticate without its
+            # credential store. Left in the environment, one of these silently
+            # satisfies the credential probe and makes revoked-credential tests
+            # pass on a developer's shell while failing in CI (#1952).
+            *CLAUDE_CLI_ENV_TOKENS,
         }
     )
 )

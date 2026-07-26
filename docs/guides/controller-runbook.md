@@ -33,6 +33,31 @@ forge sprint --verbose --issues N,N,N --budget 50 --parallel 3
 - **Confirm with the operator per-invocation before launching.** Sprints spend
   money; "fix it" is not authorization to spend.
 
+### Auth readiness gate (issue #1952)
+
+Before any story is dispatched, a sprint inspects the credential each
+CLI-backed Claude profile will present (`~/.claude/.credentials.json`) —
+including the PLAN and PLAN_REVIEW agents when those phases are enabled. If it
+holds no usable token, the sprint aborts in seconds with
+`SprintAuthUnavailable`, names the credential path, and marks **no** story
+failed — nothing about the work was judged.
+
+The credential the `claude` path uses is in the **same OAuth family as an
+interactive Claude Code session**. A new interactive sign-in revokes the
+previous family server-side, which silently disables the substrate. The
+signature is distinctive: `accessToken` and `refreshToken` blanked to empty
+strings while `refreshTokenExpiresAt` stays a future date, so the file reads as
+valid until token *length* is checked. Remedy: re-authenticate the CLI
+(`claude` → `/login`) — and be aware that doing so points the same conflict the
+other way for whichever consumer signed in first.
+
+If the credential is revoked *mid-sprint*, a circuit breaker trips on the first
+fatal auth failure: in-flight workers are stopped and no further story is
+dispatched, rather than re-presenting the same rejected credential once per
+story and per phase. Stories the breaker cancels are recorded **SKIPPED** and
+attributed to the credential, not FAILED — the sprint killed them, no model
+judged them, and they contribute nothing to adaptive memory.
+
 ## 2. Branch & forward-port model
 
 - Fixes land on the **base branch**. `forward-port.yml` then auto-carries every
