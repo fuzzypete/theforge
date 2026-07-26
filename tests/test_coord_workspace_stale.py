@@ -1087,7 +1087,9 @@ class TestRunSetupSplit:
         from theforge.coordinator.workspace import _resolve_setup_command
 
         spaced_exe = "/home/my user/.pyenv/bin/python3"
-        with patch("theforge.coordinator.workspace.maybe_resolve_workspace_python") as mock_resolve:
+        with patch(
+            "theforge.coordinator.workspace.maybe_resolve_workspace_python"
+        ) as mock_resolve:
             mock_resolve.return_value = SimpleNamespace(executable=Path(spaced_exe))
             result = _resolve_setup_command("{forge_python} -m venv .venv", Path("/tmp/workspace"))
 

@@ -17,7 +17,6 @@ from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
 from theforge.workspace_env import (
     maybe_resolve_workspace_python,
-    resolve_workspace_python,
     workspace_venv_matches_python,
 )
 
@@ -138,9 +137,10 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
     if m:
         install_cmd = m.group(1).strip()
         resolved_python = maybe_resolve_workspace_python(workspace_path)
-        python_exe = shlex.quote(
-            str(resolved_python.executable if resolved_python is not None else Path(sys.executable))
+        python_path = (
+            resolved_python.executable if resolved_python is not None else Path(sys.executable)
         )
+        python_exe = shlex.quote(str(python_path))
         if (
             resolved_python is not None
             and (workspace_path / ".venv").exists()
