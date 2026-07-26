@@ -1,0 +1,2656 @@
+{
+  "schema_version": 9,
+  "run_id": "2039e6241e01",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Per-project sandbox capability profiles for stacks that need out-of-worktree operations to develop",
+    "slug": "issue-1947",
+    "story_path": null,
+    "story_text": "## Problem\n\nThe dev agent runs under a mechanical write-containment sandbox (`(deny default)` + a fixed allow-set for writes, self-signals, and a handful of mach services). That boundary is correct for most stacks, but some stacks cannot even *develop* a change inside it \u2014 not run the gate, *develop*. The sandbox denies out-of-worktree operations the toolchain needs to produce a buildable artifact at all.\n\nThe forcing case is iOS/Xcode: `xcodegen` and `xcodebuild` need writes to `~/Library/Developer`, DerivedData, and temp, plus mach services for the simulator/toolchain. Inside the sandbox these return `Operation not permitted`. The agent can't generate the project, so it can't build, so it can't verify its own work \u2014 and gets pushed into a structurally invalid handoff (real code, no gate evidence).\n\nThis is distinct from the gate-ownership problem (#823 / the #1944 rewrite). Forge owning the gate removes *validation* from the sandbox, but the agent still has to build locally to iterate. No amount of gate ownership fixes \"the agent can't run the build tool while editing.\" This is the residual half.\n\n## Why now\n\nObserved independently in a second project (HDP #230): the dev produced a real fix but hit `xcodegen`/`xcodebuild`/temp-write denials inside the sandbox, couldn't validate, and handed off `BLOCKED`-with-MET-criteria \u2014 the same trap shape TheForge hit via `killpg`/`ps`. Two unrelated stacks hitting the same wall through different denied operations is the signal this is a substrate gap, not a project quirk.\n\nTheForge's own Python stack does **not** need this \u2014 its denied operations (killpg, ps) are gate-only and are covered by forge-owned gate. Two consequences follow, and both are load-bearing for how this story is accepted:\n\n- **TheForge cannot supply end-to-end proof for the forcing stack.** There is no iOS toolchain here and CI is Linux, so \"an agent successfully runs `xcodegen`\" is not observable from this repo. Acceptance below is therefore written against the capability surface itself \u2014 what a preset resolves to, and what stays denied \u2014 not against a build succeeding. The real-stack confirmation happens out-of-band in HDP #230.\n- **This is independent of #823's landing.** It touches the sandbox capability surface, not gate ownership; there is no ordering constraint between them and this story is not blocked on that epic.\n\n## What's needed\n\nA project declares, in `forge.yaml`, the additional capabilities its stack needs to develop inside the sandbox \u2014 selected by named preset, not enumerated by hand. The sandbox grants exactly those, and nothing beyond them stays granted.\n\nBackend note (altitude, not prescription): the writable-root mechanism already exists internally (`extra_write_roots` in `runners/sandbox.py`) but is fed only computed values and is not reachable from project config. The signal-scope and mach-service axes don't exist as parameters at all. So this is partly surfacing an existing capability and partly extending it.\n\n## Example (illustrative target, not a mandated schema)\n\n```yaml\nsandbox:\n  capability_profile: xcode   # named preset seeds the stack's known needs\n```\n\nwhere an `xcode` preset grants the DerivedData/`Library/Developer`/temp write roots and the simulator/toolchain mach services \u2014 and a project on the default (no profile) is unchanged from today.\n\n## Acceptance criteria\n\n- A project can declare a sandbox capability profile in `forge.yaml`, selected by preset name; a project that declares none behaves exactly as today.\n- Presets are forge-owned named capability sets: a project selects one by name, it does not author, extend, or override the contents of one.\n- The capability set a preset resolves to is inspectable without running an agent \u2014 for a given preset, the granted write roots and services are exactly that preset's declared set and nothing more. This holds on any host, independent of whether that host's toolchain is installed.\n- With a preset active, a write to one of that preset's declared out-of-worktree roots succeeds, and a write to an undeclared out-of-worktree path still fails. Containment is narrowed to the declared set, not removed.\n- Declaring a preset whose capabilities the host platform's sandbox cannot express fails closed with a clear reason, rather than silently running with the declared capability absent.\n- There is no flag or value that disables the sandbox wholesale or grants `allow default`; widening is always a named, bounded capability set.\n- The capabilities granted for a run are recorded where a run's substrate decisions are already audited.\n- The new `forge.yaml` section is documented in the project-configuration reference alongside the other top-level keys, including what an operator must change to adopt a preset.\n\n## Related\n\n- #823 \u2014 forge-owned gate (covers the gate/validation axis; this issue is its sibling for the iteration axis)\n- #1944 \u2014 sandbox\u2194gate root cause (being rescoped)\n- HDP #230 \u2014 cross-project confirmation; where the forcing stack is actually exercised\n",
+    "github_issue": 1947,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Per-project sandbox capability profiles for stacks that need out-of-worktree operations to develop' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-1947",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-26T18:55:44.667791+00:00",
+    "finished_at": "2026-07-26T19:43:29.725608+00:00",
+    "duration_seconds": 2865.057817
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1947",
+    "branch": "feat/issue-1947"
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 9.479846499999997,
+        "duration_s": 2129.53,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/config/__init__.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/sandbox_capabilities.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/audit_substrate.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/runners/runner_claude.py",
+          "src/theforge/runners/runner_gemini.py",
+          "src/theforge/runners/sandbox.py",
+          "tests/fixtures/audit_record_schema_v10.json",
+          "tests/test_cli_audit_per_run.py",
+          "tests/test_config_load.py",
+          "tests/test_coord_sandbox_capabilities.py",
+          "tests/test_generate_audit_log.py",
+          "tests/test_runner_gemini.py",
+          "tests/test_sandbox_capabilities.py"
+        ],
+        "files_changed_count": 19,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.321079,
+        "duration_s": 149.02
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 86,
+      "profile_avg_iterations": 1.8605,
+      "profile_avg_cost_usd": 8.690413,
+      "profile_raw_dev_max": 2.7908,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 21.726,
+      "review_history_sample_size": 9,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 86 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-26T19:04:46.849500+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 9.479846499999997,
+    "review_usd": null,
+    "dev_invocations": 1,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 9.479846499999997,
+        "duration_seconds": 2129.529865332879,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.007194
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 9.472652499999997
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 39.517525638996936,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 39.517525638996936,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.2032469000000001,
+        "duration_seconds": 39.517525638996936,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.047082
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.1561649
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.11783189999999999,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.11783189999999999
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "No sandbox capability-profile mechanism exists anywhere in the codebase \u2014 extra_write_roots exists in runners/sandbox.py but is only fed computed values, not reachable from forge.yaml; the mach-service and signal-scope axes don't exist as parameters at all, and there is no preset registry, config field, or docs for this.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "security",
+      "config",
+      "backend"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.35345709999999997,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "ab50ec65cbd7",
+    "cache_snapshot": {
+      "worktree_head": "8d511dfef90c329a23db940e31f96b6ae45f57b7",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "8d511dfef90c329a23db940e31f96b6ae45f57b7",
+      "story_content_hash": "6ea195f926b72772501b67c5fde35f6e7fd9852262e993dd6850f5fe2f209e64"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "8d511dfef90c329a23db940e31f96b6ae45f57b7",
+      "current_worktree_head": "8d511dfef90c329a23db940e31f96b6ae45f57b7",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "8d511dfef90c329a23db940e31f96b6ae45f57b7",
+      "current_evaluation_base_branch_head": "8d511dfef90c329a23db940e31f96b6ae45f57b7",
+      "cached_story_content_hash": "6ea195f926b72772501b67c5fde35f6e7fd9852262e993dd6850f5fe2f209e64",
+      "current_story_content_hash": "6ea195f926b72772501b67c5fde35f6e7fd9852262e993dd6850f5fe2f209e64",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.35345709999999997,
+        "duration_s": 42.93,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.37 < threshold 0.60 over 86 admissible HIGH runs (profile success_rate=0.37 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1947/iter_1.yaml",
+      "handoff": {
+        "summary": "Added a forge-owned sandbox capability preset registry (src/theforge/config/sandbox_capabilities.py, stdlib-only) selectable by name via a new top-level `sandbox.capability_profile` key in forge.yaml. Presets are immutable declarative data \u2014 write-root templates, mach services, and supported platforms \u2014 so resolution is pure and inspectable on any host without probing the toolchain. The selected name is validated at config load, stamped onto the dev ModelProfile in dev_phase.py, threaded through runner_claude/runner_gemini into workspace_effect_sandbox_command, and merged into the macOS profile's write roots (plus matching read roots) and explicit per-service mach-lookup grants. Unsupported combinations fail closed before the command is built; the runners convert that into a startup_failure result rather than degrading to default containment. Resolved grants are recorded in the run audit under `workspace` and per dev iteration, which required a record schema bump v9->v10 with a reader-side migration backfilling the explicit default payload. Documented in docs/guides/inputs-reference.md. The no-profile path produces a byte-identical sandbox command to before.",
+        "commits": [
+          {
+            "sha": "afa1362",
+            "message": "feat(sandbox): per-project capability profiles for out-of-worktree dev needs"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A project can declare a sandbox capability profile in forge.yaml, selected by preset name; a project that declares none behaves exactly as today.",
+            "status": "MET",
+            "notes": "SandboxConfig.capability_profile parsed in config/load.py::_parse_sandbox_config. test_no_profile_leaves_sandbox_command_unchanged asserts the no-profile command equals the pre-existing baseline; test_no_profile_records_explicit_default covers the coordinator seam."
+          },
+          {
+            "criterion": "Presets are forge-owned named capability sets: a project selects one by name, it does not author, extend, or override the contents of one.",
+            "status": "MET",
+            "notes": "The registry is a module-level private dict with no config-driven extension point. load.py rejects inline write_roots/mach_services/allow_default/disabled/mode keys explicitly, and rejects any unknown key in the sandbox mapping."
+          },
+          {
+            "criterion": "The capability set a preset resolves to is inspectable without running an agent \u2014 for a given preset, the granted write roots and services are exactly that preset's declared set and nothing more. This holds on any host, independent of whether that host's toolchain is installed.",
+            "status": "MET",
+            "notes": "resolve_capabilities() only expands ~ and normalises paths; it never calls shutil.which or checks existence. test_preset_resolves_to_exactly_its_declared_set_on_any_host pins the resolved set against the declared set rather than a hand-written list, and test_preset_inspection_does_not_require_the_toolchain resolves under a fake home with shutil.which stubbed to None."
+          },
+          {
+            "criterion": "With a preset active, a write to one of that preset's declared out-of-worktree roots succeeds, and a write to an undeclared out-of-worktree path still fails. Containment is narrowed to the declared set, not removed.",
+            "status": "PARTIAL",
+            "notes": "Implemented and covered by test_declared_root_writable_while_undeclared_path_stays_denied, which executes real writes under a real sandbox-exec and asserts declared-succeeds/undeclared-denied. It is PARTIAL only because that test SKIPS in this environment: sandbox-exec is present but denied when the test process itself runs nested inside a sandbox (same guard the existing #1443 regression test uses), and CI is Linux. Construction-level coverage does run everywhere via test_macos_profile_grants_preset_roots_and_services and test_macos_profile_grants_no_services_beyond_the_declared_set. Expect it to execute on an unsandboxed macOS host."
+          },
+          {
+            "criterion": "Declaring a preset whose capabilities the host platform's sandbox cannot express fails closed with a clear reason, rather than silently running with the declared capability absent.",
+            "status": "MET",
+            "notes": "resolve_capabilities(system=...) raises UnsupportedCapabilityProfileError; _resolve_capability_profile adds a per-axis mach-services-on-Linux check as belt-and-braces. Both runners catch SandboxCapabilityError and return startup_failure with SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED. Covered by test_sandbox_command_fails_closed_for_unsupported_backend and test_unsupported_platform_audits_zero_grants_not_a_silent_widening."
+          },
+          {
+            "criterion": "There is no flag or value that disables the sandbox wholesale or grants allow default; widening is always a named, bounded capability set.",
+            "status": "MET",
+            "notes": "Only capability_profile is accepted, and its value must name a registry preset. resolve_capabilities additionally refuses any preset resolving to / or $HOME. test_no_preset_grants_a_filesystem_or_home_root and the (deny default)/(allow default) assertions in test_macos_profile_grants_preset_roots_and_services cover this. Note the pre-existing profile-level sandbox_mode: none escape hatch is untouched and out of scope."
+          },
+          {
+            "criterion": "The capabilities granted for a run are recorded where a run's substrate decisions are already audited.",
+            "status": "MET",
+            "notes": "Recorded alongside the existing sandboxed/containment fields: state.dev_sandbox_capabilities -> DevIterationTelemetry.sandbox_capabilities -> audit dev_loop items, plus a run-level entry under workspace. A run with no preset records an explicit null profile with empty lists so default containment is distinguishable from omitted data. Required audit record schema v9->v10 plus _migrate_v9_to_v10; schema-drift guard passes and the v10 fixture is committed."
+          },
+          {
+            "criterion": "The new forge.yaml section is documented in the project-configuration reference alongside the other top-level keys, including what an operator must change to adopt a preset.",
+            "status": "MET",
+            "notes": "Added to docs/guides/inputs-reference.md: a sandbox block in the full config reference plus a 'Sandbox capability profiles' subsection with the preset table, the safety rules, the explicit operator adoption step, and a one-liner for inspecting a preset's grants without running an agent."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Plan Step 3 named runners/cli.py as the wiring site; that file has no sandbox references. Used the real call sites (runner_claude.py, runner_gemini.py) as the plan reviewers flagged.",
+          "Plan Step 2 placed the registry under runners/; used src/theforge/config/sandbox_capabilities.py instead so config/load.py can validate preset names without a config->runners import. The reviewer note claiming this module already existed was incorrect \u2014 it did not exist and was created here.",
+          "Plan Step 4 targeted only audit_substrate.py; extended coordinator/audit.py (the record writer) as well, since the substrate module is the reader/index and cannot see ForgeConfig. Also bumped CURRENT_RECORD_SCHEMA_VERSION 9->10 with a migration, which the schema-drift guard required.",
+          "Plan Step 6 pointed at docs/reference; documented in docs/guides/inputs-reference.md, which is where forge.yaml keys actually live.",
+          "The capability profile is stamped onto the dev profile only, not review/preflight/plan profiles. The story is scoped to the agent being unable to build while iterating; review agents read rather than build. config/auth.py's host-sandbox probe deliberately stays on the default capability set."
+        ],
+        "deferred_items": [
+          "runners/sandbox.py::_blocked_worktree_roots raises PermissionError (rather than degrading) when a sibling worktree is unreadable \u2014 pre-existing, untouched, and the cause of the environmental test failures noted below. Not fixed here because swallowing the error would silently drop sibling-worktree deny rules, i.e. trade a crash for a quiet containment reduction; that tradeoff deserves its own story.",
+          "End-to-end proof that an agent successfully runs xcodegen/xcodebuild under the xcode preset is not observable from this repo (no iOS toolchain, Linux CI). Per the story this is expected; real-stack confirmation happens out-of-band in HDP #230. Acceptance here is written against the capability surface.",
+          "Test environment caveat for reviewers: running pytest with cwd inside .forge/worktrees/ fails 74 tests with PermissionError from _blocked_worktree_roots reading sibling worktrees \u2014 the nested-sandbox self-reference class, not a regression. Verified by reproducing the error against unmodified code directly, and by re-running from /private/var/tmp: 1394 passed / 0 failed across config+audit+sandbox+runner+dev_phase+substrate, and 2200 passed / 0 failed across profile+bridge+schema+role+types+coord+engine+cli. Full standalone suite: 5964 passed, 14 failed, all in test_process_group / test_run_shell_timeout / test_release_readiness (the documented process-supervision self-reference class), none in touched areas."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 1,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The change satisfies the sandbox capability profile criteria, with focused tests passing for the host-independent paths. | [google-gemini-3.5-flash] Approved: The implementation of per-project sandbox capability profiles is exceptionally clean, robust, and fully compliant with all acceptance criteria and invariants. | [claude-sonnet] Sandbox capability preset registry is well-isolated, pure-data, fails closed on unsupported platforms, and correctly wired config -> dev ModelProfile -> runner -> audit; no-profile path is byte-identical to before and the schema v9->v10 migration is properly registered.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A project can declare a sandbox capability profile in forge.yaml, selected by preset name; a project that declares none behaves exactly as today.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/load.py:102 parses the optional sandbox mapping and src/theforge/config/types.py:608 adds the typed SandboxConfig default; tests/test_config_load.py:76 covers the omitted-profile default, tests/test_config_load.py:82 covers loading xcode, tests/test_sandbox_capabilities.py:143 covers unchanged no-profile sandbox command construction, and tests/test_coord_sandbox_capabilities.py:78 covers the no-profile coordinator seam.; src/theforge/config/load.py lines 102-134 parses sandbox.capability_profile. tests/test_config_load.py lines 76-105 tests loading and invalid shapes. tests/test_coord_sandbox_capabilities.py lines 59-87 tests that no profile records explicit default and leaves sandbox command unchanged.; config/load.py:102-134 _parse_sandbox_config parses/validates 'sandbox.capability_profile'; test_config_load.py test_sandbox_capability_profile_loads and the invalid-shape parametrized test cover load-time validation. test_sandbox_capabilities.py::test_no_profile_leaves_sandbox_command_unchanged asserts byte-identical command with no profile vs explicit None."
+        },
+        {
+          "criterion": "Presets are forge-owned named capability sets: a project selects one by name, it does not author, extend, or override the contents of one.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/sandbox_capabilities.py:124 declares the forge-owned xcode preset and src/theforge/config/load.py:111 rejects inline capability keys while src/theforge/config/load.py:117 rejects unknown sandbox keys; tests/test_config_load.py:87 covers inline write_roots, mach_services, allow_default, disabled, mode, extra keys, and unknown preset names.; src/theforge/config/sandbox_capabilities.py lines 124-154 defines the private _PRESETS registry. src/theforge/config/load.py lines 111-122 explicitly rejects inline keys like write_roots, mach_services, allow_default, disabled, mode. tests/test_config_load.py lines 83-105 tests that invalid shapes raise.; config/load.py:80-82 _REJECTED_INLINE_SANDBOX_KEYS rejects write_roots/mach_services/allow_default/disabled/mode; _VALID_SANDBOX_KEYS restricts to capability_profile only, unknown keys rejected. test_config_load.py parametrized cases assert each inline key and unknown key is rejected."
+        },
+        {
+          "criterion": "The capability set a preset resolves to is inspectable without running an agent \u2014 for a given preset, the granted write roots and services are exactly that preset's declared set and nothing more. This holds on any host, independent of whether that host's toolchain is installed.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/sandbox_capabilities.py:185 resolves presets by expanding path templates without toolchain probing and src/theforge/config/sandbox_capabilities.py:223 deduplicates only the declared write roots; tests/test_sandbox_capabilities.py:54 asserts the resolved roots and mach services match the preset declaration exactly, and tests/test_sandbox_capabilities.py:76 asserts inspection does not require the toolchain.; src/theforge/config/sandbox_capabilities.py lines 185-246 implements resolve_capabilities which is pure and does not probe the host toolchain. tests/test_sandbox_capabilities.py lines 48-89 tests that preset resolves to exactly its declared set on any host and does not require the toolchain.; config/sandbox_capabilities.py resolve_capabilities() only does path expansion/normalization, never calls shutil.which or checks existence. test_sandbox_capabilities.py::test_preset_resolves_to_exactly_its_declared_set_on_any_host pins resolved set against declared set; test_preset_inspection_does_not_require_the_toolchain resolves under a fake home with shutil.which stubbed to None."
+        },
+        {
+          "criterion": "With a preset active, a write to one of that preset's declared out-of-worktree roots succeeds, and a write to an undeclared out-of-worktree path still fails. Containment is narrowed to the declared set, not removed.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py:488 merges resolved preset write roots into the sandbox write allow-set and src/theforge/runners/sandbox.py:496 passes only those preset roots as extra readable roots; tests/test_sandbox_capabilities.py:219 exercises a real macOS sandbox write where the declared out-of-worktree root succeeds and the undeclared sibling path remains denied.; src/theforge/runners/sandbox.py lines 487-517 appends capabilities.write_roots to extra_write_roots and passes capabilities.mach_services to _macos_profile. tests/test_sandbox_capabilities.py lines 219-257 implements test_declared_root_writable_while_undeclared_path_stays_denied which runs a real sandbox-exec to verify that a declared root is writable while an undeclared path stays denied.; test_declared_root_writable_while_undeclared_path_stays_denied (tests/test_sandbox_capabilities.py) implements the real end-to-end check via a live sandbox-exec run (declared root write succeeds, undeclared root write fails), skipping only under the pre-existing nested-sandbox guard shared with the #1443 regression test (and on Linux CI) \u2014 an environmental limitation of this review host, not a gap in the implementation. Construction-level coverage runs unconditionally via test_macos_profile_grants_preset_roots_and_services and test_macos_profile_grants_no_services_beyond_the_declared_set, confirming the generated sandbox-exec profile grants exactly the declared roots/services with '(deny default)' and no '(allow default)'. Together these verify the narrowing behaviour the criterion requires."
+        },
+        {
+          "criterion": "Declaring a preset whose capabilities the host platform's sandbox cannot express fails closed with a clear reason, rather than silently running with the declared capability absent.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/sandbox_capabilities.py:213 rejects unsupported platforms, src/theforge/runners/sandbox.py:425 rejects mach-service presets on non-Darwin backends, and src/theforge/runners/runner_claude.py:675 plus src/theforge/runners/runner_gemini.py:115 convert capability errors into SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED startup failures; tests/test_sandbox_capabilities.py:116 and tests/test_sandbox_capabilities.py:121 cover the unsupported Linux path, and tests/test_coord_sandbox_capabilities.py:163 covers zero-grant auditing for unsupported hosts.; src/theforge/runners/sandbox.py lines 428-446 implements _resolve_capability_profile which raises UnsupportedCapabilityProfileError if the host platform cannot express the preset. src/theforge/runners/runner_claude.py lines 675-688 and src/theforge/runners/runner_gemini.py lines 115-128 catch SandboxCapabilityError and return startup_failure=True. tests/test_sandbox_capabilities.py lines 101-118 tests that unsupported platforms fail closed.; config/sandbox_capabilities.py resolve_capabilities(system=...) raises UnsupportedCapabilityProfileError; runners/sandbox.py:428-445 _resolve_capability_profile adds a belt-and-braces mach-services-on-non-Darwin check; runner_claude.py:667-687 and runner_gemini.py:109-129 catch SandboxCapabilityError and return startup_failure=True with SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED. Covered by test_sandbox_command_fails_closed_for_unsupported_backend and test_coord_sandbox_capabilities.py::test_unsupported_platform_audits_zero_grants_not_a_silent_widening."
+        },
+        {
+          "criterion": "There is no flag or value that disables the sandbox wholesale or grants allow default; widening is always a named, bounded capability set.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/load.py:111 rejects allow_default, disabled, and mode inside the sandbox mapping, while src/theforge/config/sandbox_capabilities.py:231 rejects presets resolving to filesystem or home roots; tests/test_config_load.py:93 covers rejected disabling and inline widening keys, tests/test_sandbox_capabilities.py:90 covers root and home-root rejection, and tests/test_sandbox_capabilities.py:168 asserts deny default remains while allow default is absent from the widened macOS profile.; src/theforge/config/sandbox_capabilities.py lines 228-236 rejects presets that resolve to / or $HOME. src/theforge/runners/sandbox.py lines 465-471 documents that widening is always a bounded named set. tests/test_sandbox_capabilities.py lines 90-97 tests that no preset grants a filesystem or home root.; Only capability_profile is accepted (config/load.py _VALID_SANDBOX_KEYS); resolve_capabilities refuses any preset resolving to / or $HOME (sandbox_capabilities.py ~line 220). Confirmed by test_no_preset_grants_a_filesystem_or_home_root and the '(deny default)'/no '(allow default)' assertions in test_macos_profile_grants_preset_roots_and_services."
+        },
+        {
+          "criterion": "The capabilities granted for a run are recorded where a run's substrate decisions are already audited.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/audit.py:458 records per-iteration sandbox_capabilities, src/theforge/coordinator/audit.py:610 records run-level workspace sandbox_capabilities, and src/theforge/coordinator/audit_substrate.py:840 adds the v9-to-v10 migration; tests/test_coord_sandbox_capabilities.py:83 and tests/test_coord_sandbox_capabilities.py:123 cover audit output for default and xcode profiles, and tests/fixtures/audit_record_schema_v10.json:104 pins the new schema fields.; src/theforge/coordinator/audit.py lines 455-461 and 608-614 records sandbox_capabilities in the run audit record. src/theforge/coordinator/audit_substrate.py lines 840-877 implements _migrate_v9_to_v10 to backfill the default payload. tests/test_coord_sandbox_capabilities.py lines 88-128 tests that the capability profile reaches the runner and audit.; dev_phase.py:601-624 resolves and logs capabilities into state.dev_sandbox_capabilities; state.py:493-496 and DevIterationTelemetry.sandbox_capabilities carry it into audit.py:455-459 (per-iteration) and audit.py:608-612 (workspace-level). Schema bumped to v10 with _migrate_v9_to_v10 backfilling explicit default payload; verified consistent via test_audit_schema_guard.py (schema-drift guard, migration-registry coverage, writer/reader shared-registry checks) and the committed v10 fixture. Seam-level test test_coord_sandbox_capabilities.py exercises config -> runner -> audit end to end for default, declared, and unsupported-platform cases."
+        },
+        {
+          "criterion": "The new forge.yaml section is documented in the project-configuration reference alongside the other top-level keys, including what an operator must change to adopt a preset.",
+          "status": "VERIFIED",
+          "evidence": "docs/guides/inputs-reference.md:420 adds the sandbox block to the full config reference and docs/guides/inputs-reference.md:485 documents capability profiles, the xcode preset, safety rules, audit behavior, and the operator adoption step.; docs/guides/inputs-reference.md lines 485-534 documents sandbox.capability_profile with the preset table, safety rules, operator adoption step, and inspection command.; docs/guides/inputs-reference.md adds the 'sandbox:' block to the full config example plus a dedicated 'Sandbox capability profiles' subsection with preset table, safety rules, and an explicit 'To adopt a preset' operator step with an inspection one-liner."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] Step 3 lists src/theforge/runners/cli.py as a wiring site, but that file contains no sandbox references. The actual call sites of workspace_effect_sandbox_command are runners/runner_claude.py:667, runners/runner_gemini.py:109, runners/sandbox.py:461, and config/auth.py:34 \u2014 and the preset must be threaded from ForgeConfig/SandboxConfig down to the runner (today only profile.sandbox_mode reaches there, config/types.py:253).\n  Suggestion: Wire through the real call sites: carry the resolved capability profile alongside sandbox_mode on the runner profile (or pass it explicitly at the runner_claude/runner_gemini invocation), and decide deliberately whether the config/auth.py probe path stays on the default capability set.\n- [P1-impl] [claude-opus] Step 4 targets coordinator/audit_substrate.py, which is the SQLite index (upsert/rebuild over per-run JSON). The per-run substrate decision fields \u2014 e.g. 'sandboxed': item.sandboxed at coordinator/audit.py:452 \u2014 are written elsewhere, so touching only the index would leave the canonical run record without the capability data and rebuilds would drop it.\n  Suggestion: Emit the profile name and resolved roots/services in the per-run audit record (coordinator/audit.py) first, then surface/index it in audit_substrate.py; check whether SUBSTRATE_SCHEMA_VERSION needs a bump per the module's own versioning note.\n- [P1-impl] [claude-opus] Step 6 points at docs/reference, which holds only bug-shape.md and preflight-partial-evidence.md. The forge.yaml key reference is docs/guides/inputs-reference.md (the retry: block precedent is documented there per docs/guides/authoring.md:424).\n  Suggestion: Document sandbox.capability_profile in docs/guides/inputs-reference.md next to the other top-level keys, including the operator adoption step.\n- [P2] [claude-opus] Step 2 places the preset registry at src/theforge/runners/sandbox_capabilities.py, while the config-load validation in Step 1 needs preset-name knowledge; a registry under runners/ makes config/load.py import from the runner layer.\n  Suggestion: Prefer src/theforge/config/sandbox_capabilities.py so config validation and sandbox construction both depend on it without a config\u2192runners import.\n- [P1-impl] [google-gemini-3.5-flash] The JSON audit log is generated in src/theforge/coordinator/audit.py (specifically generate_audit_log), so the dev agent should also modify audit.py to include the sandbox capability profile name and its resolved write roots and services in the JSON audit log, which audit_substrate.py can then index or parse.\n- [P2] [google-gemini-3.5-flash] The project configuration reference is located in docs/guides/inputs-reference.md under the 'Project configuration (forge.yaml)' section, rather than a file named docs/reference.\n- [P1-impl] [openai-gpt-5.4] Step 3 names src/theforge/runners/cli.py and src/theforge/runners/sandbox.py as the wiring seam, but the actual sandbox wrapper is invoked in src/theforge/runners/runner_claude.py:667 and src/theforge/runners/runner_gemini.py:109. runners/cli.py only dispatches to those runners; it does not call workspace_effect_sandbox_command() itself. As written, the plan leaves the real callers unaccounted for, so the selected ForgeConfig.sandbox.capability_profile has no path to the sandbox backend.\n  Suggestion: Amend Step 3 to thread resolved capabilities through the actual runner call chain: either add parameters from run_agent() into runner_claude.py / runner_gemini.py, or centralize sandbox wrapping in a shared helper that those runners call.\n- [P1-impl] [openai-gpt-5.4] Step 4 targets only src/theforge/coordinator/audit_substrate.py, but that module is just the persistence sink. The per-run record is constructed earlier in src/theforge/coordinator/audit.py and written by src/theforge/cli/shared.py:_write_audit(). audit_substrate.upsert_run_record() has no access to ForgeConfig or the resolved sandbox preset, so modifying the substrate layer alone cannot satisfy the audit-record acceptance criterion.\n  Suggestion: Expand Step 4 to include the audit record construction path, at minimum src/theforge/coordinator/audit.py and any state/config plumbing needed to carry the resolved profile into that record before cli/shared.py persists it.\n- [P2] [openai-gpt-5.4] Step 2 proposes creating src/theforge/runners/sandbox_capabilities.py, but this checkout already has the preset registry in src/theforge/config/sandbox_capabilities.py, with existing tests importing that module (tests/test_sandbox_capabilities.py).\n  Suggestion: Use the existing config/sandbox_capabilities.py module as the registry owner, or explicitly account for moving its imports/tests if a relocation is intentional.",
+    "cost_usd": null,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.561716
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4",
+        "verdict": "REQUEST_CHANGES",
+        "cost_usd": null
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 73.2,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 290.43,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.4",
+        "complexity": "large",
+        "unique_p1_count": 2,
+        "total_p1_count": 2,
+        "latency_s": 128.92,
+        "latency_per_p1_s": 64.46,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 3 lists src/theforge/runners/cli.py as a wiring site, but that file contains no sandbox references. The actual call sites of workspace_effect_sandbox_command are runners/runner_claude.py:667, runners/runner_gemini.py:109, runners/sandbox.py:461, and config/auth.py:34 \u2014 and the preset must be threaded from ForgeConfig/SandboxConfig down to the runner (today only profile.sandbox_mode reaches there, config/types.py:253).",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 targets coordinator/audit_substrate.py, which is the SQLite index (upsert/rebuild over per-run JSON). The per-run substrate decision fields \u2014 e.g. 'sandboxed': item.sandboxed at coordinator/audit.py:452 \u2014 are written elsewhere, so touching only the index would leave the canonical run record without the capability data and rebuilds would drop it.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 6 points at docs/reference, which holds only bug-shape.md and preflight-partial-evidence.md. The forge.yaml key reference is docs/guides/inputs-reference.md (the retry: block precedent is documented there per docs/guides/authoring.md:424).",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 places the preset registry at src/theforge/runners/sandbox_capabilities.py, while the config-load validation in Step 1 needs preset-name knowledge; a registry under runners/ makes config/load.py import from the runner layer.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The JSON audit log is generated in src/theforge/coordinator/audit.py (specifically generate_audit_log), so the dev agent should also modify audit.py to include the sandbox capability profile name and its resolved write roots and services in the JSON audit log, which audit_substrate.py can then index or parse.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The project configuration reference is located in docs/guides/inputs-reference.md under the 'Project configuration (forge.yaml)' section, rather than a file named docs/reference.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 3 names src/theforge/runners/cli.py and src/theforge/runners/sandbox.py as the wiring seam, but the actual sandbox wrapper is invoked in src/theforge/runners/runner_claude.py:667 and src/theforge/runners/runner_gemini.py:109. runners/cli.py only dispatches to those runners; it does not call workspace_effect_sandbox_command() itself. As written, the plan leaves the real callers unaccounted for, so the selected ForgeConfig.sandbox.capability_profile has no path to the sandbox backend.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 targets only src/theforge/coordinator/audit_substrate.py, but that module is just the persistence sink. The per-run record is constructed earlier in src/theforge/coordinator/audit.py and written by src/theforge/cli/shared.py:_write_audit(). audit_substrate.upsert_run_record() has no access to ForgeConfig or the resolved sandbox preset, so modifying the substrate layer alone cannot satisfy the audit-record acceptance criterion.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 proposes creating src/theforge/runners/sandbox_capabilities.py, but this checkout already has the preset registry in src/theforge/config/sandbox_capabilities.py, with existing tests importing that module (tests/test_sandbox_capabilities.py).",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against\n  finding[6]: UNMATCHED \u2014 no prior findings to match against\n  finding[7]: UNMATCHED \u2014 no prior findings to match against\n  finding[8]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1957",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1947",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1957",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1957",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-26T19:43:29.725608+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "WARN",
+    "cost_usd": 0.146078,
+    "duration_s": 20.103580915834755,
+    "findings": [
+      {
+        "category": "requirement",
+        "description": "The problem statement and backend note both call out mach-service access (simulator/toolchain) and signal-scope as capability axes the xcode preset must grant, not just out-of-worktree write roots \u2014 the backend note explicitly says these axes 'don't exist as parameters at all' and need adding. But the acceptance criteria only verify the write-root axis (AC4: a write to a declared root succeeds, an undeclared one fails). No AC verifies that a preset's mach-service or signal-scope grants take effect or stay bounded, so the mach-service half of the forcing case (xcodebuild needing simulator/toolchain mach services) has no observable acceptance check.",
+        "split_suggestion": null
+      }
+    ]
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1283 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1416 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 789 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 919 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2207 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1638 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1458 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1599 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1813 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1064 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2016 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 848 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 931 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 872 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 816 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 998 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1222 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1201 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 3613 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 964 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1489 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1271 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2040 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1167 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1084 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1412 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1539 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 2838 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1127 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1268 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1413 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 3,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 4,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8372,
+              "weighted": 0.3655,
+              "runs": 86,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.3655
+            },
+            "domain": {
+              "domains": [
+                "security",
+                "config",
+                "backend"
+              ],
+              "raw": 0.6364,
+              "weighted": 0.6364,
+              "runs": 11,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.6364,
+              "by_domain": {
+                "security": {
+                  "runs": 1,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 2,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 8,
+                  "raw": 0.5,
+                  "weighted": 0.5,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "security",
+                "config",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "security": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "security",
+          "config",
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "security",
+            "config",
+            "backend"
+          ],
+          "raw": 0.6364,
+          "weighted": 0.6364,
+          "runs": 11,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.6364,
+          "by_domain": {
+            "security": {
+              "runs": 1,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "config": {
+              "runs": 2,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 8,
+              "raw": 0.5,
+              "weighted": 0.5,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": true,
+        "outcome": "promoted_below_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8372,
+        "weighted_success_rate": 0.3655,
+        "sample_size": 86,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": false,
+        "checked": {
+          "weighted_success_rate": 0.3655,
+          "threshold": 0.6,
+          "sample_size": 86,
+          "min_runs": 5
+        },
+        "reason": "promotion_active_weighted_rate_below_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+config+security",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "config",
+          "security"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.37 < threshold 0.60 over 86 admissible HIGH runs (profile success_rate=0.37 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 13,
+            "completed": 12,
+            "raw": 0.9231,
+            "weighted": 0.9283,
+            "rate": 0.9283,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 24,
+            "completed": 24,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 13,
+            "completed": 12,
+            "raw": 0.9231,
+            "weighted": 0.9283,
+            "rate": 0.9283,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.353457,
+      "duration_s": 42.93,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": null,
+      "duration_s": 35.36,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Add a forge-owned sandbox capability profile registry, wire a single preset name from forge.yaml into sandbox command construction, and audit the resolved capability set. Keep the default path byte-for-byte equivalent in behavior by making profile resolution optional and fail-closed only when a declared preset cannot be expressed by the active sandbox backend.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Add typed config support for selecting a sandbox capability profile.",
+            "files": [
+              "src/theforge/config/types.py",
+              "src/theforge/config/load.py",
+              "src/theforge/config/_loaders.py"
+            ],
+            "action": "modify",
+            "details": "Add a top-level sandbox config shape with an optional capability_profile string, preserving current defaults when sandbox is absent. Validate unknown keys and invalid profile value types at config load time, consistent with existing schema validation behavior."
+          },
+          {
+            "id": 2,
+            "description": "Create the forge-owned capability preset registry.",
+            "files": [
+              "src/theforge/runners/sandbox_capabilities.py"
+            ],
+            "action": "create",
+            "details": "Define immutable preset data for named profiles, starting with xcode. Include declared out-of-worktree write roots and required mach services as data, plus platform support metadata used for fail-closed validation. Provide lookup/inspection helpers that return only the declared preset capabilities and do not inspect installed toolchains.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Wire resolved capabilities into sandbox command generation.",
+            "files": [
+              "src/theforge/runners/sandbox.py",
+              "src/theforge/runners/cli.py"
+            ],
+            "action": "modify",
+            "details": "Thread the selected preset from runner invocation into workspace_effect_sandbox_command. Merge preset write roots with existing computed extra_write_roots without changing the no-profile path. Extend the macOS sandbox profile generation to grant declared mach services and write roots. Add backend validation so unsupported axes, such as mach services on the Linux backend, fail before running the command with a clear error.",
+            "depends_on": [
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Record granted sandbox capabilities in substrate audit data.",
+            "files": [
+              "src/theforge/coordinator/audit_substrate.py"
+            ],
+            "action": "modify",
+            "details": "Extend the existing substrate audit output to include the selected capability profile name and its resolved write roots and services. Record an explicit empty/default value when no profile is selected so reviewers can distinguish default containment from omitted audit data.",
+            "depends_on": [
+              3
+            ]
+          },
+          {
+            "id": 5,
+            "description": "Add tests for config parsing, preset inspection, sandbox narrowing, fail-closed behavior, and audit recording.",
+            "files": [
+              "tests/"
+            ],
+            "action": "modify",
+            "details": "Add focused tests near the existing config, runner sandbox, and coordinator audit tests. Cover absent profile preserving current behavior, unknown preset rejection, xcode preset inspection independent of host toolchain, declared write root allowed while undeclared out-of-worktree path remains denied, unsupported backend failure, and audit inclusion of resolved capabilities.",
+            "depends_on": [
+              4
+            ]
+          },
+          {
+            "id": 6,
+            "description": "Document the new forge.yaml sandbox section.",
+            "files": [
+              "docs/reference"
+            ],
+            "action": "modify",
+            "details": "Locate the project configuration reference and add sandbox.capability_profile alongside other top-level forge.yaml keys. Document that projects select forge-owned presets by name, cannot extend or override preset contents, and must set the profile explicitly to adopt widened sandbox capabilities.",
+            "depends_on": [
+              1
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "A project can declare a sandbox capability profile in forge.yaml, selected by preset name; a project that declares none behaves exactly as today.",
+            "steps": [
+              1,
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "Presets are forge-owned named capability sets: a project selects one by name, it does not author, extend, or override the contents of one.",
+            "steps": [
+              1,
+              2,
+              5,
+              6
+            ]
+          },
+          {
+            "criterion": "The capability set a preset resolves to is inspectable without running an agent \u2014 for a given preset, the granted write roots and services are exactly that preset's declared set and nothing more. This holds on any host, independent of whether that host's toolchain is installed.",
+            "steps": [
+              2,
+              5
+            ]
+          },
+          {
+            "criterion": "With a preset active, a write to one of that preset's declared out-of-worktree roots succeeds, and a write to an undeclared out-of-worktree path still fails. Containment is narrowed to the declared set, not removed.",
+            "steps": [
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "Declaring a preset whose capabilities the host platform's sandbox cannot express fails closed with a clear reason, rather than silently running with the declared capability absent.",
+            "steps": [
+              2,
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "There is no flag or value that disables the sandbox wholesale or grants allow default; widening is always a named, bounded capability set.",
+            "steps": [
+              1,
+              2,
+              3,
+              5,
+              6
+            ]
+          },
+          {
+            "criterion": "The capabilities granted for a run are recorded where a run's substrate decisions are already audited.",
+            "steps": [
+              4,
+              5
+            ]
+          },
+          {
+            "criterion": "The new forge.yaml section is documented in the project-configuration reference alongside the other top-level keys, including what an operator must change to adopt a preset.",
+            "steps": [
+              6
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The exact xcode preset contents are security-sensitive and the spec gives an illustrative, not exhaustive, list.",
+            "mitigation": "Keep the preset table small, explicit, and reviewable; include only the roots and mach services required by the motivating Xcode workflow and encode them as forge-owned constants."
+          },
+          {
+            "description": "Sandbox tests that perform real denied writes may be host-dependent, especially on Linux CI versus macOS.",
+            "mitigation": "Separate pure preset/config/audit tests from backend-specific sandbox execution tests, and skip only the execution assertion when the host cannot run that backend while still testing fail-closed validation."
+          },
+          {
+            "description": "Multiple runner call sites may construct sandbox commands indirectly.",
+            "mitigation": "Trace all workspace_effect_sandbox_command callers and thread the profile through the narrowest shared runner boundary so default behavior remains unchanged for callers that do not pass a profile."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": null,
+      "duration_s": 483.76,
+      "iterations": 4,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.561716
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4",
+          "verdict": "REQUEST_CHANGES",
+          "cost_usd": null
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 9.479846,
+      "duration_s": 2129.53,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 34.04,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 118.55,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 1.321079,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2844.17,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "d4afba3fc988",
+  "sprint_name": "issues-1947,1758"
+}
