@@ -48,6 +48,7 @@ _STRONG_HOW_TOKENS: tuple[str, ...] = (
     "subclass",
 )
 
+
 def _bounded_token_pattern(tok: str) -> str:
     """Anchor a token to whole-word boundaries only where the token itself ends
     in a word character. A trailing \\b after punctuation (e.g. "implementation:")
