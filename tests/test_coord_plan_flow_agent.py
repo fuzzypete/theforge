@@ -1828,8 +1828,21 @@ class TestPlanReviewerFailureAudit:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert result.state.plan_review_decision == "reject"
-        assert "minimum required is 2" in (result.message or "")
+        # #1951: a reviewer lost to the transport cast no vote. The pool falling
+        # below the minimum is a statement about the substrate, so the run ends
+        # as an infrastructure abort — NOT as a plan-review rejection, which
+        # would record a verdict no reviewer produced.
+        assert result.infrastructure_failure is True
+        assert result.state.plan_review_decision is None
+        assert result.state.infrastructure_failure is not None
+        assert result.state.infrastructure_failure["phase"] == "PLAN_REVIEW"
+        assert result.state.infrastructure_failure["category"] == "transport"
+        assert "not a plan rejection" in (result.message or "")
+        # The pool loss survives as first-class metadata.
+        assert result.state.degraded_pools[-1]["lost"] == ["reviewer-a"]
+        assert result.state.degraded_pools[-1]["pool_size"] == 2
+        _failed_profiles = [f["profile_name"] for f in result.state.agent_invocation_failures]
+        assert _failed_profiles == ["reviewer-a"]
         assert len(result.state.plan_review_transport_retries) == 2
         assert len(result.state.plan_review_results) == 4
         assert result.state.total_plan_review_cost == pytest.approx(0.18)
@@ -1839,6 +1852,7 @@ class TestPlanReviewerFailureAudit:
         assert failure["failure_kind"] == "transport"
         assert failure["retryable"] is True
         assert failure["retry_count"] == 2
+        assert failure["produced_model_output"] is False
         assert "Transport failure:" in failure["errors"][0]
         audit = generate_audit_log(pool_config, task, result)
         assert audit["plan_review"]["per_reviewer"] == [

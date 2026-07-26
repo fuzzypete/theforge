@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 10
+CURRENT_RECORD_SCHEMA_VERSION = 11
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -877,6 +877,34 @@ def _migrate_v9_to_v10(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v10_to_v11(record: dict) -> dict:
+    """Add top-level ``agent_invocation`` (issue #1951).
+
+    v10 records could not distinguish an agent that judged the work from one
+    that never answered: a transport/auth failure was folded into whatever
+    verdict the phase could express (PROCEED / REJECT / ESCALATE) and the
+    substrate saw only the manufactured verdict. v11 records the distinction
+    directly — which invocations produced no model output, whether the run
+    itself aborted for want of a judgment, and which pools completed degraded.
+
+    Older records cannot be reclassified after the fact (the evidence that would
+    separate the two was never written), so backfill the "not recorded" shape —
+    null infrastructure failure, empty lists — rather than inferring a cause
+    from an outcome. The record itself is never rewritten in the substrate
+    (ADR-0002 refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    if "agent_invocation" in record:
+        return record
+    return {
+        **record,
+        "agent_invocation": {
+            "infrastructure_failure": None,
+            "no_judgment_failures": [],
+            "degraded_pools": [],
+        },
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -895,6 +923,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
+    10: _migrate_v10_to_v11,
 }
 
 

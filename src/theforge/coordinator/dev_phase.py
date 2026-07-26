@@ -24,6 +24,11 @@ from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
 
+from .agent_failure import (
+    classify_agent_failure,
+    mark_infrastructure_abort,
+    record_invocation_failure,
+)
 from .commit_guard import (
     _checkpoint_commit,
     _commits_exist_strict,
@@ -1333,6 +1338,58 @@ def _run_dev_phase(
         # the worktree has no new commits ahead of base, escalate immediately
         # rather than letting an empty diff flow through to a fake APPROVE.
         if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+            # ── Infrastructure abort vs. genuine escalation (#1951) ──────
+            # Refusing to APPROVE an empty diff is right either way. What
+            # differs is what the run is entitled to CLAIM about the story.
+            # ESCALATE is the outcome reserved for a story whose framing an
+            # agent found invalid — it asserts a judgment. When the dev
+            # invocation produced no model output at all (credential rejected,
+            # transport dropped, process never started), no agent judged
+            # anything, and recording ESCALATE writes a story-quality verdict
+            # that no model ever formed — one that then outlives the run in
+            # escalation memory.
+            _invocation_failure = classify_agent_failure(
+                dev_result,
+                phase="DEV",
+                profile_name=getattr(config.dev_profile, "name", None),
+                detail=_failure_detail,
+            )
+            if _invocation_failure is not None:
+                record_invocation_failure(state, _invocation_failure)
+                state.phase = Phase.ESCALATE
+                # Name the failure the way the phase already names it
+                # (_failure_detail states a timeout and its limit rather than the
+                # signal number, per #1216) and add the substrate category.
+                state.error = (
+                    f"Dev agent produced no model output "
+                    f"(category={_invocation_failure.category}: {_failure_detail}) and "
+                    "no commits ahead of base — aborting as an infrastructure failure; "
+                    "no judgment was obtained about this story"
+                )
+                mark_infrastructure_abort(state, _invocation_failure, message=state.error)
+                record_dev_iteration_telemetry(
+                    state,
+                    workspace_path,
+                    max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                    gate_result="DEV_INFRA_FAILURE",
+                )
+                _log(f"✗ ABORT   infrastructure failure: {state.error}")
+                if logger:
+                    logger._safe_emit(
+                        "infrastructure_abort",
+                        phase="DEV",
+                        reason=state.error,
+                        category=_invocation_failure.category,
+                    )
+                # No escalation notification: nothing was learned about the
+                # story, so there is nothing for a human to adjudicate about it.
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                    infrastructure_failure=True,
+                )
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Dev agent failed ({_failure_detail}) and produced no commits "
