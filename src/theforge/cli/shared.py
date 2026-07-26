@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -21,7 +21,7 @@ from theforge.config import (
     load_config,
 )
 from theforge.config.auth import check_agent_auth
-from theforge.config.types import ModelProfile
+from theforge.config.profiles import iter_config_profiles
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.redact import redact
@@ -145,26 +145,6 @@ def _find_config(start: Path | None = None) -> Path | None:
     return None
 
 
-def _iter_config_profiles(config: ForgeConfig) -> Iterator[tuple[str, ModelProfile]]:
-    """Yield ``(role_label, profile)`` for every ModelProfile a run/sprint uses.
-
-    Covers the dev profile, preflight (+ optional fallback), every reviewer in
-    the pool, the optional synthesis profile, and every agent-pool entry (each
-    projected to a ModelProfile). Plan/plan-review configs are validated
-    separately at load time and are not ModelProfiles, so they are not included.
-    """
-    yield ("dev", config.dev_profile)
-    yield ("preflight", config.preflight_profile)
-    if config.preflight_fallback_profile is not None:
-        yield ("preflight-fallback", config.preflight_fallback_profile)
-    for profile in config.review_pool:
-        yield ("review", profile)
-    if config.synthesis_profile is not None:
-        yield ("synthesis", config.synthesis_profile)
-    for agent in config.agents:
-        yield ("agent-pool", agent.to_model_profile())
-
-
 def _print_startup_auth_warnings(config: ForgeConfig) -> None:
     """Print a stderr warning for every configured profile missing credentials.
 
@@ -181,7 +161,7 @@ def _print_startup_auth_warnings(config: ForgeConfig) -> None:
     computation as much as the result.
     """
     try:
-        profiles = list(_iter_config_profiles(config))
+        profiles = list(iter_config_profiles(config))
     except Exception:
         return
 
