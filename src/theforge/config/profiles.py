@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from .auth import check_agent_auth
 from .defaults import (
@@ -18,7 +19,30 @@ from .defaults import (
 from .models import AgentDef, AgentSpec, _resolve_model_info, price_tiebreak_signal
 from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .types import ForgeConfig
+
 _COST_RANK_TO_TIER = {1: "cheap", 2: "mid", 3: "strong"}
+
+
+def iter_config_profiles(config: "ForgeConfig") -> Iterator[tuple[str, ModelProfile]]:
+    """Yield ``(role_label, profile)`` for every ModelProfile a run/sprint uses.
+
+    Covers the dev profile, preflight (+ optional fallback), every reviewer in
+    the pool, the optional synthesis profile, and every agent-pool entry (each
+    projected to a ModelProfile). Plan/plan-review configs are validated
+    separately at load time and are not ModelProfiles, so they are not included.
+    """
+    yield ("dev", config.dev_profile)
+    yield ("preflight", config.preflight_profile)
+    if config.preflight_fallback_profile is not None:
+        yield ("preflight-fallback", config.preflight_fallback_profile)
+    for profile in config.review_pool:
+        yield ("review", profile)
+    if config.synthesis_profile is not None:
+        yield ("synthesis", config.synthesis_profile)
+    for agent in config.agents:
+        yield ("agent-pool", agent.to_model_profile())
 
 
 def _agents_from_models(

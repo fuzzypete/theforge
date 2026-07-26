@@ -22,6 +22,7 @@ import yaml
 from ..config import ForgeConfig
 from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
+from ..coordinator.agent_failure import CATEGORY_AUTH, is_infrastructure_abort
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
 from ..coordinator.gate import run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
@@ -52,6 +53,7 @@ from .audit import (
     _write_story_audit,
     persist_accumulated_story_state,
 )
+from .auth_gate import enforce_sprint_auth_readiness
 from .ci_checks import poll_required_checks
 from .collision import (
     compute_bundle_assignments,
@@ -1574,6 +1576,28 @@ def _merge_visible_on_base(pr_url: str, project_root: Path, base_branch: str) ->
     return ancestor.returncode == 0
 
 
+def _fatal_auth_cause(result: CoordinatorResult) -> dict | None:
+    """Return the structured cause when *result* died on a credential rejection.
+
+    Returns ``None`` for every other outcome, including infrastructure aborts
+    of a different category. A transport drop or a provider 5xx can succeed on
+    the next attempt, so re-trying the next story is genuine resilience there.
+    An auth rejection cannot: the same credential will be presented, and it will
+    be refused identically. Re-discovering that per story and per phase is what
+    turned #1952's revoked token into six minutes and nine identical errors.
+    """
+    if not (
+        getattr(result, "infrastructure_failure", False) or is_infrastructure_abort(result.state)
+    ):
+        return None
+    cause = getattr(result.state, "infrastructure_failure", None)
+    if not isinstance(cause, dict):
+        return None
+    if cause.get("category") != CATEGORY_AUTH:
+        return None
+    return cause
+
+
 def _classify_and_record(
     task: TaskStory,
     result: CoordinatorResult,
@@ -1741,6 +1765,12 @@ def run_sprint(
     # outcome is overwritten with a bogus FAILED. Treat re-exec as
     # resume-equivalent for all reconciliation/skip paths.
     reconcile = resume or reexec
+
+    # Establish that the agents are reachable BEFORE committing wall clock or
+    # budget to them (#1952). This runs ahead of the baseline gate, the base
+    # pull, and every worktree touch, so a dead credential costs seconds and
+    # leaves no story with a verdict — the run simply never happened.
+    enforce_sprint_auth_readiness(config, log=_log)
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
@@ -2745,6 +2775,13 @@ def run_sprint(
     # threads stop running instead of continuing past their deadline.
     stop_events: dict[str, threading.Event] = {}
 
+    # Auth circuit breaker (#1952): the structured cause of the first fatal
+    # credential rejection observed after launch, or None while the substrate
+    # is still believed reachable. Once set, no further story is dispatched —
+    # the same credential would be presented and refused identically.
+    auth_circuit: dict | None = None
+    auth_circuit_reason = ""
+
     # Overlap detection state (plan gates)
     file_footprints: dict[str, set[str]] = {}  # slug -> files from plan
     plan_gates: dict[str, threading.Event] = {}  # slug -> gate for PLAN→DEV pause
@@ -2863,6 +2900,18 @@ def run_sprint(
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
+                # Auth circuit breaker (#1952): a credential the substrate
+                # already had refused is not worth re-presenting. Skip rather
+                # than fail — nothing about this story was ever judged.
+                if auth_circuit is not None:
+                    dag.mark_skipped(task.slug)
+                    _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=auth_circuit_reason)
+                    _log(f"SKIPPED {task.slug} ({auth_circuit_reason})")
+                    _record_current_story_entry(task.slug, "SKIPPED", error=auth_circuit_reason)
+                    if _state_writer is not None:
+                        _state_writer.update(task.slug, status="skipped")
+                    continue
+
                 # Both hard (depends_on) and soft (collision_deps) parents must
                 # honor the queued-PR reachability gate. dag.ready() releases a
                 # collision edge the instant its parent reaches a terminal state,
@@ -3316,6 +3365,39 @@ def run_sprint(
                 icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)
                 _log(f"{icon} {slug}   ${spec_cost:.2f}  {dur}")
+
+                # Auth circuit breaker (#1952): the launch gate proves the
+                # credential was usable at t=0, but an interactive sign-in can
+                # revoke it mid-sprint. The first fatal credential rejection is
+                # the whole answer for every remaining story and phase — stop
+                # here instead of paying to re-learn it per invocation.
+                if auth_circuit is None:
+                    _auth_cause = _fatal_auth_cause(result)
+                    if _auth_cause is not None:
+                        auth_circuit = _auth_cause
+                        _auth_detail = str(_auth_cause.get("detail") or "").strip()
+                        _auth_phase = str(_auth_cause.get("phase") or "unknown phase")
+                        auth_circuit_reason = (
+                            "agent credential rejected during "
+                            f"{_auth_phase} of {slug}"
+                            + (f": {_auth_detail[:200]}" if _auth_detail else "")
+                        )
+                        if stopped_reason is None:
+                            stopped_reason = (
+                                f"Agent authentication failed ({auth_circuit_reason}); "
+                                "remaining stories skipped — every subsequent call would "
+                                "present the same rejected credential"
+                            )
+                        _log(f"HALT sprint: {stopped_reason}")
+                        # Stop in-flight workers at their next phase boundary and
+                        # release any plan gate they are parked on, so the sprint
+                        # ends in seconds rather than at the worker timeout.
+                        for _pending_evt in stop_events.values():
+                            _pending_evt.set()
+                        for _gate_slug, _pending_gate in plan_gates.items():
+                            _log(f"Releasing plan gate for {_gate_slug} (auth abort)")
+                            _pending_gate.set()
+                        plan_gates.clear()
 
                 _done_status = (
                     "done"

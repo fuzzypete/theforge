@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
+import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from .defaults import PROVIDER_API_KEY_MAP, SUPPORTED_CLIS
@@ -119,11 +122,148 @@ def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
     return (True, "")
 
 
+# ── Claude CLI credential store ──────────────────────────────────────────
+# The `claude` CLI authenticates from an OAuth credential file in the user's
+# home directory. That credential belongs to the same token family as an
+# interactive Claude Code session: a fresh interactive sign-in revokes the
+# previous family server-side, and the copy this substrate depends on starts
+# returning `401 OAuth access token has been revoked` for every call (#1952).
+_CLAUDE_CREDENTIALS_RELPATH = (".claude", ".credentials.json")
+
+# The credential file's OAuth block.
+_CLAUDE_OAUTH_KEY = "claudeAiOauth"
+
+# Environment variables that let the CLI authenticate WITHOUT reading the OAuth
+# credential store at all. When one is set the store is irrelevant, so probing
+# it could only produce a false abort.
+_CLAUDE_ENV_TOKENS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def claude_credentials_path() -> Path:
+    """Path to the `claude` CLI OAuth credential store for the current user."""
+    return Path.home().joinpath(*_CLAUDE_CREDENTIALS_RELPATH)
+
+
+def _as_epoch_ms(raw: object) -> int:
+    """Coerce a credential timestamp to epoch milliseconds; 0 when unusable."""
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def check_claude_credentials(
+    merged: Mapping[str, str] | None = None,
+    *,
+    credentials_path: Path | None = None,
+    now_ms: float | None = None,
+) -> tuple[bool, str]:
+    """Return ``(ready, reason)`` for the `claude` CLI OAuth credential store.
+
+    This inspects the credential the CLI will actually present, so a sprint can
+    establish that its agents are reachable before it commits wall clock and
+    budget to them rather than rediscovering a dead credential one invocation
+    at a time.
+
+    ``ready`` is False only when the store carries positive evidence that no
+    usable credential exists. Absence of evidence is not evidence: a missing
+    file is treated as ready, because the CLI also authenticates from the macOS
+    Keychain and from the environment, and aborting on a file this process
+    cannot see would be a false negative on a perfectly healthy host.
+
+    Two failure shapes matter in practice:
+
+    - **Revoked.** After repeated 401s the CLI blanks ``accessToken`` and
+      ``refreshToken`` to empty strings *while leaving* ``refreshTokenExpiresAt``
+      populated with a future date. The credential superficially reads as valid
+      until token *length* is checked rather than expiry, which is exactly why
+      an expiry-only check misses it.
+    - **Unrefreshable.** The access token has expired and no unexpired refresh
+      token remains to mint a new one.
+
+    ``reason`` names the credential path and the condition. It never contains
+    token material — not a value, not a prefix, not a length beyond the
+    empty/non-empty distinction the classification itself rests on.
+    """
+    env = merged if merged is not None else os.environ
+    for var in _CLAUDE_ENV_TOKENS:
+        if (env.get(var) or "").strip():
+            return (True, "")
+
+    path = credentials_path if credentials_path is not None else claude_credentials_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # No store on disk: the CLI may authenticate from the Keychain or from
+        # a token this process cannot observe. No claim either way.
+        return (True, "")
+    except OSError as exc:
+        return (False, f"claude credential store at {path} is unreadable: {exc.strerror or exc}")
+
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return (
+            False,
+            f"claude credential store at {path} is not valid JSON; "
+            "re-authenticate the CLI (`claude` → /login)",
+        )
+    if not isinstance(payload, dict):
+        return (
+            False,
+            f"claude credential store at {path} is not a JSON object; "
+            "re-authenticate the CLI (`claude` → /login)",
+        )
+
+    oauth = payload.get(_CLAUDE_OAUTH_KEY)
+    if not isinstance(oauth, dict):
+        # A store written by a different auth backend (or a future CLI layout).
+        # Nothing this probe can classify, so it makes no claim.
+        return (True, "")
+
+    access = str(oauth.get("accessToken") or "").strip()
+    refresh = str(oauth.get("refreshToken") or "").strip()
+    expires_at = _as_epoch_ms(oauth.get("expiresAt"))
+    refresh_expires_at = _as_epoch_ms(oauth.get("refreshTokenExpiresAt"))
+    now = now_ms if now_ms is not None else time.time() * 1000.0
+
+    if not access and not refresh:
+        return (
+            False,
+            f"claude credential store at {path} holds no access or refresh token "
+            "(the CLI blanks both after repeated auth rejections, so this is the "
+            "signature of an OAuth family that was revoked server-side — most "
+            "often by a newer interactive Claude Code sign-in). Re-authenticate "
+            "the CLI (`claude` → /login) before starting a sprint.",
+        )
+
+    if access and expires_at > now:
+        return (True, "")
+
+    # The access token is absent or past its expiry — only an unexpired refresh
+    # token can still produce a working call.
+    if not refresh:
+        return (
+            False,
+            f"claude credential store at {path} has an expired access token and "
+            "no refresh token to renew it; re-authenticate the CLI "
+            "(`claude` → /login)",
+        )
+    if refresh_expires_at and refresh_expires_at <= now:
+        return (
+            False,
+            f"claude credential store at {path} has an expired access token and "
+            "an expired refresh token; re-authenticate the CLI (`claude` → /login)",
+        )
+    return (True, "")
+
+
 def check_agent_auth(
     profile: ModelProfile,
     secrets: dict[str, str] | None = None,
     *,
     include_sandbox_readiness: bool = True,
+    include_credential_probe: bool = False,
 ) -> tuple[bool, str]:
     """Return ``(ready, reason)`` for *profile*.
 
@@ -137,6 +277,12 @@ def check_agent_auth(
     - CLI profiles — checks whether the appropriate binary exists on PATH.
       ``claude`` -> ``shutil.which("claude")``;
       ``codex`` / ``gemini`` -> ``shutil.which("npx")``.
+    - ``include_credential_probe`` additionally inspects the ``claude`` CLI's
+      OAuth credential store (see :func:`check_claude_credentials`). It is
+      opt-in because a *stale* credential must not fail config loading — that
+      would refuse ``forge check-config``, the very command an operator runs to
+      diagnose it. Callers that are about to spend money on agents (the sprint
+      launch gate, ``forge check-config``'s reporting) pass True.
     - API profiles with a local base_url (localhost / 127.0.0.1 / 0.0.0.0 / ::1):
       key check is skipped for ``openai`` and ``deepseek`` providers.
       ``google`` does NOT support local endpoints, so the key is always required.
@@ -172,6 +318,10 @@ def check_agent_auth(
         ok = shutil.which(profile.cli) is not None
         if not ok:
             return (False, f"{profile.cli!r} not found in PATH")
+        if profile.cli == "claude" and include_credential_probe:
+            cred_ready, cred_reason = check_claude_credentials(merged)
+            if not cred_ready:
+                return (False, cred_reason)
         if include_sandbox_readiness:
             return _launcher_sandbox_readiness(profile)
         return (True, "")
