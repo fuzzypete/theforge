@@ -102,11 +102,17 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     sprint_block = summary.get("sprint") if isinstance(summary.get("sprint"), dict) else {}
     stories = [s for s in (summary.get("stories") or []) if isinstance(s, dict)]
 
-    landed = [s for s in stories if _outcome(s) in DONE_OUTCOMES]
+    # A no-merge ALREADY_DONE acceptance succeeded but shipped no change. It
+    # must not be reported as a landed change (issue #1937), so split it into a
+    # distinct ALREADY SATISFIED bucket. It still counts as succeeded, so it is
+    # excluded from ``non_done`` and never triggers the recovery sections.
+    already_satisfied = [s for s in stories if _is_already_satisfied(s)]
+    landed = [s for s in stories if _outcome(s) in DONE_OUTCOMES and not _is_already_satisfied(s)]
     non_done = [s for s in stories if _outcome(s) not in DONE_OUTCOMES]
 
     _print_header(sprint_block, run_id)
     _print_landed(landed, len(stories))
+    _print_already_satisfied(already_satisfied)
 
     # Shape-gate skip categories (issue #1453) are independent of story
     # outcomes: a sprint can land every runnable story yet still have skipped a
@@ -162,6 +168,45 @@ def _print_landed(landed: list[dict], total: int) -> None:
         return
     for story in landed:
         print(f"  ✓ {_story_row(story)}")
+
+
+def _print_already_satisfied(stories: list[dict]) -> None:
+    """Render no-op ALREADY_DONE acceptances distinctly from landed changes.
+
+    These stories succeeded without shipping a change — preflight determined the
+    spec was already satisfied and no PR merged. Reporting them under LANDED
+    would present a no-op acceptance as equivalent to a merged land (issue
+    #1937), so they get their own bucket with the preflight reason as detail.
+    """
+    if not stories:
+        return
+    print()
+    print(f"ALREADY SATISFIED ({len(stories)})")
+    for story in stories:
+        print(f"  ✓ {_story_row(story)}")
+        reason = str(story.get("preflight_reason") or "").strip()
+        if reason:
+            print(f"       no change needed — {reason}")
+
+
+def _is_already_satisfied(story: dict) -> bool:
+    """True when a story is a no-merge, preflight-verdict ALREADY_DONE acceptance.
+
+    Distinguishes a no-op acceptance (working tree already satisfied the spec,
+    no PR) from a real landed change. A merged story — even one classified
+    ALREADY_DONE via the resume-skip-merged path — is excluded because it either
+    carries a merge boolean or a structured landing record.
+    """
+    if _outcome(story) != "ALREADY_DONE":
+        return False
+    if str(story.get("outcome_source") or "") != "preflight_verdict":
+        return False
+    if story.get("merge"):
+        return False
+    landing = story.get("landing")
+    if isinstance(landing, dict) and landing.get("merged"):
+        return False
+    return True
 
 
 def _print_shape_gate_skips(summary: dict) -> None:
