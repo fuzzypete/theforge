@@ -885,7 +885,9 @@ def run_task(
         _log_phase(state.phase, task.slug)
         logger._safe_emit("phase_start", phase="WORKSPACE", iteration=0)
 
-        workspace_path, branch_name, err = _create_workspace(config, task, no_pull=no_pull)
+        workspace_path, branch_name, err = _create_workspace(
+            config, task, no_pull=no_pull, auto_merge=auto_merge
+        )
         if err:
             state.phase = Phase.ESCALATE
             state.error = err
@@ -1248,7 +1250,7 @@ def _run_resume_coordinator(
         # Blocking, unlike the informational behind-origin check this replaced:
         # the reused worktree is about to be rebased onto the base branch, so an
         # unpublished commit there would be absorbed into this story's diff.
-        pull_base_branch(config)
+        pull_base_branch(config, auto_merge=auto_merge)
     setup = _setup_resume_entry(
         config,
         task,

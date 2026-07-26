@@ -422,7 +422,7 @@ def test_run_resume_coordinator_aborts_when_base_branch_unpublished(tmp_path):
             state_update_fn=None,
         )
 
-    mock_pull.assert_called_once_with(config)
+    mock_pull.assert_called_once_with(config, auto_merge=False)
     mock_setup.assert_not_called()
 
 

@@ -114,9 +114,10 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
     the operation — this pushes it to origin and verifies the base branch is no
     longer ahead, raising loudly if either step fails.
 
-    ``publish`` mirrors ``workspace.auto_push``. Pushing a branch publishes all
-    of its ancestors, so with auto_push off a push here would also publish the
-    local story merges the operator opted out of sending to the remote. In that
+    ``publish`` comes from ``_base_branch_tracks_origin``: it is false only when
+    this run lands stories by merging into the local base checkout *and* has
+    opted out of pushing them. Pushing a branch publishes all of its ancestors,
+    so a push here would then also publish those local merges. In that one
     configuration the commit stays local and the fact is warned about instead.
     """
     from ..coordinator import util as _cu  # noqa: PLC0415
@@ -146,9 +147,10 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
 
     if not publish:
         _log(
-            f"⚠ SPRINT  story run audit records remain local: workspace.auto_push is off, so "
-            f"'{base_branch}' is not pushed. Publish it before cutting worktrees from a clone "
-            f"that expects origin/{base_branch} to be current."
+            f"⚠ SPRINT  story run audit records remain local: this run merges stories into "
+            f"'{base_branch}' with workspace.auto_push off, so pushing would also publish those "
+            f"local merges. Push '{base_branch}' yourself before any workflow that diffs a story "
+            f"branch against origin/{base_branch}."
         )
         return
 
@@ -1874,7 +1876,7 @@ def run_sprint(
         pass
 
     if not no_pull and _project_root_is_git_checkout(config.project_root):
-        coordinator_workspace.pull_base_branch(config)
+        coordinator_workspace.pull_base_branch(config, auto_merge=auto_merge)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     baseline_gate = _run_baseline_gate(config, resolved)
@@ -3625,7 +3627,7 @@ def run_sprint(
         _commit_story_run_audits(
             config.project_root,
             config.workspace.base_branch,
-            publish=_base_branch_tracks_origin(config),
+            publish=_base_branch_tracks_origin(config, auto_merge=auto_merge),
         )
     except RuntimeError as exc:
         _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}")

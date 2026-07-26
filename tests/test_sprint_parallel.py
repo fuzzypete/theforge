@@ -2620,12 +2620,22 @@ class TestImmediateIntegrationLanding:
         assert result.landing_status == "failed"
 
 
-def _make_pushing_config(tmp_path: Path):
-    """_make_config with auto_push on — the base branch is expected to track origin."""
+def _make_workspace_config(tmp_path: Path, **workspace_kwargs):
+    """_make_config with workspace field overrides."""
     config = _make_config(tmp_path)
     return dataclasses.replace(
-        config, workspace=dataclasses.replace(config.workspace, auto_push=True)
+        config, workspace=dataclasses.replace(config.workspace, **workspace_kwargs)
     )
+
+
+def _make_pushing_config(tmp_path: Path):
+    """These sprints run with auto_merge=True, so auto_push decides publication.
+
+    --auto-merge forces the local-merge landing path; with auto_push on, those
+    merges reach the remote, so the base branch is expected to track origin and
+    the audit commit must be pushed.
+    """
+    return _make_workspace_config(tmp_path, auto_push=True)
 
 
 class TestSprintRunAuditCommit:
@@ -2809,8 +2819,53 @@ class TestSprintRunAuditCommit:
 
         assert any("canonical story run audit publish failed" in warning for warning in warnings)
 
-    def test_run_sprint_commits_without_push_when_auto_push_off(self, tmp_path: Path) -> None:
-        """auto_push=false: pushing the base would publish local merges the operator declined.
+    def test_run_sprint_publishes_audits_under_pr_workflow_without_auto_push(
+        self, tmp_path: Path
+    ) -> None:
+        """on_approve: pr + auto_push: false must still push the audit commit.
+
+        Nothing merges into the local base branch under a PR workflow, so there
+        are no local merges a push could over-publish — and story branches are
+        pushed for GitHub to diff against origin/<base>, which is exactly where
+        an unpublished audit commit shows up as content of the wrong story.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        assert config.workspace.auto_push is False
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
+        shell_calls: list[str] = []
+        logs: list[str] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            if cmd == "git rev-list --count origin/main..main":
+                return (True, "0\n")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+            patch("theforge.sprint.runner._log", side_effect=logs.append),
+        ):
+            run_sprint(config, manifest_path)
+
+        assert commit_cmd in shell_calls
+        assert "git push origin main" in shell_calls
+        assert not any("remain local" in line for line in logs)
+
+    def test_run_sprint_commits_without_push_under_local_merge(self, tmp_path: Path) -> None:
+        """Local-merge landing without auto_push: pushing would over-publish.
 
         A branch push carries all its ancestors, so the audit commit cannot be
         published in isolation. The records stay local and the sprint warns.
@@ -2853,7 +2908,7 @@ class TestSprintRunAuditCommit:
         assert sprint.specs_succeeded == 1
         assert commit_cmd in shell_calls
         assert "git push origin main" not in shell_calls
-        assert any("remain local" in line and "auto_push is off" in line for line in logs)
+        assert any("remain local" in line and "workspace.auto_push off" in line for line in logs)
 
 
 def test_integration_lock_serializes(tmp_path: Path) -> None:

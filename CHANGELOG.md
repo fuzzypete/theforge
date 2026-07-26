@@ -30,11 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Workspace preparation also fails closed when the base branch carries commits
   absent from origin — on the fresh, reused, reattach, and resume paths alike —
   because a worktree cut from such a checkout makes GitHub attribute that
-  content to whichever story happens to be running. Both behaviors are scoped
-  to `auto_push`: without it, `on_approve: merge` lands stories into the local
-  base checkout by design, so the branch is expected to run ahead of origin and
-  the sprint warns that the audit records stay local rather than pushing them
-  (a branch push would carry those local merges too). The purely informational
+  content to whichever story happens to be running. Both behaviors stand down
+  in exactly one case: when the run lands stories by merging into the local base
+  checkout (`on_approve: merge`, or the `--auto-merge` override) *and* has
+  `auto_push` off. There the branch is expected to run ahead of origin, so the
+  sprint warns that the audit records stay local rather than pushing them (a
+  branch push would carry those local merges too). Under `on_approve: pr` and
+  `merge-pr` nothing merges locally, so the guard and the push apply regardless
+  of `auto_push`. The purely informational
   `_check_behind_origin` helper is gone; the ahead-only case it could not
   detect is exactly the one that contaminated PR diffs.
 

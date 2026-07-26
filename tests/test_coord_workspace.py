@@ -4,10 +4,12 @@ Covers:
 - Fresh workspace: pull succeeds before worktree creation
 - Fresh workspace: pull fails (diverged) -> hard abort, workspace NOT created, error returned
 - Fresh workspace: pull fails (offline/unreachable) -> hard abort, workspace NOT created
-- Base branch ahead of origin (ahead-only) under auto_push -> hard abort on
-  fresh, reused, and reattach paths, even though `git pull --ff-only` succeeds
-- Base branch ahead of origin without auto_push -> allowed; local merges land
-  there by design and must not block subsequent stories in a sprint
+- Base branch ahead of origin (ahead-only) where the branch must track origin
+  -> hard abort on fresh, reused, and reattach paths, even though
+  `git pull --ff-only` succeeds in that state
+- Base branch ahead of origin under a local-merge workflow (on_approve: merge
+  or --auto-merge, without auto_push) -> allowed; stories land there by design
+  and must not block subsequent stories in a sprint
 - no_pull=True: no pull attempted on fresh path
 - no_pull=True: no base-branch sync on resume path
 - Daemon sprint_args dict includes no_pull; _execute_sprint passes it to run_sprint
@@ -23,6 +25,7 @@ from coord_test_helpers import _make_config, _make_task
 
 from theforge.coordinator.workspace import (
     _FORGE_ARTIFACTS,
+    _base_branch_tracks_origin,
     _create_workspace,
     _deindex_forge_artifacts,
     pull_base_branch,
@@ -307,17 +310,23 @@ def _ahead_only_shell(ahead: str = "2", behind: str = "0", *, recorder=None):
     return shell_side_effect
 
 
-def _make_pushing_config(tmp_path):
-    """_make_config with auto_push on: the base branch is expected to track origin.
-
-    With auto_push off, `_merge_branch` lands stories locally without pushing,
-    so an ahead-only base branch is the configured steady state and the guard
-    deliberately stands down — see TestLocalMergeWorkflowNotBlocked.
-    """
+def _make_workspace_config(tmp_path, **workspace_kwargs):
+    """_make_config with workspace field overrides."""
     config = _make_config(tmp_path)
     return dataclasses.replace(
-        config, workspace=dataclasses.replace(config.workspace, auto_push=True)
+        config, workspace=dataclasses.replace(config.workspace, **workspace_kwargs)
     )
+
+
+def _make_pushing_config(tmp_path):
+    """A workflow where the base branch must track origin: PRs, no local merges.
+
+    `on_approve: pr` publishes story branches for GitHub to diff against
+    origin/<base>, and nothing merges into the local base checkout, so any
+    commit it carries beyond origin is drift. Note auto_push stays off — this
+    is exactly the combination the auto_push-only rule wrongly exempted.
+    """
+    return _make_workspace_config(tmp_path, on_approve="pr")
 
 
 class TestBaseBranchAheadOnlyGuard:
@@ -418,22 +427,57 @@ class TestBaseBranchAheadOnlyGuard:
         mock_rebase.assert_not_called()
 
 
+class TestPublicationRuleMatrix:
+    """Two independent questions decide whether an ahead-only base is drift.
+
+    Does anything land on the local base branch (only `on_approve: merge`, or
+    the --auto-merge CLI override, does), and if so are those merges pushed
+    (only with auto_push)? Keying the rule off auto_push alone got both the
+    local-merge workflow and the `on_approve: pr` workflow wrong.
+    """
+
+    def test_pr_workflow_tracks_origin_without_auto_push(self, tmp_path):
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        assert config.workspace.auto_push is False
+        assert _base_branch_tracks_origin(config) is True
+
+    def test_merge_pr_workflow_tracks_origin(self, tmp_path):
+        config = _make_workspace_config(tmp_path, on_approve="merge-pr", auto_push=True)
+        assert _base_branch_tracks_origin(config) is True
+
+    def test_no_landing_workflow_tracks_origin(self, tmp_path):
+        config = _make_workspace_config(tmp_path, on_approve="none")
+        assert _base_branch_tracks_origin(config) is True
+
+    def test_local_merge_without_push_does_not_track_origin(self, tmp_path):
+        config = _make_workspace_config(tmp_path, on_approve="merge")
+        assert _base_branch_tracks_origin(config) is False
+
+    def test_local_merge_with_push_tracks_origin(self, tmp_path):
+        config = _make_workspace_config(tmp_path, on_approve="merge", auto_push=True)
+        assert _base_branch_tracks_origin(config) is True
+
+    def test_auto_merge_override_forces_local_landing(self, tmp_path):
+        """--auto-merge forces the merge path regardless of configured on_approve."""
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        assert _base_branch_tracks_origin(config, auto_merge=True) is False
+        assert _base_branch_tracks_origin(config, auto_merge=False) is True
+
+
 class TestLocalMergeWorkflowNotBlocked:
-    """auto_push=false leaves the base branch ahead by design — do not abort.
+    """A local-merge workflow leaves the base branch ahead by design.
 
     `_merge_branch` merges each landed story into the project-root base branch
-    and only pushes when workspace.auto_push is set. Under the default, the
-    branch is legitimately ahead of origin from the first landing onward, so a
-    guard that fired on ahead>0 unconditionally would abort every subsequent
-    story in a multi-story sprint.
+    and only pushes when workspace.auto_push is set. Under `on_approve: merge`
+    without auto_push the branch is legitimately ahead of origin from the first
+    landing onward, so a guard that fired on ahead>0 unconditionally would
+    abort every subsequent story in a multi-story sprint.
     """
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_pull_base_branch_allows_ahead_when_auto_push_off(
-        self, mock_log, mock_shell, tmp_path
-    ):
-        config = _make_config(tmp_path)
+    def test_pull_base_branch_allows_ahead_under_local_merge(self, mock_log, mock_shell, tmp_path):
+        config = _make_workspace_config(tmp_path, on_approve="merge")
         assert config.workspace.auto_push is False
         mock_shell.side_effect = _ahead_only_shell(ahead="3", behind="0")
 
@@ -441,11 +485,22 @@ class TestLocalMergeWorkflowNotBlocked:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
+    def test_pull_base_branch_allows_ahead_under_auto_merge_override(
+        self, mock_log, mock_shell, tmp_path
+    ):
+        """`forge sprint --auto-merge` merges locally even with on_approve: none."""
+        config = _make_config(tmp_path)
+        mock_shell.side_effect = _ahead_only_shell(ahead="3", behind="0")
+
+        assert pull_base_branch(config, auto_merge=True) is True
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
     def test_second_story_workspace_created_after_local_only_merge(
         self, mock_log, mock_shell, tmp_path
     ):
         """The scenario the unconditional guard broke: story N+1 after a local merge."""
-        config = _make_config(tmp_path)
+        config = _make_workspace_config(tmp_path, on_approve="merge")
         task = _make_task(tmp_path)
         calls: list[str] = []
         base_shell = _ahead_only_shell(ahead="3", behind="0", recorder=calls)
@@ -467,9 +522,36 @@ class TestLocalMergeWorkflowNotBlocked:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_diverged_abort_still_applies_when_auto_push_off(self, mock_log, mock_shell, tmp_path):
+    def test_auto_merge_reaches_guard_through_create_workspace(
+        self, mock_log, mock_shell, tmp_path
+    ):
+        """The seam: _create_workspace must forward auto_merge, not drop it."""
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        task = _make_task(tmp_path)
+        calls: list[str] = []
+        base_shell = _ahead_only_shell(ahead="3", behind="0", recorder=calls)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if cmd.startswith("mkdir -p "):
+                calls.append(cmd)
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return base_shell(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = shell_side_effect
+
+        _path, _branch, error_without = _create_workspace(config, task, no_pull=False)
+        assert error_without is not None and "not on origin/main" in error_without
+
+        path, _branch, error_with = _create_workspace(config, task, no_pull=False, auto_merge=True)
+        assert error_with is None
+        assert path == tmp_path / task.slug
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_diverged_abort_still_applies_under_local_merge(self, mock_log, mock_shell, tmp_path):
         """Standing down on ahead-only must not disable the pre-existing divergence abort."""
-        config = _make_config(tmp_path)
+        config = _make_workspace_config(tmp_path, on_approve="merge")
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
