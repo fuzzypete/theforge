@@ -16,6 +16,7 @@ is read. The credential store is a temp file the test writes itself.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -32,11 +33,22 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.config.auth import check_agent_auth, check_claude_credentials
+from theforge.config.auth import (
+    CLAUDE_CLI_ENV_TOKENS,
+    check_agent_auth,
+    check_claude_credentials,
+)
+from theforge.config.types import (
+    ModelProfile,
+    PlanAgentReviewConfig,
+    PlanConfig,
+)
 from theforge.coordinator.agent_failure import (
     CATEGORY_AUTH,
     CATEGORY_TRANSPORT,
+    ERROR_TYPE_INFRASTRUCTURE_ABORT,
     AgentInvocationFailure,
+    is_infrastructure_abort,
     mark_infrastructure_abort,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
@@ -62,6 +74,20 @@ _REVOKED_CREDENTIAL = {
         "subscriptionType": "max",
     }
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_claude_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip every env token that would satisfy the probe without the store.
+
+    Without this, a developer shell exporting CLAUDE_CODE_OAUTH_TOKEN or
+    ANTHROPIC_API_KEY makes the probe short-circuit to ready and every
+    revoked-credential assertion below fails for a reason that has nothing to
+    do with the code. These tests assert on a credential file they wrote
+    themselves; the host must not be able to answer for it.
+    """
+    for var in CLAUDE_CLI_ENV_TOKENS:
+        monkeypatch.delenv(var, raising=False)
 
 
 def _now_ms() -> float:
@@ -289,6 +315,106 @@ def test_gate_reports_revoked_credential_for_configured_profiles(tmp_path: Path)
     assert all("revoked" in f.reason.lower() for f in failures)
 
 
+def _api_profile(name: str) -> ModelProfile:
+    """A non-Claude profile, so the only Claude surface can be isolated."""
+    return ModelProfile(
+        name=name,
+        cli=None,
+        provider="openai",
+        model="gpt-5.4",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+
+
+def _all_api_config(tmp_path: Path, **overrides) -> ForgeConfig:
+    """A config whose dev/preflight/review profiles are all non-Claude."""
+    return replace(
+        _make_config(tmp_path),
+        dev_profile=_api_profile("dev"),
+        preflight_profile=_api_profile("preflight"),
+        review_pool=[_api_profile("review")],
+        **overrides,
+    )
+
+
+def test_gate_covers_a_claude_planner_when_nothing_else_is_claude(tmp_path: Path) -> None:
+    """PLAN dispatches and spends; a revoked planner credential must abort too."""
+    path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
+    config = _all_api_config(tmp_path, plan=PlanConfig(enabled=True, cli="claude"))
+
+    with patch("theforge.config.auth.claude_credentials_path", return_value=path):
+        failures = check_sprint_auth_readiness(config)
+
+    assert [f.label for f in failures] == ["plan"]
+    assert "revoked" in failures[0].reason.lower()
+
+
+def test_gate_covers_a_claude_plan_reviewer_when_nothing_else_is_claude(
+    tmp_path: Path,
+) -> None:
+    path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
+    config = _all_api_config(
+        tmp_path,
+        plan_agent_review=PlanAgentReviewConfig(enabled=True, cli="claude"),
+    )
+
+    with patch("theforge.config.auth.claude_credentials_path", return_value=path):
+        failures = check_sprint_auth_readiness(config)
+
+    assert [f.label for f in failures] == ["plan-review"]
+
+
+def test_gate_covers_a_claude_plan_review_pool(tmp_path: Path) -> None:
+    """The pool format must be enumerated, not just the legacy scalar fields."""
+    path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
+    config = _all_api_config(
+        tmp_path,
+        plan_agent_review=PlanAgentReviewConfig(
+            enabled=True,
+            pool=[replace(DEFAULT_REVIEW_PROFILE, name="plan-reviewer-1")],
+        ),
+    )
+
+    with patch("theforge.config.auth.claude_credentials_path", return_value=path):
+        failures = check_sprint_auth_readiness(config)
+
+    assert [f.profile_name for f in failures] == ["plan-reviewer-1"]
+
+
+def test_gate_ignores_a_disabled_claude_planner(tmp_path: Path) -> None:
+    """A phase that never dispatches makes no claim on the credential."""
+    path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
+    config = _all_api_config(
+        tmp_path,
+        plan=PlanConfig(enabled=False, cli="claude"),
+        plan_agent_review=PlanAgentReviewConfig(enabled=False, cli="claude"),
+    )
+
+    with patch("theforge.config.auth.claude_credentials_path", return_value=path):
+        assert check_sprint_auth_readiness(config) == []
+
+
+def test_claude_planner_aborts_the_sprint_before_dispatch(tmp_path: Path) -> None:
+    """Seam test: the planner-only case reaches the same launch abort."""
+    path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
+    config = _all_api_config(tmp_path, plan=PlanConfig(enabled=True, cli="claude"))
+    resolved = _make_resolved(tmp_path, ("story-a",))
+
+    with (
+        patch("theforge.config.auth.claude_credentials_path", return_value=path),
+        patch("theforge.sprint.runner._run_baseline_gate") as mock_baseline,
+        patch("theforge.sprint.runner.run_task") as mock_run_task,
+    ):
+        with pytest.raises(SprintAuthUnavailable) as exc_info:
+            run_sprint(config, resolved)
+
+    assert "plan" in str(exc_info.value)
+    assert not mock_run_task.called
+    assert not mock_baseline.called
+
+
 def test_gate_is_silent_when_no_credential_evidence(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
 
@@ -464,3 +590,99 @@ def test_ordinary_story_failure_does_not_trip_the_breaker(tmp_path: Path) -> Non
     _result, dispatched = _run_two_story_sprint(tmp_path, escalated)
 
     assert dispatched == ["story-a", "story-b"]
+
+
+# ── parallel: a sibling already in flight when the breaker trips ─────────
+
+
+def _cancelled_result() -> CoordinatorResult:
+    """What coordinator/engine.py returns for a story killed by stop_event.
+
+    Deliberately built to that module's shape — a plain ESCALATE tagged
+    ``StoryCancelled``, with no infrastructure markers — because the point of
+    the test is that the sprint scheduler must re-attribute it rather than
+    trust it.
+    """
+    state = CoordinatorState()
+    state.preflight_result = MagicMock(cost_usd=0.0)
+    state.phase = Phase.ESCALATE
+    state.error = "Story cancelled by sprint timeout"
+    state.error_type = "StoryCancelled"
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.ESCALATE,
+        state=state,
+        message="Story cancelled by sprint timeout",
+    )
+
+
+def test_inflight_sibling_cancelled_by_breaker_is_not_a_story_failure(
+    tmp_path: Path,
+) -> None:
+    """The #1951 bug class, at parallelism > 1.
+
+    story-b is genuinely in flight — dispatched, running, and blocked — when
+    story-a's revoked credential trips the breaker. It comes back through the
+    generic stop_event cancellation path, whose result is shaped for a worker
+    *timeout*. Left alone that reads as a story failure. It must not: no model
+    judged story-b, so a substrate outage would be presented as a property of
+    the work.
+    """
+    config = _make_config(tmp_path)
+    resolved = replace(_make_resolved(tmp_path, ("story-a", "story-b")), max_parallel=2)
+
+    b_dispatched = threading.Event()
+    a_may_finish = threading.Event()
+    outcomes: dict[str, CoordinatorResult] = {}
+
+    def _fake_run_task(_config, task, **kwargs):
+        stop_event = kwargs.get("stop_event")
+        if task.slug == "story-b":
+            # Genuinely in flight: block until the breaker cancels us, exactly
+            # as a worker parked in a provider call would.
+            b_dispatched.set()
+            assert stop_event is not None
+            assert stop_event.wait(timeout=30), "breaker never cancelled the in-flight sibling"
+            outcomes["story-b"] = _cancelled_result()
+            return outcomes["story-b"]
+        # story-a discovers the revoked credential, but only after story-b is
+        # confirmed running — otherwise the breaker would trip before dispatch
+        # and this would silently degrade into the already-covered SKIP path.
+        assert b_dispatched.wait(timeout=30), "story-b never dispatched"
+        a_may_finish.set()
+        outcomes["story-a"] = _infra_abort_result(CATEGORY_AUTH)
+        return outcomes["story-a"]
+
+    with (
+        patch(
+            "theforge.config.auth.claude_credentials_path",
+            return_value=tmp_path / "absent.json",
+        ),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+        patch("theforge.sprint.runner._write_sprint_audit"),
+        patch("theforge.sprint.runner._write_sprint_summary"),
+        patch("theforge.sprint.runner._write_story_audit"),
+    ):
+        result = run_sprint(config, resolved)
+
+    # The sibling really was in flight and really was cancelled by us.
+    assert a_may_finish.is_set()
+    assert "story-b" in outcomes
+
+    # It is NOT a story failure. story-a (which did meet the substrate) keeps
+    # its own #1951 handling; story-b was never judged at all.
+    story_b = next(r for slug, r in result.results if slug.startswith("story-b"))
+    assert story_b.infrastructure_failure is True
+    assert story_b.state.error_type == ERROR_TYPE_INFRASTRUCTURE_ABORT
+    # The taint marker #1951 relies on to keep this out of adaptive memory.
+    assert story_b.state.infrastructure_failure["category"] == CATEGORY_AUTH
+    assert is_infrastructure_abort(story_b.state)
+    # And the credential is named as the cause, not the story.
+    assert "credential" in story_b.state.error.lower()
+
+    assert result.stopped_reason is not None
+    assert "authentication" in result.stopped_reason.lower()

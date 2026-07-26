@@ -136,7 +136,12 @@ _CLAUDE_OAUTH_KEY = "claudeAiOauth"
 # Environment variables that let the CLI authenticate WITHOUT reading the OAuth
 # credential store at all. When one is set the store is irrelevant, so probing
 # it could only produce a false abort.
-_CLAUDE_ENV_TOKENS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+#
+# Public because the gate/test scrub must strip exactly this set: an ambient
+# token that silently satisfies the probe would make credential tests pass or
+# fail depending on the developer's shell (CONVENTIONS: tests assert on
+# controlled state, not on the host).
+CLAUDE_CLI_ENV_TOKENS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 
 def claude_credentials_path() -> Path:
@@ -186,7 +191,7 @@ def check_claude_credentials(
     empty/non-empty distinction the classification itself rests on.
     """
     env = merged if merged is not None else os.environ
-    for var in _CLAUDE_ENV_TOKENS:
+    for var in CLAUDE_CLI_ENV_TOKENS:
         if (env.get(var) or "").strip():
             return (True, "")
 

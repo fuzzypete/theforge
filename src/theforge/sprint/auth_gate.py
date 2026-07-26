@@ -30,7 +30,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..config.auth import check_claude_credentials
-from ..config.profiles import iter_config_profiles
+from ..config.profiles import iter_config_profiles, iter_plan_phase_profiles
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..config.types import ForgeConfig
@@ -56,19 +56,28 @@ def check_sprint_auth_readiness(config: "ForgeConfig") -> list[AuthGateFailure]:
     """Return the credential failures that should prevent this sprint launching.
 
     Every CLI-backed Claude profile the run would invoke has its OAuth
-    credential store inspected. Sandbox readiness is excluded — this gate asks
-    whether an agent can be *reached*, and the sandbox posture is a separate,
-    already-enforced concern with its own failure path.
+    credential store inspected — including the PLAN and PLAN_REVIEW agents,
+    which dispatch and spend like any other phase. A sprint whose only Claude
+    surface is an enabled planner is exactly as unable to proceed on a revoked
+    credential as one whose dev profile is Claude, and must abort the same way.
+
+    Sandbox readiness is excluded — this gate asks whether an agent can be
+    *reached*, and the sandbox posture is a separate, already-enforced concern
+    with its own failure path.
 
     A profile whose credential store cannot be inspected, or whose probe raises,
     is skipped rather than reported: this gate refuses on evidence only.
     """
     failures: list[AuthGateFailure] = []
     seen: set[tuple[str, str]] = set()
-    try:
-        profiles = list(iter_config_profiles(config))
-    except Exception:
-        return failures
+    profiles: list[tuple[str, object]] = []
+    # Each enumeration is independently best-effort: a malformed plan config
+    # must not blind the gate to a revoked dev credential, or vice versa.
+    for enumerate_profiles in (iter_config_profiles, iter_plan_phase_profiles):
+        try:
+            profiles.extend(enumerate_profiles(config))
+        except Exception:
+            continue
 
     # Same resolution order check_agent_auth uses: environment first, then the
     # project's own secrets overriding it.

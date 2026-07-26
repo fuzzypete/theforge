@@ -22,7 +22,13 @@ import yaml
 from ..config import ForgeConfig
 from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
-from ..coordinator.agent_failure import CATEGORY_AUTH, is_infrastructure_abort
+from ..coordinator.agent_failure import (
+    CATEGORY_AUTH,
+    ERROR_TYPE_INFRASTRUCTURE_ABORT,
+    AgentInvocationFailure,
+    is_infrastructure_abort,
+    mark_infrastructure_abort,
+)
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
 from ..coordinator.gate import run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
@@ -1598,6 +1604,41 @@ def _fatal_auth_cause(result: CoordinatorResult) -> dict | None:
     return cause
 
 
+def _mark_story_auth_cancelled(
+    result: CoordinatorResult,
+    cause: dict | None,
+    *,
+    reason: str,
+) -> None:
+    """Re-attribute a mid-flight cancellation to the credential that caused it.
+
+    The worker returned through the generic stop_event path, whose result is
+    shaped for a worker *timeout*: a plain ``ESCALATE`` with
+    ``error_type="StoryCancelled"``. Left alone, that reads downstream as a
+    story-level failure. This restamps it with the same infrastructure-abort
+    vocabulary the discovering story carries, so #1951's taint machinery
+    excludes it from adaptive memory and no consumer can mistake a sprint-issued
+    kill for a judgment about the work.
+
+    Best-effort by construction: the story is already terminal, and failing to
+    relabel it must not take the sprint's shutdown path down with it.
+    """
+    try:
+        result.infrastructure_failure = True
+        state = result.state
+        state.error = reason
+        state.error_type = ERROR_TYPE_INFRASTRUCTURE_ABORT
+        failure = AgentInvocationFailure(
+            phase=str(getattr(getattr(result, "phase", None), "name", "") or "UNKNOWN"),
+            category=CATEGORY_AUTH,
+            detail=reason[:500],
+            profile_name=(cause or {}).get("profile_name"),
+        )
+        mark_infrastructure_abort(state, failure, message=reason)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log(f"WARN: could not re-attribute auth-cancelled story: {exc}")
+
+
 def _classify_and_record(
     task: TaskStory,
     result: CoordinatorResult,
@@ -2781,6 +2822,11 @@ def run_sprint(
     # the same credential would be presented and refused identically.
     auth_circuit: dict | None = None
     auth_circuit_reason = ""
+    # Slugs the breaker cancelled mid-flight. Their futures return through the
+    # generic stop_event cancellation path, which is timeout-shaped and would
+    # classify them FAILED; this set is how the scheduler tells "we killed it
+    # because the credential was dead" apart from "the story failed".
+    auth_cancelled_slugs: set[str] = set()
 
     # Overlap detection state (plan gates)
     file_footprints: dict[str, set[str]] = {}  # slug -> files from plan
@@ -3276,6 +3322,19 @@ def run_sprint(
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
                     live_telemetry_snapshots[slug] = snapshot
+                    # A worker the auth breaker cancelled can also cross its
+                    # deadline before returning. It is still a story the sprint
+                    # killed over a dead credential, not one that failed — same
+                    # attribution as the ordinary cancellation path below.
+                    _timeout_outcome: StoryOutcome = StoryOutcome.FAILED
+                    if slug in auth_cancelled_slugs:
+                        auth_cancelled_slugs.discard(slug)
+                        _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
+                        _mark_story_auth_cancelled(
+                            _timeout_result, auth_circuit, reason=_cancel_reason
+                        )
+                        _timeout_outcome = StoryOutcome.SKIPPED
+                        _log(f"SKIPPED {slug} ({_cancel_reason})")
                     results.append((spec_str, _timeout_result))
                     _write_story_audit(
                         config,
@@ -3286,7 +3345,7 @@ def run_sprint(
                     )
                     _set_outcome(
                         slug,
-                        StoryOutcome.FAILED,
+                        _timeout_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
                     )
@@ -3333,6 +3392,18 @@ def run_sprint(
                     )
                     story_times[slug] = (story_started_at, failed_at)
                     live_telemetry_snapshots[slug] = snapshot
+                    # Same attribution as the other two cancellation exits: a
+                    # worker that raised on its way out of an auth-breaker
+                    # cancellation was killed by the sprint, not by the story.
+                    _exc_outcome: StoryOutcome = StoryOutcome.FAILED
+                    if slug in auth_cancelled_slugs:
+                        auth_cancelled_slugs.discard(slug)
+                        _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
+                        _mark_story_auth_cancelled(
+                            _exc_result, auth_circuit, reason=_cancel_reason
+                        )
+                        _exc_outcome = StoryOutcome.SKIPPED
+                        _log(f"SKIPPED {slug} ({_cancel_reason})")
                     results.append((spec_str, _exc_result))
                     _write_story_audit(
                         config,
@@ -3343,7 +3414,7 @@ def run_sprint(
                     )
                     _set_outcome(
                         slug,
-                        StoryOutcome.FAILED,
+                        _exc_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
                     )
@@ -3392,12 +3463,37 @@ def run_sprint(
                         # Stop in-flight workers at their next phase boundary and
                         # release any plan gate they are parked on, so the sprint
                         # ends in seconds rather than at the worker timeout.
-                        for _pending_evt in stop_events.values():
+                        # Remember which slugs WE cancelled: their results come
+                        # back through the timeout-oriented cancellation path,
+                        # which would otherwise hand them a story failure verdict
+                        # for a substrate outage (#1951).
+                        for _pending_slug, _pending_evt in stop_events.items():
+                            auth_cancelled_slugs.add(_pending_slug)
                             _pending_evt.set()
                         for _gate_slug, _pending_gate in plan_gates.items():
                             _log(f"Releasing plan gate for {_gate_slug} (auth abort)")
                             _pending_gate.set()
                         plan_gates.clear()
+
+                # A sibling story we cancelled to stop the bleeding never got a
+                # model judgment — the sprint killed it mid-flight. Recording the
+                # generic cancellation as FAILED would present the substrate
+                # outage as a property of that story, which is precisely the
+                # conflation #1951 exists to prevent. Attribute it to the
+                # credential and record it as skipped, not judged.
+                if slug in auth_cancelled_slugs and not result.success:
+                    auth_cancelled_slugs.discard(slug)
+                    _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
+                    _mark_story_auth_cancelled(result, auth_circuit, reason=_cancel_reason)
+                    _log(f"SKIPPED {slug} ({_cancel_reason})")
+                    _record_current_story_entry(slug, "SKIPPED", error=_cancel_reason)
+                    _set_outcome(slug, StoryOutcome.SKIPPED, reason=_cancel_reason)
+                    if _state_writer is not None:
+                        _state_writer.update(slug, status="skipped")
+                    dag.mark_skipped(slug)
+                    _write_story_audit(config, task, result, sprint_id=_sprint_id)
+                    _print_worker_status(active, worker_phases, dag, total)
+                    continue
 
                 _done_status = (
                     "done"
