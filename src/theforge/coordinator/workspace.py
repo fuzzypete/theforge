@@ -107,6 +107,16 @@ def _resolve_setup_command(cmd: str, workspace_path: Path) -> str:
     return cmd.replace("{forge_python}", shlex.quote(str(executable)))
 
 
+def _log_unpinned_python_fallback(workspace_path: Path) -> None:
+    """Record when gate setup falls back to the ambient interpreter."""
+    _cu._log(
+        "⚠ WORKSPACE  "
+        f"{workspace_path} has no .python-version; "
+        f"gate setup is using ambient Python {sys.executable}. "
+        "Add a workspace .python-version pin to enable pinned-interpreter gate setup."
+    )
+
+
 def _read_last_setup_command(workspace_path: Path) -> str | None:
     """Read the last setup_command run in this workspace, if any."""
     path = workspace_path / ".forge" / "last_setup_command"
@@ -138,6 +148,8 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
         if m:
             install_cmd = m.group(1).strip()
             resolved_python = maybe_resolve_workspace_python(workspace_path)
+            if resolved_python is None:
+                _log_unpinned_python_fallback(workspace_path)
             python_path = (
                 resolved_python.executable if resolved_python is not None else Path(sys.executable)
             )
@@ -169,6 +181,8 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
         legacy_python_exe = m.group(1)
         install_cmd = m.group(2).strip()
         resolved_python = maybe_resolve_workspace_python(workspace_path)
+        if resolved_python is None:
+            _log_unpinned_python_fallback(workspace_path)
         python_exe = (
             shlex.quote(str(resolved_python.executable))
             if resolved_python is not None

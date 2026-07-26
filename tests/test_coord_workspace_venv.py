@@ -64,6 +64,19 @@ class TestRunSetupSplitVenvBehavior:
         assert calls[0] == "test -d .venv || python -m venv .venv"
         assert calls[1] == "pip install -e '.[all]'"
 
+    def test_legacy_guard_without_pin_logs_ambient_python_fallback(self, tmp_path):
+        cmd = "test -d .venv || (python -m venv .venv && pip install -e '.[all]')"
+
+        with (
+            patch("theforge.coordinator.workspace._cu._run_shell", return_value=(True, "ok")),
+            patch("theforge.coordinator.workspace._cu._log") as mock_log,
+        ):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert any("has no .python-version" in str(call) for call in mock_log.call_args_list)
+        assert any("ambient Python" in str(call) for call in mock_log.call_args_list)
+
     def test_template_guard_reprovisions_stale_venv(self, tmp_path):
         _write_workspace_pin(tmp_path)
         venv_bin = tmp_path / ".venv" / "bin"
@@ -110,6 +123,19 @@ class TestRunSetupSplitVenvBehavior:
         assert len(calls) == 2
         assert calls[0] == f"test -d .venv || {sys.executable} -m venv .venv"
         assert calls[1] == "pip install -e '.[all]'"
+
+    def test_template_guard_without_pin_logs_ambient_python_fallback(self, tmp_path):
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e '.[all]')"
+
+        with (
+            patch("theforge.coordinator.workspace._cu._run_shell", return_value=(True, "ok")),
+            patch("theforge.coordinator.workspace._cu._log") as mock_log,
+        ):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert any("has no .python-version" in str(call) for call in mock_log.call_args_list)
+        assert any("ambient Python" in str(call) for call in mock_log.call_args_list)
 
 
 class TestRunSetupSplitCommandTracking:
