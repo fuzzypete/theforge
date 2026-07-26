@@ -18,7 +18,7 @@ from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
-from .sandbox import workspace_effect_sandbox_command
+from .sandbox import SandboxCapabilityError, workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -106,7 +106,26 @@ def _run_gemini(
     # detector has been removed, so running without containment would leave writes
     # undetected. Set sandbox_mode: none explicitly to opt out of containment.
     if profile.sandbox_mode != "none":
-        sandboxed_cmd = workspace_effect_sandbox_command(cmd, working_dir)
+        try:
+            sandboxed_cmd = workspace_effect_sandbox_command(
+                cmd,
+                working_dir,
+                capability_profile=profile.sandbox_capability_profile,
+            )
+        except SandboxCapabilityError as exc:
+            # Fail closed: a declared capability profile this host cannot express
+            # must refuse the run, never degrade to default containment (#1947).
+            _log(f"✗ gemini: {exc}")
+            return AgentResult(
+                success=False,
+                output=f"SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED: {exc}",
+                session_id=None,
+                cost_usd=None,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+                startup_failure=True,
+            )
         if sandboxed_cmd[0] == cmd[0]:
             _log(
                 f"✗ gemini: sandbox_mode={profile.sandbox_mode!r} requested but platform "
