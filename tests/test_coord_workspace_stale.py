@@ -961,7 +961,7 @@ class TestRunSetupSplit:
         assert ok is True
         assert len(calls) == 2
         assert "test -d .venv" in calls[0]
-        assert "python -m venv" in calls[0]
+        assert "python3.12" in calls[0]
         # Second call is just the install command, not the venv creation
         assert "pip install -e ." in calls[1]
         assert "python -m venv" not in calls[1]
@@ -1039,7 +1039,7 @@ class TestRunSetupSplit:
             return (True, "ok")
 
         with (
-            patch("theforge.coordinator.workspace.resolve_workspace_python") as mock_resolve,
+            patch("theforge.coordinator.workspace.maybe_resolve_workspace_python") as mock_resolve,
             patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
         ):
             mock_resolve.return_value = SimpleNamespace(executable=Path(spaced_exe))
@@ -1070,7 +1070,7 @@ class TestRunSetupSplit:
             return (True, "ok")
 
         with (
-            patch("theforge.coordinator.workspace.resolve_workspace_python") as mock_resolve,
+            patch("theforge.coordinator.workspace.maybe_resolve_workspace_python") as mock_resolve,
             patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
         ):
             mock_resolve.return_value = SimpleNamespace(executable=Path(tricky_exe))
@@ -1087,7 +1087,7 @@ class TestRunSetupSplit:
         from theforge.coordinator.workspace import _resolve_setup_command
 
         spaced_exe = "/home/my user/.pyenv/bin/python3"
-        with patch("theforge.coordinator.workspace.resolve_workspace_python") as mock_resolve:
+        with patch("theforge.coordinator.workspace.maybe_resolve_workspace_python") as mock_resolve:
             mock_resolve.return_value = SimpleNamespace(executable=Path(spaced_exe))
             result = _resolve_setup_command("{forge_python} -m venv .venv", Path("/tmp/workspace"))
 

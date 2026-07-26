@@ -103,6 +103,18 @@ def resolve_workspace_python(workspace_path: Path) -> WorkspacePython:
     )
 
 
+def maybe_resolve_workspace_python(workspace_path: Path) -> WorkspacePython | None:
+    """Best-effort workspace interpreter resolution.
+
+    Returns None when the workspace has no usable .python-version pin so callers
+    can conservatively fall back instead of crashing on unpinned worktrees.
+    """
+    try:
+        return resolve_workspace_python(workspace_path)
+    except ValueError:
+        return None
+
+
 def read_workspace_venv_config(workspace_path: Path) -> dict[str, str]:
     """Read workspace .venv/pyvenv.cfg into a normalized key/value mapping."""
     cfg_path = workspace_path / ".venv" / "pyvenv.cfg"
@@ -124,7 +136,9 @@ def workspace_venv_matches_python(
     workspace_path: Path, resolved_python: WorkspacePython | None = None
 ) -> bool:
     """Return True when workspace .venv provenance matches the pinned interpreter."""
-    resolved = resolved_python or resolve_workspace_python(workspace_path)
+    resolved = resolved_python or maybe_resolve_workspace_python(workspace_path)
+    if resolved is None:
+        return False
     cfg = read_workspace_venv_config(workspace_path)
     if not cfg:
         return False

@@ -15,7 +15,11 @@ from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
-from theforge.workspace_env import resolve_workspace_python, workspace_venv_matches_python
+from theforge.workspace_env import (
+    maybe_resolve_workspace_python,
+    resolve_workspace_python,
+    workspace_venv_matches_python,
+)
 
 from . import util as _cu
 from .gate import _run_gate
@@ -97,8 +101,11 @@ def _resolve_setup_command(cmd: str, workspace_path: Path) -> str:
     Uses shlex.quote so that paths containing spaces or shell-sensitive characters
     do not break shell=True invocations.
     """
-    resolved = resolve_workspace_python(workspace_path)
-    return cmd.replace("{forge_python}", shlex.quote(str(resolved.executable)))
+    if "{forge_python}" not in cmd:
+        return cmd
+    resolved = maybe_resolve_workspace_python(workspace_path)
+    executable = resolved.executable if resolved is not None else Path(sys.executable)
+    return cmd.replace("{forge_python}", shlex.quote(str(executable)))
 
 
 def _read_last_setup_command(workspace_path: Path) -> str | None:
@@ -130,10 +137,14 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
     m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
     if m:
         install_cmd = m.group(1).strip()
-        resolved_python = resolve_workspace_python(workspace_path)
-        python_exe = shlex.quote(str(resolved_python.executable))
-        if (workspace_path / ".venv").exists() and not workspace_venv_matches_python(
-            workspace_path, resolved_python
+        resolved_python = maybe_resolve_workspace_python(workspace_path)
+        python_exe = shlex.quote(
+            str(resolved_python.executable if resolved_python is not None else Path(sys.executable))
+        )
+        if (
+            resolved_python is not None
+            and (workspace_path / ".venv").exists()
+            and not workspace_venv_matches_python(workspace_path, resolved_python)
         ):
             _cu._log("⚠ WORKSPACE  removing stale .venv pinned to a different Python")
             shutil.rmtree(workspace_path / ".venv")
@@ -152,11 +163,18 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
         if ok:
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
-    python_exe = m.group(1)
+    legacy_python_exe = m.group(1)
     install_cmd = m.group(2).strip()
-    resolved_python = resolve_workspace_python(workspace_path)
-    if (workspace_path / ".venv").exists() and not workspace_venv_matches_python(
-        workspace_path, resolved_python
+    resolved_python = maybe_resolve_workspace_python(workspace_path)
+    python_exe = (
+        shlex.quote(str(resolved_python.executable))
+        if resolved_python is not None
+        else legacy_python_exe
+    )
+    if (
+        resolved_python is not None
+        and (workspace_path / ".venv").exists()
+        and not workspace_venv_matches_python(workspace_path, resolved_python)
     ):
         _cu._log("⚠ WORKSPACE  removing stale .venv pinned to a different Python")
         shutil.rmtree(workspace_path / ".venv")

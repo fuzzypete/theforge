@@ -11,6 +11,7 @@ import pytest
 from theforge.workspace_env import (
     WorkspacePython,
     build_workspace_env,
+    maybe_resolve_workspace_python,
     resolve_workspace_python,
     workspace_venv_matches_python,
 )
@@ -72,6 +73,10 @@ def test_resolve_workspace_python_uses_pinned_interpreter(tmp_path: Path) -> Non
 def test_resolve_workspace_python_requires_repo_pin(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"missing \.python-version"):
         resolve_workspace_python(tmp_path)
+
+
+def test_maybe_resolve_workspace_python_returns_none_without_pin(tmp_path: Path) -> None:
+    assert maybe_resolve_workspace_python(tmp_path) is None
 
 
 def test_resolve_workspace_python_rejects_non_pinned_value(tmp_path: Path) -> None:
@@ -213,6 +218,23 @@ def test_build_workspace_env_ignores_stale_venv_on_path(tmp_path: Path) -> None:
 
     with patch("theforge.workspace_env.resolve_workspace_python", return_value=resolved):
         env = build_workspace_env(tmp_path, base_env)
+
+    assert env["PATH"] == "/usr/local/bin:/usr/bin"
+    assert "VIRTUAL_ENV" not in env
+    assert env["PYTHONHOME"] == "/opt/python"
+
+
+def test_build_workspace_env_ignores_existing_venv_when_pin_missing(tmp_path: Path) -> None:
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_pyvenv_cfg(
+        tmp_path,
+        version="3.11.9",
+        executable="/Users/example/.pyenv/versions/3.11.9/bin/python3.11",
+    )
+    base_env = {"PATH": "/usr/local/bin:/usr/bin", "PYTHONHOME": "/opt/python"}
+
+    env = build_workspace_env(tmp_path, base_env)
 
     assert env["PATH"] == "/usr/local/bin:/usr/bin"
     assert "VIRTUAL_ENV" not in env

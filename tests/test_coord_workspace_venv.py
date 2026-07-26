@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -32,6 +33,22 @@ class TestRunSetupSplitVenvBehavior:
 
     def test_legacy_guard_always_runs_install_even_when_venv_exists(self, tmp_path):
         _write_workspace_pin(tmp_path)
+        cmd = "test -d .venv || (python -m venv .venv && pip install -e '.[all]')"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kwargs):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert len(calls) == 2
+        assert "python3.12" in calls[0]
+        assert calls[1] == "pip install -e '.[all]'"
+
+    def test_legacy_guard_without_pin_keeps_original_python_token(self, tmp_path):
         cmd = "test -d .venv || (python -m venv .venv && pip install -e '.[all]')"
         calls = []
 
@@ -77,6 +94,22 @@ class TestRunSetupSplitVenvBehavior:
         assert not (tmp_path / ".venv" / "pyvenv.cfg").exists()
         assert len(calls) == 2
         assert "python3.12" in calls[0]
+
+    def test_template_guard_without_pin_falls_back_to_orchestrator_python(self, tmp_path):
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e '.[all]')"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kwargs):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert len(calls) == 2
+        assert calls[0] == f"test -d .venv || {sys.executable} -m venv .venv"
+        assert calls[1] == "pip install -e '.[all]'"
 
 
 class TestRunSetupSplitCommandTracking:
