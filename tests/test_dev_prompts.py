@@ -249,14 +249,14 @@ def test_dev_prompt_uses_configured_commands_and_no_hardcoded_layout_rule(tmp_pa
     assert "Do not create files outside `src/`, `tests/`, or `docs/`" not in prompt
     assert "## Workflow" in prompt
     assert "1. Implement the spec. Write tests for new functionality." in prompt
-    assert "2. Run the gate command to validate your work:" in prompt
-    assert "```bash" in prompt
+    assert "2. Do NOT run the full gate command" in prompt
+    assert "coordinator-owned" in prompt
     assert "npm run validate" in prompt
-    assert "3. Only after the gate passes, commit your changes:" in prompt
+    assert "3. When your implementation is complete, commit your changes:" in prompt
     assert "4. Emit a `<forge_handoff>` block in your **final message**" in prompt
 
 
-def test_dev_prompt_requires_honest_gate_result_field(tmp_path):
+def test_dev_prompt_declares_gate_is_coordinator_owned(tmp_path):
     task = _make_task(tmp_path)
     prompt = build_dev_prompt(
         task,
@@ -266,15 +266,16 @@ def test_dev_prompt_requires_honest_gate_result_field(tmp_path):
         gate_command="make gate",
     )
 
-    # The handoff block advertises the structured gate_result field...
-    assert "gate_result: PASS | FAIL | BLOCKED" in prompt
-    # ...and forbids claiming completion without gate evidence.
-    assert "Set `gate_result: PASS` only after the gate command actually passed" in prompt
-    assert "set `gate_result: BLOCKED`" in prompt
-    # collapse whitespace to tolerate dedent/wrapping of the multi-line rule
+    # The handoff block records the coordinator-owned gate marker...
+    assert "gate_delegated: true" in prompt
+    # ...and forbids self-reporting a PASS for a gate the agent did not run.
+    assert "NEVER self-report" in prompt
+    assert "gate you did not run" in prompt
+    # Acceptance criteria are claims the coordinator verifies — a passing gate is
+    # not a precondition for marking a criterion MET.
     _flat = " ".join(prompt.split())
     assert "do\n" not in _flat  # sanity: flattened
-    assert "NOT mark any acceptance criterion `MET`" in _flat
+    assert "you do NOT need a passing gate to mark a criterion `MET`" in _flat
 
 
 def test_dev_prompt_includes_webfetch_framing_when_tool_allowed(tmp_path):

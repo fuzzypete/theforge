@@ -213,3 +213,61 @@ def test_sprint_audit_records_stable_outcome_code(tmp_path):
 
     audit = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
     assert audit["specs"][0]["outcome_code"] == "max_iterations_no_submit"
+
+
+def _met_without_pass_handoff() -> dict:
+    """A completion claim (AC MET) with no self-reported gate_result — the
+    coordinator-owned-gate contract the retry prompt now uses."""
+    return {
+        "summary": "Implemented after the submit-pressure retry.",
+        "commits": [{"sha": "abc1234", "message": "feat(x): implement"}],
+        "acceptance_criteria": [{"criterion": "It works", "status": "MET", "notes": "done"}],
+        "story_deviations": "none",
+        "deferred_items": "none",
+    }
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
+def test_max_iterations_retry_completing_met_without_pass_delegates_not_escalates(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    """Regression (#1944): a max_iterations_no_submit retry that completes honestly
+    with MET and no self-reported gate PASS must delegate to the coordinator's
+    authoritative VALIDATE gate — not trip HANDOFF_NO_GATE_EVIDENCE at the dev seam.
+    The retry prompt uses the coordinator-owned-gate contract, so its handoff omits
+    a self-reported PASS by design; gate delegation must hold on this path too."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace)
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_dev.side_effect = [
+        _max_iter_no_submit_result(),
+        _make_agent_result(
+            success=True,
+            output="Done.",
+            profile_name="dev",
+            dev_handoff=_met_without_pass_handoff(),
+        ),
+    ]
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+
+    # Not escalated at the dev seam: the retry delegated and reached VALIDATE.
+    assert result.success is True
+    assert "without gate PASS evidence" not in (result.message or "")
+    assert result.state.gate_delegated_this_iteration is True
+    assert "PASS" in result.state.gate_decisions
+    assert all(
+        t.gate_result != "HANDOFF_NO_GATE_EVIDENCE" for t in result.state.dev_iteration_telemetry
+    )

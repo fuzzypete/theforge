@@ -270,13 +270,12 @@ def build_dev_prompt(
         """)
     else:
         gate_section = dedent(f"""\
-            Run the gate command to validate your work:
-            ```bash
-            {gate_command}
-            ```
-            Full gate completion is a hard prerequisite for done. Fix any failures.
-            Do NOT declare success, write a completed handoff, or treat the task as
-            finished until the gate passes.
+            Do NOT run the full gate command (`{gate_command}`). Gate execution is
+            coordinator-owned: after you complete, the coordinator runs the
+            authoritative gate itself, outside your sandbox — running it yourself
+            wastes time and can fail on sandbox-restricted operations the
+            coordinator's run does not hit. Use targeted tests for your own
+            feedback while developing; leave the full gate to the coordinator.
         """)
 
     if contract_change:
@@ -354,7 +353,7 @@ def build_dev_prompt(
 
         1. Implement the spec. Write tests for new functionality.
         2. {gate_section}
-        3. Only after the gate passes, commit your changes:
+        3. When your implementation is complete, commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
@@ -374,7 +373,8 @@ def build_dev_prompt(
              - criterion: "AC text from the spec"
                status: MET | PARTIAL | NOT_MET
                notes: "how it was met, or why not"
-           gate_result: PASS | FAIL | BLOCKED
+           gate_delegated: true
+           gate_result: BLOCKED
            story_deviations: none
            deferred_items: none
            </forge_handoff>
@@ -385,11 +385,14 @@ def build_dev_prompt(
            - Content must be valid YAML (no embedded code fences inside the block).
            - `commits` and `acceptance_criteria` must be lists (even if empty: `[]`).
            - `story_deviations` and `deferred_items` may be the word `none` or a list.
-           - Set `gate_result: PASS` only after the gate command actually passed.
-             If you genuinely cannot run the gate, set `gate_result: BLOCKED` and do
-             NOT mark any acceptance criterion `MET` — an unrun or failing gate is a
-             blocking failure, not completion, and must never be reported as done with
-             an environmental excuse attached.
+           - Gate execution is coordinator-owned. Add `gate_delegated: true` and
+             leave `gate_result` unset or `BLOCKED`. NEVER self-report
+             `gate_result: PASS` for a gate you did not run — the coordinator runs
+             the authoritative gate after you complete.
+           - Mark each acceptance criterion `MET` / `PARTIAL` / `NOT_MET` by your
+             honest assessment of the implementation. These are claims the
+             coordinator verifies with its authoritative gate and review — you do
+             NOT need a passing gate to mark a criterion `MET`.
 
         ## Rules
 
