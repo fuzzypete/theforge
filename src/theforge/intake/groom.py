@@ -48,7 +48,10 @@ _STRONG_HOW_TOKENS: tuple[str, ...] = (
     "subclass",
 )
 
-_STRONG_HOW_RE = re.compile("|".join(re.escape(tok) for tok in _STRONG_HOW_TOKENS), re.IGNORECASE)
+_STRONG_HOW_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(tok) for tok in _STRONG_HOW_TOKENS) + r")\b",
+    re.IGNORECASE,
+)
 
 # An implementation verb operating on a code construct within the same clause.
 # The verb list excludes "import" (see above); the construct list matches the

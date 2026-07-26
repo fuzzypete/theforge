@@ -76,6 +76,36 @@ def test_groom_still_flags_implement_using_domain_import_machinery():
     assert findings[0].code == "groom_how_shaped_ac"
 
 
+def test_groom_does_not_flag_renamed_entity_outcome_bullet():
+    """Regression for hdp #141: outcome language about a renamed domain entity
+    is not an instruction to rename a code construct."""
+    body = (
+        "## Acceptance criteria\n\n"
+        "- A renamed or closely related exercise still shows its prior "
+        "performance history on the card\n"
+    )
+    assert groom_check("Title", body, ["bug"]) == []
+
+
+def test_groom_does_not_flag_inflected_strong_tokens_in_outcome_prose():
+    """Participle/plural forms of strong tokens ('refactored', 'subclasses')
+    must not trip the substring match when used as outcome/domain language."""
+    body = (
+        "## Acceptance criteria\n\n"
+        "- The refactored module still passes existing tests\n"
+        "- Sport subclasses like tennis show their own leaderboards\n"
+    )
+    assert groom_check("Title", body, ["enhancement"]) == []
+
+
+def test_groom_still_flags_bare_strong_tokens():
+    """Whole-word strong tokens must still flag on their own."""
+    body = "## Acceptance criteria\n\n- Refactor the pipeline for clarity\n"
+    findings = groom_check("Title", body, ["enhancement"])
+    assert len(findings) == 1
+    assert findings[0].code == "groom_how_shaped_ac"
+
+
 def test_groom_ignores_yaml_example_block_under_example_heading_in_ac():
     body = (
         "## Acceptance criteria\n\n"
