@@ -705,17 +705,19 @@ def _run_dev_phase(
     )
     _test_cmd = config.validation.test_command or _gate_cmd
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
-    # Reset the per-iteration gate-delegation flag; each prompt-building case that
-    # produces a completion handoff sets it True when the gate is not skipped.
-    # Gate execution is coordinator-owned (#1944 / #823): the authoritative gate
-    # runs unsandboxed in VALIDATE, so the dev agent — which runs inside a
-    # write-containment sandbox that denies the process/build operations many
-    # gates exercise — is never asked to run or prove the gate. The
-    # unproven-completion guard therefore accepts a MET-without-PASS handoff and
-    # defers to the coordinator's VALIDATE gate for the authoritative result.
-    # TIMEOUT/MAX_ITERATIONS retries leave it False: they re-enter DEV to continue
-    # unfinished work rather than making a completion claim.
-    state.gate_delegated_this_iteration = False
+    # Gate execution is coordinator-owned on EVERY iteration (#1944 / #823),
+    # whenever the gate is not skipped. The authoritative gate runs unsandboxed in
+    # VALIDATE (the engine runs it on every successful handoff before REVIEW/MERGE),
+    # so the dev agent — which runs inside a write-containment sandbox that denies
+    # the process/build operations many gates exercise — is never asked to run or
+    # prove the gate. The unproven-completion guard therefore accepts a
+    # MET-without-PASS handoff and defers to VALIDATE for the authoritative result.
+    # Set once here, unconditionally: every prompt-routing case below uses the
+    # coordinator-owned contract, and a successful MAX_ITERATIONS/TIMEOUT retry
+    # also reaches VALIDATE (retry_reason is reset below), so it must delegate too.
+    # Setting it per-case invites omitting a case and recreating the false
+    # HANDOFF_NO_GATE_EVIDENCE trap for that path's retries.
+    state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
     match state.retry_reason:
         case RetryReason.TIMEOUT_RESUME:
             prompt = (
@@ -748,7 +750,6 @@ def _run_dev_phase(
                 advisory_p2_only=True,
                 p2_policy=config.dev.p2_policy,
             )
-            state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
         case RetryReason.REVIEW_CHANGES | RetryReason.EXTEND if state.last_review_findings:
@@ -775,7 +776,6 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 p2_policy=config.dev.p2_policy,
             )
-            state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
             injected_finding_ids.extend(
                 r.finding_id for r in current_cycle_p1s if r.finding_id not in injected_finding_ids
@@ -862,10 +862,6 @@ def _run_dev_phase(
                 assembled_context=dev_context,
                 p2_policy=config.dev.p2_policy,
             )
-            # Fresh dev prompt (first iteration or a gate-fail/convention/dirty/
-            # reject retry): the coordinator owns the authoritative VALIDATE gate,
-            # so this iteration delegates like the fix-prompt paths above (#1944).
-            state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None  # consumed
         case _:
