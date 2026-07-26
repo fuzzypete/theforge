@@ -323,7 +323,7 @@ def test_run_sprint_pulls_base_branch_before_baseline_by_default(tmp_path: Path)
     resolved = _make_empty_resolved()
     call_order: list[str] = []
 
-    def _fake_pull(_config: ForgeConfig, *, auto_merge: bool = False) -> None:
+    def _fake_pull(_config: ForgeConfig, *, lands_locally: bool | None = None) -> None:
         call_order.append("pull")
 
     def _fake_baseline(_config: ForgeConfig, _resolved: ResolvedSprint) -> dict[str, object]:
@@ -354,7 +354,7 @@ def test_run_sprint_pulls_base_branch_before_baseline_by_default(tmp_path: Path)
             run_sprint(config, resolved)
 
     assert call_order == ["pull", "baseline"]
-    mock_pull.assert_called_once_with(config, auto_merge=False)
+    mock_pull.assert_called_once_with(config, lands_locally=False)
 
 
 def test_run_sprint_no_pull_skips_prebaseline_pull(tmp_path: Path) -> None:

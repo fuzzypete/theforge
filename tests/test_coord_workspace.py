@@ -30,6 +30,9 @@ from theforge.coordinator.workspace import (
     _deindex_forge_artifacts,
     pull_base_branch,
 )
+from theforge.coordinator.workspace import (
+    _base_branch_lands_locally as _lands,
+)
 
 # ── Fresh workspace pull tests ────────────────────────────────────────
 
@@ -439,29 +442,31 @@ class TestPublicationRuleMatrix:
     def test_pr_workflow_tracks_origin_without_auto_push(self, tmp_path):
         config = _make_workspace_config(tmp_path, on_approve="pr")
         assert config.workspace.auto_push is False
-        assert _base_branch_tracks_origin(config) is True
+        assert _base_branch_tracks_origin(config, lands_locally=_lands(config)) is True
 
     def test_merge_pr_workflow_tracks_origin(self, tmp_path):
         config = _make_workspace_config(tmp_path, on_approve="merge-pr", auto_push=True)
-        assert _base_branch_tracks_origin(config) is True
+        assert _base_branch_tracks_origin(config, lands_locally=_lands(config)) is True
 
     def test_no_landing_workflow_tracks_origin(self, tmp_path):
         config = _make_workspace_config(tmp_path, on_approve="none")
-        assert _base_branch_tracks_origin(config) is True
+        assert _base_branch_tracks_origin(config, lands_locally=_lands(config)) is True
 
     def test_local_merge_without_push_does_not_track_origin(self, tmp_path):
         config = _make_workspace_config(tmp_path, on_approve="merge")
-        assert _base_branch_tracks_origin(config) is False
+        assert _base_branch_tracks_origin(config, lands_locally=_lands(config)) is False
 
     def test_local_merge_with_push_tracks_origin(self, tmp_path):
         config = _make_workspace_config(tmp_path, on_approve="merge", auto_push=True)
-        assert _base_branch_tracks_origin(config) is True
+        assert _base_branch_tracks_origin(config, lands_locally=_lands(config)) is True
 
     def test_auto_merge_override_forces_local_landing(self, tmp_path):
         """--auto-merge forces the merge path regardless of configured on_approve."""
         config = _make_workspace_config(tmp_path, on_approve="pr")
-        assert _base_branch_tracks_origin(config, auto_merge=True) is False
-        assert _base_branch_tracks_origin(config, auto_merge=False) is True
+        assert _lands(config, auto_merge=True) is True
+        assert _lands(config, auto_merge=False) is False
+        assert _base_branch_tracks_origin(config, lands_locally=True) is False
+        assert _base_branch_tracks_origin(config, lands_locally=False) is True
 
 
 class TestLocalMergeWorkflowNotBlocked:
@@ -492,7 +497,7 @@ class TestLocalMergeWorkflowNotBlocked:
         config = _make_config(tmp_path)
         mock_shell.side_effect = _ahead_only_shell(ahead="3", behind="0")
 
-        assert pull_base_branch(config, auto_merge=True) is True
+        assert pull_base_branch(config, lands_locally=True) is True
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
@@ -522,10 +527,10 @@ class TestLocalMergeWorkflowNotBlocked:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_auto_merge_reaches_guard_through_create_workspace(
+    def test_lands_locally_reaches_guard_through_create_workspace(
         self, mock_log, mock_shell, tmp_path
     ):
-        """The seam: _create_workspace must forward auto_merge, not drop it."""
+        """The seam: _create_workspace must forward lands_locally, not drop it."""
         config = _make_workspace_config(tmp_path, on_approve="pr")
         task = _make_task(tmp_path)
         calls: list[str] = []
@@ -543,7 +548,9 @@ class TestLocalMergeWorkflowNotBlocked:
         _path, _branch, error_without = _create_workspace(config, task, no_pull=False)
         assert error_without is not None and "not on origin/main" in error_without
 
-        path, _branch, error_with = _create_workspace(config, task, no_pull=False, auto_merge=True)
+        path, _branch, error_with = _create_workspace(
+            config, task, no_pull=False, lands_locally=True
+        )
         assert error_with is None
         assert path == tmp_path / task.slug
 

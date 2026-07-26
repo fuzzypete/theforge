@@ -1116,6 +1116,7 @@ def _run_fresh(
     preflight_states: dict[str, CoordinatorState] | None = None,
     *,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
@@ -1149,6 +1150,7 @@ def _run_fresh(
                 cached_preflight_state=(preflight_states or {}).get(task.slug),
                 defer_landing=True,
                 stop_event=stop_event,
+                base_lands_locally=base_lands_locally,
             )
         return run_task(
             config,
@@ -1162,6 +1164,7 @@ def _run_fresh(
             cached_preflight_state=(preflight_states or {}).get(task.slug),
             defer_landing=True,
             stop_event=stop_event,
+            base_lands_locally=base_lands_locally,
         )
 
     # Phase 1: run through PLAN only
@@ -1169,7 +1172,7 @@ def _run_fresh(
         config,
         task,
         interactive=interactive,
-        auto_merge=False,
+        auto_merge=effective_auto_merge,
         notify=notify,
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
@@ -1178,6 +1181,7 @@ def _run_fresh(
         cached_preflight_state=(preflight_states or {}).get(task.slug),
         defer_landing=True,
         stop_event=stop_event,
+        base_lands_locally=base_lands_locally,
     )
 
     if not plan_result.success:
@@ -1214,6 +1218,7 @@ def _run_fresh(
         cached_preflight_state=(preflight_states or {}).get(task.slug),
         defer_landing=True,
         stop_event=stop_event,
+        base_lands_locally=base_lands_locally,
     )
 
 
@@ -1232,6 +1237,7 @@ def _run_single_story(
     plan_gate: "threading.Event | None" = None,
     preflight_states: dict[str, CoordinatorState] | None = None,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -1267,6 +1273,7 @@ def _run_single_story(
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
                     defer_landing=True,
                     stop_event=stop_event,
+                    base_lands_locally=base_lands_locally,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -1282,6 +1289,7 @@ def _run_single_story(
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
                     defer_landing=True,
                     stop_event=stop_event,
+                    base_lands_locally=base_lands_locally,
                 )
             else:
                 result = _run_fresh(
@@ -1297,6 +1305,7 @@ def _run_single_story(
                     plan_gate,
                     preflight_states,
                     stop_event=stop_event,
+                    base_lands_locally=base_lands_locally,
                 )
         else:
             result = _run_fresh(
@@ -1312,6 +1321,7 @@ def _run_single_story(
                 plan_gate,
                 preflight_states,
                 stop_event=stop_event,
+                base_lands_locally=base_lands_locally,
             )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
@@ -1748,6 +1758,19 @@ def run_sprint(
     }
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
 
+    # Does ANY story in this sprint merge into the project-root base checkout?
+    # This is a sprint-wide question, not a per-story one: story N merging
+    # locally leaves the base branch ahead of origin when story N+1's worktree
+    # is cut, so every story's workspace guard needs the sprint's answer, not
+    # its own effective_auto_merge. Parallel mode never eager-merges (see the
+    # effective_am computation below, which forces False when max_parallel > 1);
+    # sequential mode merges for --auto-merge and, independently of it, for any
+    # story other stories depend on.
+    _sprint_lands_locally = coordinator_workspace._base_branch_lands_locally(
+        config,
+        auto_merge=(max_parallel <= 1 and (auto_merge or bool(dependent_slugs))),
+    )
+
     total = len(task_entries)
     noun = "stories" if total != 1 else "story"
     # Substrate provenance: name the runtime executing this sprint so the
@@ -1876,7 +1899,7 @@ def run_sprint(
         pass
 
     if not no_pull and _project_root_is_git_checkout(config.project_root):
-        coordinator_workspace.pull_base_branch(config, auto_merge=auto_merge)
+        coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     baseline_gate = _run_baseline_gate(config, resolved)
@@ -3001,6 +3024,9 @@ def run_sprint(
                     gate,
                     preflight_states,
                     stop_evt,
+                    # Keyword, not positional: stop_evt must stay the last
+                    # positional argument for callers that index args[-1].
+                    base_lands_locally=_sprint_lands_locally,
                 )
                 active[task.slug] = fut
                 story_deadlines[task.slug] = time.monotonic() + float(
@@ -3627,7 +3653,7 @@ def run_sprint(
         _commit_story_run_audits(
             config.project_root,
             config.workspace.base_branch,
-            publish=_base_branch_tracks_origin(config, auto_merge=auto_merge),
+            publish=_base_branch_tracks_origin(config, lands_locally=_sprint_lands_locally),
         )
     except RuntimeError as exc:
         _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}")

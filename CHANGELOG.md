@@ -22,22 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Base-branch audit commits are published, not left local (#1950):** with
-  `workspace.auto_push` on, the sprint now pushes its `chore(audit): record
-  sprint run audits` commit to `origin/<base_branch>` and verifies the base
-  branch is no longer ahead; failure raises instead of logging a warning, so
-  the sprint exits nonzero rather than reporting success over divergent state.
+- **Base-branch audit commits are published, not left local (#1950):** the
+  sprint now pushes its `chore(audit): record sprint run audits` commit to
+  `origin/<base_branch>` and verifies the base branch is no longer ahead;
+  failure raises instead of logging a warning, so the sprint exits nonzero
+  rather than reporting success over divergent state.
   Workspace preparation also fails closed when the base branch carries commits
   absent from origin — on the fresh, reused, reattach, and resume paths alike —
   because a worktree cut from such a checkout makes GitHub attribute that
   content to whichever story happens to be running. Both behaviors stand down
-  in exactly one case: when the run lands stories by merging into the local base
-  checkout (`on_approve: merge`, or the `--auto-merge` override) *and* has
-  `auto_push` off. There the branch is expected to run ahead of origin, so the
-  sprint warns that the audit records stay local rather than pushing them (a
-  branch push would carry those local merges too). Under `on_approve: pr` and
-  `merge-pr` nothing merges locally, so the guard and the push apply regardless
-  of `auto_push`. The purely informational
+  in exactly one case: when the run merges stories into the local base checkout
+  *and* has `auto_push` off. There the branch is expected to run ahead of
+  origin, so the sprint warns that the audit records stay local rather than
+  pushing them (a branch push would carry those local merges too). Under
+  `on_approve: pr` and `merge-pr` nothing merges locally, so the guard and the
+  push apply regardless of `auto_push`. Whether a run merges locally is decided
+  sprint-wide rather than per story, since `--auto-merge` and dependency-parent
+  stories both force a local merge that leaves the base branch ahead when the
+  *next* story's worktree is cut. The purely informational
   `_check_behind_origin` helper is gone; the ahead-only case it could not
   detect is exactly the one that contaminated PR diffs.
 

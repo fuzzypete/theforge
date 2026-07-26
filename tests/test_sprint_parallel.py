@@ -26,7 +26,7 @@ from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, build_dag
 from theforge.sprint.lock import integration_lock
-from theforge.sprint.runner import _classify_and_record
+from theforge.sprint.runner import _classify_and_record, _run_fresh
 from theforge.task import TaskStory
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -2618,6 +2618,100 @@ class TestImmediateIntegrationLanding:
         assert result.success is False
         assert result.phase is Phase.MERGE_FAILED
         assert result.landing_status == "failed"
+
+
+class TestRunFreshPlanGatedForwarding:
+    """The plan-gated split path must forward both landing-related flags.
+
+    Phase 1 of the split is the call whose WORKSPACE step actually cuts the
+    story's worktree, so dropping either flag there reintroduces a false abort
+    on a base branch that a local-merge workflow legitimately left ahead.
+    """
+
+    def _run(self, tmp_path: Path, *, effective_auto_merge: bool, base_lands_locally: bool):
+        task = TaskStory(name="Story A", slug="story-a", story_path=None, story_text="body")
+        gate = threading.Event()
+        gate.set()  # scheduler already released; do not block the test
+
+        plan_result = _make_coordinator_result(success=True, cost=0.0)
+        plan_result.state.workspace_path = tmp_path / "story-a"
+        dev_result = _make_coordinator_result(success=True, cost=0.0)
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=plan_result) as mock_run_task,
+            patch(
+                "theforge.sprint.runner.run_from_dev", return_value=dev_result
+            ) as mock_run_from_dev,
+        ):
+            _run_fresh(
+                _make_config(tmp_path),
+                task,
+                "sprint-run-1",
+                "Sprint",
+                False,
+                False,
+                effective_auto_merge,
+                None,
+                False,
+                gate,
+                None,
+                base_lands_locally=base_lands_locally,
+            )
+        return mock_run_task, mock_run_from_dev
+
+    def test_phase1_run_task_forwards_effective_auto_merge(self, tmp_path: Path) -> None:
+        mock_run_task, _ = self._run(tmp_path, effective_auto_merge=True, base_lands_locally=True)
+        assert mock_run_task.call_args.kwargs["auto_merge"] is True
+
+    def test_phase1_run_task_forwards_base_lands_locally(self, tmp_path: Path) -> None:
+        mock_run_task, _ = self._run(tmp_path, effective_auto_merge=False, base_lands_locally=True)
+        # effective_auto_merge is False for this story, but an earlier story in
+        # the sprint merged locally — the guard must hear about it anyway.
+        assert mock_run_task.call_args.kwargs["auto_merge"] is False
+        assert mock_run_task.call_args.kwargs["base_lands_locally"] is True
+
+    def test_phase2_run_from_dev_forwards_both(self, tmp_path: Path) -> None:
+        _, mock_run_from_dev = self._run(
+            tmp_path, effective_auto_merge=True, base_lands_locally=True
+        )
+        assert mock_run_from_dev.call_args.kwargs["auto_merge"] is True
+        assert mock_run_from_dev.call_args.kwargs["base_lands_locally"] is True
+
+
+class TestSprintLandsLocallyResolution:
+    """run_sprint answers the local-landing question sprint-wide, once."""
+
+    def _lands_locally_seen(self, tmp_path: Path, *, max_parallel: int, auto_merge: bool):
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md"], budget=10.0, max_parallel=max_parallel
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        seen: dict = {}
+
+        def fake_pull(_config, *, lands_locally=None):
+            seen["lands_locally"] = lands_locally
+            raise RuntimeError("stop after base sync")
+
+        with (
+            patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+            patch("theforge.coordinator.workspace.pull_base_branch", side_effect=fake_pull),
+            pytest.raises(RuntimeError, match="stop after base sync"),
+        ):
+            run_sprint(config, manifest_path, auto_merge=auto_merge)
+        return seen["lands_locally"]
+
+    def test_sequential_auto_merge_lands_locally(self, tmp_path: Path) -> None:
+        """--auto-merge in sequential mode merges into the local base checkout."""
+        assert self._lands_locally_seen(tmp_path, max_parallel=1, auto_merge=True) is True
+
+    def test_parallel_auto_merge_does_not_land_locally(self, tmp_path: Path) -> None:
+        """Parallel mode forces effective_am False, so nothing merges locally."""
+        assert self._lands_locally_seen(tmp_path, max_parallel=2, auto_merge=True) is False
+
+    def test_sequential_without_auto_merge_does_not_land_locally(self, tmp_path: Path) -> None:
+        assert self._lands_locally_seen(tmp_path, max_parallel=1, auto_merge=False) is False
 
 
 def _make_workspace_config(tmp_path: Path, **workspace_kwargs):

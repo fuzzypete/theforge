@@ -82,7 +82,7 @@ from .util import (
     _log_phase,
     _log_verbose,
 )
-from .workspace import _create_workspace, pull_base_branch
+from .workspace import _base_branch_lands_locally, _create_workspace, pull_base_branch
 from .workspace_scrub import _scrub_forge_history
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
@@ -754,6 +754,7 @@ def run_task(
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -770,6 +771,12 @@ def run_task(
             finalizing DONE or ESCALATE. When False (default), behave as before.
         auto_merge: When True, merge the feature branch into base_branch after
             a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
+        base_lands_locally: Override for the base-branch publication guard —
+            whether *any* story in the surrounding run merges into the local
+            base checkout. Defaults to deriving it from this task's own
+            auto_merge and config, which is right for a standalone run but not
+            inside a sprint, where an earlier story may have merged locally
+            while this one did not.
     """
     _ensure_runners()
     state = _fresh_run_state()
@@ -886,7 +893,14 @@ def run_task(
         logger._safe_emit("phase_start", phase="WORKSPACE", iteration=0)
 
         workspace_path, branch_name, err = _create_workspace(
-            config, task, no_pull=no_pull, auto_merge=auto_merge
+            config,
+            task,
+            no_pull=no_pull,
+            lands_locally=(
+                base_lands_locally
+                if base_lands_locally is not None
+                else _base_branch_lands_locally(config, auto_merge=auto_merge)
+            ),
         )
         if err:
             state.phase = Phase.ESCALATE
@@ -1239,6 +1253,7 @@ def _run_resume_coordinator(
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -1250,7 +1265,14 @@ def _run_resume_coordinator(
         # Blocking, unlike the informational behind-origin check this replaced:
         # the reused worktree is about to be rebased onto the base branch, so an
         # unpublished commit there would be absorbed into this story's diff.
-        pull_base_branch(config, auto_merge=auto_merge)
+        pull_base_branch(
+            config,
+            lands_locally=(
+                base_lands_locally
+                if base_lands_locally is not None
+                else _base_branch_lands_locally(config, auto_merge=auto_merge)
+            ),
+        )
     setup = _setup_resume_entry(
         config,
         task,
@@ -1441,6 +1463,7 @@ def run_from_review(
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1475,6 +1498,7 @@ def run_from_review(
         cached_preflight_state=cached_preflight_state,
         defer_landing=defer_landing,
         stop_event=stop_event,
+        base_lands_locally=base_lands_locally,
     )
 
 
@@ -1493,6 +1517,7 @@ def run_from_dev(
     cached_preflight_state: CoordinatorState | None = None,
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -1524,6 +1549,7 @@ def run_from_dev(
         cached_preflight_state=cached_preflight_state,
         defer_landing=defer_landing,
         stop_event=stop_event,
+        base_lands_locally=base_lands_locally,
     )
 
 
