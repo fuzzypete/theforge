@@ -60,12 +60,28 @@ def _escape_subpath(path: Path) -> str:
     return str(path.resolve()).replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _path_exists(path: Path) -> bool:
+    """``path.exists()`` that treats "forbidden to stat" as existing.
+
+    ``Path.exists()`` swallows only ENOENT-class errors; an EPERM — which is what
+    an outer sandbox returns for a path it has masked — propagates and would
+    abort profile construction entirely. A path we are not allowed to stat is
+    still a real path, so report it as present: that keeps it on the deny list
+    (where dropping it would be a containment hole) and on the read list (where
+    dropping it would silently break the wrapped CLI).
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
 def _unique_existing_paths(paths: list[Path] | tuple[Path, ...]) -> tuple[Path, ...]:
     unique: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
         resolved = path.resolve()
-        if resolved in seen or not resolved.exists():
+        if resolved in seen or not _path_exists(resolved):
             continue
         seen.add(resolved)
         unique.append(resolved)
@@ -90,13 +106,28 @@ def _layout_roots(allowed_root: Path) -> tuple[Path | None, Path | None]:
 def _blocked_worktree_roots(allowed_root: Path) -> tuple[Path, ...]:
     root = allowed_root.resolve()
     _, worktrees_dir = _layout_roots(root)
-    if worktrees_dir is None or not worktrees_dir.exists():
+    if worktrees_dir is None or not _path_exists(worktrees_dir):
         return ()
     blocked: list[Path] = []
-    for child in sorted(worktrees_dir.iterdir()):
-        if not child.is_dir():
+    try:
+        children = sorted(worktrees_dir.iterdir())
+    except OSError:
+        return ()
+    for child in children:
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            # Cannot stat the sibling — block it anyway. Erring toward the deny
+            # list is the safe direction, and letting the error escape would
+            # abort profile construction entirely, dropping the sandbox for a
+            # path we were trying to lock down.
+            is_dir = True
+        if not is_dir:
             continue
-        resolved = child.resolve()
+        try:
+            resolved = child.resolve()
+        except OSError:
+            resolved = child
         if resolved == root:
             continue
         blocked.append(resolved)
@@ -347,12 +378,25 @@ def _macos_profile(
 {deny_rules}
 )
 """
+    # Signal scope: a sandboxed CLI must be able to tear down the tree it
+    # spawned. `(target self)` alone authorises signalling only the calling
+    # process, so `killpg` aimed at a child's process group — which is how every
+    # forge timeout/teardown path kills npm→node→leaf trees — returns EPERM and
+    # silently no-ops. The subprocess then runs to its natural end instead of to
+    # its timeout, which is what made a 30s suite cost 605s of gate wall clock at
+    # idle CPU (#1959). `children` covers descendants and `same-sandbox` covers
+    # the whole inherited-sandbox subtree, so a group kill reaches grandchildren
+    # too. Neither widens the boundary outward: a process outside this sandbox
+    # instance is still unsignallable, so an agent cannot signal the coordinator,
+    # a sibling story's agent, or anything else on the host.
     return f"""(version 1)
 (deny default)
 (import "system.sb")
 (allow process-exec)
 (allow process-fork)
 (allow signal (target self))
+(allow signal (target children))
+(allow signal (target same-sandbox))
 {service_block}
 (allow file-write*
 {write_rules}

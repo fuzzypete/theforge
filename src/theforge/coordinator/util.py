@@ -12,11 +12,12 @@ import secrets
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
-from theforge.process_group import is_killable_pgid
+from theforge.process_group import KILL_GRACE_SECONDS, is_killable_pgid
 from theforge.workspace_env import build_workspace_env
 
 # Stable reference captured at import time so test patches that replace the
@@ -176,13 +177,36 @@ def resolve_timeout_with_active(
     return base, False
 
 
+def _wait_bounded(proc: subprocess.Popen[str]) -> bool:
+    """Wait for *proc*, but never longer than the teardown grace period.
+
+    Returns True if it exited within that window.
+
+    An unbounded wait after a best-effort kill is only correct if the kill always
+    lands. It does not: a platform sandbox can refuse signal delivery outright,
+    and the wait then lasts for the command's entire natural lifetime — measured
+    at 300s for a ``sleep 300`` that a 0.1s timeout was meant to cut short
+    (#1959). A timeout that cannot bound its own cleanup is not a timeout.
+    """
+    try:
+        proc.wait(timeout=KILL_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:
-    """Best-effort kill for a spawned shell process group.
+    """Best-effort kill for a spawned shell process group, then a bounded wait.
 
     Only ``killpg`` a pgid that denotes a real group (``> 1``); a bogus ``<= 1``
     value would broadcast SIGKILL across the whole session (see
     ``process_group.is_killable_pgid`` / #1793). Fall back to terminating just the
     direct child when the group id is unknown or unkillable.
+
+    A refused ``killpg`` is logged rather than swallowed. It produces no error
+    anywhere else and surfaces only as a teardown that takes the command's full
+    natural lifetime — indistinguishable in a log from "the work was slow", which
+    is why #1959 took a dedicated probe to find.
     """
     try:
         pgid = os.getpgid(proc.pid)
@@ -191,13 +215,96 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
     if is_killable_pgid(pgid):
         try:
             os.killpg(pgid, signal.SIGKILL)
+        except OSError as exc:
+            _log_line("[forge]", f"  ⚠ group kill of pgid={pgid} refused: {exc}")
+        else:
+            _wait_bounded(proc)
             return
-        except OSError:
-            pass
+    # Each wait is guarded by whether the signal before it was actually
+    # delivered. Waiting on a refused signal is the #1959 mistake in miniature:
+    # it buys nothing and costs the grace period every time.
     try:
         proc.terminate()
     except OSError:
         pass
+    else:
+        if _wait_bounded(proc):
+            return
+    # SIGTERM is catchable, so a shell that ignores it survives — and a survivor
+    # holds the output pipes open, which is the read this function's caller then
+    # blocks on (#1959). Escalate to SIGKILL rather than leave that to chance;
+    # this matches process_group.terminate_process_group's escalation.
+    try:
+        proc.kill()
+    except OSError:
+        return
+    _wait_bounded(proc)
+
+
+# Longest we will wait to collect a timed-out command's partial output. Small:
+# the pipes hold what the command already wrote, so a read that has not returned
+# by now is blocked on a writer that is still alive, not on data in flight.
+_DRAIN_TIMEOUT_SECONDS = 2.0
+
+
+def _drain_partial_output(
+    te: subprocess.TimeoutExpired, proc: subprocess.Popen[str]
+) -> tuple[str, bool]:
+    """Collect what a timed-out command emitted, without blocking on its writer.
+
+    Returns ``(output, drained)``. ``drained`` is False when the read did not
+    finish, which also means the reader thread still owns the streams — see
+    below.
+
+    Reading a pipe blocks until every writer holding the other end closes it.
+    After the group kill above that writer should be gone — but when the kill was
+    refused (a platform sandbox denying signal delivery, #1959) it is not, and
+    this read then waits out the command's entire natural lifetime. Measured: a
+    ``sleep 300`` under a 0.1s timeout returned after 300s, with the wait spent
+    here rather than anywhere the timeout could see it. Reading on a daemon
+    thread bounds it — a timeout that cannot bound its own cleanup is not a
+    timeout.
+
+    The thread closes the streams itself once it finishes. That is not tidiness:
+    a blocked ``read()`` holds the buffer lock, so a ``close()`` from this thread
+    would block on that lock and reintroduce the very wait we just bounded, one
+    frame further out.
+    """
+    chunks: list[str] = []
+    for raw in (te.stdout, te.stderr):
+        if raw:
+            chunks.append(raw if isinstance(raw, str) else raw.decode(errors="replace"))
+
+    tail: list[str] = []
+
+    def _read() -> None:
+        for stream in (proc.stdout, proc.stderr):
+            if stream is None:
+                continue
+            try:
+                data = stream.read()
+                if isinstance(data, bytes):
+                    data = data.decode(errors="replace")
+                if isinstance(data, str):
+                    tail.append(data)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    reader.join(_DRAIN_TIMEOUT_SECONDS)
+    drained = not reader.is_alive()
+    if not drained:
+        _log_line(
+            "[forge]",
+            "  ⚠ timed-out command still holds its output pipes open "
+            "(its process group survived the kill); reporting partial output",
+        )
+    return "".join(chunks + tail).strip(), drained
 
 
 def _run_shell_detailed(
@@ -221,6 +328,9 @@ def _run_shell_detailed(
         )
     except Exception as e:
         return False, f"ERROR: {e}", None, False
+    # False only while a drain thread still owns the streams, in which case that
+    # thread closes them and this one must not touch them (see _drain_partial_output).
+    owns_streams = True
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()
@@ -230,36 +340,24 @@ def _run_shell_detailed(
         # such as pytest-xdist workers cannot keep writing indefinitely after
         # the shell itself has timed out.
         _kill_process_group(proc)
-        proc.wait()
-        partial_out = ""
-        try:
-            chunks: list[str] = []
-            for raw in (te.stdout, te.stderr):
-                if raw:
-                    chunks.append(raw if isinstance(raw, str) else raw.decode(errors="replace"))
-            if proc.stdout:
-                chunks.append(proc.stdout.read())
-            if proc.stderr:
-                chunks.append(proc.stderr.read())
-            partial_out = "".join(chunks).strip()
-        except Exception:
-            pass
+        partial_out, drained = _drain_partial_output(te, proc)
+        owns_streams = drained
         header = f"TIMEOUT after {timeout}s: {cmd}"
         if partial_out:
             return False, f"{header}\n{partial_out}", None, True
         return False, header, None, True
     except BaseException:
         _kill_process_group(proc)
-        proc.wait()
         raise
     finally:
-        for stream_name in ("stdout", "stderr"):
-            stream = getattr(proc, stream_name, None)
-            if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+        if owns_streams:
+            for stream_name in ("stdout", "stderr"):
+                stream = getattr(proc, stream_name, None)
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
 
 
 def _run_shell(
