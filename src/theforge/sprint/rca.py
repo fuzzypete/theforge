@@ -172,7 +172,11 @@ RULES: tuple[RcaRule, ...] = (
             "Base branch diverged from origin (local ahead and behind) — a "
             "mechanical workspace precondition failure, not a code/logic bug."
         ),
-        patterns=("workspace abort", "diverged from origin"),
+        # Deliberately narrow to the divergence-specific phrase only. A bare
+        # "workspace abort" also fires for unrelated WORKSPACE abort failures
+        # (e.g. "pull failed for base branch ... ") which are not divergence and
+        # must not get the rebase/reconcile remediation.
+        patterns=("diverged from origin",),
     ),
     # ── primary: intake shape drop ───────────────────────────────────────────
     RcaRule(

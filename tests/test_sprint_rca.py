@@ -200,6 +200,28 @@ def test_workspace_base_divergence_classifies_not_unknown(tmp_path: Path) -> Non
     assert "forge diagnose" not in actions
 
 
+def test_workspace_abort_pull_failure_without_divergence_not_misclassified(
+    tmp_path: Path,
+) -> None:
+    """A WORKSPACE abort that is a plain pull failure (no divergence) must not be
+    classified as workspace_divergence — it did not diverge, so the rebase
+    remediation would be wrong.
+    """
+    pull_failed_err = (
+        "WORKSPACE abort: pull failed for base branch 'release/v0.13' — "
+        "fatal: unable to access 'https://github.com/...': Could not resolve host"
+    )
+    d = _sprint_dir(tmp_path, name="issues-1900")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1900", "outcome": "FAILED", "error": pull_failed_err}]),
+    )
+    entry = _build(d)["stories"]["issue-1900"]
+    assert entry["primary_failure_class"] != "workspace_divergence"
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "workspace_base_divergence" not in rule_ids
+
+
 # ── Engine: ambiguous "429" must not match inside cost/duration floats ────────
 
 
