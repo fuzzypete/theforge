@@ -31,16 +31,12 @@ def _parse_version(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
-def _read_workspace_python_pin(workspace_path: Path) -> str:
+def _read_workspace_python_pin(workspace_path: Path) -> str | None:
     pin_path = workspace_path / ".python-version"
     try:
         raw = pin_path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ValueError(
-            "Workspace "
-            f"{workspace_path} is missing .python-version; "
-            "gate setup requires a pinned Python interpreter."
-        ) from exc
+    except FileNotFoundError:
+        return None
 
     for line in raw.splitlines():
         pin = line.split("#", 1)[0].strip()
@@ -76,9 +72,8 @@ def _read_python_version(executable: str) -> str:
     return proc.stdout.strip()
 
 
-def resolve_workspace_python(workspace_path: Path) -> WorkspacePython:
-    """Resolve the interpreter pinned by workspace .python-version from PATH."""
-    pin = _read_workspace_python_pin(workspace_path)
+def _resolve_workspace_python_pin(workspace_path: Path, pin: str) -> WorkspacePython:
+    """Resolve a validated workspace Python pin from PATH."""
     pinned_parts = _parse_version(pin.removeprefix("python"))
 
     for candidate_name in _candidate_python_names(pin):
@@ -103,16 +98,28 @@ def resolve_workspace_python(workspace_path: Path) -> WorkspacePython:
     )
 
 
+def resolve_workspace_python(workspace_path: Path) -> WorkspacePython:
+    """Resolve the interpreter pinned by workspace .python-version from PATH."""
+    pin = _read_workspace_python_pin(workspace_path)
+    if pin is None:
+        raise ValueError(
+            "Workspace "
+            f"{workspace_path} is missing .python-version; "
+            "gate setup requires a pinned Python interpreter."
+        )
+    return _resolve_workspace_python_pin(workspace_path, pin)
+
+
 def maybe_resolve_workspace_python(workspace_path: Path) -> WorkspacePython | None:
     """Best-effort workspace interpreter resolution.
 
-    Returns None when the workspace has no usable .python-version pin so callers
-    can conservatively fall back instead of crashing on unpinned worktrees.
+    Returns None only when the workspace has no .python-version pin. Declared
+    pins still fail closed when they are invalid or unresolved.
     """
-    try:
-        return resolve_workspace_python(workspace_path)
-    except ValueError:
+    pin = _read_workspace_python_pin(workspace_path)
+    if pin is None:
         return None
+    return resolve_workspace_python(workspace_path)
 
 
 def read_workspace_venv_config(workspace_path: Path) -> dict[str, str]:
@@ -162,6 +169,22 @@ def workspace_venv_matches_python(
     return False
 
 
+def workspace_venv_is_usable(
+    workspace_path: Path, resolved_python: WorkspacePython | None = None
+) -> bool:
+    """Return True when workspace .venv can safely drive subprocess execution."""
+    cfg = read_workspace_venv_config(workspace_path)
+    if not cfg:
+        return False
+
+    resolved = resolved_python if resolved_python is not None else maybe_resolve_workspace_python(
+        workspace_path
+    )
+    if resolved is None:
+        return True
+    return workspace_venv_matches_python(workspace_path, resolved)
+
+
 def build_workspace_env(
     workspace_path: Path,
     base_env: Mapping[str, str] | None = None,
@@ -173,7 +196,7 @@ def build_workspace_env(
     venv_path = workspace_path / ".venv"
     venv_bin = venv_path / "bin"
 
-    if venv_bin.exists() and workspace_venv_matches_python(workspace_path):
+    if venv_bin.exists() and workspace_venv_is_usable(workspace_path):
         path_entries = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
         filtered_entries = [
             entry

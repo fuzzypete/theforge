@@ -129,18 +129,51 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
     Matches {forge_python} template before substitution to avoid parsing
     shlex.quote() output; falls back to legacy form; then runs verbatim.
     """
-    last_setup_command = _read_last_setup_command(workspace_path)
-    if last_setup_command is not None and last_setup_command != setup_command:
-        _cu._log("⚠ WORKSPACE  setup_command changed — re-running install")
+    try:
+        last_setup_command = _read_last_setup_command(workspace_path)
+        if last_setup_command is not None and last_setup_command != setup_command:
+            _cu._log("⚠ WORKSPACE  setup_command changed — re-running install")
 
-    m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
-    if m:
-        install_cmd = m.group(1).strip()
+        m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
+        if m:
+            install_cmd = m.group(1).strip()
+            resolved_python = maybe_resolve_workspace_python(workspace_path)
+            python_path = (
+                resolved_python.executable if resolved_python is not None else Path(sys.executable)
+            )
+            python_exe = shlex.quote(str(python_path))
+            if (
+                resolved_python is not None
+                and (workspace_path / ".venv").exists()
+                and not workspace_venv_matches_python(workspace_path, resolved_python)
+            ):
+                _cu._log("⚠ WORKSPACE  removing stale .venv pinned to a different Python")
+                shutil.rmtree(workspace_path / ".venv")
+            ok, out = _cu._run_shell(
+                f"test -d .venv || {python_exe} -m venv .venv", workspace_path
+            )
+            if not ok:
+                return ok, out
+            ok, out = _cu._run_shell(install_cmd, workspace_path)
+            if ok:
+                _write_last_setup_command(workspace_path, setup_command)
+            return ok, out
+
+        cmd = _resolve_setup_command(setup_command, workspace_path)
+        m = _VENV_GUARD_RE.search(cmd)
+        if not m:
+            ok, out = _cu._run_shell(cmd, workspace_path)
+            if ok:
+                _write_last_setup_command(workspace_path, setup_command)
+            return ok, out
+        legacy_python_exe = m.group(1)
+        install_cmd = m.group(2).strip()
         resolved_python = maybe_resolve_workspace_python(workspace_path)
-        python_path = (
-            resolved_python.executable if resolved_python is not None else Path(sys.executable)
+        python_exe = (
+            shlex.quote(str(resolved_python.executable))
+            if resolved_python is not None
+            else legacy_python_exe
         )
-        python_exe = shlex.quote(str(python_path))
         if (
             resolved_python is not None
             and (workspace_path / ".venv").exists()
@@ -155,36 +188,8 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
         if ok:
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
-
-    cmd = _resolve_setup_command(setup_command, workspace_path)
-    m = _VENV_GUARD_RE.search(cmd)
-    if not m:
-        ok, out = _cu._run_shell(cmd, workspace_path)
-        if ok:
-            _write_last_setup_command(workspace_path, setup_command)
-        return ok, out
-    legacy_python_exe = m.group(1)
-    install_cmd = m.group(2).strip()
-    resolved_python = maybe_resolve_workspace_python(workspace_path)
-    python_exe = (
-        shlex.quote(str(resolved_python.executable))
-        if resolved_python is not None
-        else legacy_python_exe
-    )
-    if (
-        resolved_python is not None
-        and (workspace_path / ".venv").exists()
-        and not workspace_venv_matches_python(workspace_path, resolved_python)
-    ):
-        _cu._log("⚠ WORKSPACE  removing stale .venv pinned to a different Python")
-        shutil.rmtree(workspace_path / ".venv")
-    ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
-    if not ok:
-        return ok, out
-    ok, out = _cu._run_shell(install_cmd, workspace_path)
-    if ok:
-        _write_last_setup_command(workspace_path, setup_command)
-    return ok, out
+    except ValueError as exc:
+        return False, str(exc)
 
 
 def _resolve_merge_conflicts(

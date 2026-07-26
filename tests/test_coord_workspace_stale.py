@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
@@ -61,8 +63,8 @@ def _make_stale_config(tmp_path: Path, stale_worktree_days: int = 1) -> ForgeCon
     )
 
 
-def _write_workspace_pin(workspace_path: Path) -> None:
-    (workspace_path / ".python-version").write_text("3.12.12\n", encoding="utf-8")
+def _write_workspace_pin(workspace_path: Path, version: str = "3.12.12") -> None:
+    (workspace_path / ".python-version").write_text(f"{version}\n", encoding="utf-8")
 
 
 # ── Stale worktree tests ──────────────────────────────────────────
@@ -1026,6 +1028,15 @@ class TestRunSetupSplit:
         _write_workspace_pin(tmp_path)
         assert _resolve_setup_command(cmd, tmp_path) == cmd
 
+    def test_resolve_setup_command_raises_for_unresolved_declared_pin(self, tmp_path):
+        """A declared but unresolved pin fails closed instead of falling back."""
+        from theforge.coordinator.workspace import _resolve_setup_command
+
+        _write_workspace_pin(tmp_path, "3.99.1")
+
+        with pytest.raises(ValueError, match=r"pins Python '3\.99\.1'"):
+            _resolve_setup_command("{forge_python} -m venv .venv", tmp_path)
+
     def test_forge_python_with_spaces_in_path_is_shell_quoted(self, tmp_path):
         """Pinned interpreter with spaces is shell-quoted; command is still split."""
         from theforge.coordinator.workspace import _run_setup_split
@@ -1081,6 +1092,20 @@ class TestRunSetupSplit:
         assert len(calls) == 2
         # The quoted token must appear in the venv creation command
         assert shlex.quote(tricky_exe) in calls[0]
+
+    def test_declared_unresolved_pin_fails_before_shelling_out(self, tmp_path):
+        """A declared but unresolved pin stops setup instead of using ambient Python."""
+        from theforge.coordinator.workspace import _run_setup_split
+
+        _write_workspace_pin(tmp_path, "3.99.1")
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e .)"
+
+        with patch("theforge.coordinator.workspace._cu._run_shell") as mock_shell:
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is False
+        assert "pins Python '3.99.1'" in out
+        mock_shell.assert_not_called()
 
     def test_resolve_setup_command_quotes_spaced_path(self):
         """_resolve_setup_command wraps a space-containing path in single quotes."""

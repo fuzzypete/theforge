@@ -13,6 +13,7 @@ from theforge.workspace_env import (
     build_workspace_env,
     maybe_resolve_workspace_python,
     resolve_workspace_python,
+    workspace_venv_is_usable,
     workspace_venv_matches_python,
 )
 
@@ -77,6 +78,15 @@ def test_resolve_workspace_python_requires_repo_pin(tmp_path: Path) -> None:
 
 def test_maybe_resolve_workspace_python_returns_none_without_pin(tmp_path: Path) -> None:
     assert maybe_resolve_workspace_python(tmp_path) is None
+
+
+def test_maybe_resolve_workspace_python_raises_when_declared_pin_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    _write_workspace_pin(tmp_path, "3.99.1")
+
+    with pytest.raises(ValueError, match=r"pins Python '3\.99\.1'"):
+        maybe_resolve_workspace_python(tmp_path)
 
 
 def test_resolve_workspace_python_rejects_non_pinned_value(tmp_path: Path) -> None:
@@ -236,6 +246,32 @@ def test_build_workspace_env_ignores_existing_venv_when_pin_missing(tmp_path: Pa
 
     env = build_workspace_env(tmp_path, base_env)
 
-    assert env["PATH"] == "/usr/local/bin:/usr/bin"
-    assert "VIRTUAL_ENV" not in env
-    assert env["PYTHONHOME"] == "/opt/python"
+    assert env["PATH"].split(os.pathsep)[0] == str(venv_bin)
+    assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+    assert "PYTHONHOME" not in env
+
+
+def test_workspace_venv_is_usable_without_pin_when_cfg_exists(tmp_path: Path) -> None:
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_pyvenv_cfg(
+        tmp_path,
+        version="3.11.9",
+        executable="/Users/example/.pyenv/versions/3.11.9/bin/python3.11",
+    )
+
+    assert workspace_venv_is_usable(tmp_path) is True
+
+
+def test_build_workspace_env_raises_for_unresolved_declared_pin(tmp_path: Path) -> None:
+    _write_workspace_pin(tmp_path, "3.99.1")
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_pyvenv_cfg(
+        tmp_path,
+        version="3.99.1",
+        executable="/tmp/toolchain/python3.99",
+    )
+
+    with pytest.raises(ValueError, match=r"pins Python '3\.99\.1'"):
+        build_workspace_env(tmp_path, {"PATH": "/usr/local/bin:/usr/bin"})
