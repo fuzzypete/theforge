@@ -1,0 +1,2759 @@
+{
+  "schema_version": 9,
+  "run_id": "901237cb4006",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Gate nested inside a sprint takes 20x wall clock at idle CPU (30s standalone vs 605s nested)",
+    "slug": "issue-1959",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nThe same test suite takes roughly twenty times longer to run when executed inside a sprint than when run directly, and it consumes no CPU while doing so. Every story in every sprint pays this cost on every gate run.\n\nStory #1947, sprint `a50b96879656`, 2026-07-26:\n\n```\n12:15:03.601 [issue-1947]   \u21b3 Bash: .venv/bin/python -m pytest tests/ -q -n auto --dist worksteal\n12:25:08.617 [issue-1947]   \u21b3 Bash: .venv/bin/ruff format ...\n```\n\nRoughly 605 seconds between the gate invocation and the next tool call. The operator observed the machine as close to idle throughout.\n\nThe identical command run directly in the same checkout on the same machine, minutes after the sprint completed:\n\n```\n5955 passed, 32 skipped, 13 warnings in 29.66s\n=== WALL CLOCK: 30s ===\n```\n\nFor a third reference point, the same suite on Linux CI (PR #1943's gate job) completed in 67.8s.\n\nSo the ordering is: 30s run directly on this machine, 68s on Linux CI, 605s nested inside a sprint on the machine where it takes 30s.\n\n## Diagnosis\n\n**Symptom:** A gate run inside a sprint consumed ten minutes of wall clock at near-zero CPU, on a machine where the same suite completes in thirty seconds.\n\n**Evidence:** Three measurements of the same suite, above. Additionally `pytest --durations=20` standalone shows the slowest single test at 2.90s and the twentieth at 0.85s, with the full run at 29.66s under `-n auto --dist worksteal`.\n\n**Ruled out \u2014 CPU contention.** The host has 10 physical cores and the operator reports the CPU was largely idle for the duration. Ten minutes of wall clock at idle CPU is a process blocked, not a process computing.\n\n**Ruled out \u2014 contention with the concurrently running story.** Log activity between 12:15:00 and 12:25:30 shows seven entries, all for issue-1947 and none for issue-1758. The other story issued no commands in the window.\n\n**Ruled out \u2014 inherently slow tests.** No individual test exceeds 2.90s standalone, and the aggregate is 29.66s. There is no candidate set of tests whose own runtime could account for a ten-minute total.\n\n**Ruled out \u2014 platform.** macOS standalone (29.66s) is faster than Linux CI (67.8s), so the slow case is not the local platform being slow at running this suite.\n\n**Confirmed differentiator:** execution context. The suite is fast run directly and slow run nested inside a sprint, on the same machine, same checkout, same command, minutes apart. This is the same variable already measured to cause failures rather than latency: on 2026-07-25 the nested gate produced 382 failures against 5953-pass/0-fail standalone. Latency and failure appear to be two expressions of one condition.\n\n**Confirmed cause (probe run 2026-07-26):** the macOS seatbelt profile that wraps every agent declares `(deny default)` and then permits signalling with `(allow signal (target self))` at `src/theforge/runners/sandbox.py:355`. Under seatbelt, `target self` authorises a process to signal only itself, so a `killpg` aimed at a child's process group is denied with `EPERM`. Forge's timeout and teardown mechanism is group-kill throughout, so inside the sandbox it silently does nothing and subprocesses run to their natural end rather than to their timeout \u2014 which is why wall clock accumulates at zero CPU. The three `test_timeout_kills_grandchild` tests each take the full 30s lifetime of the sleeper they spawn against a 5s kill timeout. A control subset with no subprocess supervision runs at 0.9x, so the cost attaches to signal delivery and not to sandboxing generally. Full probe evidence, including the bare vs sandboxed `killpg` comparison and the four group-kill assertions that fail only under the sandbox, is in the comment below.\n\n**Fix-success criterion:** A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.\n\n## Expected behavior\n\nThe environment a verification step runs in should not change its result or its cost. A gate exists to answer whether the code passes, and an execution context that makes the same suite twenty times slower and introduces hundreds of failures that do not occur outside it has made the gate measure the harness rather than the work. Both effects have the same standing: latency and spurious failure are the same defect observed through different instruments, and neither is acceptable in a step whose entire purpose is to produce a trustworthy verdict.\n\nThe cost compounds in a way the single measurement understates. Ten minutes per gate run, on every iteration of every story of every sprint, is the dominant term in sprint wall clock and therefore in the operator's ability to iterate at all. A substrate whose verification step is this much more expensive inside the substrate than outside it cannot be evaluated honestly against its own runtime, because every timing signal the operator reads is dominated by the harness rather than the work being timed.\n\nRelated: #1945 (story gate and CI merge-check gate disagree) concerns the two gates reaching different verdicts. This issue concerns the cost and reliability of the nested one regardless of verdict. #1913 (no coverage that agent group-kill survives the platform sandbox wrapper) covers a specific untested interaction in the same area.\n\n",
+    "github_issue": 1959,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug Diagnosis section missing required component: observed symptom",
+      "bug Diagnosis section missing required component: affected code path"
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Gate nested inside a sprint takes 20x wall clock at idle CPU (30s standalone vs 605s nested)' completed. Review approved after 3 cycle(s), 2 dev iteration(s). Branch: feat/issue-1959",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-26T20:21:32.110798+00:00",
+    "finished_at": "2026-07-26T21:24:10.984000+00:00",
+    "duration_seconds": 3758.873202
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1959",
+    "branch": "feat/issue-1959"
+  },
+  "iterations": {
+    "dev_attempts_total": 4,
+    "dev_iterations_productive": 4,
+    "review_cycles_total": 3,
+    "review_cycles": 3,
+    "dev_iterations": 4,
+    "gate_decisions": [
+      "FAIL",
+      "PASS",
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error",
+          "tests/test_sandbox_group_kill.py::TestTerminateProcessGroup::test_survivor_is_logged_not_waited_on"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 12.619133499999997,
+        "duration_s": 2202.65,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/util.py",
+          "src/theforge/process_group.py",
+          "src/theforge/runners/runner_claude.py",
+          "src/theforge/runners/sandbox.py",
+          "tests/test_coord_gate_exec.py",
+          "tests/test_sandbox_group_kill.py"
+        ],
+        "files_changed_count": 6,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 0,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 5.467156500000001,
+        "duration_s": 315.71,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/process_group.py",
+          "tests/test_sandbox_group_kill.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 1,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 7.458184,
+        "duration_s": 428.77,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/util.py",
+          "src/theforge/process_group.py",
+          "src/theforge/runners/runner_claude.py",
+          "tests/test_sandbox_group_kill.py"
+        ],
+        "files_changed_count": 4,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 2,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 6.629655500000002,
+        "duration_s": 200.41,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/runners/runner_claude.py",
+          "tests/test_coord_gate_exec.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 0.819852,
+        "duration_s": 157.37
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 2
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 2
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 1.045499,
+        "duration_s": 205.94
+      },
+      {
+        "iteration": 3,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.561796,
+        "duration_s": 84.18
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 4,
+        "max": 3,
+        "hit_limit": true,
+        "early_finish": false
+      },
+      "review": {
+        "used": 3,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 87,
+      "profile_avg_iterations": 1.8506,
+      "profile_avg_cost_usd": 8.699487,
+      "profile_raw_dev_max": 2.7759,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 21.7487,
+      "review_history_sample_size": 9,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 87 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-26T20:21:42.975310+00:00"
+      },
+      {
+        "cycle": 0,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-07-26T20:59:06.400293+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 3,
+        "timestamp": "2026-07-26T21:07:32.284139+00:00"
+      },
+      {
+        "cycle": 2,
+        "cycle_count": 2,
+        "total_count": 4,
+        "timestamp": "2026-07-26T21:18:42.251477+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 32.1741295,
+    "review_usd": null,
+    "dev_invocations": 4,
+    "review_invocations": 9,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 12.619133499999997,
+        "duration_seconds": 2202.6467256250326,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.004353
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 12.614780499999997
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 5.467156500000001,
+        "duration_seconds": 315.7086704589892,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 5.467156500000001
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 7.458184,
+        "duration_seconds": 428.77352025010623,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 7.458184
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 6.629655500000002,
+        "duration_seconds": 200.41424787486903,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 6.629655500000002
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 52.40879698633216,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 52.40879698633216,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.8198517000000001,
+        "duration_seconds": 52.40879698633216,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.032238
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.7876137000000001
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 68.58377133333124,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 68.58377133333124,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.0454991,
+        "duration_seconds": 68.58377133333124,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.0454991
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 28.006477277648326,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 28.006477277648326,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.5617955000000001,
+        "duration_seconds": 28.006477277648326,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.5617955000000001
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The root cause is diagnosed and localized to a single seatbelt rule at src/theforge/runners/sandbox.py:355 (`(allow signal (target self))`), confirmed unchanged in the current baseline, but the fix requires correctly widening signal-delivery scope for killpg group-kill without over-loosening the sandbox boundary, and touches the interaction between sandbox.py, process_group.py, and coordinator/util.py that all issue killpg \u2014 this is cancellation/lifecycle propagation across module boundaries per the large-work trigger.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 3,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "3 operator-visible surfaces enumerated in acceptance criteria: --dist, --durations, and then permits signalling with",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "concurrency",
+      "security",
+      "testing"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.29788939999999997,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "f98085c06b52",
+    "cache_snapshot": {
+      "worktree_head": "b8a5a49c587795312bb8d46e7c9057b72dfd6b08",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "b8a5a49c587795312bb8d46e7c9057b72dfd6b08",
+      "story_content_hash": "78ec93286084a2919df8bdb6f1bcdd738a8dff1b03396b281033b7e64939e7c7"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "b8a5a49c587795312bb8d46e7c9057b72dfd6b08",
+      "current_worktree_head": "b8a5a49c587795312bb8d46e7c9057b72dfd6b08",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "b8a5a49c587795312bb8d46e7c9057b72dfd6b08",
+      "current_evaluation_base_branch_head": "b8a5a49c587795312bb8d46e7c9057b72dfd6b08",
+      "cached_story_content_hash": "78ec93286084a2919df8bdb6f1bcdd738a8dff1b03396b281033b7e64939e7c7",
+      "current_story_content_hash": "78ec93286084a2919df8bdb6f1bcdd738a8dff1b03396b281033b7e64939e7c7",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.29788939999999997,
+        "duration_s": 185.12,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.44 < threshold 0.60 over 87 admissible HIGH runs (profile success_rate=0.44 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1959/iter_1.yaml",
+      "handoff": {
+        "summary": "Fixed the root cause of #1959: the macOS seatbelt profile granted only `(allow signal (target self))`, so every killpg-based timeout/teardown returned EPERM and silently no-opped inside the sandbox, letting subprocesses run to their natural end instead of their timeout. Added `(allow signal (target children))` and `(allow signal (target same-sandbox))`, verified valid on this OS by distinguishing profile-compile errors from sandbox_apply errors. Added defence in depth so a refused kill can never hide as latency again: bounded every wait that follows a best-effort kill (process_group teardown, coordinator gate-timeout path, Claude runner post-stream wait); moved the gate's partial-output drain onto a daemon thread that owns the streams, since a pipe read blocks until the writer exits and was where 300s of a measured 300.03s went; stopped waiting on signals that were never delivered; log refused kills instead of swallowing them; guarded the direct-pid kill the way killpg is guarded (#1793); and stopped sandbox.py aborting profile construction when a sibling worktree cannot be stat-ed. Measured: tests/test_run_shell_timeout.py 300.89s -> 3.05s in a signal-denied environment.",
+        "commits": [
+          {
+            "sha": "061edcb",
+            "message": "fix(sandbox): grant descendant signal scope so group-kill lands under seatbelt"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+            "status": "MET",
+            "notes": "Root cause fixed at src/theforge/runners/sandbox.py: the profile now grants signalling descendants, so killpg lands and timeouts actually fire. Directly measured on the largest contributor: tests/test_run_shell_timeout.py went 300.89s -> 3.05s in an environment where every kill is refused (the worst case the fix must tolerate). Full suite here runs in 60.68s. NOT verified by an actual nested sprint gate run \u2014 I cannot apply a nested seatbelt profile from inside my own sandbox, so the end-to-end assertion is carried by tests/test_sandbox_group_kill.py, which skips here and will first execute for real in the coordinator's gate."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Modified an existing test file, tests/test_coord_gate_exec.py: five occurrences of `proc.wait.assert_called_once_with()` became `proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)`. These tests pinned the unbounded wait that is the defect, and they are directly related to this story. No other assertion was touched.",
+          "Fixed an adjacent P2 in sandbox.py (per in_scope policy): _blocked_worktree_roots and _unique_existing_paths let a PermissionError from stat escape, aborting profile construction entirely. An unstattable path now stays on the deny list rather than dropping the sandbox. This fixed 4 real failures in tests/test_coord_sandbox.py.",
+          "An initial refactor delegated coordinator/util._kill_process_group to process_group.terminate_process_group; this moved the patch seam that test_coord_gate_exec.py relies on, causing those tests to fire real os.killpg at pgid 9876 instead of a mock. Reverted to a local implementation that keeps the seam and the SIGTERM fallback, adding only the bound."
+        ],
+        "deferred_items": [
+          "13 full-suite failures remain in my sandbox (tests/test_sprint_lock.py, test_cut_rc_isolation.py, test_sprint_reexec_collision.py, test_process_group.py). All are the harness denying signal delivery and mktemp with EPERM \u2014 demonstrated before any edit, when a plain os.kill on a direct child returned EPERM. None touch the changed code. The coordinator's unsandboxed gate should show these passing.",
+          "The end-to-end tests in tests/test_sandbox_group_kill.py (test_profile_compiles, test_killpg_reaches_a_child_process_group) skip when a sandbox profile cannot be applied \u2014 including inside a nested sandbox. They provide no coverage in that state by design; the profile-text assertions in the same file run everywhere.",
+          "During development a `git stash -u` failed on a pre-existing unmerged path, so the trailing `git stash pop` popped an unrelated autostash and wrote a stale issue-322 handoff into this worktree's gitignored .forge/handoff.yaml. I removed that file. All 5 pre-existing stash entries are intact; no source changes were affected."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1959/iter_2.yaml",
+      "handoff": {
+        "summary": "Fixed the single gate failure. test_survivor_is_logged_not_waited_on patched `os.kill` on the os module, replacing it process-wide, so the test's own proc.kill() cleanup was refused and its proc.wait(timeout=5) then blocked and raised TimeoutExpired. It patched os.kill because the group kill had a seam (_killpg_for) while the direct-pid escalation was inline with no seam to stub. Extracted `_kill_pid` in process_group.py as the twin of _killpg_for, carrying the #1793 pid guard and the refusal logging that were inline in terminate_process_group, which now reads as two symmetric attempts. The test patches both seams instead of reaching past the module. The test had been skipping locally under the autouse signalling guard (my sandbox denies signal delivery), which is exactly why the defect reached the gate; with both seams stubbed it needs no working signal delivery, so it moved out from under that guard, runs everywhere now, and its cleanup tolerates a host that cannot signal. Added a pure guard test for _kill_pid that spawns no subprocess. The second test named in the feedback extraction (test_coord_preflight_escalation ... without_import_error) is a false positive \u2014 it appears only in the gate's warnings section, not the FAILED list; verified passing directly.",
+        "commits": [
+          {
+            "sha": "061edcb",
+            "message": "fix(sandbox): grant descendant signal scope so group-kill lands under seatbelt"
+          },
+          {
+            "sha": "95c80f3",
+            "message": "fix(process-group): give the direct-pid kill its own seam"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+            "status": "MET",
+            "notes": "Now confirmed by the coordinator's own gate rather than inference: it ran the full suite in 33.87s with 5994 passed, against the story's measured 605s nested and 29.66s standalone. That is a ~1.1x constant factor, far inside the 'well under two minutes' bar. Root cause fixed at src/theforge/runners/sandbox.py (profile grants signalling descendants so killpg lands and timeouts actually fire), with bounded waits and a bounded output drain as defence in depth."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Modified an existing test file, tests/test_coord_gate_exec.py (first commit): five occurrences of `proc.wait.assert_called_once_with()` became `proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)`. Those assertions pinned the unbounded wait that is the defect, and the tests are directly related to this story. No other assertion touched; these passed in the coordinator's gate.",
+          "Fixed an adjacent P2 in sandbox.py (per in_scope policy): _blocked_worktree_roots and _unique_existing_paths let a PermissionError from stat escape, aborting profile construction entirely. An unstattable path now stays on the deny list rather than dropping the sandbox.",
+          "An initial refactor delegated coordinator/util._kill_process_group to process_group.terminate_process_group; this moved the patch seam test_coord_gate_exec.py relies on, causing those tests to fire real os.killpg at pgid 9876 instead of a mock. Reverted to a local implementation keeping the seam and the SIGTERM fallback, adding only the bound."
+        ],
+        "deferred_items": [
+          "13 full-suite failures remain in my sandbox (tests/test_sprint_lock.py, test_cut_rc_isolation.py, test_sprint_reexec_collision.py, test_process_group.py) \u2014 an identical list to before any of my edits, all Operation not permitted from the harness denying signal delivery and mktemp. The coordinator's gate ran all 13 green, confirming they are environmental.",
+          "The end-to-end tests in tests/test_sandbox_group_kill.py (test_profile_compiles, test_killpg_reaches_a_child_process_group) and the two TestTerminateProcessGroup tests skip when a sandbox profile cannot be applied or the host denies signalling. They will execute for the first time in the coordinator's gate. The profile-text, pid-guard, survivor and gate-timeout tests in that file run everywhere."
+        ]
+      }
+    },
+    {
+      "iteration": 3,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1959/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 addresses the P1 and the P2. P1: a teardown that could reach only the direct child left grandchildren running but unregistered the pgid sidecar unconditionally \u2014 erasing the only record reap_orphan_agents can use to reach a surviving group, leaving it untracked while still holding its workspace-write sandbox grant. My own bounded-wait change from iteration 0 is what made this reachable, since the previous unbounded wait blocked until the tree died anyway. terminate_process_group now returns whether the kill reached the whole group or at most the direct child; a new release_group_record drops the sidecar only once the group is confirmed gone via group_is_alive (a signal-0 probe that errs toward 'alive' when it cannot tell, because a stale sidecar costs one no-op reap while a dropped one costs an untracked tree). Fixed at both sites the pattern occurs: runner_claude had the same unconditional unregister after a _kill_group() that can be refused, and now tracks kill failure and releases through the same helper. P2: coordinator/util._kill_process_group fell back to proc.terminate() alone; SIGTERM is catchable and a surviving shell holds the output pipes open, which is the read that produced the measured 300s, so it now escalates to SIGKILL. That escalation initially reintroduced this story's own defect \u2014 an unconditional extra wait pushed the timeout path from passing to 6s against its <5s assertion \u2014 so every wait there is now guarded by whether the preceding signal was actually delivered.",
+        "commits": [
+          {
+            "sha": "061edcb",
+            "message": "fix(sandbox): grant descendant signal scope so group-kill lands under seatbelt"
+          },
+          {
+            "sha": "95c80f3",
+            "message": "fix(process-group): give the direct-pid kill its own seam"
+          },
+          {
+            "sha": "8dfddab",
+            "message": "fix(process-group): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+            "status": "MET",
+            "notes": "Confirmed by the coordinator's own gate in the previous iteration: 33.87s for the full suite against the story's measured 605s nested and 29.66s standalone \u2014 a ~1.1x constant factor, far inside the 'well under two minutes' bar. Root cause fixed in src/theforge/runners/sandbox.py (the seatbelt profile now grants signalling descendants, so killpg lands and timeouts fire), with bounded waits, a bounded output drain, and now correct sidecar retention as defence in depth. This iteration changed teardown bookkeeping and escalation, not the latency path; the local full suite still completes in 61.16s."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Modified tests/test_coord_gate_exec.py in iteration 0: five occurrences of `proc.wait.assert_called_once_with()` became `proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)`. Those assertions pinned the unbounded wait that is the defect. Unchanged this iteration and passing.",
+          "Fixed an adjacent P2 in sandbox.py in iteration 0 (per in_scope policy): _blocked_worktree_roots and _unique_existing_paths let a PermissionError from stat escape, aborting profile construction entirely. An unstattable path now stays on the deny list.",
+          "release_group_record and group_is_alive are new public names in process_group because runner_claude needs the same release rule; kill_agent_group and terminate_process_group now return bool. reap_orphan_agents ignores the new return value and is unaffected."
+        ],
+        "deferred_items": [
+          "The reviewer's second coverage note is not addressed and cannot be from inside a sandbox: TestGroupKillUnderRealSandbox and two TestTerminateProcessGroup tests skip wherever a fresh seatbelt profile cannot be applied, including a nested sandbox. They exercise the true end-to-end signal-delivery path only in the coordinator's gate. Every other test in that file \u2014 profile text, pid guard, group_is_alive guard, survivor abandonment, gate-timeout bound, and the three new sidecar-retention tests \u2014 runs on every host.",
+          "13 full-suite failures remain in this sandbox (tests/test_sprint_lock.py, test_cut_rc_isolation.py, test_sprint_reexec_collision.py, test_process_group.py), an identical list to before any of my edits, all Operation not permitted from the harness denying signal delivery and mktemp. Verified again this iteration: the reaper failures log 'group kill of pgid=... refused: Operation not permitted'. The coordinator's gate ran all 13 green."
+        ]
+      }
+    },
+    {
+      "iteration": 4,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1959/iter_2.yaml",
+      "handoff": {
+        "summary": "Advisory cleanup pass on the approved implementation; no behaviour redesigned. Two P2s addressed. First: the SIGTERM-then-SIGKILL escalation added to coordinator/util._kill_process_group in iteration 1 had no test, because every existing timeout test mocks proc.wait to return immediately and so returns before reaching proc.kill(). Added a Popen stand-in that models a process catching SIGTERM and staying alive, asserting the escalation fires and that both waits are bounded by KILL_GRACE_SECONDS, plus a companion test asserting it does NOT fire when SIGTERM works \u2014 pinning the branch in both directions. Verified non-vacuous by deleting the escalation and confirming the test fails, then restoring util.py to HEAD. Second: group_killed in runner_claude was a plain bool written from both the watchdog thread and the main thread; it is now a threading.Event (group_kill_failed), which carries its own lock and states the cross-thread intent in the type, and the nonlocal declaration is gone. All five write sites and the single read were converted, not just the cited line. The only production change this iteration is runner_claude.py; util.py is untouched.",
+        "commits": [
+          {
+            "sha": "061edcb",
+            "message": "fix(sandbox): grant descendant signal scope so group-kill lands under seatbelt"
+          },
+          {
+            "sha": "95c80f3",
+            "message": "fix(process-group): give the direct-pid kill its own seam"
+          },
+          {
+            "sha": "8dfddab",
+            "message": "fix(process-group): address review findings (iter 1)"
+          },
+          {
+            "sha": "f430811",
+            "message": "fix(process-group): address review findings (iter 2)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+            "status": "MET",
+            "notes": "Confirmed by the coordinator's own gate: 33.87s for the full suite against the story's measured 605s nested and 29.66s standalone \u2014 roughly a 1.1x constant factor, far inside the 'well under two minutes' bar. Root cause fixed in src/theforge/runners/sandbox.py, where the seatbelt profile now grants signalling descendants so killpg lands and timeouts actually fire. This iteration added tests and swapped a bool for an Event; it did not touch the latency path. Local full suite completes in 54.67s."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Modified tests/test_coord_gate_exec.py: in iteration 1, five occurrences of `proc.wait.assert_called_once_with()` became `proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)` because those assertions pinned the unbounded wait that is the defect. This iteration appends two new tests to the same file, which is the natural home for _kill_process_group coverage.",
+          "Fixed an adjacent P2 in sandbox.py in iteration 0 (per the then-active in_scope policy): _blocked_worktree_roots and _unique_existing_paths let a PermissionError from stat escape, aborting profile construction entirely. An unstattable path now stays on the deny list.",
+          "release_group_record and group_is_alive are public names in process_group because runner_claude needs the same release rule; kill_agent_group and terminate_process_group return bool. reap_orphan_agents ignores the new return value and is unaffected."
+        ],
+        "deferred_items": [
+          "TestGroupKillUnderRealSandbox and two TestTerminateProcessGroup tests still skip wherever a fresh seatbelt profile cannot be applied, including a nested sandbox, so the true end-to-end signal-delivery path exercises only in the coordinator's gate. This cannot be fixed from inside a sandbox. Every other test in that file \u2014 profile text, pid guard, group_is_alive guard, survivor abandonment, gate-timeout bound, and the three sidecar-retention tests \u2014 runs on every host.",
+          "13 full-suite failures remain in this sandbox (tests/test_sprint_lock.py, test_cut_rc_isolation.py, test_sprint_reexec_collision.py, test_process_group.py), an identical list to before any of my edits, all Operation not permitted from the harness denying signal delivery and mktemp. The coordinator's gate ran all 13 green."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    },
+    {
+      "iteration": 3,
+      "finding_ids": [
+        "4703ba325cb0f28c"
+      ]
+    },
+    {
+      "iteration": 4,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] Timeout latency is addressed, but the new bounded teardown can drop tracking while grandchildren are still alive. | [google-gemini-3.5-flash] Approved: Fixed macOS seatbelt signal scope and added bounded waits/drains to prevent unbounded blocking during teardown. | [claude-sonnet] Root cause (seatbelt (target self)-only signal scope) is fixed and verified to compile via signal-scope profile tests; bounded-wait defence-in-depth is applied consistently across coordinator, process_group, and runner_claude, with a deterministic regression test reproducing the original symptom.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/process_group.py",
+          "line": 110,
+          "description": "When a timed-out process group cannot be group-killed but the direct child can be killed, the direct child exits while its grandchild remains alive and the agent sidecar is removed, leaving the surviving process group unreachable by the orphan reaper.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/util.py",
+          "line": 220,
+          "description": "When os.killpg on the shell's process group raises OSError (refused or already-gone), _kill_process_group falls back to proc.terminate(), which signals only the direct shell pid and never escalates to a direct SIGKILL the way process_group.terminate_process_group does for the agent-runner paths.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py:397-399 grants descendant and same-sandbox signal scope so killpg can land under the macOS profile, src/theforge/coordinator/util.py:180-224 bounds the gate timeout kill wait, and src/theforge/coordinator/util.py:233-290 bounds partial-output draining; tests/test_sandbox_group_kill.py:87-136 checks the profile grant and real sandbox killpg path, and tests/test_sandbox_group_kill.py:282-307 reproduces the refused-kill timeout drain symptom and asserts prompt return.; The macOS seatbelt profile in src/theforge/runners/sandbox.py (lines 398-399) was updated to grant signalling descendants via (allow signal (target children)) and (allow signal (target same-sandbox)). This allows process group kills to land under seatbelt. Additionally, bounded waits and bounded output drains were added in src/theforge/coordinator/util.py (lines 180-224, 233-290) and src/theforge/process_group.py (lines 143-179) as defense in depth. These changes are thoroughly tested in tests/test_sandbox_group_kill.py, which verifies the signal scope grants, real sandbox compilation, and bounded teardown behavior.; src/theforge/runners/sandbox.py:381-401 adds (allow signal (target children)) and (allow signal (target same-sandbox)) to the seatbelt profile, directly fixing the (target self)-only grant that caused killpg to return EPERM. Verified independently that this profile syntax is accepted by sandbox-exec (no \"unbound variable\" error) rather than failing to compile. The specific production symptom (unbounded wait after a refused kill) is reproduced deterministically in tests/test_sandbox_group_kill.py::TestGateTimeoutBoundsItsOwnCleanup::test_timeout_returns_promptly_when_the_kill_does_not_land, which neuters _kill_process_group and asserts a 120s command under a 0.2s timeout returns in under 30s \u2014 this is the same failure mode as the reported 605s nested run. The coordinator's own gate additionally confirms a live 33.87s full-suite run (~1.1x standalone) against the story's measured 605s."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior P1 is resolved; the signal grant, bounded teardown, output drain, and sidecar retention paths are covered by focused tests. | [google-gemini-3.5-flash] The implementation successfully resolves the nested gate latency issue by granting descendant signal scope under macOS seatbelt, with robust bounded waits and sidecar retention as defense in depth. | [claude-sonnet] Prior P1 (sidecar dropped after a partial teardown, orphaning a surviving grandchild tree) is fixed via terminate_process_group returning whether the whole group was reached, plus release_group_record/group_is_alive keeping the sidecar when uncertain, with dedicated tests (TestSidecarSurvivesPartialTeardown) covering keep/release/normal-completion. No regressions found in the touched files; two non-blocking robustness gaps noted below.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 2,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/util.py",
+          "line": 236,
+          "description": "The new SIGTERM-then-SIGKILL escalation added to _kill_process_group (coordinator/util.py) has no unit test exercising a real or simulated process that ignores SIGTERM, so the path that calls proc.kill() after a failed terminate()-then-wait is untested; every existing timeout test mocks proc.wait to return immediately, short-circuiting before that branch is reached.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/runners/runner_claude.py",
+          "line": 766,
+          "description": "group_killed is a plain nonlocal boolean written from both the watchdog thread (via _kill_group() at lines 816/821) and the main thread (via _kill_group() at lines 844/847/851/884, and directly at line 880), with no lock around the read-modify-write.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py:392 grants the macOS sandbox signal scopes for self, children, and same-sandbox so killpg can reach spawned descendants; src/theforge/coordinator/util.py:215 bounds and logs refused group kills, escalates direct-child teardown through line 241, and drains timed-out output without blocking at lines 338-348; src/theforge/process_group.py:109 consumes terminate_process_group's boolean result and release_group_record keeps sidecars for live partial teardowns at lines 117-131. tests/test_sandbox_group_kill.py:88 checks the exact profile signal grants, lines 123-137 exercise killpg under a real sandbox where available, lines 283-308 reproduce the refused-kill timeout-drain symptom with a long sleep, and lines 357-421 cover the prior partial-teardown sidecar bug. Focused run: .venv/bin/python -m pytest tests/test_sandbox_group_kill.py selected coord gate timeout tests -q passed with 15 passed and 2 skipped.; src/theforge/runners/sandbox.py:397-399 (seatbelt profile signal scope grants children and same-sandbox targets); tests/test_sandbox_group_kill.py:85-130 (TestSignalScopeGrant and TestGroupKillUnderRealSandbox verify signal delivery under sandbox); src/theforge/runners/sandbox.py:381-401 grants (target children) and (target same-sandbox) signal scope, fixing the (target self)-only seatbelt grant that caused killpg EPERM. The specific production symptom (unbounded wait after a refused kill) is reproduced deterministically in tests/test_sandbox_group_kill.py::TestGateTimeoutBoundsItsOwnCleanup::test_timeout_returns_promptly_when_the_kill_does_not_land (120s command under 0.2s timeout returns in <30s). This iteration's changes (process_group.py:96-135 group_killed/release_group_record/group_is_alive, runner_claude.py:764-893) touch teardown bookkeeping, not the latency path, and the dev's local full-suite run still completes in 61.16s per handoff."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 3,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior sidecar-retention P1 is resolved, the latest iteration introduces no blocking regressions, and the targeted timeout/sandbox tests pass. | [google-gemini-3.5-flash] The implementation successfully resolves the macOS seatbelt signal-delivery restriction and bounds all process teardown waits to prevent idle CPU hangs. | [claude-sonnet] Prior P1 (sidecar dropped after a partial teardown that could reach only the direct child) remains fixed; this iteration is a pure test/hygiene pass (SIGKILL-escalation test added and verified non-vacuous, group_killed converted from a plain bool to a threading.Event) with no production logic change in util.py or process_group.py and no regressions found in runner_claude.py's Event conversion.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A gate run inside a sprint completes within a small constant factor of the same suite run standalone on the same machine \u2014 not twenty times it. Given this suite, a nested gate finishes in well under two minutes.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py lines 392-399 grants signal targets for self, children, and same-sandbox; src/theforge/process_group.py lines 216-230 bounds teardown and reports partial group-kill failure; src/theforge/coordinator/util.py lines 338-348 bounds gate timeout cleanup and partial-output draining; src/theforge/process_group.py lines 109-131 keeps sidecars when teardown reached only the direct child. tests/test_sandbox_group_kill.py lines 88-137 verifies the macOS profile signal grant and real killpg path where the host permits it, lines 283-308 reproduces the refused-kill timeout drain that previously waited for natural command lifetime, and lines 357-421 verifies the prior P1 sidecar-retention failure mode. tests/test_coord_gate_exec.py lines 966-998 pins SIGTERM-to-SIGKILL escalation. Local targeted verification passed: 38 passed, 2 skipped for tests/test_sandbox_group_kill.py and tests/test_coord_gate_exec.py.; src/theforge/runners/sandbox.py:381-401 grants (target children) and (target same-sandbox) signal scope, fixing the (target self)-only seatbelt grant that caused killpg EPERM. The specific production symptom (unbounded wait after a refused kill) is reproduced deterministically in tests/test_sandbox_group_kill.py::TestGateTimeoutBoundsItsOwnCleanup::test_timeout_returns_promptly_when_the_kill_does_not_land (120s command under 0.2s timeout returns in <30s). This iteration's only production change, runner_claude.py:764-895 (group_kill_failed as a threading.Event), does not touch the latency path; the dev's local full suite still completes in 54.67s and the coordinator's own gate measured 33.87s against the story's 605s nested baseline."
+        },
+        {
+          "criterion": "Symptom resolution: A gate run inside a sprint takes 20x wall clock at idle CPU due to macOS seatbelt profile denying signal delivery to process groups.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/sandbox.py:385-392 adds signal target children and same-sandbox rules; tests/test_sandbox_group_kill.py:88-93 asserts these rules are present in the generated profile, and lines 108-123 verify end-to-end that killpg succeeds under a real sandbox."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1961",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1959",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1961",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1961",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-26T21:24:10.984000+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1283 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1416 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 789 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 919 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2207 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1638 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1458 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1599 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1813 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1064 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2016 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 848 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 931 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 872 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 816 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1222 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1201 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 3613 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 964 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1489 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1271 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2040 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1167 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1084 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1412 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1539 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 2838 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1127 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1268 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1413 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "4703ba325cb0f28c",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/process_group.py",
+      "line": 110,
+      "severity": "P1",
+      "description": "When a timed-out process group cannot be group-killed but the direct child can be killed, the direct child exits while its grandchild remains alive and the agent sidecar is removed, leaving the surviving process group unreachable by the orphan reaper.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "51f752e0e2c98969",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/util.py",
+      "line": 220,
+      "severity": "P2",
+      "description": "When os.killpg on the shell's process group raises OSError (refused or already-gone), _kill_process_group falls back to proc.terminate(), which signals only the direct shell pid and never escalates to a direct SIGKILL the way process_group.terminate_process_group does for the agent-runner paths.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "d76b906229d6964b",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/coordinator/util.py",
+      "line": 236,
+      "severity": "P2",
+      "description": "The new SIGTERM-then-SIGKILL escalation added to _kill_process_group (coordinator/util.py) has no unit test exercising a real or simulated process that ignores SIGTERM, so the path that calls proc.kill() after a failed terminate()-then-wait is untested; every existing timeout test mocks proc.wait to return immediately, short-circuiting before that branch is reached.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "f7d62204571e8acc",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/runners/runner_claude.py",
+      "line": 766,
+      "severity": "P2",
+      "description": "group_killed is a plain nonlocal boolean written from both the watchdog thread (via _kill_group() at lines 816/821) and the main thread (via _kill_group() at lines 844/847/851/884, and directly at line 880), with no lock around the read-modify-write.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 3,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 4,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8391,
+              "weighted": 0.4399,
+              "runs": 87,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.4399
+            },
+            "domain": {
+              "domains": [
+                "concurrency",
+                "security",
+                "testing"
+              ],
+              "raw": 0.6667,
+              "weighted": 0.6667,
+              "runs": 3,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.6667,
+              "by_domain": {
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "security": {
+                  "runs": 2,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "testing": {
+                  "runs": 1,
+                  "raw": 0.0,
+                  "weighted": 0.0,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "concurrency",
+                "security",
+                "testing"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "security": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "testing": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "concurrency",
+          "security",
+          "testing"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "concurrency",
+            "security",
+            "testing"
+          ],
+          "raw": 0.6667,
+          "weighted": 0.6667,
+          "runs": 3,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.6667,
+          "by_domain": {
+            "concurrency": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            },
+            "security": {
+              "runs": 2,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "testing": {
+              "runs": 1,
+              "raw": 0.0,
+              "weighted": 0.0,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": true,
+        "outcome": "promoted_below_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8391,
+        "weighted_success_rate": 0.4399,
+        "sample_size": 87,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": false,
+        "checked": {
+          "weighted_success_rate": 0.4399,
+          "threshold": 0.6,
+          "sample_size": 87,
+          "min_runs": 5
+        },
+        "reason": "promotion_active_weighted_rate_below_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:concurrency+security+testing",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "concurrency",
+          "security",
+          "testing"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.44 < threshold 0.60 over 87 admissible HIGH runs (profile success_rate=0.44 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 14,
+            "completed": 13,
+            "raw": 0.9286,
+            "weighted": 0.9339,
+            "rate": 0.9339,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 8,
+            "completed": 7,
+            "raw": 0.875,
+            "weighted": 0.8689,
+            "rate": 0.8689,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 27,
+            "completed": 27,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 14,
+            "completed": 13,
+            "raw": 0.9286,
+            "weighted": 0.9339,
+            "rate": 0.9339,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 8,
+            "completed": 7,
+            "raw": 0.875,
+            "weighted": 0.8689,
+            "rate": 0.8689,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.297889,
+      "duration_s": 185.12,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 32.174129,
+      "duration_s": 3147.54,
+      "iterations": 4,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 142.9,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 447.0,
+      "cycles": 3,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 3.427146,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 3922.56,
+    "dev_attempts_total": 4,
+    "dev_iterations_productive": 4,
+    "review_cycles_total": 3,
+    "dev_iterations": 4,
+    "review_cycles": 3
+  },
+  "sprint_id": "7b7735cf4833",
+  "sprint_name": "issues-1959"
+}
