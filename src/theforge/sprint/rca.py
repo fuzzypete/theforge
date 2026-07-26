@@ -163,6 +163,17 @@ RULES: tuple[RcaRule, ...] = (
         description="An agent invocation exceeded its timeout.",
         patterns=("timeout: agent exceeded",),
     ),
+    # ── primary: workspace base-branch divergence ────────────────────────────
+    RcaRule(
+        rule_id="workspace_base_divergence",
+        failure_class="workspace_divergence",
+        role="primary",
+        description=(
+            "Base branch diverged from origin (local ahead and behind) — a "
+            "mechanical workspace precondition failure, not a code/logic bug."
+        ),
+        patterns=("workspace abort", "diverged from origin"),
+    ),
     # ── primary: intake shape drop ───────────────────────────────────────────
     RcaRule(
         rule_id="intake_dropped_after_fix",
@@ -282,6 +293,7 @@ RULES_BY_ID: dict[str, RcaRule] = {rule.rule_id: rule for rule in RULES}
 _PRIMARY_PRIORITY: tuple[str, ...] = (
     "provider_quota",
     "worker_timeout",
+    "workspace_divergence",
     "intake_shape",
     "merge_failed",
     "merge_arming_failed",
@@ -890,6 +902,11 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
         "worker_timeout": (
             f"inspect the worker log for the phase {ref} was in at timeout; "
             "split the story or raise the worker timeout, then re-run"
+        ),
+        "workspace_divergence": (
+            f"resolve the base branch divergence (rebase/reconcile local vs origin), "
+            f"then re-sprint {ref} — this is a mechanical workspace precondition failure, "
+            "not a code defect requiring LLM diagnosis"
         ),
         "intake_shape": f"reshape the {ref} issue body to satisfy the intake gate, then re-run",
         "merge_failed": f"resolve the merge conflict for {ref} and re-run the merge",

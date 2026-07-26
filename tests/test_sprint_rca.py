@@ -169,6 +169,37 @@ def test_provider_quota_with_gate_timeout(tmp_path: Path) -> None:
     assert "usage limit" in quota_ev["excerpt"].lower()
 
 
+# ── Engine: workspace base-branch divergence is a known mechanical class ──────
+
+
+def test_workspace_base_divergence_classifies_not_unknown(tmp_path: Path) -> None:
+    """A WORKSPACE abort divergence error must classify as workspace_divergence,
+    not fall through to the unknown_needs_rca residual — and the recommended
+    action must point at resolving the branch state, not LLM diagnosis.
+
+    Reproduces #1899: the sprint RCA recorded primary_failure_class:
+    unknown_needs_rca for a story whose captured error was the exact
+    WORKSPACE abort divergence message raised by workspace.py.
+    """
+    divergence_err = (
+        "WORKSPACE abort: base branch 'release/v0.13' has diverged from origin"
+        " (local is 1 ahead, 1 behind). Run: git rebase origin/release/v0.13"
+    )
+    d = _sprint_dir(tmp_path, name="issues-1899,158,1019,1108,1443,1489")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1899", "outcome": "FAILED", "error": divergence_err}]),
+    )
+    entry = _build(d)["stories"]["issue-1899"]
+    assert entry["primary_failure_class"] == "workspace_divergence"
+    assert entry["primary_failure_class"] != UNKNOWN_CLASS
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "workspace_base_divergence" in rule_ids
+    actions = " ".join(entry["recommended_next_actions"]).lower()
+    assert "rebase" in actions or "diverg" in actions
+    assert "forge diagnose" not in actions
+
+
 # ── Engine: ambiguous "429" must not match inside cost/duration floats ────────
 
 
