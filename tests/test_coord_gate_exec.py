@@ -930,3 +930,69 @@ def test_run_shell_keyboard_interrupt_ignores_missing_process_group(tmp_path):
     # Bounded, not bare: an unbounded wait here lasts for the command's whole
     # natural lifetime whenever the kill above did not land (#1959).
     proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
+
+
+class _IgnoresSigterm:
+    """Popen stand-in for a process that catches SIGTERM and keeps running.
+
+    The mocks used by the tests above return from ``wait()`` immediately, so they
+    short-circuit before the SIGKILL escalation and cannot observe it. This one
+    stays alive until ``kill()`` — the only thing SIGTERM-ignoring processes
+    respond to, and the reason the escalation exists (a survivor holds the gate's
+    output pipes open, which is the 300s read in #1959).
+    """
+
+    def __init__(self, pid: int = 4321) -> None:
+        self.pid = pid
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_timeouts: list[float | None] = []
+        self._alive = True
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1  # Delivered, and deliberately ignored.
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self._alive = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_timeouts.append(timeout)
+        if self._alive:
+            raise subprocess.TimeoutExpired(cmd="ignores-sigterm", timeout=timeout or 0)
+        return 0
+
+
+def test_kill_process_group_escalates_to_sigkill_when_sigterm_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process that survives terminate() must be killed, not left running."""
+    # Force the no-usable-pgid path so the fallback branch is what runs. Patching
+    # the module-local name rather than os.getpgid keeps the real os module intact.
+    monkeypatch.setattr(_cu, "is_killable_pgid", lambda _pgid: False)
+    proc = _IgnoresSigterm()
+
+    _cu._kill_process_group(proc)
+
+    assert proc.terminate_calls == 1, "SIGTERM should be tried first"
+    assert proc.kill_calls == 1, (
+        "process survived SIGTERM and was never SIGKILL-ed — it would keep the "
+        "gate's output pipes open for its full natural lifetime (#1959)"
+    )
+    assert proc.wait_timeouts == [_cu.KILL_GRACE_SECONDS, _cu.KILL_GRACE_SECONDS], (
+        f"every wait must be bounded by the grace period; got {proc.wait_timeouts}"
+    )
+
+
+def test_kill_process_group_does_not_escalate_when_sigterm_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The escalation is conditional: a process that exits on SIGTERM is left alone."""
+    monkeypatch.setattr(_cu, "is_killable_pgid", lambda _pgid: False)
+    proc = _IgnoresSigterm()
+    proc.terminate = lambda: setattr(proc, "_alive", False)  # type: ignore[method-assign]
+
+    _cu._kill_process_group(proc)
+
+    assert proc.kill_calls == 0, "SIGKILL sent to a process that had already exited"
+    assert proc.wait_timeouts == [_cu.KILL_GRACE_SECONDS]
