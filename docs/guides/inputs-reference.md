@@ -417,6 +417,12 @@ intake:
   auto_fix: false             # allow a single agent rewrite pass on failure
   auto_fix_mode: comment      # "comment" (post + drop) | "edit" (rewrite body, rerun once)
 
+# ── Sandbox capability profile (optional) ─────────────────
+# Omit entirely for default write containment. See "Sandbox capability
+# profiles" below.
+sandbox:
+  capability_profile: xcode   # forge-owned preset name; omit for the default
+
 # ── Secrets (optional) ────────────────────────────────────
 # API keys are read from .forge/.env (run `forge secrets-init` to create)
 ```
@@ -475,6 +481,56 @@ Controls how the dev agent treats P2 review findings during the current run.
 (`docs/adr/0001-intake-readiness-workflow.md`), "Inline intake remediation
 posture". `forge init` and generated templates emit no `intake.grooming` line
 (so it resolves to `false`); there is no migration path.
+
+### Sandbox capability profiles (`sandbox.capability_profile`)
+
+The dev agent runs under a mechanical write-containment sandbox: writes are
+confined to the story worktree plus a fixed allow-set. Some stacks cannot
+*develop* a change inside that boundary — the iOS/Xcode toolchain, for example,
+needs writes under `~/Library/Developer` and mach services for the simulator, so
+`xcodegen`/`xcodebuild` fail with `Operation not permitted` and the agent cannot
+build well enough to verify its own work.
+
+`sandbox.capability_profile` names a **forge-owned preset** that widens the
+sandbox by a bounded, declared amount:
+
+```yaml
+sandbox:
+  capability_profile: xcode
+```
+
+| Preset | Platform | Grants |
+|--------|----------|--------|
+| `xcode` | macOS only | Xcode/SwiftPM state roots (`~/Library/Developer`, DerivedData caches, `/private/var/folders`) and the CoreSimulator / launch-services mach services. |
+
+Rules that make this safe to adopt:
+
+- **Presets are forge-owned.** A project selects one *by name*. It cannot
+  author a preset, extend one, or override its contents; there is no inline
+  `write_roots`/`mach_services` key, and supplying one is a config error.
+- **Widening is always bounded.** No value disables the sandbox or grants
+  `allow default`. The granted set is exactly the preset's declared list — a
+  write to an out-of-worktree path the preset does not declare still fails.
+- **Unknown names fail at config load**, so a typo cannot silently fall back to
+  default containment.
+- **Unexpressible presets fail closed.** Declaring `xcode` on Linux refuses the
+  run with a clear reason (bwrap has no mach-service axis) rather than running
+  with the declared capability missing.
+- **Grants are audited.** The resolved profile name, write roots, and mach
+  services are recorded in the run audit record under `workspace` and per dev
+  iteration. A run with no preset records an explicit null profile with empty
+  grants, so default containment is distinguishable from missing audit data.
+
+**To adopt a preset**, an operator adds the two-line `sandbox` block above to
+`forge.yaml` and re-runs. There is no default and no auto-detection: a project
+that says nothing keeps today's containment exactly. To inspect what a preset
+grants without running an agent — on any host, whether or not the toolchain is
+installed:
+
+```bash
+python -c "from theforge.config.sandbox_capabilities import resolve_capabilities; \
+print(resolve_capabilities('xcode').audit_payload())"
+```
 
 ---
 

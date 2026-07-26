@@ -8,6 +8,19 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
+from theforge.config.sandbox_capabilities import (
+    ResolvedSandboxCapabilities,
+    SandboxCapabilityError,
+    UnsupportedCapabilityProfileError,
+    resolve_capabilities,
+)
+
+__all__ = [
+    "SandboxCapabilityError",
+    "sandbox_command",
+    "workspace_effect_sandbox_command",
+]
+
 logger = logging.getLogger(__name__)
 _SYSTEM = platform.system()
 
@@ -278,6 +291,7 @@ def _macos_profile(
     extra_write_roots: tuple[Path, ...] = (),
     denied_read_roots: tuple[Path, ...] = (),
     allow_credential_services: bool = False,
+    extra_mach_services: tuple[str, ...] = (),
 ) -> str:
     root = allowed_root.resolve()
     cred_read_roots = _credential_read_roots() if allow_credential_services else ()
@@ -321,6 +335,11 @@ def _macos_profile(
     ]
     if allow_credential_services:
         service_lines.append('(allow mach-lookup (global-name "com.apple.SecurityServer"))')
+    # Capability-profile mach services (e.g. the Xcode preset's CoreSimulator
+    # lookup). Each is an explicit global-name grant — never a wildcard — so the
+    # granted set stays exactly the preset's declared list (#1947).
+    for service in dict.fromkeys(extra_mach_services):
+        service_lines.append(f'(allow mach-lookup (global-name "{service}"))')
     service_block = "\n".join(service_lines)
     deny_block = ""
     if deny_rules:
@@ -406,12 +425,34 @@ def _linux_command(
     return wrapped
 
 
+def _resolve_capability_profile(profile: str | None) -> ResolvedSandboxCapabilities:
+    """Resolve *profile* against the running host, failing closed if unexpressible.
+
+    The platform check happens here, before the command is built, so a project
+    that declares a preset this backend cannot express gets a clear refusal
+    rather than a run that silently proceeds with the capability absent. The
+    per-axis check is belt-and-braces behind the preset's own
+    ``supported_platforms``: it catches a future preset whose platform metadata
+    and declared axes disagree.
+    """
+    capabilities = resolve_capabilities(profile, system=_SYSTEM)
+    if capabilities.mach_services and _SYSTEM != "Darwin":
+        raise UnsupportedCapabilityProfileError(
+            f"sandbox capability profile {capabilities.profile!r} declares mach "
+            f"services {list(capabilities.mach_services)}, which the {_SYSTEM} "
+            "sandbox backend (bwrap) cannot express. Refusing to run with the "
+            "declared capability absent."
+        )
+    return capabilities
+
+
 def workspace_effect_sandbox_command(
     cmd: list[str],
     allowed_root: Path,
     *,
     extra_write_roots: tuple[Path, ...] | list[Path] = (),
     allow_credential_services: bool = False,
+    capability_profile: str | None = None,
 ) -> list[str]:
     """Wrap *cmd* so filesystem writes are confined to *allowed_root*.
 
@@ -421,6 +462,14 @@ def workspace_effect_sandbox_command(
     access a CLI needs to authenticate under the sandbox (macOS securityd);
     without it, wrapping Claude reproduces the #925 "Not logged in" regression.
 
+    ``capability_profile`` names a forge-owned preset from
+    ``config.sandbox_capabilities`` (selected by the project in ``forge.yaml``)
+    whose declared out-of-worktree write roots and mach services are added to
+    the allow-set. ``None`` — the default — resolves to no extra capabilities,
+    so the unselected path is exactly today's containment boundary. Widening is
+    always a bounded named set: there is no value here that grants
+    ``allow default`` or disables the sandbox (#1947).
+
     The worktree's own git internals (private gitdir, shared object store, and
     its own branch-ref namespace) are granted automatically so ``git commit``
     from the correctly-scoped worktree works, while the main checkout and other
@@ -429,16 +478,26 @@ def workspace_effect_sandbox_command(
     Returns *cmd* unchanged when no host sandbox (sandbox-exec/bwrap) is
     available — callers that require mechanical containment must detect this
     (``result[0] == cmd[0]``) and fail closed.
+
+    Raises:
+        SandboxCapabilityError: *capability_profile* names no forge-owned preset,
+            or this host's sandbox backend cannot express it.
     """
     root = allowed_root.resolve()
+    capabilities = _resolve_capability_profile(capability_profile)
     extra_write_roots = tuple(extra_write_roots) + _git_worktree_write_roots(root)
+    extra_write_roots += capabilities.write_roots
     blocked_worktrees = _blocked_worktree_roots(root)
     if _SYSTEM == "Darwin":
         profile = _macos_profile(
             root,
+            # A build tool must read the state dirs it writes, so a preset's
+            # write roots are readable too. Nothing beyond the declared set.
+            extra_read_roots=capabilities.write_roots,
             extra_write_roots=extra_write_roots,
             denied_read_roots=blocked_worktrees,
             allow_credential_services=allow_credential_services,
+            extra_mach_services=capabilities.mach_services,
         )
         if _sandbox_available(
             "sandbox-exec", ("sandbox-exec", "-p", "(version 1) (allow default)", "true")
@@ -450,6 +509,7 @@ def workspace_effect_sandbox_command(
             return _linux_command(
                 cmd,
                 root,
+                extra_read_roots=capabilities.write_roots,
                 extra_write_roots=extra_write_roots,
                 masked_read_roots=blocked_worktrees,
             )

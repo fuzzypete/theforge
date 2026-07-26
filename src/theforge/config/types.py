@@ -251,6 +251,11 @@ class ModelProfile:
     github_handle: str | None = None  # optional GitHub username for reviewer assignment
     fallback_models: tuple[str, ...] = ()  # additional models to try on quota/not-found failure
     sandbox_mode: str = "workspace-write"  # CLI sandbox: "workspace-write" | "read-only" | "none"
+    # Forge-owned sandbox capability preset (see config.sandbox_capabilities)
+    # widening the host sandbox for stacks that cannot build inside the default
+    # containment. Stamped by the coordinator from ForgeConfig.sandbox; None
+    # means default containment (#1947).
+    sandbox_capability_profile: str | None = None
     registry_id: str | None = None  # canonical model registry key, when sourced from a registry
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     # Explicit TransportSpec — when set, it is the runtime dispatch source of
@@ -601,6 +606,13 @@ class DevConfig:
 
 
 @dataclass(frozen=True)
+class SandboxConfig:
+    """Project-selected forge-owned sandbox capability profile."""
+
+    capability_profile: str | None = None
+
+
+@dataclass(frozen=True)
 class SprintConfig:
     """Project-level sprint defaults from forge.yaml."""
 
@@ -733,6 +745,7 @@ class ForgeConfig:
     log: LogConfig = field(default_factory=LogConfig)
     hooks: HooksConfig | None = None
     dev: DevConfig = field(default_factory=DevConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     sprint: SprintConfig = field(default_factory=SprintConfig)
     shape_check: ShapeCheckConfig = field(default_factory=ShapeCheckConfig)
     intake: IntakeConfig = field(default_factory=IntakeConfig)

@@ -46,6 +46,7 @@ from .profiles import (
     override_constrains_model,
 )
 from .role_derivation import derive_roles
+from .sandbox_capabilities import get_preset
 from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
@@ -67,6 +68,7 @@ from .types import (
     PlanConfig,
     PlanReviewConfig,
     RetryPolicy,
+    SandboxConfig,
     ShapeCheckConfig,
     SprintConfig,
     StuckDetectionConfig,
@@ -75,6 +77,10 @@ from .types import (
 
 log = logging.getLogger("theforge.config")
 _VALID_DEV_P2_POLICIES = frozenset({"in_scope", "all", "p1_only"})
+_VALID_SANDBOX_KEYS = frozenset({"capability_profile"})
+_REJECTED_INLINE_SANDBOX_KEYS = frozenset(
+    {"write_roots", "mach_services", "allow_default", "disabled", "mode"}
+)
 
 
 def _parse_dev_config(dev_raw: Any) -> DevConfig:
@@ -91,6 +97,41 @@ def _parse_dev_config(dev_raw: Any) -> DevConfig:
         allowed = ", ".join(sorted(_VALID_DEV_P2_POLICIES))
         raise ValueError(f"dev.p2_policy must be one of {allowed}; got {p2_policy!r}")
     return DevConfig(p2_policy=p2_policy)
+
+
+def _parse_sandbox_config(sandbox_raw: Any) -> SandboxConfig:
+    """Parse top-level sandbox capability-profile selection from forge.yaml."""
+    if sandbox_raw is None:
+        return SandboxConfig()
+    if not isinstance(sandbox_raw, dict):
+        raise ValueError(
+            "forge.yaml 'sandbox' section must be a mapping when present, "
+            f"got {type(sandbox_raw).__name__}"
+        )
+    rejected = sorted(_REJECTED_INLINE_SANDBOX_KEYS & sandbox_raw.keys())
+    if rejected:
+        raise ValueError(
+            "forge.yaml 'sandbox' supports only forge-owned named presets; "
+            f"remove inline capability key(s): {rejected}"
+        )
+    unknown = sorted(set(sandbox_raw) - _VALID_SANDBOX_KEYS)
+    if unknown:
+        raise ValueError(
+            "forge.yaml 'sandbox' mapping only supports 'capability_profile'; "
+            f"unknown key(s): {unknown}"
+        )
+    profile = sandbox_raw.get("capability_profile")
+    if profile is None:
+        return SandboxConfig()
+    if not isinstance(profile, str) or not profile.strip():
+        raise ValueError(
+            "forge.yaml 'sandbox.capability_profile' must be a non-empty string when set"
+        )
+    name = profile.strip()
+    # Reject unknown preset names at load time rather than at dev-run time —
+    # a typo'd profile must not silently resolve to default containment.
+    get_preset(name)
+    return SandboxConfig(capability_profile=name)
 
 
 def _parse_models_section(
@@ -837,6 +878,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)
     dev_cfg = _parse_dev_config(raw.get("dev"))
+    sandbox_cfg = _parse_sandbox_config(raw.get("sandbox"))
 
     github_data = raw.get("github", {})
     github_cfg = GithubConfig(enabled=bool(github_data.get("enabled", False)))
@@ -1347,6 +1389,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         log=log_cfg,
         hooks=hooks_cfg,
         dev=dev_cfg,
+        sandbox=sandbox_cfg,
         sprint=sprint_cfg,
         shape_check=shape_check_cfg,
         intake=intake_cfg,

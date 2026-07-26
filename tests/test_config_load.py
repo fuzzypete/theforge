@@ -73,10 +73,37 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.project == "test-project"
         assert config.project_root == tmp_path
+        assert config.sandbox.capability_profile is None
         assert config.dev_profile == DEFAULT_DEV_PROFILE
         assert config.review_profile == DEFAULT_REVIEW_PROFILE
         assert config.review_pool == [DEFAULT_REVIEW_PROFILE]
         assert config.synthesis_profile is None
+
+    def test_sandbox_capability_profile_loads(self, tmp_path):
+        config_path = _write_config({"sandbox": {"capability_profile": "xcode"}}, tmp_path)
+        config = load_config(config_path)
+        assert config.sandbox.capability_profile == "xcode"
+
+    @pytest.mark.parametrize(
+        ("sandbox", "message"),
+        [
+            (["xcode"], "sandbox' section must be a mapping"),
+            ({"capability_profile": ""}, "sandbox.capability_profile' must be a non-empty string"),
+            ({"capability_profile": 3}, "sandbox.capability_profile' must be a non-empty string"),
+            ({"write_roots": ["~/x"]}, "remove inline capability key"),
+            ({"mach_services": ["svc"]}, "remove inline capability key"),
+            ({"allow_default": True}, "remove inline capability key"),
+            ({"disabled": True}, "remove inline capability key"),
+            ({"mode": "none"}, "remove inline capability key"),
+            ({"capability_profile": "xcode", "extra": True}, "unknown key"),
+            # A typo'd preset must fail at load, not resolve to default containment.
+            ({"capability_profile": "xcodee"}, "unknown sandbox capability profile"),
+        ],
+    )
+    def test_sandbox_invalid_shapes_raise(self, tmp_path, sandbox, message):
+        config_path = _write_config({"sandbox": sandbox}, tmp_path)
+        with pytest.raises(ValueError, match=message):
+            load_config(config_path)
 
     def test_failed_test_pattern_valid_regex_loads(self, tmp_path):
         config_path = _write_config(

@@ -22,7 +22,7 @@ from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
-from .sandbox import workspace_effect_sandbox_command
+from .sandbox import SandboxCapabilityError, workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -664,12 +664,28 @@ def _run_claude(
     # keychain reads, and ~/.claude stays writable, so auth and session
     # persistence survive containment.
     if profile.sandbox_mode != "none":
-        sandboxed_cmd = workspace_effect_sandbox_command(
-            cmd,
-            working_dir,
-            extra_write_roots=_claude_state_write_roots(),
-            allow_credential_services=True,
-        )
+        try:
+            sandboxed_cmd = workspace_effect_sandbox_command(
+                cmd,
+                working_dir,
+                extra_write_roots=_claude_state_write_roots(),
+                allow_credential_services=True,
+                capability_profile=profile.sandbox_capability_profile,
+            )
+        except SandboxCapabilityError as exc:
+            # Fail closed: a declared capability profile this host cannot express
+            # must refuse the run, never degrade to default containment (#1947).
+            _log(f"✗ claude: {exc}")
+            return AgentResult(
+                success=False,
+                output=f"SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED: {exc}",
+                session_id=None,
+                cost_usd=None,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+                startup_failure=True,
+            )
         if sandboxed_cmd[0] == cmd[0]:
             _log(
                 f"✗ claude: sandbox_mode={profile.sandbox_mode!r} requested but platform "
