@@ -34,6 +34,15 @@ from typing import Any
 _PROJECT_ROOT_ENV = "FORGE_PROJECT_ROOT"
 _RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
 
+# How long a teardown waits for a SIGKILL-ed tree to actually be reaped before
+# escalating, and again before giving up. Short on purpose, and it can afford to
+# be: this is not a grace period for a graceful shutdown — SIGKILL is not
+# catchable, so a process that has received one is already dead barring
+# uninterruptible sleep. It is only the window to observe the exit. Two passes
+# bound the whole teardown at 2x this, which keeps it inside the <5s budget the
+# gate's timeout path is asserted against even when every kill is refused.
+KILL_GRACE_SECONDS = 2.0
+
 
 def _log(msg: str) -> None:
     # Local import keeps this module stdlib-only at import time.
@@ -89,13 +98,12 @@ def run_in_process_group(
         register_agent_group(pgid, sandbox_dir=cwd)
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _killpg_for(proc.pid)
-        proc.wait()
-        raise
     except BaseException:
-        _killpg_for(proc.pid)
-        proc.wait()
+        # Covers TimeoutExpired and every other unwind identically: kill the
+        # group, then wait for it *bounded*. An unbounded wait here blocks for
+        # the child's full natural lifetime whenever the group kill did not land
+        # (#1959), turning an enforced timeout into no timeout at all.
+        terminate_process_group(proc)
         raise
     finally:
         if pgid is not None:
@@ -103,12 +111,63 @@ def run_in_process_group(
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
-def _killpg_for(pid: int) -> None:
+def _killpg_for(pid: int) -> bool:
     """Best-effort ``SIGKILL`` of the process group led by *pid*."""
     try:
-        kill_agent_group(os.getpgid(pid))
+        return kill_agent_group(os.getpgid(pid))
     except OSError:
-        pass
+        return False
+
+
+def _wait_bounded(proc: subprocess.Popen[Any], timeout: float) -> bool:
+    """True if *proc* exited within *timeout* seconds."""
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
+def terminate_process_group(
+    proc: subprocess.Popen[Any], *, grace_seconds: float = KILL_GRACE_SECONDS
+) -> None:
+    """Kill the group led by *proc* and wait — bounded — for the tree to die.
+
+    Group kill is best-effort and can fail to land: the macOS seatbelt profile
+    denies ``killpg`` unless it grants signalling descendants, and a group can
+    also be partly gone already. Every caller that reaches here has already
+    decided the tree must die, so the only question is how long we are willing to
+    wait to observe it. Waiting without a bound is the failure mode this exists
+    to prevent — it converts a denied kill into a block for the child's entire
+    natural lifetime, which is how a nested gate spent ten minutes at idle CPU
+    (#1959). So: kill the group, wait briefly, escalate to the direct child, wait
+    briefly again, and log loudly if even that does not settle it — a survivor is
+    a real leak and the log line is the only trace of it, so it must not be
+    swallowed the way the refused kill itself was.
+    """
+    # Only ever wait on a signal that was actually delivered. A refused kill
+    # tells us up front that nothing will change, so waiting out the grace period
+    # for it buys nothing but the latency this function exists to avoid.
+    if _killpg_for(proc.pid) and _wait_bounded(proc, grace_seconds):
+        return
+    # The group kill did not reach the child. Signalling the direct pid is a
+    # weaker guarantee (grandchildren may survive) but it is the one thing a
+    # sandbox that denies cross-group signalling still permits. The same guard
+    # applies as for a pgid, and for the same reason (#1793): a real spawned
+    # child always has pid > 1, while ``os.kill(0, …)`` signals the caller's own
+    # process group and ``os.kill(1, …)`` targets init.
+    if not is_killable_pgid(proc.pid):
+        return
+    try:
+        os.kill(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        _log(f"  ⚠ direct kill of pid={proc.pid} refused: {exc}")
+    else:
+        if _wait_bounded(proc, grace_seconds):
+            return
+    _log(f"  ⚠ pid={proc.pid} survived teardown; abandoning it rather than blocking on it")
 
 
 # ── pgid registry sidecars ───────────────────────────────────────────
@@ -182,8 +241,11 @@ def is_killable_pgid(pgid: object) -> bool:
     return isinstance(pgid, int) and pgid > 1
 
 
-def kill_agent_group(pgid: int) -> None:
+def kill_agent_group(pgid: int) -> bool:
     """Best-effort ``SIGKILL`` of an entire agent process group.
+
+    Returns True when the group is gone or the signal was delivered, False when
+    there was no group to kill or the kill was refused.
 
     A pgid ``<= 1`` (or a non-int) is treated as "no group to kill" rather than
     passed to ``killpg``: ``os.killpg(1, …)`` is ``kill(-1, …)``, a broadcast
@@ -191,11 +253,21 @@ def kill_agent_group(pgid: int) -> None:
     workers and the CI runner (issue #1793).
     """
     if not is_killable_pgid(pgid):
-        return
+        return False
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except OSError:
-        pass
+    except ProcessLookupError:
+        # Already gone — that is the state we wanted, not a failure.
+        return True
+    except OSError as exc:
+        # Loud on purpose. A refused group kill produces no error anywhere else;
+        # it surfaces only as a teardown that takes the child's full natural
+        # lifetime, which is indistinguishable from "the work was slow" in a log
+        # (#1959). Under macOS seatbelt this is EPERM when the profile does not
+        # grant signalling descendants.
+        _log(f"  ⚠ group kill of pgid={pgid} refused: {exc}")
+        return False
+    return True
 
 
 # ── Orphan reaper ────────────────────────────────────────────────────

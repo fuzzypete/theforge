@@ -124,6 +124,14 @@ def _parse_model_usage(result_json: dict[str, Any]) -> tuple[ModelUsage, ...]:
 _CACHE_READ_RATE_MULT = 0.1
 _CACHE_WRITE_RATE_MULT = 1.25
 
+# How long to let the CLI exit on its own once its stream is finished and stdin
+# is closed, before killing it. Distinct from the post-SIGKILL reap window in
+# process_group: this one is a genuine grace period for an orderly shutdown, so
+# it is generous. What it must not be is unbounded — that is what turns a
+# _kill_group() the platform sandbox refused into a wait for the CLI's whole
+# natural lifetime (#1959).
+_EXIT_GRACE_SECONDS = 10.0
+
 # Models whose kill-path cost could not be reconstructed — warned once each so
 # the log makes cost-unknown runs loud rather than silently zero.
 _COST_UNMEASURED_WARNED: set[str] = set()
@@ -853,7 +861,15 @@ def _run_claude(
             proc.stdin.close()
         except (BrokenPipeError, ValueError, OSError):
             pass
-        proc.wait()
+        # Bounded. The stream is finished (result event, timeout, stop, or stuck
+        # kill) and stdin is closed, so a CLI that has not exited by now is not
+        # going to produce anything more. Waiting without a bound here is how a
+        # _kill_group() the platform sandbox refused turns an enforced timeout
+        # into a block for the CLI's full natural lifetime (#1959).
+        try:
+            proc.wait(timeout=_EXIT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process_group.terminate_process_group(proc)
     except BaseException:
         # SIGTERM→SystemExit, KeyboardInterrupt, or any post-spawn error: kill the
         # whole group so it cannot outlive this process, then re-raise.

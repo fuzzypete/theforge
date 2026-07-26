@@ -844,7 +844,9 @@ def test_run_shell_kills_process_group_on_timeout(tmp_path):
     assert mock_popen.call_args.kwargs["start_new_session"] is True
     mock_getpgid.assert_called_once_with(4321)
     mock_killpg.assert_called_once_with(9876, signal.SIGKILL)
-    proc.wait.assert_called_once_with()
+    # Bounded, not bare: an unbounded wait here lasts for the command's whole
+    # natural lifetime whenever the kill above did not land (#1959).
+    proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
 
 
 def test_run_shell_timeout_ignores_missing_process_group(tmp_path):
@@ -862,7 +864,9 @@ def test_run_shell_timeout_ignores_missing_process_group(tmp_path):
     assert ok is False
     assert output == "TIMEOUT after 1s: pytest -n auto --dist worksteal"
     mock_killpg.assert_not_called()
-    proc.wait.assert_called_once_with()
+    # Bounded, not bare: an unbounded wait here lasts for the command's whole
+    # natural lifetime whenever the kill above did not land (#1959).
+    proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
 
 
 def test_run_shell_timeout_refuses_broadcast_pgid(tmp_path):
@@ -884,7 +888,9 @@ def test_run_shell_timeout_refuses_broadcast_pgid(tmp_path):
     mock_getpgid.assert_called_once_with(4321)
     mock_killpg.assert_not_called()
     proc.terminate.assert_called_once_with()
-    proc.wait.assert_called_once_with()
+    # Bounded, not bare: an unbounded wait here lasts for the command's whole
+    # natural lifetime whenever the kill above did not land (#1959).
+    proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
 
 
 def test_run_shell_kills_process_group_on_keyboard_interrupt(tmp_path):
@@ -902,7 +908,9 @@ def test_run_shell_kills_process_group_on_keyboard_interrupt(tmp_path):
 
     mock_getpgid.assert_called_once_with(4321)
     mock_killpg.assert_called_once_with(9876, signal.SIGKILL)
-    proc.wait.assert_called_once_with()
+    # Bounded, not bare: an unbounded wait here lasts for the command's whole
+    # natural lifetime whenever the kill above did not land (#1959).
+    proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
 
 
 def test_run_shell_keyboard_interrupt_ignores_missing_process_group(tmp_path):
@@ -919,4 +927,6 @@ def test_run_shell_keyboard_interrupt_ignores_missing_process_group(tmp_path):
             _cu._run_shell("pytest -n auto --dist worksteal", tmp_path, timeout=1)
 
     mock_killpg.assert_not_called()
-    proc.wait.assert_called_once_with()
+    # Bounded, not bare: an unbounded wait here lasts for the command's whole
+    # natural lifetime whenever the kill above did not land (#1959).
+    proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)

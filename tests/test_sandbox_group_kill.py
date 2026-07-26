@@ -1,0 +1,274 @@
+"""Group-kill must survive the platform sandbox wrapper.
+
+Every forge timeout and teardown path kills a *process group* (``killpg``), and
+the agent that issues it runs wrapped in the host sandbox. If the sandbox refuses
+that signal the kill no-ops silently: no exception, no log, just a subprocess
+that runs to its natural end instead of to its timeout. That is invisible in a
+transcript and shows up only as wall clock — a 30s suite costing 605s at idle CPU
+(#1959). These tests pin the grant that makes the kill land, and — where the host
+can actually apply a profile — prove it end to end with real processes.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from theforge.runners.sandbox import workspace_effect_sandbox_command
+
+# Spawns a child in its own session (so it leads its own process group — exactly
+# how the runners spawn agent CLIs), killpg's that group, and reports which of
+# the two signal scopes the sandbox permitted.
+_PROBE = """
+import os, signal, subprocess, sys, time
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+)
+time.sleep(0.3)
+try:
+    os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+    print("KILLPG_OK")
+except OSError as exc:
+    print("KILLPG_FAIL", exc)
+    try:
+        os.kill(child.pid, signal.SIGKILL)
+    except OSError:
+        pass
+try:
+    child.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    print("CHILD_SURVIVED")
+"""
+
+
+def _macos_profile_for(root: Path) -> str:
+    """The seatbelt profile text the wrapper would apply for *root*."""
+    with (
+        patch("theforge.runners.sandbox._SYSTEM", "Darwin"),
+        patch("theforge.runners.sandbox._sandbox_available", return_value=True),
+    ):
+        wrapped = workspace_effect_sandbox_command(["true"], root)
+    assert wrapped[:2] == ["sandbox-exec", "-p"]
+    return wrapped[2]
+
+
+def _run_sandboxed(cmd: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+    """Run *cmd* under the real host sandbox, skipping when that is not possible.
+
+    Skips rather than fails on a host that cannot apply a profile at all —
+    notably when this suite is itself running inside a sandbox, where nested
+    ``sandbox_apply`` is refused. That is a property of the harness, not of the
+    code under test.
+    """
+    if platform.system() != "Darwin":
+        pytest.skip("seatbelt signal scope is macOS-specific")
+    if shutil.which("sandbox-exec") is None:
+        pytest.skip("sandbox-exec not available on this host")
+    wrapped = workspace_effect_sandbox_command(cmd, root)
+    if wrapped[0] != "sandbox-exec":
+        pytest.skip("host sandbox unavailable; wrapper returned the command unchanged")
+    result = subprocess.run(wrapped, capture_output=True, text=True, timeout=120, check=False)
+    if "sandbox_apply" in result.stderr:
+        pytest.skip("cannot apply a sandbox profile from inside an existing sandbox")
+    return result
+
+
+class TestSignalScopeGrant:
+    """Profile-text assertions — these run on every host, including Linux CI."""
+
+    def test_profile_grants_signalling_descendants(self, tmp_path: Path) -> None:
+        """``(target self)`` alone denies killpg on a child's group — the #1959 cause."""
+        profile = _macos_profile_for(tmp_path)
+        assert "(allow signal (target children))" in profile
+        assert "(allow signal (target same-sandbox))" in profile
+
+    def test_profile_does_not_grant_signalling_arbitrary_processes(self, tmp_path: Path) -> None:
+        """Widening stays inward: an agent still cannot signal the coordinator.
+
+        ``(target others)`` would let a sandboxed agent signal any process the
+        user owns — the coordinator, a sibling story's agent, the operator's
+        shell. The fix must not reach for it.
+        """
+        profile = _macos_profile_for(tmp_path)
+        assert "(target others)" not in profile
+        assert "(allow signal)" not in profile
+
+    def test_signal_grant_does_not_widen_write_boundary(self, tmp_path: Path) -> None:
+        """The signal rules are capability grants, not filesystem ones."""
+        profile = _macos_profile_for(tmp_path)
+        assert "(deny default)" in profile
+        signal_block = "\n".join(
+            line for line in profile.splitlines() if line.startswith("(allow signal")
+        )
+        assert "subpath" not in signal_block
+
+
+class TestGroupKillUnderRealSandbox:
+    """End-to-end with real processes under a real seatbelt profile."""
+
+    def test_profile_compiles(self, tmp_path: Path) -> None:
+        """An unsupported filter would make sandbox-exec reject every agent run."""
+        result = _run_sandboxed(["/usr/bin/true"], tmp_path)
+        assert result.returncode == 0, f"profile rejected by sandbox-exec: {result.stderr}"
+
+    def test_killpg_reaches_a_child_process_group(self, tmp_path: Path) -> None:
+        """The actual bug: killpg on a spawned group must not return EPERM.
+
+        Runs the real interpreter (resolved through the venv symlink, since the
+        profile grants the toolchain roots rather than an arbitrary venv) under a
+        real profile scoped to a throwaway worktree root, and has it spawn and
+        group-kill a child exactly the way the runners do.
+        """
+        interpreter = os.path.realpath(sys.executable)
+        result = _run_sandboxed([interpreter, "-c", _PROBE], tmp_path)
+        assert "KILLPG_OK" in result.stdout, (
+            "group kill was refused inside the sandbox — a timeout in this state "
+            f"silently no-ops and runs to natural completion.\n{result.stdout}\n{result.stderr}"
+        )
+        assert "CHILD_SURVIVED" not in result.stdout
+
+
+def _spawn_sleeper() -> subprocess.Popen[bytes]:
+    return subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+
+
+def _require_signalling_own_children() -> None:
+    """Skip when the *host* forbids signalling our own subprocesses.
+
+    Some sandboxes (including a nested one wrapping the test runner itself) deny
+    signal delivery outright. Nothing about the code under test can be observed
+    in that state, so skip rather than report a failure that is really a property
+    of the harness.
+    """
+    proc = _spawn_sleeper()
+    try:
+        os.kill(proc.pid, 0)
+        os.killpg(os.getpgid(proc.pid), 0)
+    except OSError as exc:
+        pytest.skip(f"host forbids signalling own children ({exc})")
+    finally:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except OSError:
+            pass
+
+
+class TestTerminateProcessGroup:
+    """The bounded-teardown backstop, exercised with real subprocesses."""
+
+    @pytest.fixture(autouse=True)
+    def _guard(self) -> None:
+        _require_signalling_own_children()
+
+    def _spawn_sleeper(self) -> subprocess.Popen[bytes]:
+        return _spawn_sleeper()
+
+    def test_kills_the_group_and_returns_promptly(self) -> None:
+        from theforge import process_group
+
+        proc = self._spawn_sleeper()
+        try:
+            process_group.terminate_process_group(proc)
+            assert proc.poll() is not None, "sleeper outlived terminate_process_group"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_bounded_when_the_group_kill_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A refused killpg must cost the grace period, not the child's lifetime.
+
+        Simulates the sandbox denial directly: with the group kill neutered, the
+        old code path blocked in an unbounded ``proc.wait()`` for the full 60s
+        sleep. The escalation to the direct child has to bound that.
+        """
+        from theforge import process_group
+
+        monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
+        proc = self._spawn_sleeper()
+        try:
+            process_group.terminate_process_group(proc, grace_seconds=1.0)
+            assert proc.poll() is not None, (
+                "refused group kill did not escalate to the direct child; "
+                "teardown would block for the child's natural lifetime"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_survivor_is_logged_not_waited_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When nothing lands, give up loudly instead of blocking forever."""
+        from theforge import process_group
+
+        logged: list[str] = []
+        monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
+        monkeypatch.setattr(process_group, "_log", logged.append)
+        monkeypatch.setattr(process_group.os, "kill", _refuse)
+
+        proc = self._spawn_sleeper()
+        try:
+            process_group.terminate_process_group(proc, grace_seconds=0.2)
+            assert proc.poll() is None, "sleeper should still be alive — every kill was refused"
+            assert any("survived teardown" in msg for msg in logged), logged
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def _refuse(*_args: object, **_kwargs: object) -> None:
+    raise PermissionError(os.strerror(1))
+
+
+class TestGateTimeoutBoundsItsOwnCleanup:
+    """The gate's shell timeout must cost the timeout, not the command's lifetime.
+
+    Neuters the group kill outright rather than relying on the host to refuse it,
+    so this pins the behaviour on every platform — including one where signalling
+    works and the regression would otherwise be invisible.
+    """
+
+    def test_timeout_returns_promptly_when_the_kill_does_not_land(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge.coordinator import util
+
+        # Record the process instead of killing it: this is the "kill was
+        # refused" state, and it gives the teardown below a handle to clean up.
+        spared: list[subprocess.Popen[str]] = []
+        monkeypatch.setattr(util, "_kill_process_group", spared.append)
+
+        cmd = (
+            "python3 -c \"import sys, time; sys.stdout.write(chr(10).join(['partial'])); "
+            'sys.stdout.write(chr(10)); sys.stdout.flush(); time.sleep(120)"'
+        )
+        start = time.monotonic()
+        try:
+            ok, output = util._run_shell(cmd, tmp_path, timeout=0.2)
+            elapsed = time.monotonic() - start
+
+            assert ok is False
+            assert output.startswith("TIMEOUT after 0.2s:")
+            assert "partial" in output, "output written before the timeout must survive"
+            assert elapsed < 30, (
+                f"timeout cleanup took {elapsed:.1f}s against a 120s command — the "
+                "drain is waiting out the command's natural lifetime (#1959)"
+            )
+        finally:
+            for proc in spared:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except OSError:
+                    pass
