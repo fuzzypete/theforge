@@ -544,25 +544,6 @@ def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
         _remove_worktree(candidate, branch_name, project_root, "sweep: merged or branch gone")
 
 
-def _check_behind_origin(config: ForgeConfig) -> None:
-    """Log an informational note if base_branch is behind origin.
-    Silently skips if rev-list fails. Purely informational — never blocks.
-    """
-    base_branch = config.workspace.base_branch
-    ok, out = _cu._run_shell(
-        f"git rev-list --count {base_branch}..origin/{base_branch}",
-        config.project_root,
-    )
-    if not ok:
-        return
-    try:
-        count = int(out.strip())
-    except ValueError:
-        return
-    if count > 0:
-        _cu._log(f"ℹ WORKSPACE  {base_branch} is {count} commit(s) behind origin/{base_branch}")
-
-
 _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/last_setup_command")
 
 
@@ -607,6 +588,79 @@ def _branch_sync_delta(config: ForgeConfig, base_branch: str) -> tuple[int | Non
     except Exception:
         pass
     return None, None
+
+
+def _base_branch_lands_locally(config: ForgeConfig, *, auto_merge: bool = False) -> bool:
+    """Whether a run merges landed stories into the project-root base checkout.
+
+    Mirrors the effective-``on_approve`` resolution in ``completion.py``: the
+    ``--auto-merge`` CLI flag forces ``"merge"`` regardless of configuration,
+    so the config value alone cannot answer this — that runtime override is why
+    keying the publication rule off ``auto_push`` misclassified workflows.
+
+    This is the *default* derivation for a single run. Callers that know more —
+    notably the sprint runner, which also merges dependency-parent stories
+    locally whether or not ``--auto-merge`` was passed — compute the answer
+    themselves and pass it as ``lands_locally``.
+    """
+    return auto_merge or config.workspace.on_approve == "merge"
+
+
+def _base_branch_tracks_origin(config: ForgeConfig, *, lands_locally: bool) -> bool:
+    """Whether the project-root base branch is expected to match origin.
+
+    Two independent questions decide this, and conflating them is what made the
+    earlier ``auto_push``-only rule wrong in both directions:
+
+    1. Does anything land on the local base branch at all? Only the ``"merge"``
+       landing path (``_merge_branch``) does. Under ``on_approve: pr`` and
+       ``merge-pr`` the forge never merges into the local checkout, so any
+       commit the base branch carries beyond origin is unowned drift — and
+       those are precisely the workflows that publish story branches, where a
+       contaminated base makes GitHub attribute the extra content to whichever
+       story is running.
+    2. If stories do land locally, are those merges published? ``_merge_branch``
+       pushes only when ``workspace.auto_push`` is set. Without it, the branch
+       running ahead of origin is the configured steady state, and treating it
+       as drift would abort every multi-story sprint after the first landing.
+
+    So the base branch is expected to track origin unless the run lands stories
+    locally *and* has opted out of pushing them. ``lands_locally`` answers (1)
+    and is supplied by the caller — see ``_base_branch_lands_locally`` for the
+    default derivation and why the sprint runner overrides it.
+    """
+    if not lands_locally:
+        return True
+    return config.workspace.auto_push
+
+
+def _assert_base_branch_published(
+    config: ForgeConfig, base_branch: str, *, lands_locally: bool
+) -> None:
+    """Fail closed when the local base branch carries commits absent from origin.
+
+    A worktree cut from an ahead-only base branch inherits those commits, and
+    GitHub diffs the resulting PR against origin/<base> — so the unpublished
+    content is attributed to whichever story happens to be running. Since
+    commit-based review is the evaluation mechanism, that is a correctness
+    failure, not a cosmetic one. ``git pull --ff-only`` succeeds trivially in
+    this state, so the delta has to be checked explicitly.
+
+    Only applies when the base branch is supposed to track origin — see
+    ``_base_branch_tracks_origin``. Under a local-merge workflow with pushing
+    disabled, an ahead-only base branch is the configured steady state, and
+    aborting on it would break every multi-story sprint.
+    """
+    if not _base_branch_tracks_origin(config, lands_locally=lands_locally):
+        return
+    ahead, _behind = _branch_sync_delta(config, base_branch)
+    if ahead is None or ahead <= 0:
+        return
+    raise RuntimeError(
+        f"WORKSPACE abort: base branch '{base_branch}' has {ahead} local commit(s) not on "
+        f"origin/{base_branch}. Worktrees cut from it would attribute that content to the "
+        f"running story. Run: git push origin {base_branch}"
+    )
 
 
 def _recover_base_branch_sync(
@@ -665,13 +719,22 @@ def _recover_base_branch_sync(
     )
 
 
-def pull_base_branch(config: ForgeConfig) -> bool:
+def pull_base_branch(config: ForgeConfig, *, lands_locally: bool | None = None) -> bool:
     """Pull the base branch once before parallel workspace creation.
     Uses --ff-only (checked out) or fetch origin base:base (not checked out).
     Re-execs if src/theforge source changes. Raises RuntimeError if base
-    branch diverged from origin or origin is unreachable.
+    branch diverged from origin, origin is unreachable, or the base branch
+    carries unpublished commits in a workflow where it must track origin.
+
+    ``lands_locally`` says whether this run merges stories into the local base
+    checkout, which decides whether an ahead-only branch is drift or the
+    configured steady state. ``None`` derives it from config alone — correct
+    for direct/single-story callers, but the sprint runner passes its own
+    DAG-aware value.
     """
     base_branch = config.workspace.base_branch
+    if lands_locally is None:
+        lands_locally = _base_branch_lands_locally(config)
 
     ok_before, tree_before = _cu._run_shell("git rev-parse HEAD:src/theforge", config.project_root)
     if not ok_before:
@@ -696,6 +759,9 @@ def pull_base_branch(config: ForgeConfig) -> bool:
             )
     if ok_pull:
         _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
+        # A successful ff-only pull says nothing about unpublished local commits:
+        # ahead-only is exactly the state that pull reports as clean.
+        _assert_base_branch_published(config, base_branch, lands_locally=lands_locally)
     else:
         _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
         if ahead is not None and behind is not None and ahead > 0 and behind > 0:
@@ -728,6 +794,23 @@ def pull_base_branch(config: ForgeConfig) -> bool:
     return True
 
 
+def _sync_base_before_worktree_use(
+    config: ForgeConfig, *, lands_locally: bool | None = None
+) -> str | None:
+    """Blocking base-branch sync shared by fresh, reused, and reattach paths.
+
+    Returns an error message instead of raising so ``_create_workspace`` can
+    surface it through its (path, branch, error) contract. Replaces the old
+    informational ``_check_behind_origin`` call on the reuse paths, which never
+    blocked and so let worktrees be advanced from an unpublished base branch.
+    """
+    try:
+        pull_base_branch(config, lands_locally=lands_locally)
+    except RuntimeError as exc:
+        return str(exc)
+    return None
+
+
 def _rebase_reused_worktree(workspace_path: Path, base_branch: str) -> str | None:
     """Rebase a reused worktree onto current base. Returns error message on failure."""
     rebase_ok, rebase_err = _rebase_onto_main(str(workspace_path), base_branch, None)
@@ -741,9 +824,18 @@ def _rebase_reused_worktree(workspace_path: Path, base_branch: str) -> str | Non
 
 
 def _create_workspace(
-    config: ForgeConfig, task: TaskStory, *, no_pull: bool = False
+    config: ForgeConfig,
+    task: TaskStory,
+    *,
+    no_pull: bool = False,
+    lands_locally: bool | None = None,
 ) -> tuple[Path | None, str | None, str | None]:
-    """Create an isolated workspace. Returns (path, branch, error)."""
+    """Create an isolated workspace. Returns (path, branch, error).
+
+    ``lands_locally`` is forwarded to the base-branch publication guard: when
+    this run merges stories into the local base checkout, the branch is
+    expected to run ahead of origin and the guard stands down.
+    """
     slug = task.slug
     cmd = config.workspace.create_command.format(
         slug=slug,
@@ -763,7 +855,9 @@ def _create_workspace(
         else:
             _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
             if not no_pull:
-                _check_behind_origin(config)
+                sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
+                if sync_err is not None:
+                    return None, None, sync_err
             rebase_err = _rebase_reused_worktree(workspace_path, config.workspace.base_branch)
             if rebase_err is not None:
                 return None, None, rebase_err
@@ -777,10 +871,9 @@ def _create_workspace(
             return workspace_path, branch_name, None
 
     if not no_pull:
-        try:
-            pull_base_branch(config)
-        except RuntimeError as exc:
-            return None, None, str(exc)
+        sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
+        if sync_err is not None:
+            return None, None, sync_err
 
     _cu._log(f"Creating workspace: {cmd}")
     ok, output = _cu._run_shell(cmd, config.project_root)
@@ -799,7 +892,9 @@ def _create_workspace(
             if existing_wt.exists():
                 _cu._log(f"↻ WORKSPACE  reusing existing worktree (registered): {existing_wt}")
                 if not no_pull:
-                    _check_behind_origin(config)
+                    sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
+                    if sync_err is not None:
+                        return None, None, sync_err
                 rebase_err = _rebase_reused_worktree(existing_wt, config.workspace.base_branch)
                 if rebase_err is not None:
                     return None, None, rebase_err
@@ -825,7 +920,9 @@ def _create_workspace(
         if commits_ahead:
             _cu._log(f"↻ WORKSPACE  branch has commits, reattaching worktree: {branch_name}")
             if not no_pull:
-                _check_behind_origin(config)
+                sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
+                if sync_err is not None:
+                    return None, None, sync_err
             ok_add, add_out = _cu._run_shell(
                 f"git worktree add {workspace_path} {branch_name}", config.project_root
             )
