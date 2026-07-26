@@ -154,7 +154,7 @@ def test_timeout_escalation_seam(mock_shell, mock_dev, mock_preflight, mock_pool
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
 @patch_gate_shell()
-@patch("theforge.coordinator.engine._check_behind_origin")
+@patch("theforge.coordinator.engine.pull_base_branch")
 def test_resume_path_reads_sprint_flag(
     mock_origin, mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ):

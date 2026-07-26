@@ -104,8 +104,22 @@ def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
 
 
-def _commit_story_run_audits(project_root: Path) -> None:
-    """Commit canonical per-run audit JSON emitted during sprint execution."""
+def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: bool) -> None:
+    """Commit and publish canonical per-run audit JSON emitted during a sprint.
+
+    The sprint writes these records to the project-root base-branch checkout on
+    the operator's behalf. A commit that is never pushed is unowned state: later
+    story worktrees are cut from that checkout and GitHub attributes the audit
+    JSON to whichever story happens to be running. So the commit is only half
+    the operation — this pushes it to origin and verifies the base branch is no
+    longer ahead, raising loudly if either step fails.
+
+    ``publish`` comes from ``_base_branch_tracks_origin``: it is false only when
+    this run lands stories by merging into the local base checkout *and* has
+    opted out of pushing them. Pushing a branch publishes all of its ancestors,
+    so a push here would then also publish those local merges. In that one
+    configuration the commit stays local and the fact is warned about instead.
+    """
     from ..coordinator import util as _cu  # noqa: PLC0415
 
     if not (project_root / ".git").exists():
@@ -130,6 +144,47 @@ def _commit_story_run_audits(project_root: Path) -> None:
     if not ok_commit:
         raise RuntimeError(f"Failed to commit story run audits: {commit_out}")
     _log("Committed canonical story run audit records to the base branch checkout.")
+
+    if not publish:
+        _log(
+            f"⚠ SPRINT  story run audit records remain local: this run merges stories into "
+            f"'{base_branch}' with workspace.auto_push off, so pushing would also publish those "
+            f"local merges. Push '{base_branch}' yourself before any workflow that diffs a story "
+            f"branch against origin/{base_branch}."
+        )
+        return
+
+    quoted_base = shlex.quote(base_branch)
+    ok_push, push_out = _cu._run_shell(
+        f"git push origin {quoted_base}",
+        project_root,
+    )
+    if not ok_push:
+        raise RuntimeError(
+            f"Failed to push story run audits to origin/{base_branch}: {push_out.strip()}"
+        )
+
+    ok_ahead, ahead_out = _cu._run_shell(
+        f"git rev-list --count origin/{quoted_base}..{quoted_base}",
+        project_root,
+    )
+    if not ok_ahead:
+        raise RuntimeError(
+            f"Failed to verify story run audits reached origin/{base_branch}: {ahead_out.strip()}"
+        )
+    try:
+        ahead = int(ahead_out.strip())
+    except ValueError:
+        raise RuntimeError(
+            f"Failed to verify story run audits reached origin/{base_branch}: "
+            f"unexpected rev-list output {ahead_out.strip()!r}"
+        ) from None
+    if ahead > 0:
+        raise RuntimeError(
+            f"Story run audits were committed but '{base_branch}' is still {ahead} commit(s) "
+            f"ahead of origin/{base_branch} after push. Publish or reset it before rerunning."
+        )
+    _log(f"Pushed canonical story run audit records to origin/{base_branch}.")
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
@@ -1061,6 +1116,7 @@ def _run_fresh(
     preflight_states: dict[str, CoordinatorState] | None = None,
     *,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
@@ -1094,6 +1150,7 @@ def _run_fresh(
                 cached_preflight_state=(preflight_states or {}).get(task.slug),
                 defer_landing=True,
                 stop_event=stop_event,
+                base_lands_locally=base_lands_locally,
             )
         return run_task(
             config,
@@ -1107,6 +1164,7 @@ def _run_fresh(
             cached_preflight_state=(preflight_states or {}).get(task.slug),
             defer_landing=True,
             stop_event=stop_event,
+            base_lands_locally=base_lands_locally,
         )
 
     # Phase 1: run through PLAN only
@@ -1114,7 +1172,7 @@ def _run_fresh(
         config,
         task,
         interactive=interactive,
-        auto_merge=False,
+        auto_merge=effective_auto_merge,
         notify=notify,
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
@@ -1123,6 +1181,7 @@ def _run_fresh(
         cached_preflight_state=(preflight_states or {}).get(task.slug),
         defer_landing=True,
         stop_event=stop_event,
+        base_lands_locally=base_lands_locally,
     )
 
     if not plan_result.success:
@@ -1159,6 +1218,7 @@ def _run_fresh(
         cached_preflight_state=(preflight_states or {}).get(task.slug),
         defer_landing=True,
         stop_event=stop_event,
+        base_lands_locally=base_lands_locally,
     )
 
 
@@ -1177,6 +1237,7 @@ def _run_single_story(
     plan_gate: "threading.Event | None" = None,
     preflight_states: dict[str, CoordinatorState] | None = None,
     stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -1212,6 +1273,7 @@ def _run_single_story(
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
                     defer_landing=True,
                     stop_event=stop_event,
+                    base_lands_locally=base_lands_locally,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -1227,6 +1289,7 @@ def _run_single_story(
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
                     defer_landing=True,
                     stop_event=stop_event,
+                    base_lands_locally=base_lands_locally,
                 )
             else:
                 result = _run_fresh(
@@ -1242,6 +1305,7 @@ def _run_single_story(
                     plan_gate,
                     preflight_states,
                     stop_event=stop_event,
+                    base_lands_locally=base_lands_locally,
                 )
         else:
             result = _run_fresh(
@@ -1257,6 +1321,7 @@ def _run_single_story(
                 plan_gate,
                 preflight_states,
                 stop_event=stop_event,
+                base_lands_locally=base_lands_locally,
             )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
@@ -1693,6 +1758,19 @@ def run_sprint(
     }
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
 
+    # Does ANY story in this sprint merge into the project-root base checkout?
+    # This is a sprint-wide question, not a per-story one: story N merging
+    # locally leaves the base branch ahead of origin when story N+1's worktree
+    # is cut, so every story's workspace guard needs the sprint's answer, not
+    # its own effective_auto_merge. Parallel mode never eager-merges (see the
+    # effective_am computation below, which forces False when max_parallel > 1);
+    # sequential mode merges for --auto-merge and, independently of it, for any
+    # story other stories depend on.
+    _sprint_lands_locally = coordinator_workspace._base_branch_lands_locally(
+        config,
+        auto_merge=(max_parallel <= 1 and (auto_merge or bool(dependent_slugs))),
+    )
+
     total = len(task_entries)
     noun = "stories" if total != 1 else "story"
     # Substrate provenance: name the runtime executing this sprint so the
@@ -1821,7 +1899,7 @@ def run_sprint(
         pass
 
     if not no_pull and _project_root_is_git_checkout(config.project_root):
-        coordinator_workspace.pull_base_branch(config)
+        coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     baseline_gate = _run_baseline_gate(config, resolved)
@@ -2946,6 +3024,9 @@ def run_sprint(
                     gate,
                     preflight_states,
                     stop_evt,
+                    # Keyword, not positional: stop_evt must stay the last
+                    # positional argument for callers that index args[-1].
+                    base_lands_locally=_sprint_lands_locally,
                 )
                 active[task.slug] = fut
                 story_deadlines[task.slug] = time.monotonic() + float(
@@ -3562,10 +3643,21 @@ def run_sprint(
     if _state_writer is not None:
         _state_writer.remove()
 
+    # Runs after _state_writer.remove() so sprint state is cleaned up regardless,
+    # but the failure is NOT swallowed: a local-only audit commit contaminates
+    # every later story PR cut from this checkout, so the sprint must exit
+    # nonzero rather than report success over divergent base-branch state.
+    from ..coordinator.workspace import _base_branch_tracks_origin
+
     try:
-        _commit_story_run_audits(config.project_root)
+        _commit_story_run_audits(
+            config.project_root,
+            config.workspace.base_branch,
+            publish=_base_branch_tracks_origin(config, lands_locally=_sprint_lands_locally),
+        )
     except RuntimeError as exc:
-        _log(f"Warning: canonical story run audit commit failed: {exc}")
+        _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}")
+        raise
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:

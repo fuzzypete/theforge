@@ -26,7 +26,7 @@ from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, build_dag
 from theforge.sprint.lock import integration_lock
-from theforge.sprint.runner import _classify_and_record
+from theforge.sprint.runner import _classify_and_record, _run_fresh
 from theforge.task import TaskStory
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -2620,6 +2620,118 @@ class TestImmediateIntegrationLanding:
         assert result.landing_status == "failed"
 
 
+class TestRunFreshPlanGatedForwarding:
+    """The plan-gated split path must forward both landing-related flags.
+
+    Phase 1 of the split is the call whose WORKSPACE step actually cuts the
+    story's worktree, so dropping either flag there reintroduces a false abort
+    on a base branch that a local-merge workflow legitimately left ahead.
+    """
+
+    def _run(self, tmp_path: Path, *, effective_auto_merge: bool, base_lands_locally: bool):
+        task = TaskStory(name="Story A", slug="story-a", story_path=None, story_text="body")
+        gate = threading.Event()
+        gate.set()  # scheduler already released; do not block the test
+
+        plan_result = _make_coordinator_result(success=True, cost=0.0)
+        plan_result.state.workspace_path = tmp_path / "story-a"
+        dev_result = _make_coordinator_result(success=True, cost=0.0)
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=plan_result) as mock_run_task,
+            patch(
+                "theforge.sprint.runner.run_from_dev", return_value=dev_result
+            ) as mock_run_from_dev,
+        ):
+            _run_fresh(
+                _make_config(tmp_path),
+                task,
+                "sprint-run-1",
+                "Sprint",
+                False,
+                False,
+                effective_auto_merge,
+                None,
+                False,
+                gate,
+                None,
+                base_lands_locally=base_lands_locally,
+            )
+        return mock_run_task, mock_run_from_dev
+
+    def test_phase1_run_task_forwards_effective_auto_merge(self, tmp_path: Path) -> None:
+        mock_run_task, _ = self._run(tmp_path, effective_auto_merge=True, base_lands_locally=True)
+        assert mock_run_task.call_args.kwargs["auto_merge"] is True
+
+    def test_phase1_run_task_forwards_base_lands_locally(self, tmp_path: Path) -> None:
+        mock_run_task, _ = self._run(tmp_path, effective_auto_merge=False, base_lands_locally=True)
+        # effective_auto_merge is False for this story, but an earlier story in
+        # the sprint merged locally — the guard must hear about it anyway.
+        assert mock_run_task.call_args.kwargs["auto_merge"] is False
+        assert mock_run_task.call_args.kwargs["base_lands_locally"] is True
+
+    def test_phase2_run_from_dev_forwards_both(self, tmp_path: Path) -> None:
+        _, mock_run_from_dev = self._run(
+            tmp_path, effective_auto_merge=True, base_lands_locally=True
+        )
+        assert mock_run_from_dev.call_args.kwargs["auto_merge"] is True
+        assert mock_run_from_dev.call_args.kwargs["base_lands_locally"] is True
+
+
+class TestSprintLandsLocallyResolution:
+    """run_sprint answers the local-landing question sprint-wide, once."""
+
+    def _lands_locally_seen(self, tmp_path: Path, *, max_parallel: int, auto_merge: bool):
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md"], budget=10.0, max_parallel=max_parallel
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        seen: dict = {}
+
+        def fake_pull(_config, *, lands_locally=None):
+            seen["lands_locally"] = lands_locally
+            raise RuntimeError("stop after base sync")
+
+        with (
+            patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+            patch("theforge.coordinator.workspace.pull_base_branch", side_effect=fake_pull),
+            pytest.raises(RuntimeError, match="stop after base sync"),
+        ):
+            run_sprint(config, manifest_path, auto_merge=auto_merge)
+        return seen["lands_locally"]
+
+    def test_sequential_auto_merge_lands_locally(self, tmp_path: Path) -> None:
+        """--auto-merge in sequential mode merges into the local base checkout."""
+        assert self._lands_locally_seen(tmp_path, max_parallel=1, auto_merge=True) is True
+
+    def test_parallel_auto_merge_does_not_land_locally(self, tmp_path: Path) -> None:
+        """Parallel mode forces effective_am False, so nothing merges locally."""
+        assert self._lands_locally_seen(tmp_path, max_parallel=2, auto_merge=True) is False
+
+    def test_sequential_without_auto_merge_does_not_land_locally(self, tmp_path: Path) -> None:
+        assert self._lands_locally_seen(tmp_path, max_parallel=1, auto_merge=False) is False
+
+
+def _make_workspace_config(tmp_path: Path, **workspace_kwargs):
+    """_make_config with workspace field overrides."""
+    config = _make_config(tmp_path)
+    return dataclasses.replace(
+        config, workspace=dataclasses.replace(config.workspace, **workspace_kwargs)
+    )
+
+
+def _make_pushing_config(tmp_path: Path):
+    """These sprints run with auto_merge=True, so auto_push decides publication.
+
+    --auto-merge forces the local-merge landing path; with auto_push on, those
+    merges reach the remote, so the base branch is expected to track origin and
+    the audit commit must be pushed.
+    """
+    return _make_workspace_config(tmp_path, auto_push=True)
+
+
 class TestSprintRunAuditCommit:
     def test_run_sprint_commits_story_run_audits_from_project_root(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
@@ -2630,7 +2742,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2646,6 +2758,8 @@ class TestSprintRunAuditCommit:
                 return (True, "")
             if cmd == commit_cmd:
                 return (True, "")
+            if cmd == "git rev-list --count origin/main..main":
+                return (True, "0\n")
             return (True, "")
 
         with (
@@ -2659,15 +2773,15 @@ class TestSprintRunAuditCommit:
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
-        audit_shell_calls = [
-            call
-            for call in shell_calls
-            if ".forge/audits/runs" in call[0] or "chore(audit)" in call[0]
-        ]
-        assert audit_shell_calls == [
+        # Slice from the audit status probe: the publish sequence is the tail of
+        # the run, and rev-list also appears earlier from workspace base sync.
+        start = shell_calls.index(("git status --porcelain -- .forge/audits/runs", tmp_path))
+        assert shell_calls[start:] == [
             ("git status --porcelain -- .forge/audits/runs", tmp_path),
             ("git add -- .forge/audits/runs", tmp_path),
             (commit_cmd, tmp_path),
+            ("git push origin main", tmp_path),
+            ("git rev-list --count origin/main..main", tmp_path),
         ]
 
     def test_run_sprint_skips_audit_commit_when_project_root_is_clean(
@@ -2681,7 +2795,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2712,7 +2826,7 @@ class TestSprintRunAuditCommit:
         ]
         assert audit_shell_calls == [("git status --porcelain -- .forge/audits/runs", tmp_path)]
 
-    def test_run_sprint_warns_when_audit_commit_fails_after_state_cleanup(
+    def test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup(
         self, tmp_path: Path
     ) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
@@ -2723,7 +2837,7 @@ class TestSprintRunAuditCommit:
             max_parallel=1,
         )
         (tmp_path / ".git").mkdir()
-        config = _make_config(tmp_path)
+        config = _make_pushing_config(tmp_path)
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result.landing_status = "pending_integration"
@@ -2739,7 +2853,9 @@ class TestSprintRunAuditCommit:
             if cmd == "git add -- .forge/audits/runs":
                 return (True, "")
             if cmd == commit_cmd:
-                return (False, "commit failed")
+                return (True, "")
+            if cmd == "git push origin main":
+                return (False, "rejected: non-fast-forward")
             return (True, "")
 
         with (
@@ -2750,13 +2866,143 @@ class TestSprintRunAuditCommit:
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
             patch("theforge.sprint.runner._log", side_effect=warnings.append),
+            pytest.raises(RuntimeError, match="Failed to push story run audits"),
+        ):
+            run_sprint(config, manifest_path, auto_merge=True)
+
+        # Cleanup still ran before the raise, but the sprint does not report success.
+        assert not any((tmp_path / ".forge" / "runs").glob("*.state"))
+        assert any("canonical story run audit publish failed" in warning for warning in warnings)
+        assert ("git push origin main", tmp_path) in shell_calls
+
+    def test_run_sprint_raises_when_base_still_ahead_after_push(self, tmp_path: Path) -> None:
+        """A push that reports success but leaves the base ahead is still a failure."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_pushing_config(tmp_path)
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge", "pending": True}
+        warnings: list[str] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            if cmd == "git rev-list --count origin/main..main":
+                return (True, "1\n")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "success": True, "action": "merge"},
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+            patch("theforge.sprint.runner._log", side_effect=warnings.append),
+            pytest.raises(RuntimeError, match="still 1 commit"),
+        ):
+            run_sprint(config, manifest_path, auto_merge=True)
+
+        assert any("canonical story run audit publish failed" in warning for warning in warnings)
+
+    def test_run_sprint_publishes_audits_under_pr_workflow_without_auto_push(
+        self, tmp_path: Path
+    ) -> None:
+        """on_approve: pr + auto_push: false must still push the audit commit.
+
+        Nothing merges into the local base branch under a PR workflow, so there
+        are no local merges a push could over-publish — and story branches are
+        pushed for GitHub to diff against origin/<base>, which is exactly where
+        an unpublished audit commit shows up as content of the wrong story.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_workspace_config(tmp_path, on_approve="pr")
+        assert config.workspace.auto_push is False
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
+        shell_calls: list[str] = []
+        logs: list[str] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            if cmd == "git rev-list --count origin/main..main":
+                return (True, "0\n")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+            patch("theforge.sprint.runner._log", side_effect=logs.append),
+        ):
+            run_sprint(config, manifest_path)
+
+        assert commit_cmd in shell_calls
+        assert "git push origin main" in shell_calls
+        assert not any("remain local" in line for line in logs)
+
+    def test_run_sprint_commits_without_push_under_local_merge(self, tmp_path: Path) -> None:
+        """Local-merge landing without auto_push: pushing would over-publish.
+
+        A branch push carries all its ancestors, so the audit commit cannot be
+        published in isolation. The records stay local and the sprint warns.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        (tmp_path / ".git").mkdir()
+        config = _make_config(tmp_path)
+        assert config.workspace.auto_push is False
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge", "pending": True}
+        commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
+        shell_calls: list[str] = []
+        logs: list[str] = []
+
+        def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain -- .forge/audits/runs":
+                return (True, "?? .forge/audits/runs/run-123.json")
+            return (True, "")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "success": True, "action": "merge"},
+            ),
+            patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
+            patch("theforge.sprint.runner._log", side_effect=logs.append),
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
-        assert not any((tmp_path / ".forge" / "runs").glob("*.state"))
-        assert any("canonical story run audit commit failed" in warning for warning in warnings)
-        assert (commit_cmd, tmp_path) in shell_calls
+        assert commit_cmd in shell_calls
+        assert "git push origin main" not in shell_calls
+        assert any("remain local" in line and "workspace.auto_push off" in line for line in logs)
 
 
 def test_integration_lock_serializes(tmp_path: Path) -> None:

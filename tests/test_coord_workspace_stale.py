@@ -446,6 +446,14 @@ class TestStaleWorktree:
                 return (True, "feat/test-task")
             if "git status --porcelain" in cmd:
                 return (True, "?? scratch.txt")
+            # Reuse now runs the blocking base-branch sync, not a bare
+            # behind-origin probe, so the fetch + ahead/behind delta appear here.
+            if "rev-parse HEAD:src/theforge" in cmd:
+                return (True, "treesha")
+            if "git fetch origin main:main" in cmd:
+                return (True, "")
+            if "git rev-list --count origin/main..main" in cmd:
+                return (True, "0")
             if "git rev-list --count main..origin/main" in cmd:
                 return (True, "0")
             if "git rm -f --cached --ignore-unmatch" in cmd:

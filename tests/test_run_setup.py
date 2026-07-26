@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from coord_test_helpers import _make_config, _make_task
 
 from theforge.coordinator.context_scope import plan_file_list
@@ -352,7 +353,7 @@ def test_run_resume_coordinator_rebases_before_loop_and_continues(tmp_path):
 
     with (
         patch("theforge.coordinator.engine._ensure_runners"),
-        patch("theforge.coordinator.engine._check_behind_origin"),
+        patch("theforge.coordinator.engine.pull_base_branch"),
         patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
         patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
         patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
@@ -385,6 +386,91 @@ def test_run_resume_coordinator_rebases_before_loop_and_continues(tmp_path):
     )
 
 
+def test_run_resume_coordinator_aborts_when_base_branch_unpublished(tmp_path):
+    """The resume entry uses the blocking base sync, not the old advisory check.
+
+    A reused worktree is about to be rebased onto the base branch, so an
+    unpublished commit there would be absorbed into this story's diff. The
+    RuntimeError must propagate rather than be logged and stepped over.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    with (
+        patch("theforge.coordinator.engine._ensure_runners"),
+        patch(
+            "theforge.coordinator.engine.pull_base_branch",
+            side_effect=RuntimeError("WORKSPACE abort: base branch 'main' has 1 local commit(s)"),
+        ) as mock_pull,
+        patch("theforge.coordinator.engine._setup_resume_entry") as mock_setup,
+        pytest.raises(RuntimeError, match="has 1 local commit"),
+    ):
+        _run_resume_coordinator(
+            config,
+            task,
+            workspace,
+            initial_phase=Phase.DEV,
+            skip_dev_first_iter=False,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            run_id="run-1",
+            sprint_name=None,
+            state_update_fn=None,
+        )
+
+    mock_pull.assert_called_once_with(config, lands_locally=False)
+    mock_setup.assert_not_called()
+
+
+def test_run_resume_coordinator_skips_base_sync_when_no_pull(tmp_path):
+    """no_pull=True still suppresses the base-branch sync entirely."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    state = MagicMock()
+    state.workspace_path = workspace
+    state.log_dir = None
+    logger = MagicMock()
+    setup = (state, logger, "forge/test-task", "story", 123.0)
+    loop_result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+
+    with (
+        patch("theforge.coordinator.engine._ensure_runners"),
+        patch("theforge.coordinator.engine.pull_base_branch") as mock_pull,
+        patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
+        patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
+        patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
+        patch("theforge.coordinator.engine._rebase_onto_main", return_value=(True, "")),
+        patch("theforge.coordinator.engine._coordinator_loop", return_value=loop_result),
+        patch("theforge.coordinator.engine._fire_post_run_hook"),
+    ):
+        mock_ctx.return_value.__enter__.return_value = None
+        mock_ctx.return_value.__exit__.return_value = None
+        _run_resume_coordinator(
+            config,
+            task,
+            workspace,
+            initial_phase=Phase.DEV,
+            skip_dev_first_iter=False,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            run_id="run-1",
+            sprint_name=None,
+            state_update_fn=None,
+            no_pull=True,
+        )
+
+    mock_pull.assert_not_called()
+
+
 def test_run_resume_coordinator_escalates_when_rebase_fails(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -399,7 +485,7 @@ def test_run_resume_coordinator_escalates_when_rebase_fails(tmp_path):
 
     with (
         patch("theforge.coordinator.engine._ensure_runners"),
-        patch("theforge.coordinator.engine._check_behind_origin"),
+        patch("theforge.coordinator.engine.pull_base_branch"),
         patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
         patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
         patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
