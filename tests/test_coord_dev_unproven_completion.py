@@ -11,6 +11,7 @@ the safety net: a real gate failure is caught there, never silently landed.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import patch
 
 from coord_test_helpers import (
@@ -147,6 +148,46 @@ class TestUnprovenCompletionGuard:
         assert result.phase != Phase.ESCALATE
         # The unproven-completion guard did not block the review cycle.
         assert mock_pool.call_count >= 1
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_skipped_gate_completion_without_pass_proceeds(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """A skipped-gate story (gate_override: none) whose handoff marks MET with no
+        self-reported PASS must NOT escalate at the dev seam: the dev is not the gate
+        authority, and VALIDATE records a skipped gate as PASS (#1944). The dev prompt
+        emits the same coordinator-owned handoff contract for skipped gates, so the
+        guard must accept a MET-without-PASS skipped-gate completion too."""
+        config = _make_config(tmp_path)
+        task = replace(_make_task(tmp_path), gate_override="none")
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(
+            success=True,
+            output="Done.",
+            profile_name="dev",
+            dev_handoff=_completion_handoff(gate_result=None),
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase != Phase.ESCALATE
+        assert "without gate PASS evidence" not in (result.message or "")
+        assert result.state.gate_delegated_this_iteration is True
+        assert all(
+            t.gate_result != "HANDOFF_NO_GATE_EVIDENCE"
+            for t in result.state.dev_iteration_telemetry
+        )
 
 
 def _delegated_fix_handoff() -> dict:

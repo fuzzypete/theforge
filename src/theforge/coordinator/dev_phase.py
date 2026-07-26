@@ -705,19 +705,20 @@ def _run_dev_phase(
     )
     _test_cmd = config.validation.test_command or _gate_cmd
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
-    # Gate execution is coordinator-owned on EVERY iteration (#1944 / #823),
-    # whenever the gate is not skipped. The authoritative gate runs unsandboxed in
-    # VALIDATE (the engine runs it on every successful handoff before REVIEW/MERGE),
-    # so the dev agent — which runs inside a write-containment sandbox that denies
-    # the process/build operations many gates exercise — is never asked to run or
-    # prove the gate. The unproven-completion guard therefore accepts a
-    # MET-without-PASS handoff and defers to VALIDATE for the authoritative result.
-    # Set once here, unconditionally: every prompt-routing case below uses the
-    # coordinator-owned contract, and a successful MAX_ITERATIONS/TIMEOUT retry
-    # also reaches VALIDATE (retry_reason is reset below), so it must delegate too.
-    # Setting it per-case invites omitting a case and recreating the false
-    # HANDOFF_NO_GATE_EVIDENCE trap for that path's retries.
-    state.gate_delegated_this_iteration = not _is_gate_skip(task.gate_override)
+    # Gate execution is coordinator-owned on EVERY iteration (#1944 / #823). The
+    # dev agent is never the gate authority: VALIDATE runs the authoritative gate
+    # unsandboxed (on every successful handoff before REVIEW/MERGE), or records a
+    # skipped gate (gate_override: none) as PASS. The agent — which runs inside a
+    # write-containment sandbox that denies the process/build operations many gates
+    # exercise — is therefore never asked to run or prove the gate, and the
+    # unproven-completion guard accepts a MET-without-PASS handoff and defers to
+    # VALIDATE for the authoritative result. Set once, unconditionally — True for
+    # skipped gates too, since VALIDATE passes them, and True on MAX_ITERATIONS/
+    # TIMEOUT retries, which also reach VALIDATE (retry_reason is reset below). A
+    # per-case flag invites omitting a routing path and recreating the false
+    # HANDOFF_NO_GATE_EVIDENCE trap; the guard's escalate branch is retained as a
+    # fail-closed backstop should any future path leave this False.
+    state.gate_delegated_this_iteration = True
     match state.retry_reason:
         case RetryReason.TIMEOUT_RESUME:
             prompt = (
