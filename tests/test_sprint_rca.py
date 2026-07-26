@@ -169,6 +169,59 @@ def test_provider_quota_with_gate_timeout(tmp_path: Path) -> None:
     assert "usage limit" in quota_ev["excerpt"].lower()
 
 
+# ── Engine: workspace base-branch divergence is a known mechanical class ──────
+
+
+def test_workspace_base_divergence_classifies_not_unknown(tmp_path: Path) -> None:
+    """A WORKSPACE abort divergence error must classify as workspace_divergence,
+    not fall through to the unknown_needs_rca residual — and the recommended
+    action must point at resolving the branch state, not LLM diagnosis.
+
+    Reproduces #1899: the sprint RCA recorded primary_failure_class:
+    unknown_needs_rca for a story whose captured error was the exact
+    WORKSPACE abort divergence message raised by workspace.py.
+    """
+    divergence_err = (
+        "WORKSPACE abort: base branch 'release/v0.13' has diverged from origin"
+        " (local is 1 ahead, 1 behind). Run: git rebase origin/release/v0.13"
+    )
+    d = _sprint_dir(tmp_path, name="issues-1899,158,1019,1108,1443,1489")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1899", "outcome": "FAILED", "error": divergence_err}]),
+    )
+    entry = _build(d)["stories"]["issue-1899"]
+    assert entry["primary_failure_class"] == "workspace_divergence"
+    assert entry["primary_failure_class"] != UNKNOWN_CLASS
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "workspace_base_divergence" in rule_ids
+    actions = " ".join(entry["recommended_next_actions"]).lower()
+    assert "rebase" in actions or "diverg" in actions
+    assert "forge diagnose" not in actions
+
+
+def test_workspace_abort_pull_failure_without_divergence_not_misclassified(
+    tmp_path: Path,
+) -> None:
+    """A WORKSPACE abort that is a plain pull failure (no divergence) must not be
+    classified as workspace_divergence — it did not diverge, so the rebase
+    remediation would be wrong.
+    """
+    pull_failed_err = (
+        "WORKSPACE abort: pull failed for base branch 'release/v0.13' — "
+        "fatal: unable to access 'https://github.com/...': Could not resolve host"
+    )
+    d = _sprint_dir(tmp_path, name="issues-1900")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-1900", "outcome": "FAILED", "error": pull_failed_err}]),
+    )
+    entry = _build(d)["stories"]["issue-1900"]
+    assert entry["primary_failure_class"] != "workspace_divergence"
+    rule_ids = {ev["rule_id"] for ev in entry["evidence"]}
+    assert "workspace_base_divergence" not in rule_ids
+
+
 # ── Engine: ambiguous "429" must not match inside cost/duration floats ────────
 
 
@@ -414,7 +467,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 2
+    assert payload["ruleset_version"] == 3
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -435,9 +488,9 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     write_sprint_rca(d)
     before = read_sprint_rca(d)
     assert before["stories"]["issue-5"]["primary_failure_class"] == UNKNOWN_CLASS
-    assert before["ruleset_version"] == 2
+    assert before["ruleset_version"] == 3
 
-    # Improved rule set (v3): a new rule now recognises the previously-unknown
+    # Improved rule set (v4): a new rule now recognises the previously-unknown
     # signature. Inputs on disk are unchanged.
     improved_rule = rca_mod.RcaRule(
         rule_id="flooble_detected",
@@ -451,12 +504,12 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(
         rca_mod, "_PRIMARY_PRIORITY", ("flooble_fault", *rca_mod._PRIMARY_PRIORITY)
     )
-    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 3)
+    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 4)
 
     write_sprint_rca(d, overwrite=True)
     after = read_sprint_rca(d)
     assert after["stories"]["issue-5"]["primary_failure_class"] == "flooble_fault"
-    assert after["ruleset_version"] == 3
+    assert after["ruleset_version"] == 4
     # Same inputs, different rule set → distinguishable analyses.
     assert before["ruleset_version"] != after["ruleset_version"]
 
