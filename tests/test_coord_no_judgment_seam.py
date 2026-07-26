@@ -105,6 +105,47 @@ class TestClassification:
         with pytest.raises(ValueError):
             AgentInvocationFailure(phase="DEV", category="made_up")
 
+    @pytest.mark.parametrize(
+        "output",
+        [
+            # Digits that look like status codes but are line numbers, issue
+            # refs, counts, and durations in ordinary agent narration. A bare
+            # substring match on "401"/"429"/"500" would call each of these a
+            # substrate failure and abort a run that a model actually judged.
+            "I updated src/theforge/coordinator/engine.py:401 to guard the branch.",
+            "Refs #1429; the loop ran 500 times before converging.",
+            "The plan is wrong because it skips migration 403.",
+            "Timeout budget was 504 seconds, which I lowered to 300.",
+            "Response code handling for 401/403 is now covered by tests.",
+            # Mentioning an API error is not being one.
+            "Fixed the API error handling path in runners/api.py.",
+        ],
+    )
+    def test_status_code_digits_in_agent_prose_are_not_substrate_failures(self, output):
+        result = _make_agent_result(success=False, output=output)
+        assert produced_model_output(result) is True
+        assert classify_agent_failure(result, phase="DEV") is None
+
+    @pytest.mark.parametrize(
+        ("output", "expected_category"),
+        [
+            ("API Error: 401 Unauthorized", "auth"),
+            ("Error 403 Forbidden", "auth"),
+            ("http 429 rate limited", "transport"),
+            ("provider 503 service unavailable", "transport"),
+            ("status_code=502 upstream", "transport"),
+            ("google.genai.errors.ServerError: 500 INTERNAL", "transport"),
+            ("API Error: Connection closed mid-response.", "transport"),
+        ],
+    )
+    def test_status_codes_in_provider_context_are_still_recognized(
+        self, output, expected_category
+    ):
+        """Tightening the digit patterns must not lose real substrate failures."""
+        result = _make_agent_result(success=False, output=output)
+        assert produced_model_output(result) is False
+        assert classify_failure_category(result) == expected_category
+
 
 # ── DEV: no model output must not become a story ESCALATE ────────────────
 

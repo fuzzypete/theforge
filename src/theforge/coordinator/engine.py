@@ -1213,6 +1213,17 @@ def _record_run_memory(
     via 'forge resume' or a sprint worker contributes the same telemetry as a
     fresh run_task invocation. Changes to what we persist at run completion
     belong in this one function — not duplicated at each entry point.
+
+    Not every terminal path reaches here. A run that ends inside PREFLIGHT or
+    the plan flow returns its phase result directly from run_task (the
+    ``_pf_result`` / ``_plan_result`` early returns above), so those outcomes —
+    including their infrastructure aborts — persist nothing by *omission*,
+    which predates #1951 and is unchanged by it. The infrastructure-abort guard
+    below is therefore load-bearing for the paths that DO reach this function:
+    the DEV→VALIDATE→REVIEW loop (where the #1951 defect was observed — a dead
+    credential persisted as escalation evidence) and both resume entry points.
+    Do not read the guard as the only thing keeping preflight/plan aborts out
+    of memory, and do not delete it on the assumption that it is unreachable.
     """
     # ── No judgment obtained ⇒ nothing to learn (#1951) ────────────────
     # Durable memory must be sourced only from invocations that actually

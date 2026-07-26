@@ -25,6 +25,7 @@ phase does with the classification.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -73,7 +74,10 @@ NO_JUDGMENT = "NO_JUDGMENT"
 
 # ── Recognized substrate-failure text ────────────────────────────────────
 # Provider/credential rejections. Matched case-insensitively against the
-# failure text a runner captured (usually provider stderr).
+# failure text a runner captured (usually provider stderr). Every entry is a
+# distinctive phrase: a pattern that can occur in ordinary agent prose would
+# invert this module's purpose, reclassifying a real model judgment as a
+# substrate failure.
 _AUTH_PATTERNS: tuple[str, ...] = (
     "failed to authenticate",
     "oauth access token has been revoked",
@@ -83,8 +87,6 @@ _AUTH_PATTERNS: tuple[str, ...] = (
     "invalid_api_key",
     "invalid x-api-key",
     "unauthorized",
-    "401",
-    "403 forbidden",
     "credit balance is too low",
     "permission_error",
 )
@@ -99,13 +101,43 @@ _TRANSPORT_PATTERNS: tuple[str, ...] = (
     "network error",
     "fetch failed",
     "rate limit",
-    "429",
-    "500 internal server error",
-    "502 bad gateway",
-    "503 service unavailable",
-    "504 gateway timeout",
+    "internal server error",
+    "servererror",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
     "overloaded_error",
-    "api error",
+    # Provider error banners are emitted with a trailing colon ("API Error:
+    # ..."); requiring it keeps the phrase from matching an agent that merely
+    # mentions an API error in its narration.
+    "api error:",
+)
+
+# HTTP status codes are matched ONLY in a status-code-shaped context. A bare
+# substring test for "401" / "429" / "500" fires on any output that happens to
+# contain those digits — a line number, an issue reference, a diff hunk, a
+# duration — and would misclassify a genuine agent judgment as a substrate
+# failure. Two shapes count: a status-ish word immediately before the code
+# ("http 429", "API Error: 401", "status_code=503"), or the code immediately
+# followed by its standard reason phrase ("503 service unavailable").
+_STATUS_CODE_CONTEXT = (
+    r"\b(?:http|https|status|statuscode|status[ _-]code|error|errors|err|code|response)\b"
+    r"[^0-9a-z]{0,8}"
+)
+_AUTH_STATUS_CODES = r"401|403"
+_TRANSPORT_STATUS_CODES = r"429|500|502|503|504"
+_AUTH_STATUS_REASONS = r"unauthorized|forbidden|permission denied"
+_TRANSPORT_STATUS_REASONS = (
+    r"too many requests|internal server error|bad gateway|service unavailable|gateway timeout"
+)
+
+_AUTH_CODE_RE = re.compile(
+    rf"{_STATUS_CODE_CONTEXT}(?:{_AUTH_STATUS_CODES})\b"
+    rf"|\b(?:{_AUTH_STATUS_CODES})\s+(?:{_AUTH_STATUS_REASONS})\b"
+)
+_TRANSPORT_CODE_RE = re.compile(
+    rf"{_STATUS_CODE_CONTEXT}(?:{_TRANSPORT_STATUS_CODES})\b"
+    rf"|\b(?:{_TRANSPORT_STATUS_CODES})\s+(?:{_TRANSPORT_STATUS_REASONS})\b"
 )
 
 # Runner-emitted markers that stand in for output that never existed.
@@ -129,6 +161,16 @@ def _text_of(result: Any) -> str:
 
 def _matches(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
+
+
+def _looks_like_auth_failure(text: str) -> bool:
+    """True when ``text`` is a credential rejection (phrase or 401/403 in context)."""
+    return _matches(text, _AUTH_PATTERNS) or bool(_AUTH_CODE_RE.search(text))
+
+
+def _looks_like_transport_failure(text: str) -> bool:
+    """True when ``text`` is a transport drop / provider outage (phrase or 5xx/429)."""
+    return _matches(text, _TRANSPORT_PATTERNS) or bool(_TRANSPORT_CODE_RE.search(text))
 
 
 def produced_model_output(result: Any) -> bool:
@@ -163,7 +205,7 @@ def produced_model_output(result: Any) -> bool:
         return False
     if _matches(text, _NO_OUTPUT_MARKERS):
         return False
-    if _matches(text, _AUTH_PATTERNS) or _matches(text, _TRANSPORT_PATTERNS):
+    if _looks_like_auth_failure(text) or _looks_like_transport_failure(text):
         return False
     return True
 
@@ -180,13 +222,13 @@ def classify_failure_category(result: Any) -> str:
     if failure_code in _TRANSPORT_FAILURE_CODES:
         return CATEGORY_TRANSPORT
     text = _text_of(result)
-    if _matches(text, _AUTH_PATTERNS):
+    if _looks_like_auth_failure(text):
         return CATEGORY_AUTH
     if "timeout: agent exceeded" in text:
         return CATEGORY_TIMEOUT
     if "cli not found" in text or "sandbox_capability_profile_unsupported" in text:
         return CATEGORY_STARTUP
-    if _matches(text, _TRANSPORT_PATTERNS):
+    if _looks_like_transport_failure(text):
         return CATEGORY_TRANSPORT
     return CATEGORY_PROCESS
 
