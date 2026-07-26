@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 9
+CURRENT_RECORD_SCHEMA_VERSION = 10
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -837,6 +837,46 @@ def _migrate_v8_to_v9(record: dict) -> dict:
     return record
 
 
+def _migrate_v9_to_v10(record: dict) -> dict:
+    """Add sandbox capability-profile grants to the substrate record (issue #1947).
+
+    v9 records captured *whether* a dev run was contained (``sandboxed`` /
+    ``containment``) but not *to what* — the containment boundary was a fixed
+    allow-set, so there was nothing to record. v10 lets a project widen that
+    boundary by selecting a forge-owned capability preset, which makes the
+    granted write roots and mach services a substrate decision a reviewer must
+    be able to see.
+
+    Every v9 record ran under the default (unwidened) boundary by construction,
+    so backfilling the explicit null-profile/empty-grant payload is a faithful
+    statement of what those runs were granted, not a fabricated default. The
+    record itself is never rewritten in the substrate (ADR-0002
+    refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    from theforge.config.sandbox_capabilities import resolve_capabilities  # noqa: PLC0415
+
+    def default_capability_payload() -> dict:
+        return resolve_capabilities(None).audit_payload()
+
+    migrated = record
+    workspace = migrated.get("workspace")
+    if isinstance(workspace, dict) and "sandbox_capabilities" not in workspace:
+        migrated = {
+            **migrated,
+            "workspace": {**workspace, "sandbox_capabilities": default_capability_payload()},
+        }
+    iterations = migrated.get("iterations")
+    if isinstance(iterations, dict) and isinstance(iterations.get("dev_loop"), list):
+        dev_loop = [
+            item
+            if not isinstance(item, dict) or "sandbox_capabilities" in item
+            else {**item, "sandbox_capabilities": default_capability_payload()}
+            for item in iterations["dev_loop"]
+        ]
+        migrated = {**migrated, "iterations": {**iterations, "dev_loop": dev_loop}}
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -854,6 +894,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
+    9: _migrate_v9_to_v10,
 }
 
 

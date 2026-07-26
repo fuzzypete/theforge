@@ -207,6 +207,10 @@ class DevIterationTelemetry:
     # wrapper), "native" (provider --sandbox flag), "unavailable" (fail-closed),
     # or "none". Distinguishes real containment from prompt-only runs (#1907).
     containment: str = "none"
+    # Sandbox capability profile granted for this iteration: {"profile",
+    # "write_roots", "mach_services"}. An explicit null profile with empty sets
+    # records default containment, as distinct from omitted data (#1947).
+    sandbox_capabilities: dict = field(default_factory=dict)
     agent_exit_code: int | None = None
     runner_failure_code: str | None = None
     runner_failure_summary: str | None = None
@@ -486,6 +490,10 @@ class CoordinatorState:
     # "unavailable" | "none". Surfaced in audit/status so a prompt-only run is
     # never reported as mechanically contained (#1907).
     dev_containment: str = "none"
+    # Resolved sandbox capability profile for the dev run (#1947):
+    # {"profile", "write_roots", "mach_services"}. Set at dev-phase entry from
+    # ForgeConfig.sandbox; empty only for runs that never entered DEV.
+    dev_sandbox_capabilities: dict = field(default_factory=dict)
     dev_escalated: bool = False  # True once model escalation has occurred this run
     timeout_escalation_used: bool = (
         False  # True once a timeout escalation has fired this sprint; gates re-escalation
