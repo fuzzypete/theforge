@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shlex
 from pathlib import Path
 
@@ -71,11 +72,26 @@ def run_gate_full(
     workspace_path: Path,
     task: TaskStory | None = None,
     iter_num: int | None = None,
+    *,
+    output_digest: list[str] | None = None,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
 
     Returns (decision, error, output_tail, resolved_gate_cmd, exit_code).
     decision is "PASS" or "FAIL"; error is set only on infrastructure failure.
+
+    ``output_digest``, when given, receives a single SHA-256 of the **full**
+    output. Callers comparing one gate run against the next must fingerprint the
+    whole output, not ``output_tail``: the tail is the last
+    ``gate_output_tail_chars`` characters, so a gate whose output ends in a
+    constant footer (a coverage table, a fixed summary banner) hashes identically
+    on every run while the failure detail changes above the window (#1981).
+
+    It is an out-parameter rather than a sixth return value because the 5-tuple is
+    unpacked at every call site including ~30 mocked tests; widening it — or
+    returning a record — would churn all of them to carry one scalar that only
+    one caller reads. A caller-supplied list keeps it explicit and per-call, so
+    parallel story workers cannot share it.
     """
     has_override = (
         task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
@@ -104,6 +120,9 @@ def run_gate_full(
             workspace_path / ".forge/traces" / f"{iter_num}-gate.txt",
             output,
         )
+
+    if output_digest is not None:
+        output_digest.append(hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest())
 
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]

@@ -430,6 +430,27 @@ def _retry_review_findings_for_dev_prompt(state: CoordinatorState) -> str | None
     )
 
 
+def _gate_output_fingerprint(
+    gate_output_digest: str | None, gate_result: str | None
+) -> str | None:
+    """Return the stall-detection fingerprint for a *failing* gate run.
+
+    ``gate_output_digest`` is ``run_gate_full``'s SHA-256 of the full output.
+    Only failing runs are fingerprinted: a passing gate prints the same thing
+    every time, so hashing it would make two consecutive PASSes look like a
+    stalled failure.
+
+    Returns None whenever no digest was produced (gate skipped, or the runner
+    stubbed), which fails open — the brake needs two adjacent equal fingerprints,
+    so an absent one simply lets the retry proceed. That is the safe direction: a
+    false non-match costs one more dev iteration, a false match kills a story
+    that was still converging.
+    """
+    if not gate_output_digest or gate_result in (None, "PASS"):
+        return None
+    return gate_output_digest
+
+
 def record_dev_iteration_telemetry(
     state: CoordinatorState,
     workspace_path: Path,
@@ -437,6 +458,7 @@ def record_dev_iteration_telemetry(
     max_iterations: int,
     gate_result: str | None,
     gate_output_tail: str = "",
+    gate_output_digest: str | None = None,
     is_timeout: bool = False,
     runner_failure_summary: str | None = None,
     failed_test_pattern: str | None = None,
@@ -486,6 +508,7 @@ def record_dev_iteration_telemetry(
             gate_result=gate_result,
             failed_tests=failed_tests,
             gate_output_format_recognized=format_recognized,
+            gate_output_fingerprint=_gate_output_fingerprint(gate_output_digest, gate_result),
             existing_test_failures=False,
             is_timeout=is_timeout,
             files_changed=files_changed,

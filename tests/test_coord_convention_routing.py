@@ -17,7 +17,7 @@ from coord_test_helpers import (
 
 from theforge.config.types import HardConventionsConfig
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase, RetryReason
 from theforge.task import TaskStory
 
 
@@ -41,7 +41,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_convention_violation_after_passing_gate_creates_synthetic_blocking_review(
+    def test_convention_violation_after_passing_gate_is_recorded_as_a_validate_block(
         self,
         mock_shell,
         mock_agent,
@@ -73,8 +73,8 @@ class TestConventionViolationRouting:
         with patch("theforge.coordinator.engine._run_validate_phase") as mock_validate:
             from theforge.coordinator.validate_phase import _ValidateOutcome
 
-            mock_validate.side_effect = [
-                (_ValidateOutcome.REVIEW_CONVENTION_BLOCK, None),
+            outcomes = [
+                (_ValidateOutcome.RETRY_DEV_NEW_CYCLE, None),
                 (
                     _ValidateOutcome.ESCALATE,
                     CoordinatorResult(
@@ -85,6 +85,14 @@ class TestConventionViolationRouting:
                     ),
                 ),
             ]
+
+            def _validate(state, *_args, **_kwargs):
+                # VALIDATE sets the retry reason before handing the finding back;
+                # the engine reads it to pick the synthetic review flavour.
+                state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
+                return outcomes.pop(0)
+
+            mock_validate.side_effect = _validate
             result = run_task(config, task)
 
         assert result.success is False
@@ -94,15 +102,18 @@ class TestConventionViolationRouting:
         mock_fix_prompt.assert_not_called()
         mock_pool.assert_not_called()
         second_validate_state = mock_validate.call_args_list[1].args[0]
-        assert len(second_validate_state.review_results) == 1
-        convention_review = second_validate_state.review_results[0]
-        assert convention_review.verdict == "REQUEST_CHANGES"
-        assert any(f.severity == "P1" for f in convention_review.findings)
-        assert "Hard convention violation" in convention_review.findings[0].description
-        assert convention_review.raw_yaml == {
-            "source": "validate_convention_block",
-            "convention_violations": [],
-        }
+        # The coordinator's finding is recorded in its own channel. The reviewer
+        # record stays untouched: an entry there means a reviewer pool ran, and
+        # per-model attribution, the adaptive review-cycle learner, and the
+        # persistent-P1 lookback all rely on that (#1981).
+        assert second_validate_state.review_results == []
+        assert second_validate_state.review_cycle_metadata == []
+        assert second_validate_state.review_iteration_telemetry == []
+        assert len(second_validate_state.validate_blocks) == 1
+        block = second_validate_state.validate_blocks[0]
+        assert block["kind"] == "convention"
+        assert block["review_cycle"] == 0
+        assert second_validate_state.validate_opened_review_cycles == 1
         assert result.message == "forced stop after synthetic convention review"
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt")
@@ -121,7 +132,12 @@ class TestConventionViolationRouting:
         mock_fix_prompt,
         tmp_path,
     ):
-        """Convention block with max_review_cycles=1 escalates immediately."""
+        """A new-cycle request the review budget cannot fund escalates immediately.
+
+        VALIDATE routes to ESCALATE itself when no cycle remains; this exercises
+        the engine's own bound, which keeps the state machine finite no matter
+        what a phase returns.
+        """
         base_config = _make_config(tmp_path)
         config = dataclasses.replace(
             base_config,
@@ -144,7 +160,11 @@ class TestConventionViolationRouting:
         with patch("theforge.coordinator.engine._run_validate_phase") as mock_validate:
             from theforge.coordinator.validate_phase import _ValidateOutcome
 
-            mock_validate.return_value = (_ValidateOutcome.REVIEW_CONVENTION_BLOCK, None)
+            def _validate(state, *_args, **_kwargs):
+                state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
+                return (_ValidateOutcome.RETRY_DEV_NEW_CYCLE, None)
+
+            mock_validate.side_effect = _validate
             result = run_task(config, task)
 
         assert result.success is False
@@ -160,7 +180,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_convention_violation_still_escalates_when_dev_budget_exhausted(
+    def test_convention_violation_escalation_from_validate_is_passed_through(
         self,
         mock_shell,
         mock_agent,
@@ -194,29 +214,18 @@ class TestConventionViolationRouting:
                     success=False,
                     phase=Phase.ESCALATE,
                     state=CoordinatorState(phase=Phase.ESCALATE),
-                    message="Hard convention violations after 1 attempts",
+                    message=(
+                        "Hard convention violations after 1 validation run(s);"
+                        " dev iterations and review cycles are both exhausted"
+                    ),
                 ),
             )
             result = run_task(config, task)
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert result.message == "Hard convention violations after 1 attempts"
+        assert result.message == (
+            "Hard convention violations after 1 validation run(s);"
+            " dev iterations and review cycles are both exhausted"
+        )
         assert len(result.state.review_results) == 0
-
-
-def test_build_convention_blocking_review_injects_fallback_p1_when_details_missing() -> None:
-    state = CoordinatorState(convention_violations=[])
-
-    from theforge.coordinator.engine import _build_convention_blocking_review
-
-    review = _build_convention_blocking_review(state)
-
-    assert review.verdict == "REQUEST_CHANGES"
-    assert len(review.findings) == 1
-    assert review.findings[0].severity == "P1"
-    assert "no violation details were recorded" in review.findings[0].description.lower()
-    assert review.raw_yaml == {
-        "source": "validate_convention_block",
-        "convention_violations": [],
-    }
