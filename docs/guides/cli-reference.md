@@ -273,6 +273,25 @@ For an active sprint run, `forge status` includes the per-story sprint status
 view. The old standalone `forge sprint-status` command is no longer exposed by
 the top-level parser.
 
+### Run dispositions
+
+The bracketed label in the sprint header is derived from how the run actually
+ended — never from the absence of a record:
+
+| Label | Meaning |
+|---|---|
+| `live` | Owning process is alive (PID file present). |
+| `completed` | The sprint returned normally. |
+| `stopped` | Terminated deliberately (`forge stop`, SIGTERM). |
+| `failed` | Terminated on an unhandled exception; the terminating cause is printed on the `cause:` line below the header. |
+| `orphaned` | Marked by `forge runs-clean` — no process, no terminal marker. |
+| `crashed` | State file left behind with no terminal marker at all. |
+
+When the owning process is gone, stories whose last recorded phase said
+`running` are reported as `interrupted` (their last known phase is retained in
+the PHASE column as history). Interrupted work is not progressing — resume the
+sprint rather than waiting on it.
+
 ### Operator-action queue
 
 ```bash
