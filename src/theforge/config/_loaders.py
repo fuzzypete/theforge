@@ -78,6 +78,20 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
                 "merge_strategy must be one of "
                 f"{sorted(_valid_strategies)}, got {merge_strategy!r}"
             )
+
+    setup_command = ws_data.get("setup_command", DEFAULT_WORKSPACE.setup_command)
+    raw_interpreter = ws_data.get("python_interpreter", DEFAULT_WORKSPACE.python_interpreter)
+    python_interpreter = str(raw_interpreter).strip() if raw_interpreter is not None else None
+    python_interpreter = python_interpreter or None
+    if setup_command and "{forge_python}" in setup_command and not python_interpreter:
+        raise ValueError(
+            "workspace.setup_command uses {forge_python} but workspace.python_interpreter "
+            "is not set. Declare the interpreter this project develops against (e.g. "
+            'python_interpreter: "python3.12") — TheForge will not substitute its own '
+            "interpreter, because the orchestrator's runtime must not decide which Python "
+            "the project's gate runs under."
+        )
+
     return WorkspaceConfig(
         create_command=ws_data.get("create_command", DEFAULT_WORKSPACE.create_command),
         path_pattern=ws_data.get("path_pattern", DEFAULT_WORKSPACE.path_pattern),
@@ -87,7 +101,8 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
             "stale_worktree_days", DEFAULT_WORKSPACE.stale_worktree_days
         ),
         auto_push=auto_push,
-        setup_command=ws_data.get("setup_command", DEFAULT_WORKSPACE.setup_command),
+        setup_command=setup_command,
+        python_interpreter=python_interpreter,
         on_approve=on_approve,
         merge_strategy=merge_strategy,
         pr_labels=tuple(ws_data.get("pr_labels", [])),

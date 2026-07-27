@@ -98,7 +98,11 @@ def run_gate_diagnostic_pass(
     )
     _cu._log(f"  Running gate diagnostic pass after timeout: {diagnostic_cmd}")
 
-    env = build_workspace_env(workspace_path, extra={"PYTHONFAULTHANDLER": "1"})
+    env = build_workspace_env(
+        workspace_path,
+        extra={"PYTHONFAULTHANDLER": "1"},
+        expected_python=config.workspace.python_interpreter,
+    )
     _ok, output, exit_code, timed_out = _cu._run_shell_detailed(
         diagnostic_cmd,
         workspace_path,

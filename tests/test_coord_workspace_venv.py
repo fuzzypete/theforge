@@ -18,7 +18,7 @@ class TestRunSetupSplitVenvBehavior:
             return (True, "ok")
 
         with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
-            ok, out = _run_setup_split(cmd, tmp_path)
+            ok, out = _run_setup_split(cmd, tmp_path, "/opt/project-pythons/3.12/bin/python3.12")
 
         assert ok is True
         assert len(calls) == 2
@@ -107,7 +107,9 @@ class TestCreateWorkspaceReuseRunsSetup:
 
         assert err is None
         assert workspace_path == workspace
-        mock_setup.assert_called_once_with(config.workspace.setup_command, workspace)
+        mock_setup.assert_called_once_with(
+            config.workspace.setup_command, workspace, config.workspace.python_interpreter
+        )
         mock_deindex.assert_called_once_with(workspace, purge=True)
 
 
