@@ -77,6 +77,7 @@ from .dag import (
 from .display import _print_worker_status, _story_header
 from .gate_timeout_resolver import resolve_effective_gate_timeout
 from .launch_guard import (
+    REASON_IN_FLIGHT,
     REASON_RECONCILE_PRIOR_DONE,
     REASON_STRANDED_WORKTREE,
 )
@@ -924,6 +925,62 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             check=False,
         )
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def _continuation_evidence(
+    *,
+    reexec: bool,
+    live_story_slugs: set[str],
+) -> str | None:
+    """Describe why this launch is a continuation of in-flight work, or None.
+
+    A re-exec is not, on its own, evidence that work is in flight: the source
+    change can be observed by the sprint's *own* first pull, before any story has
+    started, and such a launch is still a genuine start. What distinguishes a
+    continuation is observed live work — agent process groups this same pid
+    spawned before the re-exec and that are still running. Startup-only checks
+    are skipped on exactly that evidence, never on the re-exec flag alone, so a
+    launch that has not started anything keeps its full startup sequence.
+
+    Deliberately narrow: prior *recorded* outcomes are not used as evidence,
+    because a sprint id is stable across separate invocations of the same sprint
+    and would make an unrelated later run skip its baseline gate.
+    """
+    if not reexec or not live_story_slugs:
+        return None
+    return (
+        "agent process groups still running for "
+        f"{', '.join(sorted(live_story_slugs))} after the re-exec"
+    )
+
+
+def _skipped_baseline_gate(config: ForgeConfig, evidence: str) -> dict[str, object]:
+    """The baseline-gate record for a run that legitimately did not run it.
+
+    The baseline gate answers one question — was the merge base green *before any
+    dev work started* — and a continuation cannot ask it: work has started, and
+    the host is busy running it, so a failure would report a conclusion about the
+    code drawn from a measurement of our own load. Skipping is recorded
+    explicitly, with its evidence, rather than silently omitted.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return {
+        "status": "skipped",
+        "passed": True,
+        "exit_code": 0,
+        "duration_seconds": 0.0,
+        "started_at": now,
+        "finished_at": now,
+        "merge_base": None,
+        "command": config.validation.gate_command,
+        "skip_reason": "reexec_continuation",
+        "skip_evidence": evidence,
+        "message": (
+            "Baseline gate skipped: this process is continuing an in-flight sprint "
+            f"after a mid-run re-exec ({evidence}); the gate's precondition — no dev "
+            "work started — no longer holds"
+        ),
+    }
 
 
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
@@ -1855,6 +1912,7 @@ def run_sprint(
     skipped_issues: "list | None" = None,
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
     force: bool = False,
+    live_story_slugs: "set[str] | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1883,6 +1941,12 @@ def run_sprint(
             resume-equivalent for merged-state reconciliation: every manifest
             story is triaged against merged state before dispatch so a story
             whose PR already landed is never re-entered through WORKSPACE.
+        live_story_slugs: Stories of this same sprint generation whose agent
+            process groups survived the re-exec (resolved by the CLI via
+            ``theforge.sprint.live_stories``). Their worktrees are this run's own
+            live work — protected from the orphan sweep — and their existence is
+            the evidence that startup-only checks (the baseline gate) no longer
+            hold their precondition.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -1904,6 +1968,12 @@ def run_sprint(
     # resume-equivalent for all reconciliation/skip paths.
     reconcile = resume or reexec
 
+    # Stories still executing from before the re-exec. Everything downstream that
+    # would otherwise treat their state as foreign — the orphan worktree sweep,
+    # the baseline gate's "nothing has started yet" precondition, the gate-timeout
+    # load model — is told about them explicitly.
+    _live_story_slugs: set[str] = {s for s in (live_story_slugs or set()) if s}
+
     # Establish that the agents are reachable BEFORE committing wall clock or
     # budget to them (#1952). This runs ahead of the baseline gate, the base
     # pull, and every worktree touch, so a dead credential costs seconds and
@@ -1912,7 +1982,7 @@ def run_sprint(
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
-    sweep_orphan_worktrees(config.project_root, config)
+    sweep_orphan_worktrees(config.project_root, config, protected_slugs=_live_story_slugs)
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
@@ -1985,12 +2055,17 @@ def run_sprint(
         # not an operator misconfiguration. Fall back to the safe default
         # rather than raising on incidental mock attribute access.
         _mode = "adaptive"
+    # A fresh start contends only with its own configured parallelism. A
+    # continuation additionally contends with the agents it inherited, so the
+    # derived limit must count them — otherwise the gate is measured against a
+    # load model that describes a different run than the one executing.
     _gate_timeout_resolution = resolve_effective_gate_timeout(
         baseline=_baseline_gate_timeout,
         max_parallel=max_parallel,
         host_cores=_host_cores,
         gate_cpu_cores=_gate_cpu_cores,
         mode=_mode,
+        running_stories=len(_live_story_slugs),
     )
     if _gate_timeout_resolution is not None:
         print(
@@ -2000,7 +2075,7 @@ def run_sprint(
         )
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
         _gpc = _gate_timeout_resolution.gate_cpu_cores
-        _mp = _gate_timeout_resolution.max_parallel
+        _mp = _gate_timeout_resolution.actual_parallel or _gate_timeout_resolution.max_parallel
         _hc = _gate_timeout_resolution.host_cores
         print(
             f"[sprint] WARNING: gate CPU demand ({_gpc} cores × parallel {_mp} = "
@@ -2070,7 +2145,20 @@ def run_sprint(
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
-    baseline_gate = _run_baseline_gate(config, resolved)
+    _continuation_reason = _continuation_evidence(
+        reexec=reexec,
+        live_story_slugs=_live_story_slugs,
+    )
+    if _continuation_reason is not None:
+        baseline_gate = _skipped_baseline_gate(config, _continuation_reason)
+        _sprint_logger.emit(
+            "baseline_gate_skipped",
+            reason="reexec_continuation",
+            evidence=_continuation_reason,
+            live_stories=sorted(_live_story_slugs),
+        )
+    else:
+        baseline_gate = _run_baseline_gate(config, resolved)
     resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
     if not bool(baseline_gate.get("passed", False)):
@@ -2774,6 +2862,26 @@ def run_sprint(
                     "outcome_source": "reexec_reconcile",
                 },
             )
+        elif reason == REASON_IN_FLIGHT:
+            # This story's own agent is still running in its worktree, spawned by
+            # this same pid before the re-exec. Re-dispatching it would put two
+            # agents in one worktree; calling it a collision would delete the
+            # work. It is neither: it is in flight. Record it as PRESERVED (the
+            # skipped bucket — the run neither ran it nor failed it) so the
+            # sprint continues with the rest of its stories.
+            _log(
+                f"IN-FLIGHT {slug} (live agent survived the re-exec; worktree preserved, "
+                "not re-dispatched)"
+            )
+            dag.mark_skipped(slug)
+            _set_outcome(slug, StoryOutcome.PRESERVED, reason=reason)
+            _record_current_story_entry(
+                slug,
+                "PRESERVED",
+                error=reason,
+                error_type="dropped",
+                extras={"drop_reason": reason, "outcome_source": "reexec_in_flight"},
+            )
         elif reason == REASON_STRANDED_WORKTREE:
             # A prior-generation worktree exists but the story did not succeed:
             # recoverable stranded sprint state. Keep it DROPPED but retain the
@@ -2902,6 +3010,15 @@ def run_sprint(
                 _detail = {
                     "final_outcome": "ALREADY_DONE",
                     "outcome_source": "reexec_reconcile",
+                }
+            elif _drop_reason == REASON_IN_FLIGHT:
+                # Live work of this same sprint, still executing outside this
+                # process image — surface it as preserved, not failed.
+                _status = "preserved"
+                _blocked_by = [f"in flight: {_drop_reason}"]
+                _detail = {
+                    "final_outcome": "PRESERVED",
+                    "outcome_source": "reexec_in_flight",
                 }
             elif _drop_reason == REASON_STRANDED_WORKTREE:
                 # Recoverable stranded prior-generation sprint state — name it

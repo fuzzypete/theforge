@@ -284,6 +284,9 @@ def _cmd_sprint(args: object) -> int:
             )
         except Exception:
             prior_outcomes = None
+    # Stories this same process (the pid survives ``os.execv``) still has agents
+    # running for. They are this run's own live work, not foreign state.
+    in_flight_slugs = _resolve_live_story_slugs(config, slugs) if reexec else set()
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs,
         config=config,
@@ -291,6 +294,7 @@ def _cmd_sprint(args: object) -> int:
         allow_drop=reexec,
         force=force,
         prior_outcomes=prior_outcomes,
+        live_slugs=in_flight_slugs,
     )
     if launch_error is not None:
         return launch_error
@@ -365,6 +369,7 @@ def _cmd_sprint(args: object) -> int:
             run_id=run_id,
             dropped_slugs=dropped_slugs,
             force=force,
+            live_story_slugs=in_flight_slugs,
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
@@ -401,6 +406,7 @@ def _acquire_launch_locks(
     allow_drop: bool = False,
     force: bool = False,
     prior_outcomes: dict[str, str] | None = None,
+    live_slugs: set[str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
         slugs=slugs,
@@ -409,7 +415,27 @@ def _acquire_launch_locks(
         allow_drop=allow_drop,
         force=force,
         prior_outcomes=prior_outcomes,
+        live_slugs=live_slugs,
     )
+
+
+def _resolve_live_story_slugs(config: object, slugs: list[str]) -> set[str]:
+    """Stories of this same process still executing across a re-exec boundary.
+
+    Thin CLI seam over :mod:`theforge.sprint.live_stories` — the ownership
+    decision itself lives in the sprint package. Best-effort: a resolution
+    failure degrades to today's behaviour rather than failing the launch.
+    """
+    try:
+        from theforge.sprint.live_stories import resolve_live_story_slugs  # noqa: PLC0415
+
+        return resolve_live_story_slugs(
+            slugs,
+            project_root=config.project_root,
+            path_pattern=config.workspace.path_pattern,
+        )
+    except Exception:
+        return set()
 
 
 def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, str]:
@@ -1129,6 +1155,8 @@ def _run_query_mode(
     # flattening them into fresh collisions. Best-effort — a miss degrades to
     # today's behavior.
     prior_outcomes = _resolve_prior_outcomes(config, resolved.name) if reexec else None
+    # Stories this same process still has live agents for (see manifest mode).
+    in_flight_slugs = _resolve_live_story_slugs(config, slugs) if reexec else set()
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs,
         config=config,
@@ -1136,6 +1164,7 @@ def _run_query_mode(
         allow_drop=reexec,
         force=force,
         prior_outcomes=prior_outcomes,
+        live_slugs=in_flight_slugs,
     )
     if launch_error is not None:
         return launch_error
@@ -1218,6 +1247,7 @@ def _run_query_mode(
             skipped_issues=skipped_issues,
             entry_intake_outcomes=entry_intake_outcomes,
             force=force,
+            live_story_slugs=in_flight_slugs,
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
