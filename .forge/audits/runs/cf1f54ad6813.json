@@ -1,0 +1,1407 @@
+{
+  "schema_version": 10,
+  "run_id": "cf1f54ad6813",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Mid-sprint re-exec drops prior cost from both the budget cap and the reported total",
+    "slug": "issue-1972",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nA sprint that re-execs mid-run loses every dollar spent before the re-exec, from\nits operator-facing total and from the running figure its budget check consults.\nThe loss is silent.\n\nSprint `issues-1950,1905,1951,1952` (run `e8e07000d057`, sprint `342c270c68d0`,\n2026-07-26) ran four stories to completion. The run log records each story's own\ntotal:\n\n```\n#1905  \u2713 DONE  total=$2.23   12m 47s\n#1950  \u2713 DONE  total=$32.74  42m 48s\n#1951  \u2713 DONE  total=$29.58  38m 31s\n#1952  \u2713 DONE  total=$18.55  28m 8s\n```\n\nActual spend: **$83.10**, over roughly 2h12m of wall clock.\n\n`forge status` and `sprint-summary.yaml` both report `total_cost_usd: 18.5532`\nand `duration_seconds: 2206.9` \u2014 the final story alone. The three stories that\nfinished before the re-exec are listed with `cost_usd: 0.0` and no timing, under\n`detail.final_outcome: ALREADY_DONE` / `outcome_source: resume_skip_merged`.\n\nThe same zeroed figure is what the dispatch-time budget check reads. When the\nlast story was dispatched, the check evaluated a cumulative of `$0.00 +\naccumulated` rather than the $64.55 already committed.\n\n**What is not being reported here.** The sprint finished $3.10 above its `$80`\ncap, and that is not a defect. The budget is enforced at story-dispatch\nboundaries, so a sprint overshoots by up to the cost of whatever is already in\nflight; a 3.9% overshoot is that design working. Nor did the blind cumulative\nchange any decision in this run: with the correct $64.55 carried, the check at\nthe final dispatch would still have been under `$80`, so that story dispatches\neither way and no story was owed a skip. The realized damage is to the reported\ntotal; the damage to enforcement is latent, and would surface on any run where\nthe omitted spend is what puts the cumulative over the cap. In this run a single\nstory happened to remain, and the omission was $64.55 \u2014 with more stories left,\nthe check would have kept dispatching against a cap it believed untouched.\n\n## Diagnosis\n\n**Observed symptom:** a completed sprint reported roughly a quarter of its\nactual cost and a third of its actual duration, and its budget check consulted\nthe same understated figure.\n\n**Evidence.** The run re-execed mid-sprint:\n\n```\n[forge] 16:07:41.644 [issue-1952] Source updated after pull \u2014 re-execing to load new code\n```\n\n`run_sprint` carries cost across a re-exec via `prior_cost`, assigned at\n`src/theforge/sprint/runner.py:2052` under the `reconcile` branch whose comment\nat `:2048` states the intent: *\"Resume mode (and re-exec, treated as\nresume-equivalent): triage all stories and carry forward prior costs.\"* The\nbranch was taken \u2014 the three earlier stories were re-triaged and classified\n`ALREADY_DONE`, which only the triage inside that branch produces.\n\n`_read_prior_sprint_cost` (`src/theforge/sprint/runner.py:621`) sources the\ncarry-forward from `.forge/audits/sprint-audit.yaml` and returns `0.0` unless\nthat file's `sprint.sprint_id` equals the current sprint id (`:632`). The\nconfirmation is negative and positive together: the success log line at `:2054`\nfires only when `prior_cost > 0.0`, and it appears nowhere in the run log; and\nthe file today holds `sprint_id: 342c270c68d0` with `total_cost_usd: 18.5532`\nand `finished_at: 2026-07-26T23:45:28Z` \u2014 the sprint's own end timestamp.\n\n**Confirmed cause:** `sprint-audit.yaml` is written when a sprint finishes, but\nit is read during a mid-sprint re-exec. At that point it still holds the\nprevious sprint's block, the identity check fails, and `prior_cost` is `0.0`.\nThe carry-forward is therefore guaranteed to fail on a sprint's first re-exec,\nbecause the artifact it reads cannot yet describe the sprint doing the reading.\n\nBoth consequences follow from that single value. The dispatch check compares\n`prior_cost + accumulated_cost` at `src/theforge/sprint/runner.py:2942`, and the\nreported total is `accumulated_cost + prior_cost` at `:3505`.\n\n**Ruled out \u2014 the overshoot being the defect.** The `$3.10` above cap is fully\nexplained by boundary-checked enforcement and would have occurred with correct\naccounting. It is reported here only to establish that no budget-exhausted path\nfired, and it is not something to fix.\n\n**Ruled out \u2014 duplicate of #1906.** That issue concerns resume-skipped stories\nbeing grouped under `LANDED` rather than annotated distinctly, and its expected\nbehavior is entirely about presentation. Implemented exactly as written, the\nfour rows would be relabelled and the sprint would still report `$18.55`, and\nthe dispatch check would still read a zeroed cumulative. The defects are\nindependent.\n\n**Ruled out \u2014 the outcomes themselves being wrong.** All four stories genuinely\nlanded: merge commits `e3e1321`, `f849f82`, `11a0539`, and `7cd02a3` on\n`release/v0.13`, with all four issues closed. `4 of 4` is accurate as an\noutcome. Only the accounting and attribution are wrong.\n\n**Affected code path:** `_read_prior_sprint_cost`\n(`src/theforge/sprint/runner.py:621`), its call site under `reconcile`\n(`:2052`), the dispatch-time check (`:2942`), and the final total (`:3505`).\n\n**Secondary consequence:** the wrong total is now durable. The file records\n`total_cost_usd: 18.5532` for `sprint_id: 342c270c68d0`, so a later re-exec of\nthat same sprint would carry forward the understated figure rather than no\nfigure.\n\n**Explicitly out of scope:** changing when or how often the budget is enforced.\nEnforcement at story-dispatch boundaries, with in-flight stories running to\ncompletion, is the existing and intended design; a correct fix leaves that\nuntouched and changes only the figure the boundary check reads. Nothing here\ncalls for interrupting a story mid-flight or for a tighter enforcement point.\n\n**Fix-success criterion:** for a sprint that re-execs one or more times, the\nreported total equals the sum of its stories' own recorded costs, its reported\nduration spans from first dispatch to final completion, and the dispatch-time\ncheck evaluates a cumulative that includes spend from before the most recent\nre-exec. Given this run as input, the total reads $83.10 rather than $18.55, and\nthe cumulative seen at the final dispatch is $64.55 rather than $0.00 \u2014 the\ndispatch decision itself is unchanged, since $64.55 is under the cap.\n\n## Expected behavior\n\nSpend that has occurred does not stop having occurred because the process\naccounting for it was replaced. A budget is a control over real money, so any\nmechanism that restarts the orchestrating process mid-run has to carry the\ncommitted spend across that boundary, or the control silently starts evaluating\na fiction. This is a general property of process-lifecycle events during a run\nrather than something specific to re-exec after a source pull; the same\nreasoning covers any future path that reconstructs run state in a fresh process.\nWhatever policy a control implements \u2014 strict or tolerant, continuous or\nchecked at intervals \u2014 it has to be applied to the real figure, and a policy\ndeliberately designed to permit overshoot is not a licence for the underlying\nnumber to be wrong.\n\nThe same requirement applies to what the operator is shown, and for a stronger\nreason than tidiness. Cost and duration in a sprint summary are the operator's\nonly account of what a run consumed, and a summary reporting a quarter of actual\nspend while presenting itself as the whole run is not an incomplete account but\na misleading one. Where a total cannot be reconstructed, saying so is\nserviceable; reporting a confident number that is wrong is not, because nothing\ndownstream \u2014 the operator, budget-setting for the next run, or any analysis\nreading these artifacts \u2014 can tell the two apart.\n\nCarry-forward state also should not be recovered from an artifact that only\nexists once the activity it describes has finished. A run's own in-flight\naccounting has to survive on something written as the run proceeds, since a\nrecord produced at completion cannot inform a decision taken partway through.\n",
+    "github_issue": 1972,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Gate returned FAIL after 3 attempts (gate exit code 2)\nGate output tail (last 2000 chars):\n/Users/pwickersham/src/theforge/.forge/worktrees/issue-1972/.forge/index/modules.yaml\nAll checks passed!\nunformatted: File would be reformatted\n    --> src/theforge/sprint/runner.py:1:1\n     |\n2336 |             ),\n     -             \"preflight_source_run_id\": getattr(\n     -                 result.state, \"preflight_cached_from_run_id\", None\n     -             ),\n2337 +             \"preflight_source_run_id\": getattr(result.state, \"preflight_cached_from_run_id\", None),\n2338 |             \"error\": result.state.error,\n--------------------------------------------------------------------------------\n2446 |     for _slug, _outcome in intake_outcomes.items():\n     -         story_cost_adjustments[_slug] = (\n     -             story_cost_adjustments.get(_slug, 0.0) + _intake_outcome_cost(_outcome)\n     -         )\n2447 +         story_cost_adjustments[_slug] = story_cost_adjustments.get(\n2448 +             _slug, 0.0\n2449 +         ) + _intake_outcome_cost(_outcome)\n2450 |     for _issue_num, _outcome in (entry_intake_outcomes or {}).items():\n--------------------------------------------------------------------------------\n2746 |     if resume:\n2747 +\n2748 |         def _already_done_story_entry(\n     |\n\n1 file would be reformatted, 598 files already formatted\nmake: *** [gate] Error 1\nFull gate output trace: .forge/traces/3-gate.txt",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-27T05:01:31.596321+00:00",
+    "finished_at": "2026-07-27T05:08:54.283136+00:00",
+    "duration_seconds": 442.686815
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1972",
+    "branch": "feat/issue-1972",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "dev_iterations": 3,
+    "gate_decisions": [
+      "FAIL",
+      "FAIL",
+      "FAIL"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [],
+        "gate_output_format_recognized": false,
+        "cost_usd": null,
+        "duration_s": 185.39,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/runner.py",
+          "tests/test_sprint_resume.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 0,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "cost_usd": null,
+        "duration_s": 138.76,
+        "meaningful_progress": false,
+        "files_changed": [],
+        "files_changed_count": 0,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 0,
+        "iteration": 3,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [],
+        "gate_output_format_recognized": false,
+        "cost_usd": null,
+        "duration_s": 97.44,
+        "meaningful_progress": true,
+        "files_changed": [
+          "tests/test_sprint_resume.py"
+        ],
+        "files_changed_count": 1,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 3,
+        "max": 3,
+        "hit_limit": true,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 4,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 5,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "openai-gpt-5.4",
+      "model_actual": "gpt-5.4",
+      "model_provider": null,
+      "model_cli": "codex",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 900,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 5,
+      "base_review": 4,
+      "profile_history_runs": 59,
+      "profile_avg_iterations": 1.1525,
+      "profile_avg_cost_usd": 0.0,
+      "profile_raw_dev_max": 1.7288,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 900,
+      "profile_max_duration_s": 854.78,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 1283,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 1283,
+      "chosen_dev_cost_estimate_usd": 0.01,
+      "review_history_sample_size": 18,
+      "p75_review": 2,
+      "chosen_review_max": 4,
+      "rationale": "derived dev limits from 59 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (1283s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-27T05:01:35.281551+00:00"
+      },
+      {
+        "cycle": 0,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-07-27T05:04:43.465586+00:00"
+      },
+      {
+        "cycle": 0,
+        "cycle_count": 3,
+        "total_count": 3,
+        "timestamp": "2026-07-27T05:07:09.572809+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": null,
+    "review_usd": 0,
+    "dev_invocations": 3,
+    "review_invocations": 0,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": null,
+        "duration_seconds": 185.39379804208875,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": null,
+        "duration_seconds": 138.75934066600166,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": null,
+        "duration_seconds": 97.44016729108989,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.4"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The described defect is real and unfixed in the current baseline: _read_prior_sprint_cost only matches a same-sprint_id block in sprint-audit.yaml, which is written solely at sprint completion, so a mid-sprint re-exec always reads prior_cost=0.0 and both the dispatch-time budget check and the final reported total silently drop pre-re-exec spend.",
+    "complexity": "medium",
+    "complexity_score": 5,
+    "implementation_complexity_score": 5,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 5",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "9 operator-visible surfaces enumerated in acceptance criteria: and returns, both report, branch whose comment at, carries cost across a re-exec via, fires only when, forge/audits/sprint-audit.yaml, sprint-audit.yaml, sprint-summary.yaml",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "cli"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.39882480000000003,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "8eeccf59be5e",
+    "cache_snapshot": {
+      "worktree_head": "1f774ea43adc9c16a3dc2291893e728019a63f2f",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "1f774ea43adc9c16a3dc2291893e728019a63f2f",
+      "story_content_hash": "251cfde27763cd01b07caba4b97d53f51ef0deb4870b81a5c725133215ee2101"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "1f774ea43adc9c16a3dc2291893e728019a63f2f",
+      "current_worktree_head": "1f774ea43adc9c16a3dc2291893e728019a63f2f",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "1f774ea43adc9c16a3dc2291893e728019a63f2f",
+      "current_evaluation_base_branch_head": "1f774ea43adc9c16a3dc2291893e728019a63f2f",
+      "cached_story_content_hash": "251cfde27763cd01b07caba4b97d53f51ef0deb4870b81a5c725133215ee2101",
+      "current_story_content_hash": "251cfde27763cd01b07caba4b97d53f51ef0deb4870b81a5c725133215ee2101",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.39882480000000003,
+        "duration_s": 84.07,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 5,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gemini-3.5-flash",
+          "source": "forge.yaml",
+          "canonical_id": "google/gemini-3.5-flash/api"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ],
+        "dev": {
+          "model": "gpt-5.4",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 5 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 59 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 5 \u2192 tier mid ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "gpt-5.4",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gemini-3.5-flash",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 5,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1972/iter_1.yaml",
+      "handoff": {
+        "summary": "Implemented same-sprint accounting recovery from progressive accumulated sprint state instead of relying on completion-time sprint-audit data during re-exec/resume reconciliation. The runner now carries forward prior cost, earliest start time, and per-story metadata across process boundaries, persists updated story entries as the sprint advances, and includes seam tests covering budget checks and summary accounting after re-exec.",
+        "commits": [
+          {
+            "sha": "67f2477",
+            "message": "fix(sprint): preserve prior accounting across re-exec"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "For a sprint that re-execs one or more times, the reported total equals the sum of its stories' own recorded costs.",
+            "status": "MET",
+            "notes": "Reconcile now reloads progressive accumulated story state and final totals continue to use carried prior_cost plus current-run spend; tests cover re-exec summary totals and resume rollover preservation."
+          },
+          {
+            "criterion": "For a sprint that re-execs one or more times, its reported duration spans from first dispatch to final completion.",
+            "status": "MET",
+            "notes": "Reconcile now recovers the earliest prior started_at from accumulated story state and resets sprint started_at accordingly; the new re-exec summary test asserts duration spans pre-reexec work."
+          },
+          {
+            "criterion": "The dispatch-time budget check evaluates a cumulative that includes spend from before the most recent re-exec.",
+            "status": "MET",
+            "notes": "Budget enforcement still reads cumulative as carried prior_cost plus accumulated current-run cost, and carried prior_cost is now sourced from progressive same-sprint state before dispatch; tested with resume budget exhaustion from prior accumulated spend."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1972/iter_2.yaml",
+      "handoff": {
+        "summary": "Verified the mid-sprint re-exec accounting fix already present on this branch and chased the reported gate failure to repo configuration rather than the new sprint logic. The full pytest suite passed under the required command, and the worktree's forge.yaml now resolves the required workspace.python_interpreter pin for the {forge_python} setup command, leaving the branch clean.",
+        "commits": [
+          {
+            "sha": "67f2477",
+            "message": "fix(sprint): preserve prior accounting across re-exec"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "For a sprint that re-execs one or more times, the reported total equals the sum of its stories' own recorded costs.",
+            "status": "MET",
+            "notes": "Covered by the existing runner changes in 67f2477; the full pytest suite passed, including the new re-exec/resume accounting tests."
+          },
+          {
+            "criterion": "For a sprint that re-execs one or more times, its reported duration spans from first dispatch to final completion.",
+            "status": "MET",
+            "notes": "Covered by the existing runner changes in 67f2477; the full pytest suite passed, including duration-preservation coverage in sprint resume tests."
+          },
+          {
+            "criterion": "The dispatch-time budget check evaluates a cumulative that includes spend from before the most recent re-exec.",
+            "status": "MET",
+            "notes": "Covered by the existing runner changes in 67f2477; the full pytest suite passed, including prior-cost budget enforcement coverage."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 3,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1972/iter_3.yaml",
+      "handoff": {
+        "summary": "The sprint re-exec accounting implementation was already present on this branch; the failing gate was caused by style regressions in the new resume test coverage. I fixed the import ordering and overlong assertions in tests/test_sprint_resume.py, reran the required full pytest command successfully, and left the worktree clean with a focused follow-up commit.",
+        "commits": [
+          {
+            "sha": "5045cb5",
+            "message": "fix(tests): repair sprint resume lint regressions"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "For a sprint that re-execs one or more times, the reported total equals the sum of its stories' own recorded costs.",
+            "status": "MET",
+            "notes": "The existing branch implementation remains intact, and the full pytest suite passed after fixing the test-file gate regression."
+          },
+          {
+            "criterion": "For a sprint that re-execs one or more times, its reported duration spans from first dispatch to final completion.",
+            "status": "MET",
+            "notes": "Covered by the existing runner/test changes already on the branch; the repaired suite passes, including the resume accounting coverage."
+          },
+          {
+            "criterion": "The dispatch-time budget check evaluates a cumulative that includes spend from before the most recent re-exec.",
+            "status": "MET",
+            "notes": "Covered by the existing branch logic and tests; this follow-up only repaired the gate-breaking test style issues and revalidated the suite."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    },
+    {
+      "iteration": 3,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "Gate returned FAIL after 3 attempts (gate exit code 2)\nGate output tail (last 2000 chars):\n/Users/pwickersham/src/theforge/.forge/worktrees/issue-1972/.forge/index/modules.yaml\nAll checks passed!\nunformatted: File would be reformatted\n    --> src/theforge/sprint/runner.py:1:1\n     |\n2336 |             ),\n     -             \"preflight_source_run_id\": getattr(\n     -                 result.state, \"preflight_cached_from_run_id\", None\n     -             ),\n2337 +             \"preflight_source_run_id\": getattr(result.state, \"preflight_cached_from_run_id\", None),\n2338 |             \"error\": result.state.error,\n--------------------------------------------------------------------------------\n2446 |     for _slug, _outcome in intake_outcomes.items():\n     -         story_cost_adjustments[_slug] = (\n     -             story_cost_adjustments.get(_slug, 0.0) + _intake_outcome_cost(_outcome)\n     -         )\n2447 +         story_cost_adjustments[_slug] = story_cost_adjustments.get(\n2448 +             _slug, 0.0\n2449 +         ) + _intake_outcome_cost(_outcome)\n2450 |     for _issue_num, _outcome in (entry_intake_outcomes or {}).items():\n--------------------------------------------------------------------------------\n2746 |     if resume:\n2747 +\n2748 |         def _already_done_story_entry(\n     |\n\n1 file would be reformatted, 598 files already formatted\nmake: *** [gate] Error 1\nFull gate output trace: .forge/traces/3-gate.txt",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 5,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "google-gemini-3.5-flash": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gemini-3.5-flash",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 5 \u2192 tier mid ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 5,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8475,
+              "weighted": 1.0,
+              "runs": 59,
+              "tainted_runs": 4,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 1.0
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 12,
+              "tainted_runs": 6,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 1.0,
+              "by_domain": {
+                "backend": {
+                  "runs": 7,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 4
+                },
+                "cli": {
+                  "runs": 5,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 2
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4",
+        "domain_head": "openai-gpt-5.4",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "cli"
+          ],
+          "raw": 1.0,
+          "weighted": 1.0,
+          "runs": 12,
+          "tainted_runs": 6,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 1.0,
+          "by_domain": {
+            "backend": {
+              "runs": 7,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 4
+            },
+            "cli": {
+              "runs": 5,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 2
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8475,
+        "weighted_success_rate": 1.0,
+        "sample_size": 59,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "mid",
+        "to_tier": "mid"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 1.0,
+          "threshold": 0.6,
+          "sample_size": 59,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+cli",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "openai-gpt-5.4",
+        "winner": "openai-gpt-5.4",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli"
+        ]
+      },
+      "final": {
+        "model": "gpt-5.4",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 5 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 59 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "anti_self_review"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 40,
+            "completed": 40,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 21,
+            "completed": 18,
+            "raw": 0.8571,
+            "weighted": 0.8484,
+            "rate": 0.8484,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 40,
+            "completed": 40,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 29,
+            "completed": 25,
+            "raw": 0.8621,
+            "weighted": 0.8517,
+            "rate": 0.8517,
+            "floor": "pass",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 21,
+            "completed": 18,
+            "raw": 0.8571,
+            "weighted": 0.8484,
+            "rate": 0.8484,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.398825,
+      "duration_s": 84.07,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": null,
+      "duration_s": 421.59,
+      "iterations": 3,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 15.82,
+      "outcome": "fail",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": null
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 521.49,
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 0,
+    "dev_iterations": 3,
+    "review_cycles": 0
+  },
+  "sprint_id": "b67e48317854",
+  "sprint_name": "issues-1972,1946,1945,1934"
+}
