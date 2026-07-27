@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Patient gates run under the project's pinned Python, not the orchestrator's
+  (#1934):** `{forge_python}` now expands to a new required
+  `workspace.python_interpreter` setting instead of TheForge's own
+  `sys.executable`, and a worktree `.venv` whose `pyvenv.cfg` does not record
+  that interpreter is deleted and reprovisioned before setup runs. Gate
+  subprocess environments only prefer `.venv/bin` when it matches the pin. A
+  story's gate result therefore no longer depends on which Python TheForge
+  happens to be installed under, or on whether a stale virtualenv survived from
+  an earlier run.
+  **Operator action:** projects whose `setup_command` uses `{forge_python}` must
+  add `workspace.python_interpreter` (e.g. `"python3.12"`) to `forge.yaml`;
+  config load now fails closed without it rather than silently substituting the
+  orchestrator's interpreter.
+
 - **Base-branch audit commits are published, not left local (#1950):** the
   sprint now pushes its `chore(audit): record sprint run audits` commit to
   `origin/<base_branch>` and verifies the base branch is no longer ahead;

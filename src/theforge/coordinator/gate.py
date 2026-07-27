@@ -96,6 +96,7 @@ def run_gate_full(
         gate_cmd,
         workspace_path,
         timeout=gate_timeout,
+        expected_python=config.workspace.python_interpreter,
     )
 
     if iter_num is not None:
@@ -175,6 +176,7 @@ def _run_gate_debug_command(
         debug_cmd,
         workspace_path,
         timeout=debug_timeout,
+        expected_python=config.workspace.python_interpreter,
     )
     if output.startswith("TIMEOUT") and exit_code is None:
         _cu._log(f"  Gate debug command timed out after {debug_timeout}s")
