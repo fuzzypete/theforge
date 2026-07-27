@@ -1,0 +1,1938 @@
+{
+  "schema_version": 10,
+  "run_id": "938e93039416",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Agent transport failures are recorded as story verdicts and persisted as adaptive learning signal",
+    "slug": "issue-1951",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nWhen an agent invocation fails at the transport layer \u2014 process exit=1 with a provider authentication error, no model output produced \u2014 the failure is converted into a story-level verdict and recorded as if a model had judged the work. Three phases each did this differently in a single run, and one of them wrote the result into the adaptive substrate as durable learning signal.\n\nSprint `45fee01e8027` (2026-07-26, issues 1947 and 1758) ran against a revoked Anthropic OAuth token. Every `claude` subprocess returned `exit=1: Failed to authenticate. API Error: 401 OAuth access token has been revoked.` No agent produced any output at any point. The run nonetheless proceeded for six minutes and produced verdicts:\n\n**PREFLIGHT** failed for both stories and fell back to a PROCEED decision: `\u26a0 PREFLIGHT failed (exit=1) \u2014 no risk signals; fallback PROCEED (degraded)`, with the reason recorded as `Preflight agent failed (exit=1); no risk signals detected \u2014 falling back to conservative PROCEED.` The absence of risk signals is treated as evidence of low risk, when it is actually the absence of any analysis. \"Conservative\" here means proceeding.\n\n**PLAN_REVIEW** converted the transport failure into a reviewer verdict: `\u2717 PLAN_REVIEW claude-opus failed (exit=1: ...revoked.) \u2014 treating as REJECT`, then `excluding claude-opus due to parse errors: Transport failure`. The reviewer pool silently shrank from three models to two and the sprint continued. A run whose review pool has lost a member to infrastructure failure is not comparable to one that completed with a full pool, but nothing downstream distinguishes them.\n\n**DEV** produced the terminal outcome: `[DEV] FAIL | exit=1 | ... error output: Failed to authenticate` followed by `\u2717 ESCALATE Dev agent failed (exit=1) and produced no commits ahead of base \u2014 escalating to avoid an empty-diff APPROVE`. The escalation guard itself is correct \u2014 refusing to APPROVE an empty diff is right. The defect is the classification: this is recorded as ESCALATE, the outcome reserved for a story whose framing an agent found invalid, rather than as an infrastructure abort.\n\nThe consequence lands in the adaptive substrate: `[adaptive] escalation memory persisted via audit substrate: story=issue-1758 outcome=ESCALATE`. A revoked credential is now durable evidence that issue #1758 is a story that escalates, and that claude-opus rejects plans for it.\n\n## Diagnosis\n\n**Symptom:** Story #1758 reported `failed / ESCALATE` in live status with complexity 9, presenting as a story-quality problem. The actual cause was a dead OAuth token affecting every agent call in the run equally.\n\n**Evidence:** `.forge/logs/issues-1947,1758/run-45fee01e8027.log` \u2014 the identical `401 OAuth access token has been revoked` string appears at lines 36, 51, 165, 192, and 326, spanning PREFLIGHT, PLAN_REVIEW, and DEV, across both stories. Line 195 is the ESCALATE, line 198 the adaptive persist.\n\n**Ruled out \u2014 story-level cause.** No agent produced output in the entire run, so no model formed any judgment about either story. The token was already revoked at the first agent call (11:33:40), before any story-specific work began.\n\n**Ruled out \u2014 duplicate of #1851 / #1852.** Those cover marking a run as tainted and filtering tainted runs out of consumption. This is upstream of both: the run is not currently recognized as tainted at all, because a transport failure is classified as a legitimate verdict at the point it occurs. Taint marking cannot filter what was never distinguished.\n\n**Confirmed cause:** Each phase collapses a non-response into its own worst-case verdict \u2014 PROCEED for preflight, REJECT for review, ESCALATE for dev \u2014 without a category distinct from \"an agent answered.\" Because those verdicts are indistinguishable downstream from real ones, the escalation path treats the result as story evidence and persists it.\n\n**Fix-success criterion:** A run in which every agent invocation fails at the transport layer records no story-level verdicts and contributes nothing to adaptive memory. Given the log above as input, story #1758 does not appear in escalation memory, and the run is distinguishable from one where a dev agent ran and genuinely escalated.\n\n## Expected behavior\n\nA failure to obtain a model response must be a distinct category from a model response, everywhere a response is consumed. Process failure, authentication rejection, transport error, and timeout are all statements about the substrate rather than about the work, and the system must be able to say \"no judgment was obtained\" instead of substituting the most pessimistic judgment the phase can express. Substituting one is how an operator ends up reading a story-quality verdict that no agent ever formed.\n\nThis matters most where verdicts become durable. Evidence that outlives its run \u2014 adaptive routing memory, escalation history, reviewer reliability signal \u2014 must be sourced only from invocations that actually produced model output, because a verdict manufactured from an infrastructure failure is indistinguishable from a real one once written and will bias every later decision that reads it. The same reasoning applies to degraded-pool completions: a phase that lost participants to infrastructure failure has not produced a result of the same kind as one that completed intact, and the difference must survive into whatever consumes it.\n",
+    "github_issue": 1951,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug Diagnosis section missing required component: observed symptom",
+      "bug Diagnosis section missing required component: affected code path"
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Agent transport failures are recorded as story verdicts and persisted as adaptive learning signal' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-1951",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-26T22:27:22.730092+00:00",
+    "finished_at": "2026-07-26T23:06:04.388122+00:00",
+    "duration_seconds": 2321.65803
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1951",
+    "branch": "feat/issue-1951",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 19.00761,
+        "duration_s": 1331.22,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/agent_failure.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/audit_substrate.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/plan_flow.py",
+          "src/theforge/coordinator/preflight_flow.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/sprint/audit.py",
+          "src/theforge/sprint/runner.py",
+          "tests/fixtures/audit_record_schema_v11.json",
+          "tests/test_cli_audit_per_run.py",
+          "tests/test_coord_no_judgment_seam.py",
+          "tests/test_coord_plan_flow_agent.py",
+          "tests/test_coord_preflight_fallback.py",
+          "tests/test_coordinator.py",
+          "tests/test_generate_audit_log.py"
+        ],
+        "files_changed_count": 17,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 5.220422999999999,
+        "duration_s": 239.14,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/agent_failure.py",
+          "src/theforge/coordinator/engine.py",
+          "tests/test_coord_no_judgment_seam.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 2
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 2
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 2.440631,
+        "duration_s": 377.07
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.081703,
+        "duration_s": 201.68
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 9,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 9,
+      "base_review": 5,
+      "profile_history_runs": 89,
+      "profile_avg_iterations": 1.8989,
+      "profile_avg_cost_usd": 9.149168,
+      "profile_raw_dev_max": 2.8483,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 22.8729,
+      "review_history_sample_size": 8,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 89 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-26T22:28:58.534464+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-07-26T22:58:00.229843+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 24.228033,
+    "review_usd": null,
+    "dev_invocations": 2,
+    "review_invocations": 7,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 19.00761,
+        "duration_seconds": 1331.2186961660627,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006045
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 19.001565000000003
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 5.220422999999999,
+        "duration_seconds": 239.14064912497997,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 5.220422999999999
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 113.12311601398203,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 113.12311601398203,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 2.2852515,
+        "duration_seconds": 113.12311601398203,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.089664
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.1955875000000002
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.155379,
+        "duration_seconds": 67.1670546530125,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.155379
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 67.1670546530125,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 67.1670546530125,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 2.0817033,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.0817033
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "PROCEED",
+    "reason": "Transport/auth failures at PREFLIGHT, PLAN_REVIEW, and DEV are each independently folded into the phase's real verdict vocabulary (PROCEED, REJECT, ESCALATE) rather than a distinct 'no judgment obtained' category, and that conflated result flows unfiltered into adaptive escalation memory in engine.py; fixing this requires a coordinated, cross-phase change, not a local patch.",
+    "complexity": "large",
+    "complexity_score": 9,
+    "implementation_complexity_score": 9,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 9",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.8254238500000001,
+    "cached": false,
+    "original_verdict": null,
+    "source_run_id": null,
+    "cache_snapshot": {
+      "worktree_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "e3e13215478d2210ca1b82a74c22410989a80ce4",
+      "story_content_hash": "3ccef203b9f7715a7dcb1e0e4e0ffc664df91e490e2e7ff39cc26db8674a49f5"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "current_worktree_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "current_evaluation_base_branch_head": "e3e13215478d2210ca1b82a74c22410989a80ce4",
+      "cached_story_content_hash": "3ccef203b9f7715a7dcb1e0e4e0ffc664df91e490e2e7ff39cc26db8674a49f5",
+      "current_story_content_hash": "3ccef203b9f7715a7dcb1e0e4e0ffc664df91e490e2e7ff39cc26db8674a49f5",
+      "status": "invalidated",
+      "reason": "evaluation_base_branch_head_changed"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.8254238500000001,
+        "duration_s": 94.51,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 9,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.55 < threshold 0.60 over 89 admissible HIGH runs (profile success_rate=0.55 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 9,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "preflight",
+      "context_budget": 200,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1951/iter_1.yaml",
+      "handoff": {
+        "summary": "Introduced a shared coordinator-level distinction between \"a model judged the work\" and\n\"no model answered\", and threaded it through preflight, plan review, dev, adaptive\npersistence, audit, and sprint reporting. New stdlib-only module\n`src/theforge/coordinator/agent_failure.py` classifies an AgentResult that produced no\nmodel output into auth / transport / timeout / startup / process categories; it treats\nsalvaged partial output, a tool trace, structured data, or a parsed handoff as positive\nevidence a model spoke, and errs toward the pre-existing path for failure text it cannot\npositively identify as a substrate event. New state fields: `agent_invocation_failures`\n(every no-output invocation), `infrastructure_failure` (set only when the RUN's terminal\noutcome is \"no judgment obtained\"), `degraded_pools` (pools that completed with members\nlost to the substrate); `CoordinatorResult.infrastructure_failure` carries it to callers.\nPREFLIGHT no longer writes PROCEED or BLOCKED when the agent produced nothing \u2014 it records\nno verdict at all and ends the run as an infrastructure abort. PLAN_REVIEW records\nNO_JUDGMENT plus pool-loss metadata instead of a manufactured reviewer REJECT, logs the\ndegraded pool when the minimum is still met, and aborts as infrastructure (not a plan\nrejection) when every shortfall reviewer was silent. DEV's zero-commit guard still refuses\nthe empty diff but classifies a no-output failure as an infrastructure abort rather than\nPhase.ESCALATE, and skips the escalation notification. `mark_infrastructure_abort()` writes\na FAILED `agent_judgment_obtained` trust check, so the existing ADR-0006 clause 4 gate\nexcludes the run from escalation history and model profiles; `_record_run_memory()`\nadditionally short-circuits with audit-visible logging. Audit record schema bumped 10 \u2192 11\nwith a new top-level `agent_invocation` block and the matching reader-side migration;\npreflight/plan_review audit blocks now render `NO_JUDGMENT` / `no_judgment` instead of being\ndropped or defaulting to PROCEED, `run_end` emits `infrastructure_abort`, and the sprint\nrunner skips the `on_escalate` story-source callback for such runs.\n",
+        "commits": [
+          {
+            "sha": "3537ffe",
+            "message": "fix(coordinator): distinguish no-judgment agent failures from story verdicts"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A run in which every agent invocation fails at the transport layer records no story-level verdicts.",
+            "status": "MET",
+            "notes": "Preflight leaves preflight_verdict None (failure_action=infrastructure_abort); plan review records NO_JUDGMENT placeholders and no plan_review_decision; dev records no ESCALATE-as-judgment. Covered by tests/test_coord_no_judgment_seam.py and the rewritten tests/test_coord_preflight_fallback.py cases.\n"
+          },
+          {
+            "criterion": "Such a run contributes nothing to adaptive memory; story #1758 does not appear in escalation memory.",
+            "status": "MET",
+            "notes": "_record_run_memory() returns early (skipping model-profile persistence) and the failed agent_judgment_obtained trust check taints the run, so iter_escalation_records and derive_assignment_history both exclude it. The seam test persists a real aborted-run audit record to the substrate, asserts absence, then strips the taint marker as a control to prove the exclusion is caused by taint rather than an unprojectable record.\n"
+          },
+          {
+            "criterion": "The run is distinguishable from one where a dev agent ran and genuinely escalated.",
+            "status": "PARTIAL",
+            "notes": "Distinguishable via result.infrastructure_failure, state.error_type='infrastructure_abort' (which flows into sprint audit outcome_code), trust_status='tainted', the audit agent_invocation block, and run_end outcome='infrastructure_abort'. The terminal Phase enum member is still ESCALATE \u2014 see story_deviations.\n"
+          },
+          {
+            "criterion": "Degraded-pool completions stay distinguishable from full-pool results.",
+            "status": "MET",
+            "notes": "state.degraded_pools + plan_review_failures['produced_model_output'] are recorded and surfaced in the audit's agent_invocation.degraded_pools. A degraded-but-sufficient pool is deliberately NOT tainted \u2014 real judgment was obtained, so the run still teaches.\n"
+          },
+          {
+            "criterion": "Absence of risk signals after a failed preflight is no longer treated as low risk.",
+            "status": "MET",
+            "notes": "The risk-signal fallback policy (#332) now runs only when the failed preflight salvaged model output; a silent preflight aborts before that branch.\n"
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "No new Phase enum member. An infrastructure abort still terminates at Phase.ESCALATE; the distinction is carried by CoordinatorResult.infrastructure_failure, state.error_type, the taint marker, and the audit block. Adding Phase.INFRA_ABORT would have required matching changes to StoryOutcome, sprint outcome maps, status_reader failure sets, and RCA classifiers \u2014 well beyond the coordinator scope the story and preflight scoped. If the operator wants the sprint-level outcome string itself to read INFRA_ABORT, that is a follow-up.",
+          "Behavior change beyond the three named phases: preflight's conservative-PROCEED and risk-signal-BLOCKED fallbacks now require that the failed run produced some model output. Five existing tests in test_coord_preflight_fallback.py asserted the old contract on empty-output failures and were updated (with the salvaged-output helper preserving the original policy coverage, plus new no-output cases).",
+          "Audit shape: the preflight and plan_review audit blocks are now emitted when the phase ran but recorded no verdict/decision, rather than being dropped. This makes a no-judgment phase visible instead of looking like it never ran."
+        ],
+        "deferred_items": [
+          "7 tests fail in this sandbox with OS-level 'Operation not permitted' (multiprocessing SemLock in test_sprint_lock.py / test_sprint_reexec_collision.py, mktemp in test_cut_rc_isolation.py). They reproduce with the sandbox disabled, are unrelated to any code path in this change, and match the known nested-supervision issue (#1944). The coordinator's authoritative gate should confirm."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1951/iter_2.yaml",
+      "handoff": {
+        "summary": "Iteration 2 is an advisory cleanup pass over the APPROVED iteration-1 implementation; no\nredesign, two P2 fixes plus regression coverage.\n\n(1) Tightened substrate-failure text matching in src/theforge/coordinator/agent_failure.py.\nThe bare numeric entries (\"401\", \"403 forbidden\", \"429\", \"500 internal server error\") were\nmatched by raw substring containment against the whole lowercased output, so ordinary agent\nnarration containing those digits \u2014 a line number, an issue reference, a loop count, a\ntimeout duration \u2014 would be classified as \"no model output\" and abort a run that a model had\nin fact judged. HTTP status codes now match only in a code-shaped context: a status-ish word\nimmediately before the code (`API Error: 401`, `http 429`, `status_code=502`), or the code\nimmediately followed by its standard reason phrase (`503 service unavailable`). Recall that\nthe bare digits used to provide is carried by distinctive phrases added to the transport\nlist (`internal server error`, `servererror`, `bad gateway`, `service unavailable`,\n`gateway timeout`). The broad `\"api error\"` phrase is tightened to `\"api error:\"`, the banner\nform providers actually emit \u2014 verified against every occurrence in src/ and tests/, all of\nwhich carry the colon. Both consumers (produced_model_output and classify_failure_category)\nnow route through new `_looks_like_auth_failure` / `_looks_like_transport_failure` helpers so\nthe phrase list and the code regex can never drift apart between the two call sites.\n\n(2) Documented reachability in engine._record_run_memory(). PREFLIGHT and plan-flow terminal\noutcomes return their phase result directly from run_task (the `_pf_result` / `_plan_result`\nearly returns), so those paths \u2014 including their infrastructure aborts \u2014 persist nothing by\nomission; that predates #1951 and is unchanged by it. The docstring now states this and notes\nthat the infrastructure-abort guard IS load-bearing for the paths that do reach the function\n(the DEV\u2192VALIDATE\u2192REVIEW loop, where the observed defect occurred, and both resume entry\npoints), so it is not read as dead code or deleted as unreachable. Routing plan-flow results\nthrough the run tail was rejected as out of scope: it would change behavior for every plan\nescalation, not just infrastructure aborts.\n\nAdded 13 parametrized regression cases to tests/test_coord_no_judgment_seam.py covering both\ndirections \u2014 digits in agent prose must stay model judgment, provider-context status codes\nmust still classify as auth/transport.\n",
+        "commits": [
+          {
+            "sha": "3537ffe",
+            "message": "fix(coordinator): distinguish no-judgment agent failures from story verdicts"
+          },
+          {
+            "sha": "28300a0",
+            "message": "fix(coordinator): address review findings (iter 2)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A run in which every agent invocation fails at the transport layer records no story-level verdicts.",
+            "status": "MET",
+            "notes": "Unchanged from iteration 1. Preflight leaves preflight_verdict None (failure_action=infrastructure_abort); plan review records NO_JUDGMENT placeholders and no plan_review_decision; dev records no ESCALATE-as-judgment. The iter-2 pattern change was verified not to alter classification of the incident's exact strings.\n"
+          },
+          {
+            "criterion": "Such a run contributes nothing to adaptive memory; story #1758 does not appear in escalation memory.",
+            "status": "MET",
+            "notes": "_record_run_memory() returns early and the failed agent_judgment_obtained trust check taints the run, so iter_escalation_records and derive_assignment_history both exclude it. The seam test persists a real aborted-run audit record, asserts absence, then strips the taint marker as a control to prove the exclusion is caused by taint.\n"
+          },
+          {
+            "criterion": "The run is distinguishable from one where a dev agent ran and genuinely escalated.",
+            "status": "PARTIAL",
+            "notes": "Distinguishable via result.infrastructure_failure, state.error_type='infrastructure_abort' (flows into sprint audit outcome_code), trust_status='tainted', the audit agent_invocation block, and run_end outcome='infrastructure_abort'. The terminal Phase enum member is still ESCALATE \u2014 see story_deviations.\n"
+          },
+          {
+            "criterion": "Degraded-pool completions stay distinguishable from full-pool results.",
+            "status": "MET",
+            "notes": "state.degraded_pools + plan_review_failures['produced_model_output'], surfaced in the audit's agent_invocation.degraded_pools. A degraded-but-sufficient pool is deliberately not tainted \u2014 real judgment was obtained, so the run still teaches.\n"
+          },
+          {
+            "criterion": "Absence of risk signals after a failed preflight is no longer treated as low risk.",
+            "status": "MET",
+            "notes": "The risk-signal fallback policy (#332) runs only when the failed preflight salvaged model output; a silent preflight aborts before that branch.\n"
+          },
+          {
+            "criterion": "Substrate-failure detection does not misclassify genuine agent output (P2, iter 2).",
+            "status": "MET",
+            "notes": "Status codes require code-shaped context; 6 prose cases (line numbers, issue refs, counts, durations, an 'API error handling' mention) assert produced_model_output is True, and 7 provider-context cases assert the real failures still classify as auth/transport.\n"
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "No new Phase enum member. An infrastructure abort still terminates at Phase.ESCALATE; the distinction is carried by CoordinatorResult.infrastructure_failure, state.error_type, the taint marker, and the audit block. Adding Phase.INFRA_ABORT would require matching changes to StoryOutcome, sprint outcome maps, status_reader failure sets, and RCA classifiers \u2014 beyond the coordinator scope the story and preflight scoped. Follow-up if the operator wants the sprint outcome string itself to read INFRA_ABORT.",
+          "Behavior change beyond the three named phases (iter 1): preflight's conservative-PROCEED and risk-signal-BLOCKED fallbacks now require that the failed run produced some model output. Five existing tests in test_coord_preflight_fallback.py asserted the old contract on empty-output failures and were updated, with a salvaged-output helper preserving the original policy coverage plus new no-output cases.",
+          "Audit shape (iter 1): the preflight and plan_review audit blocks are now emitted when the phase ran but recorded no verdict/decision, rather than being dropped, so a no-judgment phase is visible instead of looking like it never ran. Record schema 10 \u2192 11 with the matching reader-side migration.",
+          "P2 fix declined in part (iter 2): the reviewer's first option for the _record_run_memory finding \u2014 routing PREFLIGHT/plan-flow results through the same tail as the main loop \u2014 was not taken. That early-return shape is pre-existing and applies to all plan escalations, so changing it is a behavior change unrelated to this story. The docstring option was taken instead."
+        ],
+        "deferred_items": [
+          "7 tests fail in this sandbox with OS-level 'Operation not permitted' (multiprocessing SemLock in test_sprint_lock.py / test_sprint_reexec_collision.py, mktemp in test_cut_rc_isolation.py). They reproduce with the sandbox disabled, are unrelated to any code path in this change, and match the known nested-supervision issue (#1944). The coordinator's authoritative gate should confirm."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 1,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] No P1 findings; the no-judgment paths are distinguished from story verdicts and covered by targeted tests. | [google-gemini-3.5-flash] The implementation beautifully distinguishes infrastructure/transport failures from genuine story verdicts across all phases, preventing corrupted adaptive learning signals. | [claude-sonnet] Solid, well-tested distinction between substrate failures and story verdicts; two minor P2s (broad numeric-substring auth/transport patterns risk false positives; _record_run_memory's new infra-abort short-circuit is unreachable on the PREFLIGHT/PLAN_REVIEW infra-abort paths because those paths already return before reaching it, though the net behavior \u2014 no persistence \u2014 is unaffected since that early-return pattern is pre-existing).",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 2,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/agent_failure.py",
+          "line": 79,
+          "description": "_AUTH_PATTERNS and _TRANSPORT_PATTERNS include bare numeric substrings like '401', '403 forbidden', and '429', matched with plain substring containment against the full lowercased output text.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/engine.py",
+          "line": 1035,
+          "description": "For a PREFLIGHT or PLAN_REVIEW infrastructure abort, run_task returns the phase's CoordinatorResult directly (if _pf_result is not None: return _pf_result / if _plan_result is not None: return _plan_result) before ever reaching _record_run_memory, so the new is_infrastructure_abort(state) early-return added to _record_run_memory is unreachable code on those two paths; the no-persistence outcome is achieved only because the function is never called at all, not because of the new taint check.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A run in which every agent invocation fails at the transport layer records no story-level verdicts.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/agent_failure.py:134 classifies failed AgentResult values with no model output separately from model judgments; src/theforge/coordinator/preflight_flow.py:432 records PREFLIGHT no-output failures as NO_JUDGMENT and leaves state.preflight_verdict unset at line 501; src/theforge/coordinator/plan_flow.py:1093 records failed plan reviewers as NO_JUDGMENT placeholders and aborts without plan_review_decision at lines 1239-1270; src/theforge/coordinator/dev_phase.py:1351-1392 returns an infrastructure_failure result instead of a story escalation for no-output dev failures. tests/test_coord_no_judgment_seam.py:115-192 covers the observed revoked-token DEV failure, tests/test_coord_no_judgment_seam.py:413-450 covers PREFLIGHT no verdict, and tests/test_coord_plan_flow_agent.py:1827-1857 covers PLAN_REVIEW no decision.; Implemented in src/theforge/coordinator/preflight_flow.py (lines 420-450), src/theforge/coordinator/plan_flow.py (lines 1080-1110), and src/theforge/coordinator/dev_phase.py (lines 1340-1380). Verified by tests/test_coord_no_judgment_seam.py and tests/test_coord_preflight_fallback.py.; src/theforge/coordinator/preflight_flow.py:420-470 (state.preflight_verdict left None on no-output failure), plan_flow.py:1210-1266 (NO_JUDGMENT placeholder, no plan_review_decision set on pure infra shortfall), dev_phase.py:1338-1385 (infra-abort branch classifies before setting terminal state). Covered by tests/test_coord_no_judgment_seam.py (TestDevNoJudgment, TestPlanReviewDegradedPool, TestPreflightNoJudgment) and tests/test_coord_preflight_fallback.py new no-output cases; all pass locally (9 + 371 targeted tests green)."
+        },
+        {
+          "criterion": "Such a run contributes nothing to adaptive memory; story #1758 does not appear in escalation memory.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/agent_failure.py:286-311 marks infrastructure aborts with a failed agent_judgment_obtained trust check; src/theforge/coordinator/engine.py:1217-1232 returns early from _record_run_memory for infrastructure aborts; src/theforge/coordinator/audit_substrate.py:1548-1550 and 1649-1650 exclude tainted records from assignment history and escalation projections. tests/test_coord_no_judgment_seam.py:115-192 persists a revoked-token abort using run_id 45fee01e8027 and asserts the story is absent from iter_escalation_records and derive_assignment_history.; Implemented in src/theforge/coordinator/engine.py (lines 1214-1230) where _record_run_memory returns early, and src/theforge/coordinator/agent_failure.py (lines 301-312) where mark_infrastructure_abort writes a failed agent_judgment_obtained trust check. Verified by tests/test_coord_no_judgment_seam.py.; engine.py:1217-1231 (_record_run_memory early return), agent_failure.py:mark_infrastructure_abort (failed agent_judgment_obtained trust check leads to taint). Directly exercised by test_coord_no_judgment_seam.py::test_dev_transport_failure_aborts_and_teaches_nothing, which persists a real audit record, asserts exclusion from iter_escalation_records/derive_assignment_history, then strips the taint as a control and shows the same record leaks through, a strong, concrete verification for the DEV path (the path that reaches _record_run_memory). The PREFLIGHT/PLAN_REVIEW infra-abort paths never call _record_run_memory at all (see P2 finding), so their no-persistence outcome is real but not caused by the mechanism the notes describe."
+        },
+        {
+          "criterion": "The run is distinguishable from one where a dev agent ran and genuinely escalated.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/state.py:858-873 adds CoordinatorResult.infrastructure_failure; src/theforge/coordinator/agent_failure.py:301-305 records state.infrastructure_failure and error_type infrastructure_abort; src/theforge/coordinator/engine.py:250-262 emits run_end outcome infrastructure_abort when that marker is present; src/theforge/coordinator/dev_phase.py:1357-1392 sets the marker only for no-output dev failures. tests/test_coord_no_judgment_seam.py:115-192 verifies revoked-token DEV returns infrastructure_failure true, and tests/test_coord_no_judgment_seam.py:198-241 verifies a failed dev result with model output remains a normal ESCALATE that teaches.; Implemented in src/theforge/coordinator/state.py (lines 680-700), src/theforge/coordinator/engine.py (lines 247-258), and src/theforge/coordinator/audit.py (lines 614-625). Verified by tests/test_coord_no_judgment_seam.py.; Distinguishable via CoordinatorResult.infrastructure_failure, state.error_type ('infrastructure_abort'), trust_status ('tainted'), the audit agent_invocation block, and sprint outcome_code (sprint/audit.py:340-342,545-546, which reads res.state.error_type ahead of the raw phase name). The Phase enum terminal value is unchanged (still ESCALATE), so a consumer keyed purely on the raw outcome field rather than outcome_code would not see the distinction, but every machine-readable signal actually wired into sprint audit/status consumption does distinguish the two, and the gap is explicitly disclosed in story_deviations with a reasonable scope justification (avoiding a matching sweep through StoryOutcome/RCA/status_reader)."
+        },
+        {
+          "criterion": "Degraded-pool completions stay distinguishable from full-pool results.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/agent_failure.py:319-342 records degraded pool metadata; src/theforge/coordinator/plan_flow.py:1219-1232 records PLAN_REVIEW pool loss when enough reviewers remain; src/theforge/coordinator/audit.py:622-630 emits agent_invocation.degraded_pools in the audit. tests/test_coord_no_judgment_seam.py:301-360 verifies one silent reviewer plus one approving reviewer continues while preserving degraded_pools, and tests/test_coord_no_judgment_seam.py:361-410 verifies genuine reviewer rejections record no pool loss.; Implemented in src/theforge/coordinator/plan_flow.py (lines 1210-1225) and src/theforge/coordinator/agent_failure.py (lines 319-342). Verified by tests/test_coord_no_judgment_seam.py.; plan_flow.py:1213-1230 (record_degraded_pool when successful_count >= min_reviewers), state.py degraded_pools field, audit.py agent_invocation block. Covered by TestPlanReviewDegradedPool::test_reviewer_lost_to_transport_is_recorded_as_pool_loss_not_reject and its genuine-reject control test."
+        },
+        {
+          "criterion": "Absence of risk signals after a failed preflight is no longer treated as low risk.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/preflight_flow.py:432-454 aborts before risk-signal fallback when preflight produced no model output, while src/theforge/coordinator/preflight_flow.py:454-494 only runs _detect_preflight_risk_signals after classify_agent_failure returns None. tests/test_coord_preflight_fallback.py:196-244 covers primary and fallback silent failures aborting as infrastructure, and tests/test_coord_preflight_fallback.py:325-371 covers the revoked-token preflight path not proceeding to DEV.; Implemented in src/theforge/coordinator/preflight_flow.py (lines 420-450) where preflight aborts before the risk-signal fallback branch when no model output is produced. Verified by tests/test_coord_preflight_fallback.py.; preflight_flow.py:420-480; the risk-signal PROCEED/BLOCKED fallback code path now only runs in the else branch after classify_agent_failure returns None (i.e., salvaged output exists); a silent no-output failure aborts before it. Covered by test_coord_preflight_fallback.py::test_no_model_output_aborts_instead_of_degraded_proceed and the rewritten salvaged-output control cases."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] No P1 regressions found; the infrastructure-abort path is distinguished from story verdicts, tainted, audited, and excluded from adaptive memory. | [google-gemini-3.5-flash] The implementation successfully distinguishes agent transport/auth failures from story verdicts, prevents them from persisting to adaptive memory, and ensures degraded pools remain distinguishable. | [claude-sonnet] Cycle 2 is a clean advisory pass: the numeric-substring false-positive risk I flagged in cycle 1 is now fixed with a context-aware regex (verified with 13 new parametrized regression cases plus manual re-derivation of each test case's match logic), and the _record_run_memory reachability gap is documented rather than silently left as dead-looking code. No regressions found in the touched files (agent_failure.py, engine.py docstring, test additions only).",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A run in which every agent invocation fails at the transport layer records no story-level verdicts.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/preflight_flow.py:432 classifies the failed preflight invocation and src/theforge/coordinator/preflight_flow.py:501 leaves state.preflight_verdict unset for NO_JUDGMENT; plan review records NO_JUDGMENT placeholders at src/theforge/coordinator/plan_flow.py:1109 and aborts without plan_review_decision at src/theforge/coordinator/plan_flow.py:1233; dev classifies the zero-commit no-output path as infrastructure failure at src/theforge/coordinator/dev_phase.py:1351. The incident string is covered at tests/test_coord_no_judgment_seam.py:51, with preflight, plan-review, and dev seam assertions at tests/test_coord_no_judgment_seam.py:184, tests/test_coord_no_judgment_seam.py:383, and tests/test_coord_no_judgment_seam.py:478.; src/theforge/coordinator/preflight_flow.py:420-470, plan_flow.py:1210-1266, dev_phase.py:1338-1385 unchanged from cycle 1 and re-verified working with the tightened agent_failure.py classifier; the original incident's exact string ('Failed to authenticate. API Error: 401 OAuth access token has been revoked.') still matches via the literal 'failed to authenticate' phrase in _AUTH_PATTERNS, confirmed by tests/test_coord_no_judgment_seam.py::TestDevNoJudgment and TestPreflightNoJudgment (152 targeted tests pass locally)."
+        },
+        {
+          "criterion": "Such a run contributes nothing to adaptive memory; story #1758 does not appear in escalation memory.",
+          "status": "VERIFIED",
+          "evidence": "mark_infrastructure_abort writes a failed agent_judgment_obtained trust check at src/theforge/coordinator/agent_failure.py:343, and _record_run_memory returns before persistence for infrastructure aborts at src/theforge/coordinator/engine.py:1235. Substrate readers exclude tainted records at src/theforge/coordinator/audit_substrate.py:1548 and src/theforge/coordinator/audit_substrate.py:1649. The seam test persists run 45fee01e8027 and verifies no escalation or assignment history leakage at tests/test_coord_no_judgment_seam.py:203.; engine.py:1217-1231 (_record_run_memory early return, now with a docstring clarifying it is load-bearing for the DEV loop and resume paths). test_dev_transport_failure_aborts_and_teaches_nothing persists a real audit record, confirms exclusion from iter_escalation_records/derive_assignment_history, then strips the taint marker as a control and shows the same record leaks through."
+        },
+        {
+          "criterion": "The run is distinguishable from one where a dev agent ran and genuinely escalated.",
+          "status": "VERIFIED",
+          "evidence": "CoordinatorResult carries infrastructure_failure at src/theforge/coordinator/state.py:858, infrastructure aborts set state.error_type at src/theforge/coordinator/agent_failure.py:347, and run_end emits infrastructure_abort at src/theforge/coordinator/engine.py:260. The dev seam asserts result.infrastructure_failure, state.error_type, and infrastructure_failure details for the revoked-token run at tests/test_coord_no_judgment_seam.py:186, while the control case verifies a failed model-output dev run remains a normal ESCALATE at tests/test_coord_no_judgment_seam.py:279.; CoordinatorResult.infrastructure_failure, state.error_type='infrastructure_abort', trust_status='tainted', the audit agent_invocation block, and sprint outcome_code (sprint/audit.py:340-342,545-546, which prioritizes res.state.error_type over the raw phase name) all distinguish the two. The Phase enum terminal value is unchanged (still ESCALATE), which the story_deviations section discloses with a reasonable scope justification; every machine-readable consumer wired into sprint audit/status output does carry the distinction."
+        },
+        {
+          "criterion": "Degraded-pool completions stay distinguishable from full-pool results.",
+          "status": "VERIFIED",
+          "evidence": "Plan review records degraded pools when enough reviewers remain at src/theforge/coordinator/plan_flow.py:1219, the structured audit exposes degraded_pools at src/theforge/coordinator/audit.py:622, and the degraded pool helper serializes lost reviewers and failures at src/theforge/coordinator/agent_failure.py:361. The seam test covers one revoked-token reviewer plus one approving reviewer and asserts the loss remains visible without tainting the run at tests/test_coord_no_judgment_seam.py:359.; plan_flow.py:1213-1230 (record_degraded_pool), state.py degraded_pools field, audit.py agent_invocation block. Covered by TestPlanReviewDegradedPool::test_reviewer_lost_to_transport_is_recorded_as_pool_loss_not_reject and its genuine-reject control test."
+        },
+        {
+          "criterion": "Absence of risk signals after a failed preflight is no longer treated as low risk.",
+          "status": "VERIFIED",
+          "evidence": "preflight_flow.py classifies no-output failure before risk-signal detection at src/theforge/coordinator/preflight_flow.py:432 and only reaches _detect_preflight_risk_signals in the produced-model-output branch at src/theforge/coordinator/preflight_flow.py:462. The no-output fallback regression tests assert infrastructure abort instead of degraded PROCEED at tests/test_coord_preflight_fallback.py:196 and tests/test_coord_preflight_fallback.py:324.; preflight_flow.py:420-480; the risk-signal PROCEED/BLOCKED fallback only runs after classify_agent_failure returns None (salvaged output exists). Covered by test_coord_preflight_fallback.py::test_no_model_output_aborts_instead_of_degraded_proceed."
+        },
+        {
+          "criterion": "Substrate-failure detection does not misclassify genuine agent output (P2, iter 2).",
+          "status": "VERIFIED",
+          "evidence": "agent_failure.py requires status-code-shaped context through regex helpers at src/theforge/coordinator/agent_failure.py:123 and uses those helpers in produced_model_output at src/theforge/coordinator/agent_failure.py:208. The regression cases cover prose digits as model output and provider-context status codes as auth or transport failures at tests/test_coord_no_judgment_seam.py:108 and tests/test_coord_no_judgment_seam.py:129.; agent_failure.py:79-140 (_looks_like_auth_failure / _looks_like_transport_failure with context-scoped status-code regexes, replacing raw '401'/'429'/'500...' substring matches). Manually re-derived the regex match logic against all 13 new parametrized cases in tests/test_coord_no_judgment_seam.py::TestClassification \u2014 6 prose cases (line numbers, issue refs, counts, durations, an 'API error handling' mention) correctly stay classified as model output, and 7 provider-context cases (status_code=502, ServerError: 500, API Error: 401 Unauthorized, etc.) correctly still classify as auth/transport substrate failures. The literal phrase list (e.g. 'failed to authenticate', 'servererror', 'api error:') still catches the original incident's exact strings, so the fix does not regress detection of real failures."
+        },
+        {
+          "criterion": "Symptom resolution: Agent transport failures are recorded as story verdicts and persisted as adaptive learning signal.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_coord_no_judgment_seam.py:114 (test_dev_transport_failure_aborts_and_teaches_nothing) and src/theforge/coordinator/agent_failure.py:166 (_looks_like_auth_failure)"
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1968",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1951",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1968",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1968",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-26T23:06:04.388122+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "b29073d0f2cd826b",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/agent_failure.py",
+      "line": 79,
+      "severity": "P2",
+      "description": "_AUTH_PATTERNS and _TRANSPORT_PATTERNS include bare numeric substrings like '401', '403 forbidden', and '429', matched with plain substring containment against the full lowercased output text.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "b737a16f64592690",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/engine.py",
+      "line": 1035,
+      "severity": "P2",
+      "description": "For a PREFLIGHT or PLAN_REVIEW infrastructure abort, run_task returns the phase's CoordinatorResult directly (if _pf_result is not None: return _pf_result / if _plan_result is not None: return _plan_result) before ever reaching _record_run_memory, so the new is_infrastructure_abort(state) early-return added to _record_run_memory is unreachable code on those two paths; the no-persistence outcome is achieved only because the function is never called at all, not because of the new taint check.",
+      "reporter": "claude-sonnet",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 9,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 9,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8427,
+              "weighted": 0.5482,
+              "runs": 89,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.5482
+            },
+            "domain": {
+              "domains": [
+                "backend"
+              ],
+              "raw": 0.6,
+              "weighted": 0.6,
+              "runs": 10,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.6,
+              "by_domain": {
+                "backend": {
+                  "runs": 10,
+                  "raw": 0.6,
+                  "weighted": 0.6,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend"
+          ],
+          "raw": 0.6,
+          "weighted": 0.6,
+          "runs": 10,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.6,
+          "by_domain": {
+            "backend": {
+              "runs": 10,
+              "raw": 0.6,
+              "weighted": 0.6,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": true,
+        "outcome": "promoted_below_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8427,
+        "weighted_success_rate": 0.5482,
+        "sample_size": 89,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": false,
+        "checked": {
+          "weighted_success_rate": 0.5482,
+          "threshold": 0.6,
+          "sample_size": 89,
+          "min_runs": 5
+        },
+        "reason": "promotion_active_weighted_rate_below_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.55 < threshold 0.60 over 89 admissible HIGH runs (profile success_rate=0.55 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 21,
+            "completed": 20,
+            "raw": 0.9524,
+            "weighted": 0.9581,
+            "rate": 0.9581,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 15,
+            "completed": 14,
+            "raw": 0.9333,
+            "weighted": 0.9335,
+            "rate": 0.9335,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 34,
+            "completed": 34,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 21,
+            "completed": 20,
+            "raw": 0.9524,
+            "weighted": 0.9581,
+            "rate": 0.9581,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 15,
+            "completed": 14,
+            "raw": 0.9333,
+            "weighted": 0.9335,
+            "rate": 0.9335,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.825424,
+      "duration_s": 94.51,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 24.228033,
+      "duration_s": 1570.36,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 66.47,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 540.87,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 4.522334,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2272.21,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "342c270c68d0",
+  "sprint_name": "issues-1950,1905,1951,1952"
+}
