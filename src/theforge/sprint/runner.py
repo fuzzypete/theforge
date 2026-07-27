@@ -784,7 +784,9 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
         if config.workspace.setup_command:
             _log(f"Running baseline workspace setup: {config.workspace.setup_command}")
             setup_ok, setup_out = coordinator_workspace._run_setup_split(
-                config.workspace.setup_command, baseline_worktree
+                config.workspace.setup_command,
+                baseline_worktree,
+                config.workspace.python_interpreter,
             )
             if not setup_ok:
                 duration = time.monotonic() - started_monotonic

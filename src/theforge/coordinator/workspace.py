@@ -15,6 +15,7 @@ from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
+from theforge.workspace_env import read_venv_base_executable, venv_matches_interpreter
 
 from . import util as _cu
 from .gate import _run_gate
@@ -90,13 +91,62 @@ def _propagate_claude_memory(project_root: Path, workspace_path: Path) -> None:
         _cu._log(f"⚠ WORKSPACE  failed to propagate Claude memory: {exc}")
 
 
-def _resolve_setup_command(cmd: str) -> str:
-    """Replace {forge_python} with the shell-safe path to the running interpreter.
+def _resolve_setup_command(cmd: str, python_interpreter: str | None = None) -> str:
+    """Replace {forge_python} with the shell-safe patient-project interpreter.
+
+    The value comes from ``workspace.python_interpreter``, never from
+    ``sys.executable``: the interpreter the orchestrator happens to be installed
+    under must not decide which Python the patient project's gate runs on.
+    Config load rejects a ``{forge_python}`` template without the pin, so a
+    missing value here is a programming error and raises rather than silently
+    falling back.
 
     Uses shlex.quote so that paths containing spaces or shell-sensitive characters
     do not break shell=True invocations.
     """
-    return cmd.replace("{forge_python}", shlex.quote(sys.executable))
+    if "{forge_python}" not in cmd:
+        return cmd
+    if not python_interpreter:
+        raise ValueError(
+            "setup_command uses {forge_python} but no workspace.python_interpreter was "
+            "supplied — refusing to substitute the orchestrator's own interpreter"
+        )
+    return cmd.replace("{forge_python}", shlex.quote(python_interpreter))
+
+
+def _invalidate_stale_venv(workspace_path: Path, python_interpreter: str | None) -> str | None:
+    """Remove a worktree virtualenv not built from the project-pinned interpreter.
+
+    Setup commands guard venv creation with ``test -d .venv ||``, and gate
+    commands routinely invoke ``.venv/bin/...`` directly, so an existing
+    virtualenv left by a differently-built orchestrator would decide the gate's
+    runtime no matter what the pin says. Removing it lets the guard rebuild it
+    under the pin, which also reruns dependency installation.
+
+    Returns an error message when a stale virtualenv could not be removed —
+    continuing would run the gate under the wrong interpreter — or None.
+    """
+    if not python_interpreter:
+        return None
+    venv_path = workspace_path / ".venv"
+    if not venv_path.is_dir():
+        return None
+    if venv_matches_interpreter(venv_path, python_interpreter):
+        return None
+
+    recorded = read_venv_base_executable(venv_path) or "unknown"
+    _cu._log(
+        f"⚠ WORKSPACE  existing .venv was built from {recorded}, not the project-pinned "
+        f"{python_interpreter} — removing so it is reprovisioned under the pin"
+    )
+    try:
+        shutil.rmtree(venv_path)
+    except OSError as exc:
+        return (
+            f"Could not remove stale virtualenv {venv_path} built from {recorded} "
+            f"(pinned interpreter: {python_interpreter}): {exc}"
+        )
+    return None
 
 
 def _read_last_setup_command(workspace_path: Path) -> str | None:
@@ -115,41 +165,66 @@ def _write_last_setup_command(workspace_path: Path, cmd: str) -> None:
     (forge_dir / "last_setup_command").write_text(cmd, encoding="utf-8")
 
 
-def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
+def _run_setup_split(
+    setup_command: str,
+    workspace_path: Path,
+    python_interpreter: str | None = None,
+) -> tuple[bool, str]:
     """Run workspace setup, splitting venv creation from install.
 
     Matches {forge_python} template before substitution to avoid parsing
     shlex.quote() output; falls back to legacy form; then runs verbatim.
+
+    ``python_interpreter`` is the patient project's pinned interpreter. A
+    virtualenv already present in the worktree is validated against it before
+    anything runs, so a stale one cannot survive the ``test -d .venv`` guard.
     """
     last_setup_command = _read_last_setup_command(workspace_path)
     if last_setup_command is not None and last_setup_command != setup_command:
         _cu._log("⚠ WORKSPACE  setup_command changed — re-running install")
 
+    stale_err = _invalidate_stale_venv(workspace_path, python_interpreter)
+    if stale_err is not None:
+        return False, stale_err
+
     m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
     if m:
         install_cmd = m.group(1).strip()
-        python_exe = shlex.quote(sys.executable)
-        ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
+        if not python_interpreter:
+            raise ValueError(
+                "setup_command uses {forge_python} but no workspace.python_interpreter was "
+                "supplied — refusing to substitute the orchestrator's own interpreter"
+            )
+        python_exe = shlex.quote(python_interpreter)
+        ok, out = _cu._run_shell(
+            f"test -d .venv || {python_exe} -m venv .venv",
+            workspace_path,
+            expected_python=python_interpreter,
+        )
         if not ok:
             return ok, out
-        ok, out = _cu._run_shell(install_cmd, workspace_path)
+        ok, out = _cu._run_shell(install_cmd, workspace_path, expected_python=python_interpreter)
         if ok:
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
 
-    cmd = _resolve_setup_command(setup_command)
+    cmd = _resolve_setup_command(setup_command, python_interpreter)
     m = _VENV_GUARD_RE.search(cmd)
     if not m:
-        ok, out = _cu._run_shell(cmd, workspace_path)
+        ok, out = _cu._run_shell(cmd, workspace_path, expected_python=python_interpreter)
         if ok:
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
     python_exe = m.group(1)
     install_cmd = m.group(2).strip()
-    ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
+    ok, out = _cu._run_shell(
+        f"test -d .venv || {python_exe} -m venv .venv",
+        workspace_path,
+        expected_python=python_interpreter,
+    )
     if not ok:
         return ok, out
-    ok, out = _cu._run_shell(install_cmd, workspace_path)
+    ok, out = _cu._run_shell(install_cmd, workspace_path, expected_python=python_interpreter)
     if ok:
         _write_last_setup_command(workspace_path, setup_command)
     return ok, out
@@ -863,7 +938,11 @@ def _create_workspace(
                 return None, None, rebase_err
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-                ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
+                ok_s, out_s = _run_setup_split(
+                    config.workspace.setup_command,
+                    workspace_path,
+                    config.workspace.python_interpreter,
+                )
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path, purge=True)
@@ -900,7 +979,11 @@ def _create_workspace(
                     return None, None, rebase_err
                 if config.workspace.setup_command:
                     _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-                    ok_s, out_s = _run_setup_split(config.workspace.setup_command, existing_wt)
+                    ok_s, out_s = _run_setup_split(
+                        config.workspace.setup_command,
+                        existing_wt,
+                        config.workspace.python_interpreter,
+                    )
                     if not ok_s:
                         return None, None, f"Workspace setup command failed: {out_s}"
                 _deindex_forge_artifacts(existing_wt, purge=True)
@@ -933,7 +1016,11 @@ def _create_workspace(
                 return None, None, rebase_err
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-                ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
+                ok_s, out_s = _run_setup_split(
+                    config.workspace.setup_command,
+                    workspace_path,
+                    config.workspace.python_interpreter,
+                )
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path, purge=True)
@@ -960,7 +1047,11 @@ def _create_workspace(
 
     if config.workspace.setup_command:
         _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-        ok, output = _run_setup_split(config.workspace.setup_command, workspace_path)
+        ok, output = _run_setup_split(
+            config.workspace.setup_command,
+            workspace_path,
+            config.workspace.python_interpreter,
+        )
         if not ok:
             return None, None, f"Workspace setup command failed: {output}"
 
