@@ -529,18 +529,14 @@ class TestStructuredLoggingIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir(parents=True, exist_ok=True)
 
-        # Always return FAIL → exhaust retries → ESCALATE
+        # Always return FAIL → exhaust dev iterations and review cycles → ESCALATE
         mock_shell.side_effect = _shell_with_gate(workspace, "FAIL")
         mock_preflight.return_value = _make_agent_result(
             success=True,
             output="verdict: PROCEED\ncomplexity: small",
             cost_usd=0.10,
         )
-        mock_agent.side_effect = [
-            _make_agent_result(success=True, output="Done.", cost_usd=0.10),
-            _make_agent_result(success=True, output="Done.", cost_usd=0.10),
-            _make_agent_result(success=True, output="Done.", cost_usd=0.10),
-        ]
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.10)
         mock_pool.return_value = []
 
         result = run_task(config, task)

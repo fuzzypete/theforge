@@ -43,7 +43,6 @@ from theforge.artifacts import (
     ensure_parent_dir,
 )
 from theforge.config import ForgeConfig
-from theforge.review import ReviewFinding, ReviewResult
 from theforge.task import (
     TaskStory,
     load_story,
@@ -134,69 +133,6 @@ def _ensure_runners() -> None:
         LogLevel = _r.LogLevel
 
 
-def _build_convention_blocking_review(state: CoordinatorState) -> ReviewResult:
-    """Create a synthetic blocking review result for hard convention violations."""
-    findings = [
-        ReviewFinding(
-            severity="P1",
-            file=str(violation.get("file", "")),
-            line=None,
-            observed=(
-                f"Hard convention violation [{violation.get('rule', 'unknown')}] in "
-                f"{violation.get('file', 'unknown')}: {violation.get('detail', '')}"
-            ),
-            expected=(
-                "Code merged to main must conform to the project's hard conventions; "
-                "any blocking violation flagged by validate-phase must be resolved "
-                "before approval, regardless of which rule was tripped."
-            ),
-            evidence=(
-                f"{violation.get('file', 'unknown')} (rule: {violation.get('rule', 'unknown')})"
-            ),
-            suggestion="Resolve the hard convention violation before approval.",
-        )
-        for violation in state.convention_violations
-    ]
-    if not findings:
-        findings = [
-            ReviewFinding(
-                severity="P1",
-                file="",
-                line=None,
-                observed=(
-                    "Hard convention violations detected after gate PASS, but no violation "
-                    "details were recorded. Manual investigation required."
-                ),
-                expected=(
-                    "When validate-phase reports any blocking convention violation, the "
-                    "coordinator must surface enough detail for an operator to identify "
-                    "the offending file and rule; opaque violation reports block triage."
-                ),
-                evidence="validate-phase convention check (no detail recorded)",
-                suggestion=(
-                    "Inspect validate-phase convention logs and fix the blocking violation."
-                ),
-            )
-        ]
-    return ReviewResult(
-        verdict="REQUEST_CHANGES",
-        summary=(
-            "Hard convention violations detected after gate PASS; approval is blocked "
-            "until they are fixed."
-        ),
-        findings=findings,
-        story_matches=True,
-        story_mismatches=[],
-        test_adequate=True,
-        test_gaps=[],
-        parse_errors=[],
-        raw_yaml={
-            "source": "validate_convention_block",
-            "convention_violations": state.convention_violations,
-        },
-    )
-
-
 # ── Log-tee / SIGTERM context manager ────────────────────────────────
 
 
@@ -244,7 +180,11 @@ from .review_phase import (  # noqa: E402
     _run_review_phase,
 )
 from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402,I001
-from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
+from .validate_phase import (  # noqa: E402
+    _run_validate_phase,
+    _ValidateOutcome,
+    record_validate_block,
+)
 
 
 def _run_end_outcome(result: CoordinatorResult) -> str:
@@ -601,14 +541,29 @@ def _coordinator_loop(
                 # to DONE (skip REVIEW and merge) — the cited commits are
                 # already on the base branch.
                 return _val_result  # type: ignore[return-value]
-            if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
+            if _val_outcome == _ValidateOutcome.RETRY_DEV_NEW_CYCLE:
+                # The dev iteration pool is spent but the finding is still
+                # fixable, so it is charged to a review cycle and handed back to
+                # the dev. The finding is recorded in state.validate_blocks —
+                # the reviewer record stays reviewer-only (#1981).
+                _block_label = (
+                    "Convention violations"
+                    if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
+                    else "Gate failures"
+                )
+                record_validate_block(
+                    state, outcome="opened_review_cycle", reason="review_cycle_bought"
+                )
                 state.review_cycle += 1
-                state.review_results.append(_build_convention_blocking_review(state))
+                state.validate_opened_review_cycles += 1
                 _review_cap = state.adaptive_review_max or config.retry.max_review_cycles
                 if state.review_cycle >= _review_cap:
+                    # VALIDATE routes to ESCALATE itself when no cycle remains;
+                    # this stays as the loop bound so no phase outcome can spin
+                    # the state machine forever.
                     state.phase = Phase.ESCALATE
                     state.error = (
-                        f"Convention violations persisted after {state.review_cycle} cycles. "
+                        f"{_block_label} persisted after {state.review_cycle} cycles. "
                         f"Max cycles ({_review_cap}) exhausted."
                     )
                     _log(f"✗ ESCALATE   {state.error}")
@@ -621,6 +576,9 @@ def _coordinator_loop(
                         state=state,
                         message=state.error,
                     )
+                # Opening a review cycle refills the dev iteration pool, exactly
+                # as review_phase does when it sends findings back to the dev.
+                state.budget.reset_cycle()
                 continue
             elif _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (

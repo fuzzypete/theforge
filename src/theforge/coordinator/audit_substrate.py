@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 11
+CURRENT_RECORD_SCHEMA_VERSION = 12
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -905,6 +905,32 @@ def _migrate_v10_to_v11(record: dict) -> dict:
     }
 
 
+def _migrate_v11_to_v12(record: dict) -> dict:
+    """Split VALIDATE-opened review cycles out of the reviewer counts (issue #1981).
+
+    v11 recorded one number for review cycles, so a cycle the coordinator opened
+    for its own gate or convention finding was indistinguishable from one a
+    reviewer verdict opened — and the adaptive iteration learner read that number
+    as reviewer demand. v12 reports ``review_cycles_opened_by_validate``
+    alongside, keeps ``review_cycles_total`` reviewer-only, and adds top-level
+    ``validate_blocks`` describing each coordinator-raised block.
+
+    A v11 record cannot be re-attributed after the fact: the evidence that would
+    separate the two was never written. Backfill the "none recorded" shape — zero
+    VALIDATE-opened cycles, null blocks — which leaves ``review_cycles_total``
+    reading exactly as it did when written, rather than inferring cycles from an
+    outcome. The stored record is never rewritten (ADR-0002 refusal-to-forget);
+    this is the reader-side lift applied on load.
+    """
+    migrated = dict(record)
+    migrated.setdefault("validate_blocks", None)
+    for block_key in ("iterations", "totals"):
+        block = migrated.get(block_key)
+        if isinstance(block, dict) and "review_cycles_opened_by_validate" not in block:
+            migrated[block_key] = {**block, "review_cycles_opened_by_validate": 0}
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -924,6 +950,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
     10: _migrate_v10_to_v11,
+    11: _migrate_v11_to_v12,
 }
 
 
