@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from theforge.sprint.ci_checks import poll_required_checks
+from theforge.sprint.ci_checks import failing_required_pr_checks, poll_required_checks
 
 
 class _Proc:
@@ -110,3 +110,74 @@ def test_poll_required_checks_polls_until_success(tmp_path: Path) -> None:
 
     assert result["status"] == "pass"
     sleep.assert_called_once_with(15)
+
+
+def _pr_check_responses(rollup: str) -> list[_Proc]:
+    """gh calls made by failing_required_pr_checks, in order."""
+    return [
+        _Proc('{"nameWithOwner":"acme/repo"}'),
+        _Proc('["gate","lint"]'),
+        _Proc(rollup),
+    ]
+
+
+def test_failing_required_pr_checks_reports_terminal_failures(tmp_path: Path) -> None:
+    rollup = (
+        '[{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"FAILURE"},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        failing = failing_required_pr_checks(tmp_path, "https://github.com/x/y/pull/1", "main")
+
+    assert failing == ["gate"]
+
+
+def test_failing_required_pr_checks_ignores_pending_and_non_required(tmp_path: Path) -> None:
+    """A required check still running is not a failure, and a failing check that
+    is not required cannot block the merge — neither may abandon the wait."""
+    rollup = (
+        '[{"__typename":"CheckRun","name":"gate","status":"IN_PROGRESS","conclusion":null},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"},'
+        '{"__typename":"CheckRun","name":"optional-bench","status":"COMPLETED",'
+        '"conclusion":"FAILURE"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        assert failing_required_pr_checks(tmp_path, "https://github.com/x/y/pull/1", "main") == []
+
+
+def test_failing_required_pr_checks_reads_legacy_status_contexts(tmp_path: Path) -> None:
+    rollup = (
+        '[{"__typename":"StatusContext","context":"gate","state":"ERROR"},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        failing = failing_required_pr_checks(tmp_path, "https://github.com/x/y/pull/1", "main")
+
+    assert failing == ["gate"]
+
+
+def test_failing_required_pr_checks_returns_empty_when_unresolvable(tmp_path: Path) -> None:
+    """An un-answerable probe must leave the caller waiting rather than abandon a
+    PR whose check state could not be read."""
+
+    with patch("theforge.sprint.ci_checks.subprocess.run", side_effect=OSError("gh missing")):
+        assert failing_required_pr_checks(tmp_path, "https://github.com/x/y/pull/1", "main") == []
+
+
+def test_failing_required_pr_checks_empty_when_branch_unprotected(tmp_path: Path) -> None:
+    responses = [
+        _Proc('{"nameWithOwner":"acme/repo"}'),
+        _Proc("", "gh: Not Found (HTTP 404)", 1),
+    ]
+
+    with patch("theforge.sprint.ci_checks.subprocess.run", side_effect=responses):
+        assert failing_required_pr_checks(tmp_path, "https://github.com/x/y/pull/1", "main") == []
