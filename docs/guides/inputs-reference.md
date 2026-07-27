@@ -284,6 +284,13 @@ overrides:
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
   setup_command: "pip install -e ."    # optional: run once after worktree creation
+                                      # {forge_python} expands to python_interpreter
+  python_interpreter: "python3.12"    # interpreter this project develops against;
+                                      # required when setup_command uses {forge_python}.
+                                      # Worktree virtualenvs built from a different
+                                      # interpreter are deleted and reprovisioned, so
+                                      # the gate never inherits whichever Python
+                                      # TheForge itself happens to be installed under.
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "forge/{slug}"
   base_branch: "main"                 # default: "main"

@@ -77,6 +77,9 @@ workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} {base_branch}"
   # Optional: run once in the new workspace after creation (e.g. install deps).
   # setup_command: "pip install -e ."
+  # Required when setup_command uses {forge_python}: the interpreter this project
+  # develops against. TheForge never substitutes its own interpreter here.
+  # python_interpreter: "python3.12"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "forge/{slug}"
 

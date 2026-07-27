@@ -304,6 +304,11 @@ class WorkspaceConfig:
     stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
     auto_push: bool = False  # push base_branch to origin after successful auto-merge
     setup_command: str | None = None  # optional command run once after workspace creation
+    # Interpreter the patient project develops against, e.g. "python3.12" or an
+    # absolute path. Substituted for {forge_python} in setup_command and used to
+    # validate worktree virtualenvs. Deliberately has no default: falling back to
+    # the orchestrator's own interpreter is the defect this field exists to close.
+    python_interpreter: str | None = None
     on_approve: str = "none"  # "merge" | "pr" | "merge-pr" | "none"; alias: "ask" → "pr"
     merge_strategy: str = "squash"  # merge | squash | rebase (used by on_approve="merge-pr")
     pr_labels: tuple[str, ...] = ()  # labels to apply when on_approve="pr" or "merge-pr"

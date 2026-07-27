@@ -9,6 +9,7 @@ import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
@@ -984,8 +985,32 @@ class TestRunSetupSplit:
         assert out == "venv error"
         assert len(calls) == 1  # install was not called
 
-    def test_forge_python_placeholder_replaced_with_sys_executable(self, tmp_path):
-        """{forge_python} in setup_command is replaced with sys.executable before running."""
+    def test_forge_python_placeholder_replaced_with_configured_interpreter(self, tmp_path):
+        """{forge_python} is replaced with the configured project pin, not sys.executable."""
+        import sys
+
+        from theforge.coordinator.workspace import _run_setup_split
+
+        pinned = "/opt/project-pythons/3.12/bin/python3.12"
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e .)"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kw):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path, pinned)
+
+        assert ok is True
+        assert len(calls) == 2
+        # venv creation uses the project pin, not the orchestrator's interpreter
+        assert pinned in calls[0]
+        assert sys.executable not in calls[0]
+        assert "{forge_python}" not in calls[0]
+
+    def test_forge_python_without_configured_interpreter_is_rejected(self, tmp_path):
+        """A {forge_python} template with no pin raises rather than using sys.executable."""
         import sys
 
         from theforge.coordinator.workspace import _run_setup_split
@@ -998,22 +1023,22 @@ class TestRunSetupSplit:
             return (True, "ok")
 
         with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
-            ok, out = _run_setup_split(cmd, tmp_path)
+            with pytest.raises(ValueError, match="python_interpreter"):
+                _run_setup_split(cmd, tmp_path)
 
-        assert ok is True
-        assert len(calls) == 2
-        # venv creation uses sys.executable, not the literal placeholder
-        assert sys.executable in calls[0]
-        assert "{forge_python}" not in calls[0]
+        assert calls == []
+        assert sys.executable  # the orchestrator interpreter exists but must not be used
 
     def test_resolve_setup_command_replaces_placeholder(self):
-        """_resolve_setup_command swaps {forge_python} for the absolute interpreter path."""
+        """_resolve_setup_command swaps {forge_python} for the configured interpreter."""
         import sys
 
         from theforge.coordinator.workspace import _resolve_setup_command
 
-        result = _resolve_setup_command("test -d .venv || ({forge_python} -m venv .venv)")
-        assert sys.executable in result
+        pinned = "/opt/project-pythons/3.12/bin/python3.12"
+        result = _resolve_setup_command("test -d .venv || ({forge_python} -m venv .venv)", pinned)
+        assert pinned in result
+        assert sys.executable not in result
         assert "{forge_python}" not in result
 
     def test_resolve_setup_command_noop_without_placeholder(self):
@@ -1024,7 +1049,7 @@ class TestRunSetupSplit:
         assert _resolve_setup_command(cmd) == cmd
 
     def test_forge_python_with_spaces_in_path_is_shell_quoted(self, tmp_path):
-        """sys.executable with spaces is shell-quoted; command is still split (not verbatim)."""
+        """A pin with spaces is shell-quoted; command is still split (not verbatim)."""
         from theforge.coordinator.workspace import _run_setup_split
 
         spaced_exe = "/home/my user/.pyenv/versions/3.12.12/bin/python3.12"
@@ -1035,12 +1060,8 @@ class TestRunSetupSplit:
             calls.append(cmd_arg)
             return (True, "ok")
 
-        with (
-            patch("theforge.coordinator.workspace.sys") as mock_sys,
-            patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
-        ):
-            mock_sys.executable = spaced_exe
-            ok, out = _run_setup_split(cmd, tmp_path)
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path, spaced_exe)
 
         assert ok is True
         # Template matched before substitution — command was split, not run verbatim
@@ -1066,12 +1087,8 @@ class TestRunSetupSplit:
             calls.append(cmd_arg)
             return (True, "ok")
 
-        with (
-            patch("theforge.coordinator.workspace.sys") as mock_sys,
-            patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
-        ):
-            mock_sys.executable = tricky_exe
-            ok, out = _run_setup_split(cmd, tmp_path)
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path, tricky_exe)
 
         assert ok is True
         # Must have split into two calls, not fallen back to verbatim (one call)
@@ -1084,9 +1101,7 @@ class TestRunSetupSplit:
         from theforge.coordinator.workspace import _resolve_setup_command
 
         spaced_exe = "/home/my user/.pyenv/bin/python3"
-        with patch("theforge.coordinator.workspace.sys") as mock_sys:
-            mock_sys.executable = spaced_exe
-            result = _resolve_setup_command("{forge_python} -m venv .venv")
+        result = _resolve_setup_command("{forge_python} -m venv .venv", spaced_exe)
 
         assert "'/home/my user/.pyenv/bin/python3'" in result
         assert "{forge_python}" not in result

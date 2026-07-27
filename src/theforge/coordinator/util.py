@@ -308,12 +308,21 @@ def _drain_partial_output(
 
 
 def _run_shell_detailed(
-    cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
+    cmd: str,
+    cwd: Path,
+    timeout: int = 120,
+    env: dict[str, str] | None = None,
+    expected_python: str | None = None,
 ) -> tuple[bool, str, int | None, bool]:
     """Run a shell command. Returns (success, combined output, exit_code, timed_out).
 
     On abnormal exit, kills the entire process group so child processes (e.g.
     pytest-xdist workers) don't outlive the shell and consume unbounded memory.
+
+    ``expected_python`` is the patient project's pinned interpreter; when given,
+    a worktree virtualenv is only put on PATH if it was built from that
+    interpreter. Ignored when ``env`` is supplied, since the caller then owns
+    the environment.
     """
     try:
         proc = subprocess.Popen(
@@ -323,7 +332,11 @@ def _run_shell_detailed(
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(cwd),
-            env=env if env is not None else build_workspace_env(cwd),
+            env=(
+                env
+                if env is not None
+                else build_workspace_env(cwd, expected_python=expected_python)
+            ),
             start_new_session=True,
         )
     except Exception as e:
@@ -361,7 +374,11 @@ def _run_shell_detailed(
 
 
 def _run_shell(
-    cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
+    cmd: str,
+    cwd: Path,
+    timeout: int = 120,
+    env: dict[str, str] | None = None,
+    expected_python: str | None = None,
 ) -> tuple[bool, str]:
     """Run a shell command. Returns (success, combined output)."""
     ok, output, _exit_code, _timed_out = _run_shell_detailed(
@@ -369,6 +386,7 @@ def _run_shell(
         cwd,
         timeout=timeout,
         env=env,
+        expected_python=expected_python,
     )
     return ok, output
 
