@@ -23,13 +23,13 @@ from theforge.config import (
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import run_sprint
+from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.dag import StoryTriage, _triage_spec
 from theforge.sprint.lock import acquire_story_locks, release_story_locks
 from theforge.sprint.manifest import ResolvedSprint, _build_task_from_story
 from theforge.sprint.runner import _read_prior_sprint_cost, _run_fresh
 from theforge.sprint.sources import GitHubIssueSource
 from theforge.task import TaskStory
-from theforge.sprint.audit import persist_accumulated_story_state
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -986,12 +986,14 @@ class TestResumeSprintIntegration:
         summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
         summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
         by_slug = {story["slug"]: story for story in summary["stories"]}
+        expected_started_at = prior_started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        expected_finished_at = prior_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         assert summary["sprint"]["total_cost_usd"] == pytest.approx(4.75)
         assert summary["sprint"]["duration_seconds"] >= 80.0
         assert by_slug["feature-a"]["cost_usd"] == pytest.approx(3.5)
-        assert by_slug["feature-a"]["started_at"] == prior_started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        assert by_slug["feature-a"]["finished_at"] == prior_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert by_slug["feature-a"]["started_at"] == expected_started_at
+        assert by_slug["feature-a"]["finished_at"] == expected_finished_at
         assert by_slug["feature-a"]["outcome_source"] == "resume_skip_merged"
 
     def test_no_resume_flag_unchanged(self, tmp_path: Path) -> None:
