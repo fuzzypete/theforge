@@ -29,6 +29,7 @@ from theforge.sprint.manifest import ResolvedSprint, _build_task_from_story
 from theforge.sprint.runner import _read_prior_sprint_cost, _run_fresh
 from theforge.sprint.sources import GitHubIssueSource
 from theforge.task import TaskStory
+from theforge.sprint.audit import persist_accumulated_story_state
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -336,6 +337,34 @@ class TestReadPriorSprintCost:
         monkeypatch.setenv("FORGE_PREV_RUN_ID", "run-prev-123")
 
         assert _read_prior_sprint_cost(tmp_path, sprint_id) == pytest.approx(3.5)
+
+    def test_progressive_state_can_exceed_stale_sprint_audit_during_reexec(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sprint_id = _set_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 1.0)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 3.5,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
+
+        monkeypatch.setenv("FORGE_PREV_RUN_ID", "run-prev-123")
+
+        # Legacy helper still exposes sprint-audit.yaml; integration tests below
+        # verify run_sprint now prefers progressive state for real re-exec
+        # accounting.
+        assert _read_prior_sprint_cost(tmp_path, sprint_id) == pytest.approx(1.0)
 
     def test_triage_same_tip_missing_worktree_with_prior_approve_skips_when_squash_merged(
         self, tmp_path: Path
@@ -843,6 +872,127 @@ class TestResumeSprintIntegration:
         assert audit_data["specs"][0]["error"] == (
             "budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
         )
+
+    def test_resume_prior_state_cost_exceeds_budget_without_sprint_audit(
+        self, tmp_path: Path
+    ) -> None:
+        """Budget checks use progressive prior story state during re-exec."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                    "started_at": "2026-07-27T01:00:00Z",
+                    "finished_at": "2026-07-27T01:05:00Z",
+                }
+            ],
+        )
+
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.runner.run_task") as mock_run:
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint(config, manifest_path, resume=True)
+
+        mock_run.assert_not_called()
+        assert result.specs_skipped == 1
+        assert (
+            result.stopped_reason
+            == "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+        audit_data = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        assert audit_data["specs"][0]["error"] == (
+            "budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
+
+    def test_reexec_summary_preserves_prior_story_accounting_from_progressive_state(
+        self, tmp_path: Path
+    ) -> None:
+        """Re-exec summary keeps prior cost/timing and spans pre-reexec duration."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        prior_started_at = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=90)
+        ).replace(microsecond=0)
+        prior_finished_at = prior_started_at + datetime.timedelta(seconds=30)
+
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 3.5,
+                    "story_run_id": "run-prev",
+                    "started_at": prior_started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "finished_at": prior_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+            ],
+        )
+
+        merged_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+            slug="feature-a",
+        )
+        full_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+            slug="feature-b",
+        )
+
+        def triage_side_effect(spec_path, config, project_root, *, task=None):
+            return merged_triage if "feature-a" in spec_path else full_triage
+
+        coord_result = _make_coordinator_result(success=True, cost=1.25, landing_status="landed")
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result):
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint(config, manifest_path, reexec=True)
+
+        assert result.total_cost_usd == pytest.approx(4.75)
+
+        summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
+        summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+        by_slug = {story["slug"]: story for story in summary["stories"]}
+
+        assert summary["sprint"]["total_cost_usd"] == pytest.approx(4.75)
+        assert summary["sprint"]["duration_seconds"] >= 80.0
+        assert by_slug["feature-a"]["cost_usd"] == pytest.approx(3.5)
+        assert by_slug["feature-a"]["started_at"] == prior_started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert by_slug["feature-a"]["finished_at"] == prior_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert by_slug["feature-a"]["outcome_source"] == "resume_skip_merged"
 
     def test_no_resume_flag_unchanged(self, tmp_path: Path) -> None:
         """Without --resume, behavior is unchanged (run_task called normally)."""
