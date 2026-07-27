@@ -8,6 +8,10 @@ import sys
 import textwrap
 from pathlib import Path
 
+#: Width of the STATUS column — wide enough for the longest status label
+#: ("interrupted") so a killed story does not push the row out of alignment.
+_STATUS_WIDTH = 11
+
 _ISSUE_REF_RE = re.compile(r"(?:issue-|#)(\d+)")
 _DETAIL_REF_RE = re.compile(r"#(\d+)")
 
@@ -109,6 +113,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     from theforge.sprint.status_reader import (
         find_live_state_path,
         find_sprint_summary,
+        mark_interrupted_entries,
         read_completed_status,
         read_live_status,
     )
@@ -121,6 +126,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     sprint_name = ""
     unexpected_end = False
     terminal_outcome: str | None = None
+    terminal_cause: str | None = None
     total_cost_usd: float | None = None
     duration_seconds: float | None = None
     sprint_phase: str | None = None
@@ -161,10 +167,15 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         if state_path.exists():
             from theforge import detach as _detach
 
-            terminal_outcome = _detach.read_run_ended(run_id, project_root)
+            record = _detach.read_run_ended_record(run_id, project_root)
+            if record is not None:
+                terminal_outcome, terminal_cause = record
             unexpected_end = terminal_outcome is None
             entries = read_live_status(run_id, project_root)
             if entries is not None:
+                # The owning process is gone: no story can still be advancing,
+                # whatever the last phase written to .state says.
+                entries = mark_interrupted_entries(entries)
                 sprint_name = _read_sprint_name_from_state(state_path)
 
     # For crashed sprints with an unreadable state file, show the banner with
@@ -238,6 +249,10 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
 
     if unexpected_end:
         print("  ⚠  Sprint ended unexpectedly (PID file missing, state file present)")
+    elif terminal_outcome == "failed":
+        print("  ⚠  Sprint terminated abnormally — it did not complete")
+    if terminal_cause:
+        print(f"  cause: {terminal_cause}")
     print()
 
     if not entries:
@@ -253,6 +268,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         "running": "▸",
         "waiting": "○",
         "failed": "✗",
+        "interrupted": "⚠",
         "skipped": "⊘",
         "blocked": "⊘",
         "operator-action": "⊘",
@@ -261,7 +277,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     # Column header
     stage_width = 20
     header = (
-        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'MODEL':<24}  "
+        f"  {'STORY':<28}  {'STATUS':<{_STATUS_WIDTH}}  {'PHASE':<12}  {'MODEL':<24}  "
         f"{'STAGE':<{stage_width}}  {'COMPLEXITY':<10}  {'COST':>7}  {'ELAPSED':>7}  DETAIL"
     )
     print(header)
@@ -418,7 +434,7 @@ def _print_story_line(
         elapsed_cell = elapsed_str if index == 0 else ""
         line = (
             f"{icon_cell} {path_lines[index] if index < len(path_lines) else '':<28}  "
-            f"{status_cell:<8}  "
+            f"{status_cell:<{_STATUS_WIDTH}}  "
             f"{phase_lines[index] if index < len(phase_lines) else '':<12}  "
             f"{model_lines[index] if index < len(model_lines) else '':<24}  "
             f"{stage_lines[index] if index < len(stage_lines) else '':<{stage_width}}  "
@@ -445,7 +461,24 @@ def _detail_column_width(indent: int) -> int:
     terminal_width = shutil.get_terminal_size((140, 20)).columns
     stage_width = 20
     fixed_width = (
-        indent + 2 + 28 + 2 + 8 + 2 + 12 + 2 + 24 + 2 + stage_width + 2 + 10 + 2 + 7 + 2 + 7 + 2
+        indent
+        + 2
+        + 28
+        + 2
+        + _STATUS_WIDTH
+        + 2
+        + 12
+        + 2
+        + 24
+        + 2
+        + stage_width
+        + 2
+        + 10
+        + 2
+        + 7
+        + 2
+        + 7
+        + 2
     )
     return max(20, terminal_width - fixed_width)
 

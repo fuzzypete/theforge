@@ -232,6 +232,11 @@ def cmd_run(args: "argparse.Namespace") -> int:
 
     no_pull = getattr(args, "no_pull", False)
 
+    # Terminal disposition is derived from how the run actually ended: a return
+    # out of the block below is an observed ending, anything that propagates is
+    # a failure and must not be recorded as "completed".
+    outcome = "completed"
+    cause: str | None = None
     try:
         if resume:
             triage = _triage_spec(str(story_path), config, config.project_root)
@@ -301,11 +306,15 @@ def cmd_run(args: "argparse.Namespace") -> int:
         print(f"{'=' * 60}", file=sys.stderr)
 
         return 0 if result.success else 1
+    except BaseException as exc:
+        outcome = "failed"
+        cause = _detach.format_exception_cause(exc)
+        raise
     finally:
         # Write terminal marker then remove PID — ensures status is accurate even
         # if run_task raises. SIGTERM handler may have already written "stopped";
         # write_run_ended is a no-op when the file already exists.
-        _detach.write_run_ended(run_id, config.project_root, "completed")
+        _detach.write_run_ended(run_id, config.project_root, outcome, cause=cause)
         _detach.remove_pid(run_id, config.project_root)
 
 
