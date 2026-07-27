@@ -278,7 +278,12 @@ def test_convention_violation_escalates_once_both_budgets_are_spent(tmp_path: Pa
     # gate writes no failing output, so the fingerprint breaker cannot fire here.
     assert len(result.state.gate_decisions) == 4
     assert result.state.validate_opened_review_cycles == 1
-    assert [b["kind"] for b in result.state.validate_blocks] == ["convention"]
+    # Both the cycle purchase and the terminal refusal are recorded, each with
+    # the structured routing reason behind it.
+    assert [(b["kind"], b["outcome"], b["reason"]) for b in result.state.validate_blocks] == [
+        ("convention", "opened_review_cycle", "review_cycle_bought"),
+        ("convention", "terminal", "budgets_exhausted"),
+    ]
     # The count names validation runs performed, not the per-cycle dev counter.
     assert "after 4 validation run(s)" in result.message
 
@@ -377,3 +382,73 @@ def test_persistent_p1_lookback_survives_a_validate_bought_cycle(tmp_path: Path)
     from theforge.coordinator.preflight import _has_persistent_p1
 
     assert _has_persistent_p1(state.review_results[-1].findings, state.review_results[-2].findings)
+
+
+def test_stall_brake_fingerprints_the_whole_gate_output_not_the_tail(tmp_path: Path) -> None:
+    """A constant tail must not read as a stalled gate while the failure changes above it.
+
+    The fingerprint is taken over the full gate output by ``run_gate_full``. Taken
+    over ``output_tail`` instead, any gate whose last `gate_output_tail_chars`
+    are a fixed footer — a coverage table, a summary banner — would hash
+    identically every run and the brake would fire on a story that was still
+    converging, disabling the return path this fix exists to provide (#1981).
+    """
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    _workspace(tmp_path)
+
+    footer = "\n" + ("=" * 40) + "\nmake: *** [Makefile:31: gate] Error 1\n"
+    calls = {"n": 0}
+
+    def side_effect(cmd, cwd, **kwargs):
+        if "gate" in cmd:
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                notes = Path(cwd) / ".forge"
+                notes.mkdir(parents=True, exist_ok=True)
+                (notes / "dev_notes.md").write_text("done\n", encoding="utf-8")
+                return (True, "OK", 0, False)
+            # The failure detail changes; the tail is byte-identical every run.
+            return (False, f"error in module_{calls['n']}.py{footer}", 1, False)
+        if "git status --porcelain" in cmd:
+            return (True, "", 0, False)
+        stale = _handle_stale_check_cmd(cmd)
+        if stale is not None:
+            ok, out = stale
+            return (ok, out, 0 if ok else 1, False)
+        return (True, "OK", 0, False)
+
+    tail_chars = len(footer)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(config.validation, gate_output_tail_chars=tail_chars),
+    )
+
+    with (
+        patch_gate_shell() as mock_shell,
+        _patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        _patch("theforge.coordinator.dev_phase.run_agent") as mock_agent,
+        _patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        _patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+    ):
+        mock_shell.side_effect = side_effect
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        result = run_task(config, task)
+
+    # Every failing tail was identical; only the full output differed.
+    fingerprints = [
+        t.gate_output_fingerprint
+        for t in result.state.dev_iteration_telemetry
+        if t.gate_output_fingerprint
+    ]
+    assert len(set(fingerprints)) == len(fingerprints)
+    # The brake stayed open, the cycle was bought, and the story finished.
+    assert result.state.validate_opened_review_cycles == 1
+    assert result.phase == Phase.DONE

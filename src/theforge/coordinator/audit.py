@@ -477,6 +477,10 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "gate_result": item.gate_result,
             "failed_tests": item.failed_tests,
             "gate_output_format_recognized": item.gate_output_format_recognized,
+            # The value the stall brake compares across iterations. A terminal
+            # "gate output identical" decision is only checkable if the operator
+            # can see the fingerprints it was made from (#1981).
+            "gate_output_fingerprint": item.gate_output_fingerprint,
             "cost_usd": item.cost_usd,
             "duration_s": round(item.duration_s, 2),
             "meaningful_progress": item.meaningful_progress,

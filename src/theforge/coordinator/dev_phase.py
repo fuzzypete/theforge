@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import platform
 import re
 import subprocess
@@ -431,21 +430,25 @@ def _retry_review_findings_for_dev_prompt(state: CoordinatorState) -> str | None
     )
 
 
-def _gate_output_fingerprint(gate_output_tail: str, gate_result: str | None) -> str | None:
-    """Return a stable fingerprint of *failing* gate output, or None if there is none.
+def _gate_output_fingerprint(
+    gate_output_digest: str | None, gate_result: str | None
+) -> str | None:
+    """Return the stall-detection fingerprint for a *failing* gate run.
 
-    Only failing output is fingerprinted: a passing gate prints the same thing
+    ``gate_output_digest`` is ``run_gate_full``'s SHA-256 of the full output.
+    Only failing runs are fingerprinted: a passing gate prints the same thing
     every time, so hashing it would make two consecutive PASSes look like a
     stalled failure.
 
-    Exact content hash, deliberately: output carrying a duration or any other
-    varying token simply will not match, and a non-match keeps the retry going.
-    Failing open is the safe direction here — a false non-match costs one more
-    dev iteration, a false match kills a story that was still converging.
+    Returns None whenever no digest was produced (gate skipped, or the runner
+    stubbed), which fails open — the brake needs two adjacent equal fingerprints,
+    so an absent one simply lets the retry proceed. That is the safe direction: a
+    false non-match costs one more dev iteration, a false match kills a story
+    that was still converging.
     """
-    if not gate_output_tail or gate_result in (None, "PASS"):
+    if not gate_output_digest or gate_result in (None, "PASS"):
         return None
-    return hashlib.sha256(gate_output_tail.encode("utf-8", errors="replace")).hexdigest()
+    return gate_output_digest
 
 
 def record_dev_iteration_telemetry(
@@ -455,6 +458,7 @@ def record_dev_iteration_telemetry(
     max_iterations: int,
     gate_result: str | None,
     gate_output_tail: str = "",
+    gate_output_digest: str | None = None,
     is_timeout: bool = False,
     runner_failure_summary: str | None = None,
     failed_test_pattern: str | None = None,
@@ -504,7 +508,7 @@ def record_dev_iteration_telemetry(
             gate_result=gate_result,
             failed_tests=failed_tests,
             gate_output_format_recognized=format_recognized,
-            gate_output_fingerprint=_gate_output_fingerprint(gate_output_tail, gate_result),
+            gate_output_fingerprint=_gate_output_fingerprint(gate_output_digest, gate_result),
             existing_test_failures=False,
             is_timeout=is_timeout,
             files_changed=files_changed,

@@ -133,33 +133,6 @@ def _ensure_runners() -> None:
         LogLevel = _r.LogLevel
 
 
-def _record_validate_block(state: CoordinatorState) -> None:
-    """Record the coordinator-raised blocking finding that just bought a review cycle.
-
-    VALIDATE findings are deliberately NOT written into ``review_results`` /
-    ``review_cycle_metadata`` / ``review_iteration_telemetry``. Those three lists
-    are the *reviewer* record: an entry in them means a reviewer pool ran and
-    produced a verdict, and consumers rely on that — per-model findings/cost
-    attribution feeding ``model_profiles.yaml``, the adaptive review-cycle
-    learner, and the persistent-P1 lookback at ``review_results[-2]``. A
-    coordinator-raised gate or convention block is a different kind of event and
-    gets its own record here (#1981).
-    """
-    kind = "convention" if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS else "gate"
-    state.validate_blocks.append(
-        {
-            "kind": kind,
-            "review_cycle": state.review_cycle,
-            "dev_iterations_spent": state.budget.cycle_count,
-            "gate_decision": state.gate_decisions[-1] if state.gate_decisions else None,
-            "detail": state.validate_block_detail or "",
-            "convention_violations": (
-                list(state.convention_violations) if kind == "convention" else []
-            ),
-        }
-    )
-
-
 # ── Log-tee / SIGTERM context manager ────────────────────────────────
 
 
@@ -207,7 +180,11 @@ from .review_phase import (  # noqa: E402
     _run_review_phase,
 )
 from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402,I001
-from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
+from .validate_phase import (  # noqa: E402
+    _run_validate_phase,
+    _ValidateOutcome,
+    record_validate_block,
+)
 
 
 def _run_end_outcome(result: CoordinatorResult) -> str:
@@ -574,7 +551,9 @@ def _coordinator_loop(
                     if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
                     else "Gate failures"
                 )
-                _record_validate_block(state)
+                record_validate_block(
+                    state, outcome="opened_review_cycle", reason="review_cycle_bought"
+                )
                 state.review_cycle += 1
                 state.validate_opened_review_cycles += 1
                 _review_cap = state.adaptive_review_max or config.retry.max_review_cycles

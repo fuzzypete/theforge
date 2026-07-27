@@ -186,6 +186,11 @@ def _gate_trace_path(iter_num: int | None) -> str | None:
     return f".forge/traces/{iter_num}-gate.txt"
 
 
+def _gate_output_digest(digest: list[str]) -> str | None:
+    """Return the full-output digest ``run_gate_full`` produced, if it produced one."""
+    return digest[0] if digest else None
+
+
 def _gate_attempts(state: CoordinatorState) -> int:
     """Return the number of gate executions actually performed for this story.
 
@@ -287,6 +292,44 @@ def _gate_signature_stalled(state: CoordinatorState) -> bool:
     return curr is not None and curr == prev
 
 
+def record_validate_block(state: CoordinatorState, *, outcome: str, reason: str) -> None:
+    """Record a coordinator-raised blocking finding in VALIDATE's own channel.
+
+    These findings are deliberately NOT written into ``review_results`` /
+    ``review_cycle_metadata`` / ``review_iteration_telemetry``. Those three lists
+    are the *reviewer* record: an entry in them means a reviewer pool ran, and
+    per-model findings/cost attribution feeding ``model_profiles.yaml``, the
+    adaptive review-cycle learner, and the persistent-P1 lookback at
+    ``review_results[-2]`` all depend on that (#1981).
+
+    ``outcome`` is ``opened_review_cycle`` or ``terminal``; ``reason`` is the
+    routing key from ``_blocking_finding_route``, so the audit carries the
+    coordinator's decision structurally rather than only as prose in an error
+    string.
+    """
+    kind = "convention" if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS else "gate"
+    fingerprint = (
+        state.dev_iteration_telemetry[-1].gate_output_fingerprint
+        if state.dev_iteration_telemetry
+        else None
+    )
+    state.validate_blocks.append(
+        {
+            "kind": kind,
+            "outcome": outcome,
+            "reason": reason,
+            "review_cycle": state.review_cycle,
+            "dev_iterations_spent": state.budget.cycle_count,
+            "gate_decision": state.gate_decisions[-1] if state.gate_decisions else None,
+            "gate_output_fingerprint": fingerprint,
+            "detail": state.validate_block_detail or "",
+            "convention_violations": (
+                list(state.convention_violations) if kind == "convention" else []
+            ),
+        }
+    )
+
+
 def _apply_block_route(state: CoordinatorState, route: _BlockRoute) -> str:
     """Record what a terminal routing decision means for budget reporting.
 
@@ -297,6 +340,8 @@ def _apply_block_route(state: CoordinatorState, route: _BlockRoute) -> str:
     """
     if route.reason == "budgets_exhausted":
         state.review_budget_exhausted = True
+    if route.outcome is _ValidateOutcome.ESCALATE:
+        record_validate_block(state, outcome="terminal", reason=route.reason)
     return _BLOCK_REASONS[route.reason]
 
 
@@ -566,6 +611,10 @@ def _run_validate_phase(
     gate_output_tail: str = ""
     gate_exit_code: int | None = None
     gate_result_for_telemetry: str | None = None
+    # SHA-256 of the full gate output, supplied by run_gate_full. Empty when the
+    # gate was skipped or run_gate_full was stubbed; the stall brake then has no
+    # signature to compare and fails open.
+    _gate_digest: list[str] = []
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
         _log("  Gate: none (story override)")
@@ -579,7 +628,13 @@ def _run_validate_phase(
         else:
             _log_phase(state.phase, "running gate...")
         gate_decision, gate_err, gate_output_tail, resolved_gate_cmd, gate_exit_code = (
-            run_gate_full(config, workspace_path, task=task, iter_num=state.dev_trace_count)
+            run_gate_full(
+                config,
+                workspace_path,
+                task=task,
+                iter_num=state.dev_trace_count,
+                output_digest=_gate_digest,
+            )
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
@@ -641,6 +696,7 @@ def _run_validate_phase(
             max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
             gate_result=gate_result_for_telemetry,
             gate_output_tail=gate_output_tail or gate_err,
+            gate_output_digest=_gate_output_digest(_gate_digest),
             is_timeout=is_timeout,
             failed_test_pattern=config.validation.failed_test_pattern,
         )
@@ -921,6 +977,7 @@ def _run_validate_phase(
             max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
             gate_result=gate_decision,
             gate_output_tail=gate_output_tail,
+            gate_output_digest=_gate_output_digest(_gate_digest),
             failed_test_pattern=config.validation.failed_test_pattern,
         )
         if state.dev_iteration_telemetry:
