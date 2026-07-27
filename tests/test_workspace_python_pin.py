@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from coord_test_helpers import patch_gate_shell
 
 from theforge.config import load_config
 from theforge.coordinator.workspace import _invalidate_stale_venv, _run_setup_split
@@ -289,7 +290,7 @@ class TestGateRunsUnderThePin:
             seen["expected_python"] = expected_python
             return (True, "ok", 0, False)
 
-        with patch("theforge.coordinator.gate._cu._run_shell_detailed", side_effect=fake_run):
+        with patch_gate_shell(side_effect=fake_run):
             decision, error, _tail, _cmd, _exit = run_gate_full(config, tmp_path)
 
         assert error is None
@@ -308,7 +309,7 @@ class TestGateRunsUnderThePin:
             seen["expected_python"] = expected_python
             return (True, "ok", 0, False)
 
-        with patch("theforge.coordinator.gate._cu._run_shell_detailed", side_effect=fake_run):
+        with patch_gate_shell(side_effect=fake_run):
             run_gate_full(config, tmp_path)
 
         assert seen["expected_python"] is None
