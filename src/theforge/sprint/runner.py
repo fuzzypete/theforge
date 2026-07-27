@@ -2128,6 +2128,26 @@ def run_sprint(
     # operator-facing surface (forge status, banner, summary, notifications).
     # No local counters are kept; counts are projected from this structure.
     _story_state = SprintStoryState()
+    # Pre-restart spend that the canonical story state will not be holding by
+    # the time totals are projected. It is re-attached at wrap-up (see
+    # ``_bump_story_cost``); without it the summary total — which sums the
+    # canonical state — silently drops spend that SprintResult still counts via
+    # ``prior_cost``, so two operator-facing totals disagree about one run.
+    #
+    # Two disjoint ways the canonical state loses it, both only for stories that
+    # re-enter this generation:
+    #   unseeded — a non-succeeded (or unmappable) prior outcome is never
+    #     seeded, because monotonicity would reject the later transition to
+    #     RUNNING. Its cost is therefore always missing.
+    #   seeded-then-overwritten — a succeeded prior outcome IS seeded with its
+    #     cost, but if the story runs again, transition() replaces cost_usd
+    #     with the coordinator's current-generation total. The seed survives
+    #     only for a story that does not re-run (e.g. resume_skip_merged), so
+    #     this one is re-attached conditionally, keyed on whether the story
+    #     actually ran.
+    unseeded_prior_story_cost: dict[str, float] = {}
+    seeded_prior_story_cost: dict[str, float] = {}
+    ran_this_generation: set[str] = set()
     # Pre-populate from prior-run accumulated state so cross-process resume
     # invocations see the full logical sprint in counts and projections.
     # Stories present in the current run are seeded only when their prior
@@ -2143,12 +2163,25 @@ def run_sprint(
 
         _current_run_slugs = set(slug_to_context.keys())
         _succeeded_outcomes = {"DONE", "ALREADY_DONE"}
+
+        def _prior_cost_of(prior: dict) -> float:
+            try:
+                return float(prior.get("cost_usd", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _defer_prior_cost(slug: str, prior: dict) -> None:
+            _cost = _prior_cost_of(prior)
+            if _cost > 0.0:
+                unseeded_prior_story_cost[slug] = unseeded_prior_story_cost.get(slug, 0.0) + _cost
+
         for _prior in _preload(_sprint_id, config.project_root):
             _prior_slug = _prior.get("slug")
             if not _prior_slug:
                 continue
             _prior_outcome = (_prior.get("outcome") or "").upper()
             if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
+                _defer_prior_cost(_prior_slug, _prior)
                 continue
             _outcome_map = {
                 "DONE": StoryOutcome.DONE,
@@ -2163,7 +2196,23 @@ def run_sprint(
             }
             _mapped_outcome = _outcome_map.get(_prior_outcome)
             if _mapped_outcome is None:
+                # Same reasoning as the non-succeeded skip above: an outcome
+                # this runner cannot map is still spend that occurred. Only
+                # current-run slugs are deferred — a story absent from this
+                # run has no canonical row for the spend to land on, so
+                # deferring it would drop the value silently instead.
+                if _prior_slug in _current_run_slugs:
+                    _defer_prior_cost(_prior_slug, _prior)
                 continue
+            # Seeded cost is only durable while the story stays put; if it
+            # re-runs, transition() overwrites it with the current generation's
+            # total. Remember it so wrap-up can restore it in that case.
+            if _prior_slug in _current_run_slugs:
+                _seeded_cost = _prior_cost_of(_prior)
+                if _seeded_cost > 0.0:
+                    seeded_prior_story_cost[_prior_slug] = (
+                        seeded_prior_story_cost.get(_prior_slug, 0.0) + _seeded_cost
+                    )
             # Strip per-run terminal artifacts so an accumulated story cannot
             # carry forward a stale review summary or final_outcome from an
             # earlier generation. The current run must write these fresh.
@@ -2302,6 +2351,11 @@ def run_sprint(
         task_ctx = slug_to_context.get(slug)
         if task_ctx is None:
             return
+        # Every terminal path for a dispatched story lands here (completion,
+        # timeout, exception), so this is the reliable record of which stories
+        # actually consumed a coordinator run this generation — and therefore
+        # which ones had a seeded prior cost overwritten by transition().
+        ran_this_generation.add(slug)
         task, _source, canonical_ref = task_ctx
         display_key = (
             f"Issue #{canonical_ref.split(':')[1]}"
@@ -3887,6 +3941,28 @@ def run_sprint(
         _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
     for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
         _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
+
+    # Re-attach pre-restart spend the canonical state is no longer holding, so
+    # the summary total (which sums that state) matches SprintResult's
+    # accumulated + prior_cost. Runs here, after the work loop, for the same
+    # reason the intake attribution above does: transition() overwrites
+    # cost_usd with the coordinator's current-generation total while a story
+    # is running, so any earlier attribution would be discarded.
+    _carried_by_slug: dict[str, float] = dict(unseeded_prior_story_cost)
+    for _seed_slug, _seed_cost in seeded_prior_story_cost.items():
+        # A seeded cost only needs restoring when the story re-ran; otherwise
+        # the seed is still intact and adding it would double-count.
+        if _seed_slug in ran_this_generation:
+            _carried_by_slug[_seed_slug] = _carried_by_slug.get(_seed_slug, 0.0) + _seed_cost
+    for _carried_slug, _carried_cost in _carried_by_slug.items():
+        _bump_story_cost(_carried_slug, _carried_cost)
+    if _carried_by_slug:
+        _carried_total = sum(_carried_by_slug.values())
+        _carried_detail = ", ".join(f"{s}=${c:.4f}" for s, c in sorted(_carried_by_slug.items()))
+        _log(
+            f"Re-attached pre-restart spend to {len(_carried_by_slug)} story/stories: "
+            f"${_carried_total:.4f} ({_carried_detail})"
+        )
 
     final_cost = accumulated_cost + prior_cost
     # Banner, summary, notifications, and SprintResult all project from the
