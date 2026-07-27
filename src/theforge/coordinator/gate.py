@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import shlex
+import shutil
 from pathlib import Path
 
-from theforge.config import ForgeConfig
+from theforge.config import PYTHON_VERSION_PLACEHOLDER, ForgeConfig
 from theforge.coordinator.state import GateDebugTelemetry
 from theforge.task import TaskStory
 from theforge.traces import write_trace
@@ -67,6 +68,50 @@ def _is_gate_skip(gate_override: str | None) -> bool:
     return isinstance(gate_override, str) and gate_override.lower() == "none"
 
 
+def _digest(output: str) -> str:
+    """SHA-256 of gate output, used to tell one gate run from the next."""
+    return hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _missing_matrix_interpreters(versions: tuple[str, ...]) -> list[str]:
+    """Return the ``pythonX.Y`` executables the declared matrix needs but PATH lacks."""
+    return [f"python{v}" for v in versions if shutil.which(f"python{v}") is None]
+
+
+def _run_gate_leg(
+    config: ForgeConfig,
+    workspace_path: Path,
+    gate_cmd: str,
+    *,
+    trace_name: str | None,
+    gate_timeout: int,
+) -> tuple[str | None, str | None, str, int | None]:
+    """Run one gate invocation. Returns (decision, error, full_output, exit_code).
+
+    ``decision`` is "PASS"/"FAIL" from the exit code, or None when ``error`` is
+    set — a timeout or infrastructure failure is not a verdict on the commit.
+    ``expected_python`` stays the project pin regardless of which matrix leg this
+    is: it only governs whether the worktree's ``.venv`` goes on PATH, and a leg
+    selects its own environment through the gate command itself.
+    """
+    _cu._log_verbose(f"Running gate: {gate_cmd}")
+    ok, output, exit_code, timed_out = _cu._run_shell_detailed(
+        gate_cmd,
+        workspace_path,
+        timeout=gate_timeout,
+        expected_python=config.workspace.python_interpreter,
+    )
+
+    if trace_name is not None:
+        write_trace(workspace_path / ".forge/traces" / trace_name, output)
+
+    if timed_out or output.startswith("TIMEOUT"):
+        return None, f"Gate timed out after {gate_timeout}s", output, exit_code
+    if output.startswith("ERROR:"):
+        return None, f"Gate infrastructure error: {output[:300]}", output, exit_code
+    return ("PASS" if ok else "FAIL"), None, output, exit_code
+
+
 def run_gate_full(
     config: ForgeConfig,
     workspace_path: Path,
@@ -80,12 +125,31 @@ def run_gate_full(
     Returns (decision, error, output_tail, resolved_gate_cmd, exit_code).
     decision is "PASS" or "FAIL"; error is set only on infrastructure failure.
 
+    When ``validation.python_versions`` is set the gate is a matrix: the command
+    runs once per declared interpreter with ``{python_version}`` substituted, and
+    PASS requires every leg to pass. This exists so the gate that clears a story
+    covers the same environment surface as the project's required merge checks —
+    a single-interpreter gate greenlit changes the CI matrix then rejected, so
+    "complete" was reported for commits that could not land (#1945). A missing
+    interpreter is an infrastructure error, not a FAIL: the host, not the commit,
+    is what is wrong, and routing it back to dev would ask the agent to fix
+    something outside the worktree.
+
+    Legs run in declared order and stop at the first non-PASS. The commit has to
+    change either way, and continuing would spend another full gate_timeout per
+    remaining leg for evidence the dev does not need yet.
+
+    A story-level ``gate_override`` runs single-leg and unsubstituted. It is an
+    explicit operator escape hatch that already bypasses the configured command
+    entirely; the matrix is a property of that command, not of the override.
+
     ``output_digest``, when given, receives a single SHA-256 of the **full**
-    output. Callers comparing one gate run against the next must fingerprint the
-    whole output, not ``output_tail``: the tail is the last
-    ``gate_output_tail_chars`` characters, so a gate whose output ends in a
-    constant footer (a coverage table, a fixed summary banner) hashes identically
-    on every run while the failure detail changes above the window (#1981).
+    output (all legs run, concatenated). Callers comparing one gate run against
+    the next must fingerprint the whole output, not ``output_tail``: the tail is
+    the last ``gate_output_tail_chars`` characters, so a gate whose output ends
+    in a constant footer (a coverage table, a fixed summary banner) hashes
+    identically on every run while the failure detail changes above the window
+    (#1981).
 
     It is an out-parameter rather than a sixth return value because the 5-tuple is
     unpacked at every call site including ~30 mocked tests; widening it — or
@@ -98,6 +162,7 @@ def run_gate_full(
     )
     if has_override:
         gate_cmd = task.gate_override  # type: ignore[union-attr]
+        versions: tuple[str, ...] = ()
     else:
         gate_cmd = config.validation.gate_command
         default_target = config.validation.default_test_target or "."
@@ -105,43 +170,71 @@ def run_gate_full(
         slug = task.slug if task is not None else "baseline"
         gate_cmd = gate_cmd.replace("{test_target}", test_target)
         gate_cmd = gate_cmd.replace("{slug}", slug)
+        versions = config.validation.python_versions
 
-    _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
-    ok, output, exit_code, timed_out = _cu._run_shell_detailed(
-        gate_cmd,
-        workspace_path,
-        timeout=gate_timeout,
-        expected_python=config.workspace.python_interpreter,
-    )
-
-    if iter_num is not None:
-        write_trace(
-            workspace_path / ".forge/traces" / f"{iter_num}-gate.txt",
-            output,
-        )
-
-    if output_digest is not None:
-        output_digest.append(hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest())
-
     tail_chars = config.validation.gate_output_tail_chars
-    output_tail = output[-tail_chars:]
 
-    if timed_out or output.startswith("TIMEOUT"):
-        return (
-            None,
-            f"Gate timed out after {gate_timeout}s",
-            output_tail,
+    if not versions:
+        decision, error, output, exit_code = _run_gate_leg(
+            config,
+            workspace_path,
             gate_cmd,
-            exit_code,
+            trace_name=(f"{iter_num}-gate.txt" if iter_num is not None else None),
+            gate_timeout=gate_timeout,
         )
-    if output.startswith("ERROR:"):
-        return None, f"Gate infrastructure error: {output[:300]}", output_tail, gate_cmd, exit_code
+        if output_digest is not None:
+            output_digest.append(_digest(output))
+        output_tail = output[-tail_chars:]
+        if decision == "FAIL":
+            _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
+        return decision, error, output_tail, gate_cmd, exit_code
 
-    decision = "PASS" if ok else "FAIL"
-    if decision == "FAIL":
-        _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
-    return decision, None, output_tail, gate_cmd, exit_code
+    missing = _missing_matrix_interpreters(versions)
+    if missing:
+        declared = ", ".join(versions)
+        error = (
+            f"Gate matrix cannot run: {', '.join(missing)} not found on PATH. "
+            f"validation.python_versions declares {declared}; install the missing "
+            "interpreter(s) or change the declared matrix."
+        )
+        _cu._log(error)
+        if output_digest is not None:
+            output_digest.append(_digest(error))
+        return None, error, error[-tail_chars:], gate_cmd, None
+
+    _cu._log(f"Gate matrix: {len(versions)} interpreter(s) — {', '.join(versions)}")
+    outputs: list[str] = []
+    leg_cmd = gate_cmd
+    exit_code: int | None = None
+    for version in versions:
+        leg_cmd = gate_cmd.replace(PYTHON_VERSION_PLACEHOLDER, version)
+        _cu._log(f"  Gate leg python{version}: {leg_cmd}")
+        decision, error, output, exit_code = _run_gate_leg(
+            config,
+            workspace_path,
+            leg_cmd,
+            trace_name=(f"{iter_num}-gate-py{version}.txt" if iter_num is not None else None),
+            gate_timeout=gate_timeout,
+        )
+        outputs.append(f"=== gate matrix leg: python{version} ===\n{output}")
+        if decision == "PASS":
+            continue
+
+        # Failing leg's output is last, so the tail window shows its detail.
+        combined = "\n".join(outputs)
+        if output_digest is not None:
+            output_digest.append(_digest(combined))
+        output_tail = combined[-tail_chars:]
+        if error is not None:
+            return None, f"[python{version}] {error}", output_tail, leg_cmd, exit_code
+        _cu._log(f"Gate command failed on python{version} (exit non-zero): {output_tail}")
+        return "FAIL", None, output_tail, leg_cmd, exit_code
+
+    combined = "\n".join(outputs)
+    if output_digest is not None:
+        output_digest.append(_digest(combined))
+    return "PASS", None, combined[-tail_chars:], leg_cmd, exit_code
 
 
 def format_gate_failure_summary(

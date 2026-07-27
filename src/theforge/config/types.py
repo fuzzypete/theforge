@@ -331,6 +331,12 @@ class ApiFallbackConfig:
     max_iterations: int | None = None
 
 
+# Substituted with each ``validation.python_versions`` entry when the gate runs
+# its interpreter matrix. Lives here rather than in the loader so the loader and
+# the coordinator agree on one spelling without either importing the other.
+PYTHON_VERSION_PLACEHOLDER = "{python_version}"
+
+
 @dataclass(frozen=True)
 class ValidationConfig:
     """How to validate agent output.
@@ -379,6 +385,17 @@ class ValidationConfig:
     # regardless of parallelism.
     gate_cpu_cores: int | None = None  # operator hint for gate CPU demand; None => host_cores
     gate_timeout_scale: str = "adaptive"  # "adaptive" | "fixed"
+    # ── Gate interpreter matrix (issue #1945) ─────────────────────────────────
+    # Interpreter versions the story gate must exercise, e.g. ("3.11", "3.12",
+    # "3.13"). Empty means the legacy single-run gate: one invocation under
+    # whatever interpreter the gate command resolves. When set, the coordinator
+    # runs gate_command once per version, substituting {python_version}, and the
+    # gate passes only if every leg passes — so a change that the project's
+    # required merge checks would reject on one version cannot be reported as
+    # passing the story gate. Config load requires the {python_version}
+    # placeholder whenever this is non-empty; without it every leg would run an
+    # identical command and the matrix would be a fiction.
+    python_versions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
