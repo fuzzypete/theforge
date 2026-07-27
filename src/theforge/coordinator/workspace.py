@@ -542,6 +542,24 @@ def _remove_worktree(path: Path, branch: str, project_root: Path, info_line: str
         _cu._log(f"  Deleted branch {branch}")
 
 
+def _count_unpublished_commits(branch_name: str, project_root: Path) -> int | None:
+    """Count commits on ``branch_name`` that no origin remote-tracking ref contains.
+
+    A non-zero count means the branch holds work that exists only in this clone —
+    deleting it would destroy the only copy. Returns ``None`` when the count cannot
+    be determined; callers must treat that as "do not remove".
+    """
+    ok, out = _cu._run_shell(
+        f"git rev-list --count {branch_name} --not --remotes=origin", project_root
+    )
+    if not ok:
+        return None
+    try:
+        return int(out.strip())
+    except ValueError:
+        return None
+
+
 def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
     """Return the registered worktree path for branch, or None if not found."""
     ok, output = _cu._run_shell("git worktree list --porcelain", project_root)
@@ -601,6 +619,21 @@ def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
         ok_status, status_out = _cu._run_shell("git status --porcelain", candidate)
         if not ok_status or status_out.strip():
             continue
+        # A clean tree is not evidence that the work is safe: an agent that commits
+        # as it goes leaves a clean tree with local-only history. Absence of commits
+        # missing from origin is what establishes the work exists elsewhere, and it
+        # is also what separates a never-pushed branch from one whose remote ref was
+        # deleted after merging — both of which lack refs/remotes/origin/<branch>.
+        unpublished = _count_unpublished_commits(branch_name, project_root)
+        if unpublished is None or unpublished > 0:
+            reason = (
+                "cannot determine whether its commits exist on origin"
+                if unpublished is None
+                else f"{unpublished} commit{'s' if unpublished != 1 else ''} not present on origin"
+            )
+            _cu._log(f"⚠ WORKSPACE  preserving worktree {branch_name} — {reason}")
+            continue
+
         ok_gone, gone_out = _cu._run_shell(
             f"git rev-parse --verify --quiet refs/remotes/origin/{branch_name}", project_root
         )
@@ -616,7 +649,12 @@ def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
             merged = branch_name in merged_branches
         if not (merged or branch_gone):
             continue
-        _remove_worktree(candidate, branch_name, project_root, "sweep: merged or branch gone")
+        info = (
+            f"sweep: merged into {remote_base}; no commits missing from origin"
+            if merged
+            else "sweep: remote branch gone; no commits missing from origin"
+        )
+        _remove_worktree(candidate, branch_name, project_root, info)
 
 
 _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/last_setup_command")

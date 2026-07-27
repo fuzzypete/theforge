@@ -107,6 +107,9 @@ def test_sweep_orphan_worktrees_removes_forge_only_orphans_and_merged_but_preser
     _git(merged, "commit", "-m", "merged work")
     _git(repo, "checkout", "main")
     _git(repo, "merge", "--ff-only", "forge/merged")
+    # Refresh origin/main so the merged work is actually published, matching a real
+    # workflow where the PR landed on the remote before the sweep runs.
+    _git(repo, "fetch", "origin", "main:refs/remotes/origin/main")
 
     escalated = worktrees_root / "escalated"
     _git(repo, "worktree", "add", "-b", "forge/escalated", str(escalated), "main")
@@ -208,3 +211,149 @@ def test_sweep_orphan_worktrees_removes_merged_branch_still_checked_out_elsewher
             ["git", "branch", "--list"], cwd=repo, check=True, capture_output=True, text=True
         ).stdout.splitlines()
     )
+
+
+def _init_sweep_repo(tmp_path: Path) -> tuple[Path, object]:
+    """Create a repo with an origin remote and a forge worktrees root."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "README.md").write_text("root\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "init")
+    _git(repo, "remote", "add", "origin", str(repo))
+    _git(repo, "fetch", "origin", "main:refs/remotes/origin/main")
+
+    base_config = _make_config(repo)
+    config = dataclasses.replace(
+        base_config,
+        workspace=dataclasses.replace(
+            base_config.workspace,
+            path_pattern=".forge/worktrees/{slug}",
+            branch_pattern="forge/{slug}",
+            base_branch="main",
+        ),
+    )
+    (repo / ".forge" / "worktrees").mkdir(parents=True, exist_ok=True)
+    return repo, config
+
+
+def _rev_parse(repo: Path, rev: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", rev], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_sweep_preserves_never_pushed_branch_with_committed_work(tmp_path: Path) -> None:
+    """A story branch that has committed work but has never been pushed must survive
+    the sweep: absence of refs/remotes/origin/<branch> is not evidence of integration."""
+    repo, config = _init_sweep_repo(tmp_path)
+    worktrees_root = repo / ".forge" / "worktrees"
+
+    live = worktrees_root / "live"
+    _git(repo, "worktree", "add", "-b", "forge/live", str(live), "main")
+    (live / "work.py").write_text("value = 1\n", encoding="utf-8")
+    _git(live, "add", "work.py")
+    _git(live, "commit", "-m", "wip 1")
+    (live / "work.py").write_text("value = 2\n", encoding="utf-8")
+    _git(live, "add", "work.py")
+    _git(live, "commit", "-m", "wip 2")
+    head = _rev_parse(repo, "forge/live")
+
+    # The branch has never been pushed and the tree is clean — exactly the state the
+    # sweep previously treated as "branch gone".
+    assert not (repo / ".git" / "refs" / "remotes" / "origin" / "forge" / "live").exists()
+
+    sweep_orphan_worktrees(repo, config)
+
+    assert live.exists()
+    assert (live / "work.py").read_text(encoding="utf-8") == "value = 2\n"
+    assert _rev_parse(repo, "forge/live") == head
+    assert (
+        len(
+            subprocess.run(
+                ["git", "log", "--oneline", "main..forge/live"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            .stdout.strip()
+            .splitlines()
+        )
+        == 2
+    )
+
+
+def test_sweep_removes_branch_whose_remote_ref_was_deleted_after_merging(
+    tmp_path: Path,
+) -> None:
+    """A branch that was published, merged, and then had its remote ref deleted has
+    no local-only commits, so the sweep reclaims it."""
+    repo, config = _init_sweep_repo(tmp_path)
+    worktrees_root = repo / ".forge" / "worktrees"
+
+    landed = worktrees_root / "landed"
+    _git(repo, "worktree", "add", "-b", "forge/landed", str(landed), "main")
+    (landed / "landed.txt").write_text("done\n", encoding="utf-8")
+    _git(landed, "add", "landed.txt")
+    _git(landed, "commit", "-m", "landed work")
+
+    # Publish, merge on the remote side, then delete the remote-tracking ref the way
+    # a merged-and-deleted PR branch would.
+    _git(repo, "fetch", "origin", "forge/landed:refs/remotes/origin/forge/landed")
+    _git(repo, "merge", "--ff-only", "forge/landed")
+    _git(repo, "fetch", "origin", "main:refs/remotes/origin/main")
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/forge/landed")
+
+    sweep_orphan_worktrees(repo, config)
+
+    assert not landed.exists()
+    assert not any(
+        "forge/landed" in line
+        for line in subprocess.run(
+            ["git", "branch", "--list"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+    )
+
+
+def test_sweep_removes_never_pushed_branch_with_no_commits_of_its_own(
+    tmp_path: Path,
+) -> None:
+    """An unpublished branch that added nothing holds no work to lose, so the guard
+    does not block reclamation."""
+    repo, config = _init_sweep_repo(tmp_path)
+    worktrees_root = repo / ".forge" / "worktrees"
+
+    empty = worktrees_root / "empty"
+    _git(repo, "worktree", "add", "-b", "forge/empty", str(empty), "main")
+
+    sweep_orphan_worktrees(repo, config)
+
+    assert not empty.exists()
+    assert not any(
+        "forge/empty" in line
+        for line in subprocess.run(
+            ["git", "branch", "--list"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+    )
+
+
+def test_sweep_preserves_worktree_when_unpublished_count_is_undeterminable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If git cannot answer whether the commits exist on origin, the sweep preserves."""
+    from theforge.coordinator import workspace as ws
+
+    repo, config = _init_sweep_repo(tmp_path)
+    worktrees_root = repo / ".forge" / "worktrees"
+
+    unknown = worktrees_root / "unknown"
+    _git(repo, "worktree", "add", "-b", "forge/unknown", str(unknown), "main")
+
+    monkeypatch.setattr(ws, "_count_unpublished_commits", lambda *_a, **_k: None)
+    sweep_orphan_worktrees(repo, config)
+
+    assert unknown.exists()
