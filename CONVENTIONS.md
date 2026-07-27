@@ -226,6 +226,30 @@ and re-run via the forge process once the next step is chosen.
 
 Source: `feedback_never_fix_gate.md`
 
+### Review the commit you pushed, not the ref you assume
+
+Pushing `HEAD:branch` from a detached worktree updates the remote ref and the
+remote-tracking ref, but **not** the local branch ref. `git show branch:file`,
+`git worktree add <path> branch`, and anything else resolving the local name then
+silently serve an older commit. Reviewing a pushed change off the stale local ref
+reads code that is not under review, and the findings that come back are about
+nothing.
+
+This has already produced a near-miss: a reported defect on an open PR was
+derived from a superseded commit, and an independent review agent hit the same
+trap on the same branch. Before reviewing or verifying a pushed change, confirm
+what you are actually reading:
+
+```bash
+git rev-parse --short HEAD origin/<branch>
+```
+
+Prefer explicit SHAs or `origin/<branch>` for review worktrees, and after a
+detached-worktree push, fast-forward the local ref
+(`git update-ref refs/heads/<branch> refs/remotes/origin/<branch>`) so the two
+cannot drift. A line-number mismatch against another reviewer's citations is a
+symptom of this, not a disagreement.
+
 ### Manual PR intervention changes merge state
 
 Force-pushes clear GitHub auto-merge, and `gh pr create` does not arm

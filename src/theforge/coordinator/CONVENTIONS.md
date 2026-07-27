@@ -21,6 +21,39 @@ escalates, or completes.
 - Workspace and gate handling must be conservative: prefer failing closed over
   silently continuing with an invalid repository, branch, or validation result.
 
+## The reviewer record is reviewer-only
+
+`state.review_results`, `state.review_cycle_metadata`, and
+`state.review_iteration_telemetry` carry an implicit contract: **an entry in them
+means a reviewer pool ran and produced a verdict.** They are parallel lists, read
+by index and by tail, and several consumers depend on that contract without
+checking it:
+
+- `model_profiles_bridge._extract_reviewers` pairs metadata with telemetry *by
+  index* to attribute findings and cost per model, and persists the result to
+  `model_profiles.yaml`, where adaptive routing reads it.
+- `audit.review_cycles_total` feeds `adaptive_iterations._extract_review_used`,
+  which percentiles it to set a future `max_review_cycles`.
+- The persistent-P1 lookback reads `review_results[-2]` expecting the previous
+  *reviewer* verdict; dev-model escalation hangs off that comparison.
+- `audit_render.build_reviews` zips metadata against results to render cycles.
+
+A coordinator-raised finding — a gate failure or a hard convention violation
+observed in VALIDATE — is **not** a reviewer verdict, however similar it looks.
+Record it in its own channel (`state.validate_blocks`, via
+`validate_phase.record_validate_block`), never in the three lists above.
+
+This is not hypothetical: #1981 first shipped the return path by writing a
+synthetic REQUEST_CHANGES into the reviewer record, which invented a model named
+`coordinator` holding the real reviewer's cost, zeroed the reviewer that actually
+ran, taught the router that gate failures mean reviewers need more cycles, and
+disabled persistent-P1 detection for the following cycle. Mirroring the review
+loop-back's *control flow* was right; mirroring its *data structures* was the
+defect. Sharing the review-cycle **budget** is likewise fine — it is the same
+currency — but the budget counters are split for the same reason
+(`reviewer_cycles_run` for reviewer demand, `review_cycles_spent` for budget
+consumed), so a coordinator-opened cycle never reads as reviewer demand.
+
 ## Adaptive routing symmetry invariant
 
 Adaptive routing (`assignment.py`) learns from run history to move a story's dev
