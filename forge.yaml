@@ -67,6 +67,10 @@ budget_usd: 50.0
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"
   setup_command: "test -d .venv || ({forge_python} -m venv .venv && .venv/bin/pip install -e '.[all,dev]' -q)"
+  # Interpreter this project develops against; {forge_python} expands to it.
+  # Required whenever setup_command uses {forge_python} (#1934) — TheForge will
+  # not substitute the orchestrator's own interpreter for the project's gate.
+  python_interpreter: "python3.12"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
   on_approve: merge-pr
