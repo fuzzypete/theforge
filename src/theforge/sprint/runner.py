@@ -644,6 +644,56 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
         return 0.0
 
 
+def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
+    """Parse timestamps persisted in accumulated sprint story state."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _read_prior_sprint_accounting(
+    project_root: Path,
+    sprint_id: str | None,
+) -> tuple[float, datetime.datetime | None, dict[str, dict]]:
+    """Recover prior same-sprint cost/timing from progressive story state."""
+    if not sprint_id:
+        return 0.0, None, {}
+
+    from .audit import _load_accumulated_stories  # noqa: PLC0415
+
+    recovered_entries: dict[str, dict] = {}
+    recovered_cost = 0.0
+    earliest_started_at: datetime.datetime | None = None
+    for raw_entry in _load_accumulated_stories(sprint_id, project_root):
+        if not isinstance(raw_entry, dict):
+            continue
+        canonical_ref = raw_entry.get("canonical_ref")
+        if not isinstance(canonical_ref, str) or not canonical_ref:
+            continue
+        entry = dict(raw_entry)
+        recovered_entries[canonical_ref] = entry
+        try:
+            recovered_cost += float(entry.get("cost_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+        started_at = _parse_accumulated_story_timestamp(entry.get("started_at"))
+        if started_at is not None and (
+            earliest_started_at is None or started_at < earliest_started_at
+        ):
+            earliest_started_at = started_at
+
+    if recovered_entries:
+        return round(recovered_cost, 4), earliest_started_at, recovered_entries
+
+    if os.environ.get("FORGE_PREV_RUN_ID"):
+        return _read_prior_sprint_cost(project_root, sprint_id), None, {}
+
+    return 0.0, None, {}
+
+
 def _project_root_is_git_checkout(project_root: Path) -> bool:
     """Return True when the project root is inside a git checkout."""
 
@@ -2078,6 +2128,26 @@ def run_sprint(
     # operator-facing surface (forge status, banner, summary, notifications).
     # No local counters are kept; counts are projected from this structure.
     _story_state = SprintStoryState()
+    # Pre-restart spend that the canonical story state will not be holding by
+    # the time totals are projected. It is re-attached at wrap-up (see
+    # ``_bump_story_cost``); without it the summary total — which sums the
+    # canonical state — silently drops spend that SprintResult still counts via
+    # ``prior_cost``, so two operator-facing totals disagree about one run.
+    #
+    # Two disjoint ways the canonical state loses it, both only for stories that
+    # re-enter this generation:
+    #   unseeded — a non-succeeded (or unmappable) prior outcome is never
+    #     seeded, because monotonicity would reject the later transition to
+    #     RUNNING. Its cost is therefore always missing.
+    #   seeded-then-overwritten — a succeeded prior outcome IS seeded with its
+    #     cost, but if the story runs again, transition() replaces cost_usd
+    #     with the coordinator's current-generation total. The seed survives
+    #     only for a story that does not re-run (e.g. resume_skip_merged), so
+    #     this one is re-attached conditionally, keyed on whether the story
+    #     actually ran.
+    unseeded_prior_story_cost: dict[str, float] = {}
+    seeded_prior_story_cost: dict[str, float] = {}
+    ran_this_generation: set[str] = set()
     # Pre-populate from prior-run accumulated state so cross-process resume
     # invocations see the full logical sprint in counts and projections.
     # Stories present in the current run are seeded only when their prior
@@ -2093,12 +2163,25 @@ def run_sprint(
 
         _current_run_slugs = set(slug_to_context.keys())
         _succeeded_outcomes = {"DONE", "ALREADY_DONE"}
+
+        def _prior_cost_of(prior: dict) -> float:
+            try:
+                return float(prior.get("cost_usd", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _defer_prior_cost(slug: str, prior: dict) -> None:
+            _cost = _prior_cost_of(prior)
+            if _cost > 0.0:
+                unseeded_prior_story_cost[slug] = unseeded_prior_story_cost.get(slug, 0.0) + _cost
+
         for _prior in _preload(_sprint_id, config.project_root):
             _prior_slug = _prior.get("slug")
             if not _prior_slug:
                 continue
             _prior_outcome = (_prior.get("outcome") or "").upper()
             if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
+                _defer_prior_cost(_prior_slug, _prior)
                 continue
             _outcome_map = {
                 "DONE": StoryOutcome.DONE,
@@ -2113,7 +2196,23 @@ def run_sprint(
             }
             _mapped_outcome = _outcome_map.get(_prior_outcome)
             if _mapped_outcome is None:
+                # Same reasoning as the non-succeeded skip above: an outcome
+                # this runner cannot map is still spend that occurred. Only
+                # current-run slugs are deferred — a story absent from this
+                # run has no canonical row for the spend to land on, so
+                # deferring it would drop the value silently instead.
+                if _prior_slug in _current_run_slugs:
+                    _defer_prior_cost(_prior_slug, _prior)
                 continue
+            # Seeded cost is only durable while the story stays put; if it
+            # re-runs, transition() overwrites it with the current generation's
+            # total. Remember it so wrap-up can restore it in that case.
+            if _prior_slug in _current_run_slugs:
+                _seeded_cost = _prior_cost_of(_prior)
+                if _seeded_cost > 0.0:
+                    seeded_prior_story_cost[_prior_slug] = (
+                        seeded_prior_story_cost.get(_prior_slug, 0.0) + _seeded_cost
+                    )
             # Strip per-run terminal artifacts so an accumulated story cannot
             # carry forward a stale review summary or final_outcome from an
             # earlier generation. The current run must write these fresh.
@@ -2163,13 +2262,19 @@ def run_sprint(
     # Derive slug_to_spec from unified context mapping
     slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
 
+    recovered_prior_started_at: datetime.datetime | None = None
+    recovered_prior_entries_by_ref: dict[str, dict] = {}
     # Resume mode (and re-exec, treated as resume-equivalent): triage all stories
     # and carry forward prior costs.
     triages: dict[str, StoryTriage] = {}
     if reconcile:
-        prior_cost = _read_prior_sprint_cost(config.project_root, _sprint_id)
+        prior_cost, recovered_prior_started_at, recovered_prior_entries_by_ref = (
+            _read_prior_sprint_accounting(config.project_root, _sprint_id)
+        )
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
+        if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
+            started_at = recovered_prior_started_at
         _log("Triaging specs...")
         for slug, (task, _src, canonical_ref) in slug_to_context.items():
             triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
@@ -2219,6 +2324,91 @@ def run_sprint(
     # that would otherwise be null in audit YAML and sprint summary YAML.
     current_story_entries_by_ref: dict[str, dict] = {}
 
+    story_cost_adjustments: dict[str, float] = {}
+
+    def _persist_accumulated_story_entries() -> None:
+        if _sprint_id is None:
+            return
+        accumulated_by_ref = {
+            ref: dict(entry) for ref, entry in recovered_prior_entries_by_ref.items()
+        }
+        for canonical_ref, entry in current_story_entries_by_ref.items():
+            accumulated_by_ref[canonical_ref] = {"canonical_ref": canonical_ref, **entry}
+        persist_accumulated_story_state(
+            _sprint_id,
+            resolved.name,
+            config.project_root,
+            list(accumulated_by_ref.values()),
+        )
+
+    def _persist_current_story_result(
+        slug: str,
+        result: CoordinatorResult,
+        *,
+        started_at: datetime.datetime,
+        finished_at: datetime.datetime,
+    ) -> None:
+        task_ctx = slug_to_context.get(slug)
+        if task_ctx is None:
+            return
+        # Every terminal path for a dispatched story lands here (completion,
+        # timeout, exception), so this is the reliable record of which stories
+        # actually consumed a coordinator run this generation — and therefore
+        # which ones had a seeded prior cost overwritten by transition().
+        ran_this_generation.add(slug)
+        task, _source, canonical_ref = task_ctx
+        display_key = (
+            f"Issue #{canonical_ref.split(':')[1]}"
+            if canonical_ref.startswith("issue:")
+            else canonical_ref
+        )
+        preflight = (
+            "cached"
+            if getattr(result.state, "preflight_cached", False)
+            else (result.state.preflight_verdict or "PROCEED")
+        )
+        outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else result.phase.name
+        outcome_source = (
+            "preflight_verdict"
+            if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE"
+            else None
+        )
+        current_story_entries_by_ref[canonical_ref] = {
+            "path": display_key,
+            "slug": slug,
+            "outcome": outcome,
+            "outcome_source": outcome_source,
+            "verdict": None,
+            "cost_usd": round(
+                float(result.state.total_cost) + story_cost_adjustments.get(slug, 0.0),
+                4,
+            ),
+            "story_run_id": run_id,
+            "preflight": preflight,
+            "preflight_original_verdict": getattr(
+                result.state, "preflight_cached_original_verdict", None
+            ),
+            "preflight_source_run_id": getattr(result.state, "preflight_cached_from_run_id", None),
+            "error": result.state.error,
+            "error_type": result.state.error_type,
+            "outcome_code": result.state.error_type or outcome.lower(),
+            "merge": result.merge is not None and result.merge.get("merged", False),
+            "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "batch": 0,
+            "depends_on": list(getattr(task, "depends_on", None) or []),
+            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
+            "inferred_dependencies": {
+                "manifest": [
+                    dep
+                    for dep in (getattr(task, "depends_on", None) or [])
+                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
+                ],
+                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
+            },
+        }
+        _persist_accumulated_story_entries()
+
     def _record_current_story_entry(
         slug: str,
         outcome: str,
@@ -2266,6 +2456,7 @@ def run_sprint(
         if extras:
             entry.update(extras)
         current_story_entries_by_ref[canonical_ref] = entry
+        _persist_accumulated_story_entries()
 
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
@@ -2306,6 +2497,15 @@ def run_sprint(
         _log(
             f"Intake remediation cost: ${_intake_remediation_cost:.4f} (rolled into sprint total)"
         )
+    for _slug, _outcome in intake_outcomes.items():
+        story_cost_adjustments[_slug] = story_cost_adjustments.get(
+            _slug, 0.0
+        ) + _intake_outcome_cost(_outcome)
+    for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
+        _issue_slug = f"issue-{_issue_num}"
+        story_cost_adjustments[_issue_slug] = story_cost_adjustments.get(
+            _issue_slug, 0.0
+        ) + _intake_outcome_cost(_outcome)
     if intake_outcomes:
         terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
         dropped_slugs_intake = {
@@ -2496,6 +2696,15 @@ def run_sprint(
                 if triage.action == "skip_merged":
                     merged_slugs.add(slug)
                     dag.mark_complete(slug)
+                    _prior_entry = recovered_prior_entries_by_ref.get(canonical_ref)
+                    if _prior_entry is not None:
+                        _already_done_entry = dict(_prior_entry)
+                        _already_done_entry["outcome"] = "ALREADY_DONE"
+                        _already_done_entry["outcome_source"] = "resume_skip_merged"
+                        current_story_entries_by_ref[canonical_ref] = {
+                            k: v for k, v in _already_done_entry.items() if k != "canonical_ref"
+                        }
+                        _persist_accumulated_story_entries()
                     # Preserve preloaded prior-run outcome (e.g., DONE) when
                     # accumulated state already has a stronger terminal —
                     # otherwise mark SKIPPED for the legacy aggregate contract.
@@ -2589,15 +2798,6 @@ def run_sprint(
     # Persist resume-time already-completed stories before any possible re-exec
     # handoff so later generations can recover the full logical sprint history.
     if resume:
-        _prior_accumulated_by_ref: dict[str, dict] = {}
-        if _sprint_id:
-            from .audit import _load_accumulated_stories  # noqa: PLC0415
-
-            _prior_accumulated_by_ref = {
-                story["canonical_ref"]: story
-                for story in _load_accumulated_stories(_sprint_id, config.project_root)
-                if "canonical_ref" in story
-            }
 
         def _already_done_story_entry(
             canonical_ref: str,
@@ -2605,6 +2805,7 @@ def run_sprint(
             *,
             depends_on: list[str],
         ) -> dict:
+            prior_entry = recovered_prior_entries_by_ref.get(canonical_ref, {})
             display_key = (
                 f"Issue #{canonical_ref.split(':')[1]}"
                 if canonical_ref.startswith("issue:")
@@ -2616,20 +2817,26 @@ def run_sprint(
                 "slug": slug,
                 "outcome": "ALREADY_DONE",
                 "outcome_source": "resume_skip_merged",
-                "verdict": None,
-                "cost_usd": 0.0,
-                "story_run_id": run_id,
-                "preflight": None,
-                "preflight_original_verdict": None,
-                "preflight_source_run_id": None,
-                "error": None,
-                "error_type": None,
-                "merge": False,
-                "batch": 0,
+                "verdict": prior_entry.get("verdict"),
+                "cost_usd": float(prior_entry.get("cost_usd", 0.0) or 0.0),
+                "story_run_id": prior_entry.get("story_run_id", run_id),
+                "preflight": prior_entry.get("preflight"),
+                "preflight_original_verdict": prior_entry.get("preflight_original_verdict"),
+                "preflight_source_run_id": prior_entry.get("preflight_source_run_id"),
+                "error": prior_entry.get("error"),
+                "error_type": prior_entry.get("error_type"),
+                "merge": bool(prior_entry.get("merge", False)),
+                "started_at": prior_entry.get("started_at"),
+                "finished_at": prior_entry.get("finished_at"),
+                "batch": int(prior_entry.get("batch", 0) or 0),
                 "depends_on": depends_on,
+                "dependency_warnings": list(prior_entry.get("dependency_warnings", [])),
+                "inferred_dependencies": dict(prior_entry.get("inferred_dependencies", {})),
             }
 
-        _resume_accumulated_by_ref: dict[str, dict] = dict(_prior_accumulated_by_ref)
+        _resume_accumulated_by_ref: dict[str, dict] = {
+            ref: dict(entry) for ref, entry in recovered_prior_entries_by_ref.items()
+        }
         for _canonical_ref, _triage in triages.items():
             if _triage.action != "skip_merged":
                 continue
@@ -3390,6 +3597,12 @@ def run_sprint(
                         phase="ESCALATE",
                         last_phase=last_phase,
                     )
+                    _persist_current_story_result(
+                        slug,
+                        _timeout_result,
+                        started_at=story_started_at,
+                        finished_at=timed_out_at,
+                    )
                     dag.mark_skipped(slug)
                 continue
 
@@ -3458,6 +3671,12 @@ def run_sprint(
                         _exc_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
+                    )
+                    _persist_current_story_result(
+                        slug,
+                        _exc_result,
+                        started_at=story_started_at,
+                        finished_at=failed_at,
                     )
                     dag.mark_skipped(slug)
                     continue
@@ -3583,6 +3802,12 @@ def run_sprint(
                     _existing_detail["outcome_source"] = "preflight_verdict"
                     _outcome_fields["detail"] = _existing_detail
                 _set_outcome(task.slug, _classify_outcome, **_outcome_fields)
+                _persist_current_story_result(
+                    slug,
+                    result,
+                    started_at=t0,
+                    finished_at=t1,
+                )
 
                 # Dependent stories in parallel mode need scheduler-side local merge
                 # even when on_approve is "none" and auto_merge is False.
@@ -3716,6 +3941,28 @@ def run_sprint(
         _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
     for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
         _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
+
+    # Re-attach pre-restart spend the canonical state is no longer holding, so
+    # the summary total (which sums that state) matches SprintResult's
+    # accumulated + prior_cost. Runs here, after the work loop, for the same
+    # reason the intake attribution above does: transition() overwrites
+    # cost_usd with the coordinator's current-generation total while a story
+    # is running, so any earlier attribution would be discarded.
+    _carried_by_slug: dict[str, float] = dict(unseeded_prior_story_cost)
+    for _seed_slug, _seed_cost in seeded_prior_story_cost.items():
+        # A seeded cost only needs restoring when the story re-ran; otherwise
+        # the seed is still intact and adding it would double-count.
+        if _seed_slug in ran_this_generation:
+            _carried_by_slug[_seed_slug] = _carried_by_slug.get(_seed_slug, 0.0) + _seed_cost
+    for _carried_slug, _carried_cost in _carried_by_slug.items():
+        _bump_story_cost(_carried_slug, _carried_cost)
+    if _carried_by_slug:
+        _carried_total = sum(_carried_by_slug.values())
+        _carried_detail = ", ".join(f"{s}=${c:.4f}" for s, c in sorted(_carried_by_slug.items()))
+        _log(
+            f"Re-attached pre-restart spend to {len(_carried_by_slug)} story/stories: "
+            f"${_carried_total:.4f} ({_carried_detail})"
+        )
 
     final_cost = accumulated_cost + prior_cost
     # Banner, summary, notifications, and SprintResult all project from the
