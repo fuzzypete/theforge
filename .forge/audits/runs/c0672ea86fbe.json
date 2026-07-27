@@ -1,0 +1,2578 @@
+{
+  "schema_version": 10,
+  "run_id": "c0672ea86fbe",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Base-branch audit commits can remain local and contaminate later story PRs",
+    "slug": "issue-1950",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nA sprint's audit-recording step commits `.forge/audits/runs` to the project-root checkout of the base branch and stops there. Nothing pushes it. The commit sits local-only for an unbounded period, and the base branch quietly runs ahead of its remote with no signal to the operator.\n\nTwo consequences follow, both observed on `release/v0.13` on 2026-07-25:\n\nStory worktrees cut from that checkout inherit the unpushed commit. GitHub computes the PR diff against `origin/<base>`, which lacks it, so the audit JSON appears as content authored by that story. PR #1948 \u2014 \"Coordinator owns the authoritative gate on every dev iteration\" \u2014 landed as 9545 insertions, of which 9372 were audit JSON across 5 files unrelated to the change. The gate-ownership change itself was 173 lines. Anyone evaluating that PR against its spec, human or agent, was reading a diff that was 98% payload from a different story.\n\nSeparately, the same content then reaches the remote by two paths \u2014 once inside the squash, once whenever the local commit is eventually pushed \u2014 leaving local and remote with identical file content but divergent history. `cut-rc.sh` hits this at its `--ff-only` and hard-stops with an error that reads far more alarming than the underlying cause.\n\n## Diagnosis\n\n**Symptom:** `cut-rc.sh` refused to fast-forward `release/v0.13`. Investigation found identical audit JSON in both the local-only commit `3f662ee` and the remote squash `c654839`. The two branches share parent `8ef555a`; local measured 1 ahead, 1 behind.\n\n**Evidence:** `_commit_story_run_audits` (`src/theforge/sprint/runner.py:107`) performs `git status` / `git add` / `git commit` against `.forge/audits/runs` and returns. There is no push in the function, and no push anywhere in `runner.py`. It is invoked once, at `src/theforge/sprint/runner.py:3566`, at sprint end.\n\n**Ruled out \u2014 duplicate of #1908.** That issue (closed 2026-07-25 by #1925) required that the sprint commit each record, and the fix satisfies it exactly; `3f662ee` is that fix working as designed. The gap is that \"committed\" was treated as the terminal state.\n\n**Ruled out \u2014 end-of-sprint batching as the cause.** Untracked files are absent from the git tree, so worktrees created mid-sprint inherit nothing from records not yet committed. Contamination requires a commit to exist, which makes the batching protective *within* a sprint; the damage is strictly cross-sprint, where sprint N commits without pushing and sprint N+1's PRs carry it. Committing per-story would widen the window rather than close it. The variable that matters is commit-without-push, not commit latency.\n\n**Ruled out \u2014 absence of any ahead-detection.** `_branch_sync_delta` (`src/theforge/coordinator/workspace.py:596`) does compute ahead/behind. The defect is that `pull_base_branch` acts on it only in failure branches: the recovery path (`:689`) requires `ahead == 0`, and the divergence abort (`:701`) requires both `ahead > 0` and `behind > 0`. When the orchestrator is checked out on the base branch and is ahead-only, `git pull --ff-only` succeeds trivially, `ok_pull` is true, and `:697` logs a successful pull before worktree creation proceeds. The fresh-worktree path does not fail when the base branch is locally ahead of origin and the sync command succeeds; reused-worktree paths call only the informational behind check (`_check_behind_origin`, `src/theforge/coordinator/workspace.py:547`, documented as never blocking).\n\n**Confirmed cause:** The PR-merge integration path has no base-branch push, while the local-merge path (`src/theforge/coordinator/workspace.py:344`) already performs one. The ahead-only state this produces is the one state the existing sync guard does not treat as a failure.\n\n**Fix-success criterion:** After a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly. A story worktree is never cut from a base-branch checkout carrying commits absent from origin.\n\n## Expected behavior\n\nAny state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it. A local commit that no code path is responsible for publishing is unowned state, and unowned state diverges. This is a general property of writes the system performs autonomously, not something specific to audit records.\n\nRelatedly, a story worktree must never be cut from a base-branch checkout that carries commits absent from origin. Content present locally but not remotely is attributed by the forge to whichever story happens to be running, which makes the PR diff an unreliable account of what that story changed. Because commit-based review is the substrate's evaluation mechanism, a diff that misrepresents authorship is a correctness failure of review rather than a cosmetic one.\n",
+    "github_issue": 1950,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug Diagnosis section missing required component: observed symptom",
+      "bug Diagnosis section missing required component: affected code path"
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Base-branch audit commits can remain local and contaminate later story PRs' completed. Review approved after 4 cycle(s), 1 dev iteration(s). Branch: feat/issue-1950",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-26T21:44:22.839502+00:00",
+    "finished_at": "2026-07-26T22:27:22.665367+00:00",
+    "duration_seconds": 2579.825865
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1950",
+    "branch": "feat/issue-1950",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 4,
+    "dev_iterations_productive": 4,
+    "review_cycles_total": 4,
+    "review_cycles": 4,
+    "dev_iterations": 4,
+    "gate_decisions": [
+      "PASS",
+      "PASS",
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 4.352404499999999,
+        "duration_s": 559.91,
+        "meaningful_progress": true,
+        "files_changed": [
+          "CHANGELOG.md",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/workspace.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_coord_preflight_cached.py",
+          "tests/test_coord_seam_timeout_escalation.py",
+          "tests/test_coord_workspace.py",
+          "tests/test_coord_workspace_stale.py",
+          "tests/test_run_setup.py",
+          "tests/test_sprint_parallel.py"
+        ],
+        "files_changed_count": 10,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 3.7173990000000003,
+        "duration_s": 309.44,
+        "meaningful_progress": true,
+        "files_changed": [
+          "CHANGELOG.md",
+          "src/theforge/coordinator/workspace.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_coord_workspace.py",
+          "tests/test_sprint_parallel.py"
+        ],
+        "files_changed_count": 5,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 2,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 6.506842999999999,
+        "duration_s": 459.29,
+        "meaningful_progress": true,
+        "files_changed": [
+          "CHANGELOG.md",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/workspace.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_coord_workspace.py",
+          "tests/test_run_setup.py",
+          "tests/test_sprint_parallel.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 8,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 3,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "cost_usd": 10.669809500000005,
+        "duration_s": 570.54,
+        "meaningful_progress": true,
+        "files_changed": [
+          "CHANGELOG.md",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/workspace.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_coord_workspace.py",
+          "tests/test_run_setup.py",
+          "tests/test_sprint_parallel.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 8,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 0.976029,
+        "duration_s": 149.01
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 0.98699,
+        "duration_s": 103.15
+      },
+      {
+        "iteration": 3,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 2.36664,
+        "duration_s": 115.23
+      },
+      {
+        "iteration": 4,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.782524,
+        "duration_s": 154.86
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 4,
+        "max": 3,
+        "hit_limit": true,
+        "early_finish": false
+      },
+      "review": {
+        "used": 4,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 88,
+      "profile_avg_iterations": 1.875,
+      "profile_avg_cost_usd": 8.966244,
+      "profile_raw_dev_max": 2.8125,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 22.4156,
+      "review_history_sample_size": 10,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 88 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-26T21:44:23.735723+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-26T21:56:46.250412+00:00"
+      },
+      {
+        "cycle": 2,
+        "cycle_count": 1,
+        "total_count": 3,
+        "timestamp": "2026-07-26T22:04:12.209251+00:00"
+      },
+      {
+        "cycle": 3,
+        "cycle_count": 1,
+        "total_count": 4,
+        "timestamp": "2026-07-26T22:14:26.137893+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 25.246456000000002,
+    "review_usd": null,
+    "dev_invocations": 4,
+    "review_invocations": 12,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 4.352404499999999,
+        "duration_seconds": 559.9127672079485,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006331
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 4.346073499999998
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 3.7173990000000003,
+        "duration_seconds": 309.4377836249769,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 3.7173990000000003
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 6.506842999999999,
+        "duration_seconds": 459.29336016695015,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 6.506842999999999
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 10.669809500000005,
+        "duration_seconds": 570.5396304999013,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 10.669809500000005
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 49.62292123601461,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 49.62292123601461,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.9760291,
+        "duration_seconds": 49.62292123601461,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.030892
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.9451371000000001
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 34.33297213865444,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 34.33297213865444,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.9869903999999999,
+        "duration_seconds": 34.33297213865444,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.9869903999999999
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 38.346721736326195,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 38.346721736326195,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 2.3666403,
+        "duration_seconds": 38.346721736326195,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.3666403
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 51.555237903026864,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 51.555237903026864,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 2.7825239999999996,
+        "duration_seconds": 51.555237903026864,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.7825239999999996
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed by direct inspection: _commit_story_run_audits (runner.py:107) commits with no push anywhere in runner.py, and pull_base_branch (workspace.py:668) only guards ahead>0 && behind>0 (divergence), never the ahead-only case that this bug produces, so fresh-worktree creation (_create_workspace, workspace.py:781) proceeds unguarded. This is genuinely unfinished cross-module work, not already fixed.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "6 operator-visible surfaces enumerated in acceptance criteria: --count, --ff-only, git add, git commit, git pull --ff-only, git status",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "cli"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.38035630000000004,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "ca5287b7e582",
+    "cache_snapshot": {
+      "worktree_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "story_content_hash": "99775b8e0762bb3e1aa7d6a32c3ba1b396096146fb2aa4d6380a2d6e28e66bae"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "current_worktree_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "current_evaluation_base_branch_head": "07d88daf5ba9b0b022b78aee7c4d11157ec6bb25",
+      "cached_story_content_hash": "99775b8e0762bb3e1aa7d6a32c3ba1b396096146fb2aa4d6380a2d6e28e66bae",
+      "current_story_content_hash": "99775b8e0762bb3e1aa7d6a32c3ba1b396096146fb2aa4d6380a2d6e28e66bae",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.38035630000000004,
+        "duration_s": 63.75,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.50 < threshold 0.60 over 88 admissible HIGH runs (profile success_rate=0.50 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1950/iter_1.yaml",
+      "handoff": {
+        "summary": "Made autonomous base-branch writes owned end-to-end. _commit_story_run_audits (src/theforge/sprint/runner.py) now takes the configured base branch, pushes the audit commit to origin, and verifies via `git rev-list --count origin/<base>..<base>` that the branch is no longer ahead; any status/add/commit/push/verify failure raises RuntimeError. The run_sprint call site keeps its position after _state_writer.remove() but logs an operator-visible '\u2717 SPRINT canonical story run audit publish failed' message and re-raises rather than swallowing, so the sprint exits nonzero instead of reporting success over local-only state. Separately, added _assert_base_branch_published to src/theforge/coordinator/workspace.py, invoked on the SUCCESS path of pull_base_branch \u2014 the ahead-only state is exactly what `git pull --ff-only` reports as clean, so it has to be checked explicitly rather than only in failure branches. A new _sync_base_before_worktree_use wrapper routes _create_workspace's fresh, reused-worktree, and branch-collision reattach paths through that blocking guard, replacing the documented-as-never-blocking _check_behind_origin, which is now deleted. _run_resume_coordinator in engine.py calls pull_base_branch instead of _check_behind_origin and lets its RuntimeError abort before the reused worktree is advanced.",
+        "commits": [
+          {
+            "sha": "505b8ec",
+            "message": "fix(sprint): publish base-branch audit commits and fail closed on unpushed base"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+            "status": "MET",
+            "notes": "Push to origin/<base> plus post-push ahead verification, both raising RuntimeError. The call site logs an operator-visible failure line and re-raises so the sprint exits nonzero. Covered by test_run_sprint_commits_story_run_audits_from_project_root (asserts the exact status/add/commit/push/rev-list tail), test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup, and test_run_sprint_raises_when_base_still_ahead_after_push."
+          },
+          {
+            "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+            "status": "MET",
+            "notes": "_assert_base_branch_published raises on ahead > 0 regardless of pull success. Applied to the fresh path, the reused-worktree path, the reattach path, and the resume entry. Covered by TestBaseBranchAheadOnlyGuard (5 tests, asserting abort before `mkdir`/`worktree add` and before rebase) and test_run_resume_coordinator_aborts_when_base_branch_unpublished."
+          },
+          {
+            "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+            "status": "MET",
+            "notes": "That exact rev-list is the post-push verification, and a nonzero result raises."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The plan named `_run_from_existing_worktree` for the resume entry; no such symbol exists. The actual shared resume body is `_run_resume_coordinator` (src/theforge/coordinator/engine.py:1223), which is what was changed.",
+          "Removed `_check_behind_origin` entirely rather than leaving it unused. After Steps 3 and 4 it had zero production callers, and a helper documented as 'purely informational \u2014 never blocks' is the precise thing this bug was caused by. Its test class in tests/test_coord_workspace.py was replaced with ahead-only guard coverage.",
+          "The audit push is unconditional, not gated on the existing `workspace.auto_push` config. The story's fix-success criterion is unconditional, and auto_push governs post-merge branch advancement, a different concern. Flagging in case the intent was to respect it.",
+          "Extended the shell stub in tests/test_coord_workspace_stale.py::test_dirty_worktree_reused_on_create. Its whitelist raised AssertionError on unexpected commands, and the reuse path now legitimately issues a fetch plus ahead/behind delta instead of a bare behind-origin rev-list. Stub inputs only; no assertion was weakened. Also retargeted three `patch(\"theforge.coordinator.engine._check_behind_origin\")` sites (test_run_setup.py, test_coord_preflight_cached.py, test_coord_seam_timeout_escalation.py) to `engine.pull_base_branch` \u2014 patching a removed symbol would AttributeError.",
+          "The reuse and resume paths now perform a real base-branch sync (fetch/pull) where they previously only measured behind-distance. This follows from the plan's instruction to replace those calls with the blocking sync/guard path, but it is a behavior change beyond adding a guard."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1950/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 addresses the single P1: the ahead-only base-branch guard fired unconditionally and broke the default local-merge workflow. Added _base_branch_tracks_origin(config) in src/theforge/coordinator/workspace.py, which returns config.workspace.auto_push, and made _assert_base_branch_published return early when it is false. Rationale: _merge_branch only pushes the base branch when auto_push is set, so with it off the branch is ahead of origin by design from the first landing onward and aborting on that state kills story N+1 of every multi-story sprint; with it on \u2014 which on_approve: merge-pr requires at config load, and which this repo uses \u2014 every landing reaches the remote, so ahead-only really is unowned drift. Auditing the prior cycle for collateral surfaced the mirror-image bug in the runner: `git push origin <base>` publishes the branch's whole ancestry, so under auto_push=false the audit push would also have published the local story merges the operator declined to send. _commit_story_run_audits now takes a keyword-only publish flag (passed as _base_branch_tracks_origin(config) from the run_sprint call site); when false it commits and emits an operator-visible '\u26a0 SPRINT story run audit records remain local: workspace.auto_push is off' warning instead of pushing. The unconditional push/verify/raise behavior is unchanged when auto_push is on. No changes to the resume entry, the reused/reattach wiring, or the runner's re-raise semantics from iteration 0.",
+        "commits": [
+          {
+            "sha": "505b8ec",
+            "message": "fix(sprint): publish base-branch audit commits and fail closed on unpushed base"
+          },
+          {
+            "sha": "c13fe20",
+            "message": "fix(workspace): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+            "status": "MET",
+            "notes": "Two branches of the AC's own disjunction. auto_push on: push to origin/<base> plus post-push ahead verification, both raising RuntimeError, with the call site logging '\u2717 SPRINT canonical story run audit publish failed' and re-raising so the sprint exits nonzero. auto_push off: pushing is not the forge's job in that configuration and would over-publish, so the records stay local and the sprint warns explicitly. Covered by test_run_sprint_commits_story_run_audits_from_project_root, test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup, test_run_sprint_raises_when_base_still_ahead_after_push, and the new test_run_sprint_commits_without_push_when_auto_push_off."
+          },
+          {
+            "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+            "status": "MET",
+            "notes": "Enforced on the fresh, reused-worktree, reattach, and resume paths whenever the base branch is configured to track origin. Covered by TestBaseBranchAheadOnlyGuard (5 tests asserting abort before the create command / `worktree add` / rebase) and test_run_resume_coordinator_aborts_when_base_branch_unpublished. The auto_push=false carve-out is deliberate and is itself covered by TestLocalMergeWorkflowNotBlocked."
+          },
+          {
+            "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+            "status": "MET",
+            "notes": "That exact rev-list is the post-push verification and a nonzero result raises. Holds under auto_push, the configuration in which the criterion is meaningful \u2014 without auto_push the operator has opted the forge out of publishing the branch at all."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The guard and the audit push are both scoped to workspace.auto_push rather than applying unconditionally. This is the P1 fix and it narrows the story's literal wording, which does not mention the setting. Under auto_push=false the base branch is operator-owned local state by configuration, and both an abort and a push would contradict that. Reviewers should confirm this scoping is the intended reading.",
+          "The predicate keys off config.workspace.auto_push, not the effective landing mode. `forge sprint --auto-merge` forces effective_on_approve='merge' at runtime (completion.py:1600) independent of config, and _create_workspace has no access to that flag. auto_push is the config-level proxy: it is the field that decides whether _merge_branch pushes, which is exactly what determines whether ahead>0 is expected.",
+          "Retained from iteration 0 \u2014 the plan named `_run_from_existing_worktree` for the resume entry; the actual symbol is `_run_resume_coordinator` (src/theforge/coordinator/engine.py:1223).",
+          "Retained from iteration 0 \u2014 `_check_behind_origin` was deleted rather than left unused after losing all production callers, and three test files were retargeted from patching it to patching `engine.pull_base_branch`. The shell stub in tests/test_coord_workspace_stale.py::test_dirty_worktree_reused_on_create was extended (stub inputs only, no assertion weakened) because the reuse path now issues a real fetch plus ahead/behind delta.",
+          "Retained from iteration 0 \u2014 the reuse and resume paths now perform a real base-branch sync where they previously only measured behind-distance, per plan Steps 3 and 4."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 3,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1950/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1, second pass \u2014 reworked the publication rule rather than patching it again. The auto_push-only predicate failed in both directions because it conflated two independent questions. Replaced it with _base_branch_lands_locally(config, auto_merge) (true only for the 'merge' landing path, matching completion.py's effective-on_approve resolution) feeding _base_branch_tracks_origin(config, auto_merge), which returns True unless the run both lands stories locally and has auto_push off. This makes on_approve: pr and merge-pr always subject to the guard and the audit push regardless of auto_push \u2014 the cycle-2 P1 \u2014 while keeping the local-merge carve-out that fixed cycle 1. Because --auto-merge forces the merge path independently of configured on_approve (completion.py:1600), the config value alone cannot decide this, so auto_merge is threaded as a keyword arg through pull_base_branch, _sync_base_before_worktree_use, _create_workspace, and the runner's publish decision, forwarded from run_task (engine.py), _run_resume_coordinator (engine.py), and run_sprint (runner.py). The runner's skip warning now names the real reason (local merges would be over-published) instead of citing auto_push alone. No change to the push/verify/raise mechanics, the re-raise at the run_sprint call site, or the fresh/reused/reattach/resume wiring.",
+        "commits": [
+          {
+            "sha": "505b8ec",
+            "message": "fix(sprint): publish base-branch audit commits and fail closed on unpushed base"
+          },
+          {
+            "sha": "c13fe20",
+            "message": "fix(workspace): address review findings (iter 1)"
+          },
+          {
+            "sha": "4886d15",
+            "message": "fix(workspace): address review findings (iter 1) \u2014 landing-mode publication rule"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+            "status": "MET",
+            "notes": "Pushed and verified in every workflow except local-merge-without-push, where a branch push would also publish the operator's unpushed story merges; there the records stay local and the sprint emits an explicit \u26a0 warning, which is the AC's second branch. Covered by test_run_sprint_commits_story_run_audits_from_project_root, test_run_sprint_publishes_audits_under_pr_workflow_without_auto_push (new \u2014 the cycle-2 case), test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup, test_run_sprint_raises_when_base_still_ahead_after_push, and test_run_sprint_commits_without_push_under_local_merge."
+          },
+          {
+            "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+            "status": "MET",
+            "notes": "Enforced on the fresh, reused, reattach, and resume paths in every workflow that publishes story branches \u2014 on_approve: pr and merge-pr now included regardless of auto_push. Covered by TestBaseBranchAheadOnlyGuard (5 tests, using an on_approve: pr + auto_push: false config so the cycle-2 gap would fail them), TestPublicationRuleMatrix (6 tests pinning the full decision table), test_auto_merge_reaches_guard_through_create_workspace (asserts the same config aborts without auto_merge and proceeds with it, so a dropped forward would fail), and test_run_resume_coordinator_aborts_when_base_branch_unpublished."
+          },
+          {
+            "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+            "status": "MET",
+            "notes": "That rev-list is the post-push verification and a nonzero result raises. Holds in every workflow where the base branch is expected to track origin; the one exempt configuration is the one where the operator has told the forge not to publish that branch."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The guard and the audit push stand down under local-merge-without-push (on_approve: merge or --auto-merge, with auto_push off). This narrows the story's literal wording, which does not mention landing modes, but under that configuration the base branch is operator-owned local state and both an abort and a push would contradict the operator's explicit choice. TestPublicationRuleMatrix documents all six cells.",
+          "_create_workspace, pull_base_branch, and _sync_base_before_worktree_use gained a keyword-only auto_merge parameter (default False). Three existing test assertions/stubs were updated for the new signature (tests/test_sprint_runner.py:357, tests/test_run_setup.py, and the _fake_pull stub) \u2014 signature shape only, no assertion weakened.",
+          "Retained from iteration 0 \u2014 the plan named `_run_from_existing_worktree`; the actual symbol is `_run_resume_coordinator` (engine.py:1223).",
+          "Retained from iteration 0 \u2014 `_check_behind_origin` was deleted after losing all production callers, and three test files were retargeted from patching it to patching `engine.pull_base_branch`. The stub in tests/test_coord_workspace_stale.py::test_dirty_worktree_reused_on_create was extended (inputs only) because the reuse path now issues a real fetch plus ahead/behind delta.",
+          "Retained from iteration 0 \u2014 the reuse and resume paths now perform a real base-branch sync where they previously only measured behind-distance, per plan Steps 3 and 4."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 4,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1950/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1, third pass. Fixed the cited P1 \u2014 _run_fresh's plan-gated Phase-1 run_task passed auto_merge=False instead of effective_auto_merge (runner.py:1175) \u2014 and then found via pattern search that the same mismatch was structural rather than a single dropped argument. The base-branch guard needs a sprint-wide answer to 'does anything merge into the local base checkout', but the previous iteration handed it each story's own effective_auto_merge. That diverges two ways: story N's local merge leaves the base ahead when story N+1's worktree is cut, and in sequential mode effective_am = auto_merge or task.slug in dependent_slugs (runner.py:2951), so a dependency-parent story merges locally even without --auto-merge, which would have hit the same false abort under on_approve: pr with a DAG. run_sprint now computes _sprint_lands_locally once (runner.py:1759) from max_parallel, auto_merge, and dependent_slugs, and threads it as an explicit base_lands_locally override through run_task, run_from_dev, run_from_review, and _run_resume_coordinator. The workspace layer (pull_base_branch, _sync_base_before_worktree_use, _create_workspace, _assert_base_branch_published, _base_branch_tracks_origin) now takes lands_locally directly instead of re-deriving it from auto_merge; None preserves the config-derived default via _base_branch_lands_locally for direct single-story callers. The two-question publication rule from the previous pass is unchanged in substance \u2014 only who answers question 1 moved.",
+        "commits": [
+          {
+            "sha": "505b8ec",
+            "message": "fix(sprint): publish base-branch audit commits and fail closed on unpushed base"
+          },
+          {
+            "sha": "c13fe20",
+            "message": "fix(workspace): address review findings (iter 1) \u2014 auto_push scoping"
+          },
+          {
+            "sha": "4886d15",
+            "message": "fix(workspace): address review findings (iter 1) \u2014 landing-mode publication rule"
+          },
+          {
+            "sha": "154609c",
+            "message": "fix(sprint): address review findings (iter 1) \u2014 sprint-wide lands_locally"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+            "status": "MET",
+            "notes": "Pushed and verified except when the sprint itself merges stories into the local base checkout with auto_push off, where a branch push would over-publish those merges; there the records stay local and the sprint warns, which is the AC's second branch. The publish decision now uses _sprint_lands_locally, so it no longer misreads a parallel sprint (which never eager-merges) as a local-merge run. Covered by TestSprintRunAuditCommit (6 tests) and TestSprintLandsLocallyResolution (3)."
+          },
+          {
+            "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+            "status": "MET",
+            "notes": "Enforced on the fresh, reused, reattach, and resume paths whenever the base branch is expected to track origin. Covered by TestBaseBranchAheadOnlyGuard (5), TestPublicationRuleMatrix (6, pinning the decision table), TestLocalMergeWorkflowNotBlocked (5, including the seam test that the same config aborts with lands_locally unset and proceeds with it set), TestRunFreshPlanGatedForwarding (3, the cited P1 line and its Phase-2 sibling), and test_run_resume_coordinator_aborts_when_base_branch_unpublished."
+          },
+          {
+            "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+            "status": "MET",
+            "notes": "That rev-list is the post-push verification and a nonzero result raises. Holds wherever the base branch is expected to track origin; the exempt configuration is the one where the operator has told the forge not to publish that branch."
+          }
+        ],
+        "story_deviations": [
+          "The guard and the audit push stand down when the sprint merges stories into the local base checkout with auto_push off. This narrows the story's literal wording, which does not mention landing modes. TestPublicationRuleMatrix documents all six cells of the rule.",
+          "New keyword-only-by-convention parameter base_lands_locally on run_task, run_from_dev, run_from_review, and _run_resume_coordinator (default None = derive from config + this run's auto_merge). The workspace helpers' parameter was renamed auto_merge -> lands_locally to stop two layers deriving the same fact independently.",
+          "base_lands_locally is passed to pool.submit BY KEYWORD, not positionally. tests/test_sprint_timeout_cancellation.py reads the worker's args[-1] to find stop_event, so a positional append breaks it. There is a comment at the submit site; the underlying fragility is that test's contract, which I did not change.",
+          "Four existing test assertions/stubs were updated for the renamed keyword (tests/test_sprint_runner.py, tests/test_run_setup.py, tests/test_coord_workspace.py). Signature shape only \u2014 no assertion weakened.",
+          "Retained from iteration 0 \u2014 the plan named `_run_from_existing_worktree`; the actual symbol is `_run_resume_coordinator` (engine.py:1239).",
+          "Retained from iteration 0 \u2014 `_check_behind_origin` was deleted after losing all production callers; three test files were retargeted from patching it to patching `engine.pull_base_branch`, and the stub in tests/test_coord_workspace_stale.py::test_dirty_worktree_reused_on_create was extended (inputs only) because the reuse path now issues a real fetch plus ahead/behind delta.",
+          "Retained from iteration 0 \u2014 the reuse and resume paths now perform a real base-branch sync where they previously only measured behind-distance, per plan Steps 3 and 4."
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "32462118e616bfe0"
+      ]
+    },
+    {
+      "iteration": 3,
+      "finding_ids": [
+        "b4bf5d6162a22a4f"
+      ]
+    },
+    {
+      "iteration": 4,
+      "finding_ids": [
+        "480ae8f344acb094"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The implementation satisfies the base-branch publish and ahead-only guard requirements; focused and surrounding changed tests passed. | [google-gemini-3.5-flash] The implementation successfully publishes base-branch audit commits, fails closed on unpushed base branches, and prevents story worktrees from being cut from ahead-only checkouts. | [claude-sonnet] Push/verify for the audit commit is solid, but the new _assert_base_branch_published guard is wired into pull_base_branch's success path unconditionally, so it also fires on the default (auto_push=false) local-merge workflow and breaks multi-story sprints.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/workspace.py",
+          "line": 702,
+          "description": "After a story's branch is merged locally into the base branch without a push (the default workspace.auto_push=false path in _merge_branch, src/theforge/coordinator/workspace.py:344), the base branch is intentionally ahead of origin; the next call to _create_workspace for a subsequent story invokes pull_base_branch, which now calls _assert_base_branch_published on every successful pull and raises RuntimeError because ahead > 0, aborting workspace creation and the remainder of the sprint.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:107-172 commits audit records, pushes git push origin <base>, verifies origin/<base>..<base>, and raises on push or verification failure; src/theforge/sprint/runner.py:3602-3613 logs the publish failure and re-raises so the sprint exits nonzero. tests/test_sprint_parallel.py:2667-2672 asserts the status/add/commit/push/rev-list publish tail, and tests/test_sprint_parallel.py:2717-2764 asserts a push rejection raises after sprint state cleanup with the operator-visible publish failure log.; Implemented in src/theforge/sprint/runner.py:143-172 (pushing and verifying) and src/theforge/sprint/runner.py:3609-3613 (logging and re-raising). Covered by test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup and test_run_sprint_raises_when_base_still_ahead_after_push in tests/test_sprint_parallel.py.; src/theforge/sprint/runner.py:142-171 pushes the audit commit via `git push origin {base} and verifies git rev-list --count origin/{base}..{base}` is 0, raising RuntimeError on any failure; the call site at src/theforge/sprint/runner.py:3608-3616 logs '\u2717 SPRINT canonical story run audit publish failed' and re-raises. Covered by tests/test_sprint_parallel.py::test_run_sprint_commits_story_run_audits_from_project_root, ::test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup, and ::test_run_sprint_raises_when_base_still_ahead_after_push (all pass)."
+        },
+        {
+          "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/workspace.py:593-610 raises when the local base branch is ahead of origin, src/theforge/coordinator/workspace.py:698-702 runs that guard after a successful pull, src/theforge/coordinator/workspace.py:783-799 and 817-846 route reused, fresh, registered-reuse, and reattach paths through the blocking sync before rebase or worktree add, and src/theforge/coordinator/engine.py:1247-1252 applies the same blocking sync to resume. tests/test_coord_workspace.py:312-322 covers the ahead-only pull-success case, tests/test_coord_workspace.py:335-346 covers abort before fresh workspace creation, tests/test_coord_workspace.py:351-364 covers abort before reused-worktree rebase, tests/test_coord_workspace.py:369-402 covers abort before reattach worktree add, and tests/test_run_setup.py:389-426 covers resume abort before setup.; Implemented in src/theforge/coordinator/workspace.py:593-610 (_assert_base_branch_published) and integrated into workspace creation paths via _sync_base_before_worktree_use (lines 735-747) and resume path in src/theforge/coordinator/engine.py:1251. Covered by TestBaseBranchAheadOnlyGuard in tests/test_coord_workspace.py and test_run_resume_coordinator_aborts_when_base_branch_unpublished in tests/test_run_setup.py.; _assert_base_branch_published (src/theforge/coordinator/workspace.py:593) is applied on the fresh, reused, reattach, and resume paths and is covered by TestBaseBranchAheadOnlyGuard and test_run_resume_coordinator_aborts_when_base_branch_unpublished, all of which pass. However, the guard is unconditional and therefore also trips on the default auto_push=false local-merge workflow (see P1 finding), which is a functional regression the spec's intent (publishing sprint-owned audit state) did not call for."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, git rev-list --count origin/<base>..<base> in the project root is zero, or the sprint has failed loudly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:152-170 performs the exact post-push rev-list verification from the project root and raises when the count remains nonzero; tests/test_sprint_parallel.py:2783-2802 exercises the successful-push-but-still-ahead failure mode and asserts the sprint raises while logging the canonical audit publish failure.; Implemented in src/theforge/sprint/runner.py:152-171 (running rev-list and raising if ahead > 0). Covered by test_run_sprint_raises_when_base_still_ahead_after_push in tests/test_sprint_parallel.py."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The prior local-merge regression is resolved, but the final auto_push carve-out still lets the on_approve: pr workflow publish story PRs from an unpublished base audit commit. | [google-gemini-3.5-flash] The implementation successfully publishes base-branch audit commits and prevents cutting story worktrees from an ahead-only base branch, with appropriate scoping to workspace.auto_push. | [claude-sonnet] Cycle 1's P1 (unconditional ahead-only guard breaking the default auto_push=false local-merge workflow) is fixed via _base_branch_tracks_origin scoping on both the guard and the audit push; no regressions found in the touched files, and the full relevant test suite (195 tests across workspace/runner/resume/preflight/seam-escalation) passes.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/workspace.py",
+          "line": 622,
+          "description": "With on_approve: pr and workspace.auto_push: false, after sprint audit records are committed locally, the next workspace sync skips the ahead-only guard and creates a story branch from a base checkout that is still ahead of origin, and PR creation pushes that contaminated branch to GitHub.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:155 pushes origin/<base> and src/theforge/sprint/runner.py:165 verifies origin/<base>..<base> when publish is true, while src/theforge/sprint/runner.py:147 logs an operator-visible warning when publish is false; tests/test_sprint_parallel.py covers successful push, push failure, post-push ahead failure, and auto_push=false warning paths.; src/theforge/sprint/runner.py:107-183 implements committing and pushing the audit records to origin, raising a RuntimeError if the push fails or if the branch is still ahead. Covered by tests in tests/test_sprint_parallel.py:2626-2854.; src/theforge/sprint/runner.py:107-186 \u2014 _commit_story_run_audits now takes a keyword-only publish flag; when true (auto_push on) it pushes via git push origin {base} and verifies `git rev-list --count origin/{base}..{base}` is 0, raising RuntimeError on any failure; when false it logs \"\u26a0 SPRINT story run audit records remain local: workspace.auto_push is off\" instead of silently succeeding. Call site at runner.py:3619-3633 passes publish=_base_branch_tracks_origin(config) and re-raises on RuntimeError. Covered by test_run_sprint_commits_story_run_audits_from_project_root, test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup, test_run_sprint_raises_when_base_still_ahead_after_push (all auto_push=true), and test_run_sprint_commits_without_push_when_auto_push_off (auto_push=false, asserts no push call and the exact warning text) \u2014 all pass under pytest."
+        },
+        {
+          "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/workspace.py:607 implements the ahead-only abort and _create_workspace calls it on fresh, reused, registered-reuse, and reattach paths, with tests in TestBaseBranchAheadOnlyGuard; however src/theforge/coordinator/workspace.py:622 disables that guard for every auto_push=false configuration, including on_approve: pr, which still publishes story branches through src/theforge/coordinator/completion.py:487.; src/theforge/coordinator/workspace.py:593-628 implements _assert_base_branch_published which raises RuntimeError if the base branch is ahead of origin. This is called on fresh, reused, and reattach paths via _sync_base_before_worktree_use (lines 756-767). On the resume path, src/theforge/coordinator/engine.py:1248 calls pull_base_branch directly. Covered by TestBaseBranchAheadOnlyGuard in tests/test_coord_workspace.py:310-418 and test_run_resume_coordinator_aborts_when_base_branch_unpublished in tests/test_run_setup.py:389-425.; _assert_base_branch_published (src/theforge/coordinator/workspace.py:606-630) now returns early via _base_branch_tracks_origin(config) (workspace.py:593-604, returns config.workspace.auto_push) before computing ahead/behind, so it only fires when auto_push is on \u2014 the configuration in which _merge_branch (workspace.py:344) actually publishes every landing. Applied on fresh/reused/reattach/resume paths per iteration 0. TestBaseBranchAheadOnlyGuard (5 tests) now uses _make_pushing_config to exercise the abort under auto_push=true; new TestLocalMergeWorkflowNotBlocked confirms ahead-only is allowed under the default auto_push=false, that a second story's workspace is successfully created after a local-only merge (the exact regression scenario), and that true divergence (ahead>0 and behind>0) still aborts regardless of auto_push. All pass."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, git rev-list --count origin/<base>..<base> in the project root is zero, or the sprint has failed loudly.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/sprint/runner.py:165 performs the exact rev-list verification and raises on nonzero output when publish is true, with tests/test_sprint_parallel.py::test_run_sprint_raises_when_base_still_ahead_after_push covering that failure; when publish is false, src/theforge/sprint/runner.py:147 returns after a warning, so the sprint can succeed with origin/<base>..<base> still nonzero.; Holds when auto_push is on (the configuration in which the criterion is meaningful): the exact rev-list is the post-push verification in runner.py, and a nonzero result raises, tested by test_run_sprint_raises_when_base_still_ahead_after_push. When auto_push is off, the criterion does not apply by design (the operator has opted the branch out of remote tracking), which the developer notes state and the new test confirms behavior is a loud warning rather than silent success."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:164-181 runs git rev-list --count origin/<base>..<base> and raises RuntimeError if the count is greater than zero. Covered by test_run_sprint_raises_when_base_still_ahead_after_push in tests/test_sprint_parallel.py:2761-2807."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 3,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The prior P1s are resolved: PR workflows with auto_push off now publish audit commits and block ahead-only base checkouts, while the local-merge carve-out is explicit and covered. | [google-gemini-3.5-flash] The base-branch audit commit publication and ahead-only workspace guards are fully implemented, robustly tested, and correctly handle all landing-mode configurations. | [claude-sonnet] Cycle 1 and Cycle 2 P1s are both resolved by the two-question publication rule (_base_branch_lands_locally + _base_branch_tracks_origin), but this same iteration's auto_merge-threading introduced a new regression: the PLAN-only workspace-creation call in _run_fresh hardcodes auto_merge=False instead of forwarding the sprint's effective_auto_merge, so plan-gated parallel sprints (max_parallel>1) run with --auto-merge and auto_push off will hard-abort story N+1's workspace creation on the same ahead-only state Cycle 1 fixed.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/runner.py",
+          "line": 1172,
+          "description": "In _run_fresh's plan-gated split path, the Phase-1 call to run_task \u2014 the call whose WORKSPACE step actually creates the story's fresh worktree \u2014 passes auto_merge=False unconditionally instead of the sprint's effective_auto_merge, even though the function receives effective_auto_merge and forwards it correctly to the later run_from_dev call for the same story.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:107-180 commits audit records, pushes origin/<base>, verifies origin/<base>..<base> is zero, and raises on push or verification failure; src/theforge/sprint/runner.py:3627-3633 invokes that path and re-raises instead of downgrading to a warning. tests/test_sprint_parallel.py:2642-2691 verifies the commit, push, and post-push rev-list sequence; tests/test_sprint_parallel.py:2735-2782 verifies a push failure raises after cleanup; tests/test_sprint_parallel.py:2784-2820 verifies a successful push that leaves the base ahead still raises; tests/test_sprint_parallel.py:2822-2865 verifies on_approve: pr with auto_push false still publishes the audit commit.; src/theforge/sprint/runner.py:107-187 implements _commit_story_run_audits which commits and pushes the audit records to origin, raising a RuntimeError on failure. tests/test_sprint_parallel.py:2631-2684, 2735-2778, 2780-2817, 2819-2864, 2866-2911 verify this behavior across all workflows.; src/theforge/sprint/runner.py:107-190 \u2014 _commit_story_run_audits takes publish computed from `_base_branch_tracks_origin(config, auto_merge=auto_merge)` at the run_sprint call site (runner.py:3617-3631), now correctly covering the Cycle-2 case (on_approve: pr, auto_push: false) via test_run_sprint_publishes_audits_under_pr_workflow_without_auto_push, alongside the prior test_run_sprint_commits_story_run_audits_from_project_root, test_run_sprint_raises_when_audit_publish_fails_after_state_cleanup, test_run_sprint_raises_when_base_still_ahead_after_push, and test_run_sprint_commits_without_push_under_local_merge. All pass."
+        },
+        {
+          "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/workspace.py:630-655 raises when the base branch is ahead of origin in workflows where it must track origin; src/theforge/coordinator/workspace.py:839-861, src/theforge/coordinator/workspace.py:879-912 route reused, fresh, registered-reuse, and reattach workspace paths through the blocking sync before rebase or worktree creation; src/theforge/coordinator/engine.py:888-890 and src/theforge/coordinator/engine.py:1249-1254 forward the guard through fresh and resume coordinator paths. tests/test_coord_workspace.py:337-427 covers ahead-only aborts for direct pull, fresh workspace, reused worktree, and reattach; tests/test_run_setup.py:389-426 verifies resume aborts before setup when base publication fails.; src/theforge/coordinator/workspace.py:630-656 implements _assert_base_branch_published which checks if the base branch is ahead of origin and raises a RuntimeError if so. tests/test_coord_workspace.py:323-418, 427-461, 522-545 and tests/test_run_setup.py:389-426 verify this behavior across all workflows.; _assert_base_branch_published (workspace.py:632-658) now correctly applies whenever _base_branch_tracks_origin(config, auto_merge=...) is true, and TestBaseBranchAheadOnlyGuard / TestPublicationRuleMatrix / TestLocalMergeWorkflowNotBlocked (all in tests/test_coord_workspace.py) confirm the guard's decision table is correct when auto_merge is passed accurately into _create_workspace/pull_base_branch. However, the guard's correctness at runtime depends on every call site passing the right auto_merge value, and _run_fresh (runner.py:1140, 1172) \u2014 the code path that actually creates each story's fresh workspace during a parallel sprint \u2014 does not; it hardcodes False, so the guard can still abort on the exact ahead-only state Cycle 1 was meant to permit, in the plan-gated + --auto-merge + auto_push:false combination described in the P1 above."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, git rev-list --count origin/<base>..<base> in the project root is zero, or the sprint has failed loudly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:157-184 runs git push origin <base>, then git rev-list --count origin/<base>..<base>, and raises when the count is nonzero or cannot be parsed; src/theforge/sprint/runner.py:3627-3633 lets that RuntimeError terminate the sprint. tests/test_sprint_parallel.py:2642-2691 verifies the zero-ahead success path includes the rev-list check; tests/test_sprint_parallel.py:2784-2820 verifies a nonzero count after push fails loudly; tests/test_sprint_parallel.py:2867-2911 verifies the intentional local-merge-without-push warning path.; Unaffected by the P1 above (that finding concerns the workspace-creation guard, not the audit-publish path). The rev-list verification in _commit_story_run_audits (runner.py:171-190) and its raise-on-nonzero behavior are unchanged by this iteration's edits beyond the publish flag, and test_run_sprint_raises_when_base_still_ahead_after_push continues to pass."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:167-186 runs git rev-list --count origin/<base>..<base> after pushing and raises a RuntimeError if the count is greater than zero. tests/test_sprint_parallel.py:2780-2817 verifies this behavior."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 4,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The prior P1s are resolved: audit commits are published or visibly warned in the local-merge exception, ahead-only base branches block PR-style worktree creation, and the plan-gated fresh path now forwards the effective landing context. | [google-gemini-3.5-flash] All prior P1 findings are fully resolved, and the base-branch publication guard is robustly implemented and tested. | [claude-sonnet] All three prior P1s are resolved: the auto_push-only rule (Cycle 1) was replaced by the two-question lands-locally/tracks-origin split (Cycle 2), and the per-story auto_merge mismatch (Cycle 3) is now resolved by a sprint-wide _sprint_lands_locally computed once in run_sprint and threaded as an explicit base_lands_locally override through every run_task/run_from_dev/run_from_review/_run_resume_coordinator call site, including the plan-gated Phase-1 call that previously hardcoded auto_merge=False. Verified the sprint-wide formula against the actual per-story effective_on_approve resolution in completion.py (both the --auto-merge/dependent_slugs sequential case and the config.workspace.on_approve=='merge' case, which applies unconditionally even in parallel mode) \u2014 no gap found. 250 targeted tests pass; 2 unrelated failures elsewhere in the suite are sandbox multiprocessing semaphore permission errors, not caused by this diff.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Any state the sprint commits to the base-branch checkout on the operator's behalf must reach the remote, or the failure to do so must be surfaced where the operator will see it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:107 commits dirty .forge/audits/runs records, src/theforge/sprint/runner.py:157 pushes origin/<base>, src/theforge/sprint/runner.py:167 verifies origin/<base>..<base> is zero, and src/theforge/sprint/runner.py:3652 re-raises publish failures after logging them. The local-merge exception is gated by src/theforge/coordinator/workspace.py:609 and src/theforge/sprint/runner.py:3656, with the operator warning at src/theforge/sprint/runner.py:148. tests/test_sprint_parallel.py:2735 verifies the commit-push-verify sequence, tests/test_sprint_parallel.py:2829 verifies push failure raises, tests/test_sprint_parallel.py:2878 verifies nonzero ahead after push raises, tests/test_sprint_parallel.py:2916 verifies on_approve: pr with auto_push false still pushes, and tests/test_sprint_parallel.py:2961 verifies the local-merge auto_push false warning path.; src/theforge/sprint/runner.py:107-185 implements _commit_story_run_audits which pushes the audit commit to origin and raises a RuntimeError on failure, or logs a warning if publish is False. Covered by TestSprintRunAuditCommit in tests/test_sprint_parallel.py.; src/theforge/sprint/runner.py:107-190 pushes and verifies via _commit_story_run_audits with `publish=_base_branch_tracks_origin(config, lands_locally=_sprint_lands_locally)` computed once at src/theforge/sprint/runner.py:1761-1770 and reused at the audit-publish call site (runner.py:3653-3657); a nonzero rev-list after push raises and the run_sprint call site re-raises. Covered by TestSprintRunAuditCommit (6 tests, including test_run_sprint_publishes_audits_under_pr_workflow_without_auto_push and test_run_sprint_commits_without_push_under_local_merge for both branches of the disjunction) and TestSprintLandsLocallyResolution (3 tests confirming the sprint-wide resolution distinguishes sequential --auto-merge, parallel --auto-merge, and sequential without --auto-merge). All pass."
+        },
+        {
+          "criterion": "A story worktree must never be cut from a base-branch checkout that carries commits absent from origin.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/workspace.py:637 raises when a tracked base branch is ahead of origin, src/theforge/coordinator/workspace.py:722 invokes the guard after base sync, src/theforge/coordinator/workspace.py:826 threads the guard into fresh, reused, registered-reuse, and reattach workspace paths, and src/theforge/coordinator/engine.py:1264 invokes the same blocking sync for resume paths. src/theforge/sprint/runner.py:1769 computes the sprint-wide local-landing answer and src/theforge/sprint/runner.py:3029 passes it into story workers; src/theforge/sprint/runner.py:1171 also forwards it through the plan-gated Phase-1 run_task call. tests/test_coord_workspace.py:335 covers ahead-only aborts on pull, fresh, reused, and reattach paths; tests/test_coord_workspace.py:433 covers the publication decision table; tests/test_coord_workspace.py:472 covers the local-merge exception; tests/test_run_setup.py:389 covers resume aborting before setup; and tests/test_sprint_parallel.py:2623 covers plan-gated forwarding.; src/theforge/coordinator/workspace.py:637-664 implements _assert_base_branch_published which raises a RuntimeError if the base branch is ahead of origin and expected to track origin. This is called in pull_base_branch which is used by all workspace creation and reuse paths. Covered by TestBaseBranchAheadOnlyGuard in tests/test_coord_workspace.py.; _assert_base_branch_published (workspace.py:632-658) takes lands_locally directly; _create_workspace's fresh/reused/reattach paths and _run_resume_coordinator (engine.py:1265-1273) forward base_lands_locally if given, else derive per-run. The Cycle-3 gap \u2014 the plan-gated Phase-1 run_task call hardcoding auto_merge=False \u2014 is fixed at runner.py:1175 (now effective_auto_merge) and runner.py:1184 (now also forwards base_lands_locally). Covered by TestBaseBranchAheadOnlyGuard, TestPublicationRuleMatrix, TestLocalMergeWorkflowNotBlocked, and specifically TestRunFreshPlanGatedForwarding (3 tests asserting both run_task(auto_merge=...) and run_task(base_lands_locally=...) are correctly forwarded from _run_fresh's Phase 1, and that run_from_dev's Phase 2 forwards both), plus test_run_resume_coordinator_aborts_when_base_branch_unpublished. All pass."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, git rev-list --count origin/<base>..<base> in the project root is zero, or the sprint has failed loudly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:167 runs git rev-list --count origin/<base>..<base> after the audit push, src/theforge/sprint/runner.py:175 rejects non-integer output, src/theforge/sprint/runner.py:182 raises when the base branch remains ahead, and src/theforge/sprint/runner.py:3658 logs and re-raises that failure at sprint end. tests/test_sprint_parallel.py:2735 asserts the post-push rev-list command is part of the successful publish sequence, and tests/test_sprint_parallel.py:2878 asserts a successful push followed by a nonzero ahead count fails the sprint.; Unchanged mechanically from prior cycles (runner.py:171-190); now fed by the corrected sprint-wide lands_locally resolution rather than a per-story or auto_push-only flag, so the rev-list check applies in every workflow where the base branch is expected to track origin. test_run_sprint_raises_when_base_still_ahead_after_push continues to pass."
+        },
+        {
+          "criterion": "Fix-success criterion: after a sprint that writes audit records, `git rev-list --count origin/<base>..<base>` in the project root is zero, or the sprint has failed loudly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:167-185 verifies that the base branch is no longer ahead of origin after pushing by running git rev-list --count origin/{quoted_base}..{quoted_base} and raising a RuntimeError if the count is greater than zero. Covered by test_run_sprint_raises_when_base_still_ahead_after_push in tests/test_sprint_parallel.py."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 4
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 4
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 4
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1966",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1950",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/1966",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/1966",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-26T22:27:22.665367+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "finding_registry": [
+    {
+      "finding_id": "32462118e616bfe0",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/workspace.py",
+      "line": 702,
+      "severity": "P1",
+      "description": "After a story's branch is merged locally into the base branch without a push (the default workspace.auto_push=false path in _merge_branch, src/theforge/coordinator/workspace.py:344), the base branch is intentionally ahead of origin; the next call to _create_workspace for a subsequent story invokes pull_base_branch, which now calls _assert_base_branch_published on every successful pull and raises RuntimeError because ahead > 0, aborting workspace creation and the remainder of the sprint.",
+      "reporter": "claude-sonnet",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "b4bf5d6162a22a4f",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/coordinator/workspace.py",
+      "line": 622,
+      "severity": "P1",
+      "description": "With on_approve: pr and workspace.auto_push: false, after sprint audit records are committed locally, the next workspace sync skips the ahead-only guard and creates a story branch from a base checkout that is still ahead of origin, and PR creation pushes that contaminated branch to GitHub.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "480ae8f344acb094",
+      "cycle_first_seen": 3,
+      "cycle_last_seen": 3,
+      "file": "src/theforge/sprint/runner.py",
+      "line": 1172,
+      "severity": "P1",
+      "description": "In _run_fresh's plan-gated split path, the Phase-1 call to run_task \u2014 the call whose WORKSPACE step actually creates the story's fresh worktree \u2014 passes auto_merge=False unconditionally instead of the sprint's effective_auto_merge, even though the function receives effective_auto_merge and forwards it correctly to the later run_from_dev call for the same story.",
+      "reporter": "claude-sonnet",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 3,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 4,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 1,
+            "completed": 1,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8409,
+              "weighted": 0.4995,
+              "runs": 88,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.4995
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": 0.5385,
+              "weighted": 0.5385,
+              "runs": 13,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.5385,
+              "by_domain": {
+                "backend": {
+                  "runs": 9,
+                  "raw": 0.5556,
+                  "weighted": 0.5556,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 4,
+                  "raw": 0.5,
+                  "weighted": 0.5,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "cli"
+          ],
+          "raw": 0.5385,
+          "weighted": 0.5385,
+          "runs": 13,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.5385,
+          "by_domain": {
+            "backend": {
+              "runs": 9,
+              "raw": 0.5556,
+              "weighted": 0.5556,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 4,
+              "raw": 0.5,
+              "weighted": 0.5,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": true,
+        "outcome": "promoted_below_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8409,
+        "weighted_success_rate": 0.4995,
+        "sample_size": 88,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "promoted_by",
+        "mechanism": "_check_promotion",
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": false,
+        "checked": {
+          "weighted_success_rate": 0.4995,
+          "threshold": 0.6,
+          "sample_size": 88,
+          "min_runs": 5
+        },
+        "reason": "promotion_active_weighted_rate_below_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+cli",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] HIGH dev pre-promoted claude-opus (tier strong \u2192 strong) \u2014 weighted success_rate 0.50 < threshold 0.60 over 88 admissible HIGH runs (profile success_rate=0.50 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 17,
+            "completed": 16,
+            "raw": 0.9412,
+            "weighted": 0.9467,
+            "rate": 0.9467,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 11,
+            "completed": 10,
+            "raw": 0.9091,
+            "weighted": 0.9066,
+            "rate": 0.9066,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 30,
+            "completed": 30,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 17,
+            "completed": 16,
+            "raw": 0.9412,
+            "weighted": 0.9467,
+            "rate": 0.9467,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 11,
+            "completed": 10,
+            "raw": 0.9091,
+            "weighted": 0.9066,
+            "rate": 0.9066,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.380356,
+      "duration_s": 63.75,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 25.246456,
+      "duration_s": 1899.18,
+      "iterations": 4,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 145.42,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 521.57,
+      "cycles": 4,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 7.112184,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2629.93,
+    "dev_attempts_total": 4,
+    "dev_iterations_productive": 4,
+    "review_cycles_total": 4,
+    "dev_iterations": 4,
+    "review_cycles": 4
+  },
+  "sprint_id": "342c270c68d0",
+  "sprint_name": "issues-1950,1905,1951,1952"
+}
