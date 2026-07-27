@@ -525,3 +525,274 @@ class TestPullRequestBody:
         state.dev_durations.append(10.0)
         body = self._capture_pr_body(tmp_path, state)
         assert "- **Cost:** $0.50" in body
+
+
+class TestBudgetEnforcement:
+    """The cap can only be enforced against a number that means what it says.
+
+    ``accumulated_cost`` sums measured spend, so a story whose transport
+    reported no cost contributes ``0.0`` while having spent an unknown amount.
+    Comparing that understated total against the cap would certify a budget the
+    sprint cannot show it is within, so the check fails closed instead (#1992).
+    """
+
+    def test_measured_spend_under_cap_dispatches(self) -> None:
+        from theforge.sprint.budget import evaluate_budget
+
+        assert (
+            evaluate_budget(
+                accumulated_cost=1.0,
+                prior_cost=0.5,
+                budget_usd=10.0,
+                unmeasured_spend=[],
+            )
+            is None
+        )
+
+    def test_measured_spend_over_cap_still_reports_exhausted(self) -> None:
+        from theforge.sprint.budget import evaluate_budget
+
+        block = evaluate_budget(
+            accumulated_cost=0.0,
+            prior_cost=6.0,
+            budget_usd=5.0,
+            unmeasured_spend=[],
+        )
+        assert block is not None
+        assert block.kind == "exhausted"
+        # Wording is load-bearing for existing operator surfaces and tests.
+        assert block.stopped_reason == (
+            "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
+
+    def test_exhaustion_wins_over_unverifiable(self) -> None:
+        """A definite over-cap answer stays definite even with unmeasured spend."""
+        from theforge.sprint.budget import evaluate_budget
+
+        block = evaluate_budget(
+            accumulated_cost=6.0,
+            prior_cost=0.0,
+            budget_usd=5.0,
+            unmeasured_spend=["issue-1945"],
+        )
+        assert block is not None
+        assert block.kind == "exhausted"
+
+    def test_unmeasured_spend_under_cap_blocks_dispatch(self) -> None:
+        from theforge.sprint.budget import evaluate_budget
+
+        block = evaluate_budget(
+            accumulated_cost=MEASURED_REVIEW_COST,
+            prior_cost=0.0,
+            budget_usd=10.0,
+            unmeasured_spend=["issue-1945"],
+        )
+        assert block is not None
+        assert block.kind == "unverifiable"
+        assert "issue-1945" in block.story_reason
+        assert "lower bound" in block.story_reason
+        assert block.stopped_reason.startswith("Budget unverifiable")
+
+    def test_unmeasured_source_list_is_elided_not_dropped(self) -> None:
+        from theforge.sprint.budget import describe_unmeasured_spend
+
+        rendered = describe_unmeasured_spend([f"issue-{n}" for n in range(8)])
+        assert rendered.startswith("issue-0, issue-1")
+        assert "+3 more" in rendered
+
+    def test_intake_agent_without_reported_cost_is_unmeasured_not_free(self) -> None:
+        """An intake auto-fix that ran on an unpriced transport is not free."""
+        from theforge.sprint.runner import _intake_outcome_cost, _intake_outcome_cost_measured
+
+        class _Outcome:
+            def __init__(self, agent: dict) -> None:
+                self.audit = {"agent": agent}
+
+        attempted_unpriced = _Outcome({"attempted": True, "cost_usd": None})
+        assert _intake_outcome_cost_measured(attempted_unpriced) is None
+        # The numeric accessor still yields a usable lower bound for rollups.
+        assert _intake_outcome_cost(attempted_unpriced) == 0.0
+
+        never_ran = _Outcome({"attempted": False, "cost_usd": None})
+        assert _intake_outcome_cost_measured(never_ran) == 0.0
+
+        priced = _Outcome({"attempted": True, "cost_usd": 0.25})
+        assert _intake_outcome_cost_measured(priced) == 0.25
+
+
+class TestBudgetEnforcementSeam:
+    """End-to-end: an unmeasured story must stop the sprint dispatching more."""
+
+    @staticmethod
+    def _unmeasured_dev_result():
+        from theforge.coordinator.state import CoordinatorResult as _CR
+        from theforge.coordinator.state import CoordinatorState as _CS
+
+        state = _CS()
+        state.preflight_verdict = "PROCEED"
+        state.dev_results.append(_agent_result(None, profile_name="codex-dev"))
+        state.dev_durations.append(60.0)
+        state.review_agent_results.append(
+            _agent_result(MEASURED_REVIEW_COST, profile_name="claude-reviewer")
+        )
+        state.review_durations.append(30.0)
+        return _CR(success=True, phase=Phase.DONE, state=state, message="Done.")
+
+    def test_second_story_is_not_dispatched_after_unmeasured_spend(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.dag import StoryTriage
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+        config = _make_config(tmp_path)
+
+        def _triage(spec_path, *args, **kwargs):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                return_value=self._unmeasured_dev_result(),
+            ) as mock_run:
+                result = run_sprint(config, manifest_path)
+
+        # The budget is nowhere near exhausted at the measured lower bound —
+        # the sprint stops because that bound is not the spend.
+        assert mock_run.call_count == 1
+        assert result.stopped_reason is not None
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        assert result.specs_skipped == 1
+        assert result.cost_complete is False
+
+    def test_sprint_records_which_spend_was_unmeasured(self, tmp_path: Path) -> None:
+        """Convention 6: the refusal must be traceable to the work that caused it."""
+        from unittest.mock import patch
+
+        from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.dag import StoryTriage
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+        config = _make_config(tmp_path)
+
+        def _triage(spec_path, *args, **kwargs):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                return_value=self._unmeasured_dev_result(),
+            ):
+                result = run_sprint(config, manifest_path)
+
+        assert result.unmeasured_spend_sources  # names the story that ran unpriced
+        audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+        assert audit["sprint"]["cost_complete"] is False
+        assert audit["sprint"]["total_cost_usd"] is None
+        assert audit["sprint"]["unmeasured_spend_sources"]
+        skipped = [s for s in audit["specs"] if s["outcome"] == "SKIPPED"]
+        assert skipped, audit["specs"]
+        assert "budget unverifiable" in (skipped[0]["error"] or "")
+
+    def test_fully_measured_sprint_dispatches_every_story(self, tmp_path: Path) -> None:
+        """The fail-closed path must not fire when every story reports cost."""
+        from unittest.mock import patch
+
+        from test_sprint_resume import (
+            _make_config,
+            _make_coordinator_result,
+            _make_manifest,
+            _make_spec_file,
+        )
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.dag import StoryTriage
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+        config = _make_config(tmp_path)
+
+        def _triage(spec_path, *args, **kwargs):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
+            ) as mock_run:
+                result = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 2
+        assert result.stopped_reason is None
+        assert result.cost_complete is True
+        assert result.unmeasured_spend_sources == ()
+
+    def test_resume_inherits_the_unmeasured_flag_from_the_prior_generation(
+        self, tmp_path: Path
+    ) -> None:
+        """Carried spend from an incomplete generation is a lower bound too."""
+        from theforge.sprint.runner import _prior_sprint_cost_incomplete
+
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        (audits / "sprint-audit.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "sprint": {
+                        "sprint_id": "sid",
+                        "total_cost_usd": None,
+                        "total_cost_measured_usd": MEASURED_REVIEW_COST,
+                        "cost_complete": False,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid") is True
+        # A different sprint's record must not leak its incompleteness.
+        assert _prior_sprint_cost_incomplete(tmp_path, "other-sid") is False
+
+    def test_resume_from_a_complete_generation_is_not_flagged(self, tmp_path: Path) -> None:
+        from theforge.sprint.runner import _prior_sprint_cost_incomplete
+
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        (audits / "sprint-audit.yaml").write_text(
+            yaml.safe_dump(
+                {"sprint": {"sprint_id": "sid", "total_cost_usd": 2.0, "cost_complete": True}}
+            ),
+            encoding="utf-8",
+        )
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid") is False
+        # A pre-#1992 record carries no completeness claim and must not block.
+        (audits / "sprint-audit.yaml").write_text(
+            yaml.safe_dump({"sprint": {"sprint_id": "sid", "total_cost_usd": 2.0}}),
+            encoding="utf-8",
+        )
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid") is False

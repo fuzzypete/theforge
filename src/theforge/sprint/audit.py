@@ -730,6 +730,11 @@ def _write_sprint_audit(
             ),
             "total_cost_measured_usd": round(result.total_cost_usd, 4),
             "cost_complete": bool(getattr(result, "cost_complete", True)),
+            # Which work is unpriced, not merely that some is — the budget check
+            # refuses on this list, so it must be traceable (#1992).
+            "unmeasured_spend_sources": list(
+                getattr(result, "unmeasured_spend_sources", ()) or []
+            ),
             "budget_note": "Costs reflect Claude invocations only; Codex/Gemini report $0.00",
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1142,6 +1147,13 @@ def _write_sprint_summary(
         accumulated_for_state,
     )
 
+    # Intake remediation spends the sprint budget outside any story's entry, so
+    # an unmeasured intake pass makes the sprint total incomplete even when every
+    # per-story cost is known (#1992).
+    _unmeasured_sources = list(getattr(result, "unmeasured_spend_sources", ()) or [])
+    if _unmeasured_sources:
+        effective_cost_complete = False
+
     summary = {
         "sprint": {
             "name": manifest.name,
@@ -1156,6 +1168,7 @@ def _write_sprint_summary(
             "total_cost_usd": effective_cost_usd if effective_cost_complete else None,
             "total_cost_measured_usd": effective_cost_usd,
             "cost_complete": effective_cost_complete,
+            "unmeasured_spend_sources": _unmeasured_sources,
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_seconds": round(duration, 1),

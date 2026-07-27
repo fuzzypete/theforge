@@ -62,6 +62,7 @@ from .audit import (
     persist_accumulated_story_state,
 )
 from .auth_gate import enforce_sprint_auth_readiness
+from .budget import evaluate_budget
 from .ci_checks import failing_required_pr_checks, poll_required_checks
 from .collision import (
     compute_bundle_assignments,
@@ -662,16 +663,27 @@ def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
     outside CoordinatorState.total_cost. Sprint cost rollups must consult
     this seam so reported sprint totals reflect actual spend.
     """
+    return _intake_outcome_cost_measured(outcome) or 0.0
+
+
+def _intake_outcome_cost_measured(outcome: IntakeOutcome) -> float | None:
+    """Intake agent cost, or ``None`` when an agent ran without reporting cost.
+
+    ``attempted`` is what separates "no agent ran, so genuinely free" from "an
+    agent ran on a transport that reported no cost". Only the latter is
+    cost-unknown; collapsing it to ``0.0`` would let unpriced intake spend pass
+    the sprint budget check as if it were free (#1992).
+    """
     agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
     if not isinstance(agent, dict):
         return 0.0
     raw = agent.get("cost_usd")
     if raw is None:
-        return 0.0
+        return None if agent.get("attempted") else 0.0
     try:
         return float(raw)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _intake_finding_codes(outcome: IntakeOutcome) -> list[str]:
@@ -848,6 +860,32 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
         return float(total or 0.0)
     except (OSError, ValueError, TypeError):
         return 0.0
+
+
+def _prior_sprint_cost_incomplete(project_root: Path, sprint_id: str | None) -> bool:
+    """Return True when the prior generation recorded an incomplete sprint cost.
+
+    A carried total from a generation that could not measure all of its spend is
+    itself a lower bound; the budget check must know that before enforcing a cap
+    against it (#1992). Absent/unreadable records report False — the pre-#1992
+    shape simply carries no completeness claim.
+    """
+    if not sprint_id:
+        return False
+    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
+    if not audit_path.exists():
+        return False
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        sprint_block = data.get("sprint", {})
+        if not isinstance(sprint_block, dict):
+            return False
+        if sprint_block.get("sprint_id") != sprint_id:
+            return False
+        return sprint_block.get("cost_complete") is False
+    except (OSError, yaml.YAMLError, AttributeError):
+        return False
 
 
 def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
@@ -2505,10 +2543,21 @@ def run_sprint(
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
+    # Every source of spend this sprint could not measure, in the order it was
+    # discovered ("issue-1945" for a story, "intake:issue-1946" for a
+    # remediation pass, "carried:..." for spend inherited on resume). While this is
+    # non-empty, ``accumulated_cost`` is a measured LOWER BOUND, not the
+    # sprint's spend — the budget check must refuse to certify a cap it cannot
+    # evaluate rather than dispatch more work against an understated total
+    # (#1992). Guarded by ``cost_lock`` alongside ``accumulated_cost``.
+    unmeasured_spend: list[str] = []
     # Entry-level intake remediation runs in the CLI before run_sprint and
     # spends the same sprint-authorized budget; fold its agent cost into
     # the sprint total so operator-visible accounting matches actual spend.
     if entry_intake_outcomes:
+        for _issue_num, _entry_outcome in entry_intake_outcomes.items():
+            if _intake_outcome_cost_measured(_entry_outcome) is None:
+                unmeasured_spend.append(f"entry-intake:issue-{_issue_num}")
         _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
         if _entry_intake_cost > 0.0:
             accumulated_cost += _entry_intake_cost
@@ -2581,6 +2630,12 @@ def run_sprint(
             _prior_slug = _prior.get("slug")
             if not _prior_slug:
                 continue
+            # An earlier generation's unpriced story is still unpriced spend
+            # this sprint carries. Without re-flagging it here, a --resume would
+            # start with an empty ledger and enforce the cap against a carried
+            # lower bound as if it were complete (#1992).
+            if "cost_usd" in _prior and _prior.get("cost_usd") is None:
+                unmeasured_spend.append(f"carried:{_prior_slug}")
             _prior_outcome = (_prior.get("outcome") or "").upper()
             if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
                 _defer_prior_cost(_prior_slug, _prior)
@@ -2675,6 +2730,10 @@ def run_sprint(
         )
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
+        if _prior_sprint_cost_incomplete(config.project_root, _sprint_id):
+            # The carried total came from a generation that recorded incomplete
+            # cost, so it is a lower bound too (#1992).
+            unmeasured_spend.append("carried:prior-generation")
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
@@ -2906,6 +2965,9 @@ def run_sprint(
     # Intake remediation agent spend (auto_fix LLM rewrites) must roll up
     # into the sprint total. Without this, sprint.total_cost_usd silently
     # excludes every dollar spent on intake auto-fix attempts.
+    for _intake_slug, _intake_outcome in intake_outcomes.items():
+        if _intake_outcome_cost_measured(_intake_outcome) is None:
+            unmeasured_spend.append(f"intake:{_intake_slug}")
     _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
     if _intake_remediation_cost > 0.0:
         accumulated_cost += _intake_remediation_cost
@@ -3713,28 +3775,25 @@ def run_sprint(
                     break
 
                 with cost_lock:
-                    cumulative = prior_cost + accumulated_cost
-                if cumulative >= resolved.budget_usd:
-                    dag.mark_skipped(task.slug)
-                    _budget_reason = (
-                        "budget exhausted "
-                        f"(sprint ${accumulated_cost:.2f} + carried ${prior_cost:.2f} = "
-                        f"${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
+                    _budget_decision = evaluate_budget(
+                        accumulated_cost=accumulated_cost,
+                        prior_cost=prior_cost,
+                        budget_usd=resolved.budget_usd,
+                        unmeasured_spend=list(unmeasured_spend),
                     )
+                if _budget_decision is not None:
+                    dag.mark_skipped(task.slug)
+                    _budget_reason = _budget_decision.story_reason
                     _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=_budget_reason)
                     if stopped_reason is None:
-                        _budget_math = (
-                            f"sprint ${accumulated_cost:.2f} + carried ${prior_cost:.2f} = "
-                            f"${cumulative:.2f} >= ${resolved.budget_usd:.2f}"
-                        )
-                        stopped_reason = f"Budget exhausted ({_budget_math})"
+                        stopped_reason = _budget_decision.stopped_reason
                         if notify and config.notifications.backend not in ("ntfy", "none"):
                             from ..notify_backends import send_notifications
 
                             send_notifications(
                                 config,
-                                f'TheForge: budget exceeded \u2014 "{resolved.name}"',
-                                f"{_budget_math} \u2014 remaining stories skipped",
+                                _budget_decision.notification_title(resolved.name),
+                                f"{_budget_decision.detail} \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} ({_budget_reason})")
                     _record_current_story_entry(task.slug, "SKIPPED", error=_budget_reason)
@@ -4133,6 +4192,11 @@ def run_sprint(
                 story_times[slug] = (t0, t1)
 
                 with cost_lock:
+                    # The budget can only ever be enforced against measured
+                    # spend. Record the shortfall alongside it so the dispatch
+                    # check knows the running total is a lower bound (#1992).
+                    if result.state.total_cost_measured is None:
+                        unmeasured_spend.append(slug)
                     accumulated_cost += result.state.total_cost
 
                 spec_str = slug_to_spec[slug]
@@ -4420,8 +4484,11 @@ def run_sprint(
     # A sprint total is only a total when every story's cost was measured. When
     # any story ran on a transport that reported no cost, ``final_cost`` is a
     # measured lower bound and every surface must say so rather than present it
-    # as the sprint's cost (#1992).
-    _cost_complete = all(e.cost_usd is not None for e in _story_state.stories())
+    # as the sprint's cost (#1992). Intake remediation spends the same budget
+    # outside any story's CoordinatorState, so its unmeasured passes count too.
+    _cost_complete = not unmeasured_spend and all(
+        e.cost_usd is not None for e in _story_state.stories()
+    )
     # Banner, summary, notifications, and SprintResult all project from the
     # same canonical structure — by construction they cannot disagree.
     _canonical_counts = _story_state.counts()
@@ -4441,6 +4508,7 @@ def run_sprint(
         total_cost_usd=final_cost,
         budget_usd=resolved.budget_usd,
         cost_complete=_cost_complete,
+        unmeasured_spend_sources=tuple(unmeasured_spend),
         results=results,
         stopped_reason=stopped_reason,
     )
