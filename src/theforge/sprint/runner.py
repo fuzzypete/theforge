@@ -77,6 +77,7 @@ from .dag import (
 from .display import _print_worker_status, _story_header
 from .gate_timeout_resolver import resolve_effective_gate_timeout
 from .launch_guard import (
+    REASON_IN_FLIGHT,
     REASON_RECONCILE_PRIOR_DONE,
     REASON_STRANDED_WORKTREE,
 )
@@ -926,6 +927,62 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def _continuation_evidence(
+    *,
+    reexec: bool,
+    live_story_slugs: set[str],
+) -> str | None:
+    """Describe why this launch is a continuation of in-flight work, or None.
+
+    A re-exec is not, on its own, evidence that work is in flight: the source
+    change can be observed by the sprint's *own* first pull, before any story has
+    started, and such a launch is still a genuine start. What distinguishes a
+    continuation is observed live work — agent process groups this same pid
+    spawned before the re-exec and that are still running. Startup-only checks
+    are skipped on exactly that evidence, never on the re-exec flag alone, so a
+    launch that has not started anything keeps its full startup sequence.
+
+    Deliberately narrow: prior *recorded* outcomes are not used as evidence,
+    because a sprint id is stable across separate invocations of the same sprint
+    and would make an unrelated later run skip its baseline gate.
+    """
+    if not reexec or not live_story_slugs:
+        return None
+    return (
+        "agent process groups still running for "
+        f"{', '.join(sorted(live_story_slugs))} after the re-exec"
+    )
+
+
+def _skipped_baseline_gate(config: ForgeConfig, evidence: str) -> dict[str, object]:
+    """The baseline-gate record for a run that legitimately did not run it.
+
+    The baseline gate answers one question — was the merge base green *before any
+    dev work started* — and a continuation cannot ask it: work has started, and
+    the host is busy running it, so a failure would report a conclusion about the
+    code drawn from a measurement of our own load. Skipping is recorded
+    explicitly, with its evidence, rather than silently omitted.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return {
+        "status": "skipped",
+        "passed": True,
+        "exit_code": 0,
+        "duration_seconds": 0.0,
+        "started_at": now,
+        "finished_at": now,
+        "merge_base": None,
+        "command": config.validation.gate_command,
+        "skip_reason": "reexec_continuation",
+        "skip_evidence": evidence,
+        "message": (
+            "Baseline gate skipped: this process is continuing an in-flight sprint "
+            f"after a mid-run re-exec ({evidence}); the gate's precondition — no dev "
+            "work started — no longer holds"
+        ),
+    }
+
+
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
     """Return sprint-start warnings for configured CLI agents with unknown cost."""
 
@@ -1406,6 +1463,104 @@ def _run_single_story(
     return task, result, elapsed, started_at, finished_at
 
 
+def _run_inherited_story(
+    config: ForgeConfig,
+    task: TaskStory,
+    triage: "StoryTriage | None",
+    sprint_run_id: str,
+    sprint_name: str,
+    interactive: bool,
+    notify: bool,
+    resume: bool,
+    effective_auto_merge: bool,
+    state_update_fn: "Callable[[dict], None] | None",
+    no_pull: bool = False,
+    plan_gate: "threading.Event | None" = None,
+    preflight_states: dict[str, CoordinatorState] | None = None,
+    stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
+    *,
+    canonical_ref: str,
+    quiesce_timeout: float,
+) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
+    """Resume a story whose agent process group survived a mid-run re-exec.
+
+    Occupies a worker slot exactly like a normal dispatch — which is honest, the
+    story *is* consuming one — and does three things before handing off to
+    :func:`_run_single_story`:
+
+    1. Waits for the inherited agent group to finish. Two agents must never write
+       to one worktree, and nothing else can adopt this group: its sidecar names
+       this pid as owner, so the moment this process exits a later invocation's
+       orphan reaper will kill it.
+    2. Reclaims the group if the wait overruns, so an agent that is wedged cannot
+       hold the story hostage past the worker timeout.
+    3. Triages the worktree *then*, not at sprint start — the re-entry point
+       (review / dev / fresh) is only knowable once the agent has stopped
+       writing.
+
+    The worker deadline the scheduler enforces covers this whole call, so
+    ``quiesce_timeout`` is deliberately a fraction of it: the story must still
+    have time to actually run after the wait.
+    """
+    from .live_stories import await_inherited_agents, reclaim_inherited_agents  # noqa: PLC0415
+
+    quiesced = await_inherited_agents(
+        task.slug,
+        project_root=config.project_root,
+        path_pattern=config.workspace.path_pattern,
+        timeout=quiesce_timeout,
+        stop_event=stop_event,
+        log=_log,
+    )
+    if not quiesced:
+        killed = reclaim_inherited_agents(
+            task.slug,
+            project_root=config.project_root,
+            path_pattern=config.workspace.path_pattern,
+        )
+        _log(
+            f"IN-FLIGHT {task.slug}: inherited agent still running after "
+            f"{int(quiesce_timeout)}s — terminated process group(s) "
+            f"{', '.join(str(p) for p in killed) or 'none'} and resuming from whatever "
+            "it committed"
+        )
+
+    fresh_triage = triage
+    if fresh_triage is None:
+        try:
+            fresh_triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
+            _log(
+                f"IN-FLIGHT {task.slug}: resuming "
+                f"{fresh_triage.action.upper().replace('_', ' ')} ({fresh_triage.reason})"
+            )
+        except Exception as exc:
+            # Triage is an optimisation over "start over"; losing it must not
+            # lose the story.
+            _log(f"WARN {task.slug}: could not triage inherited worktree ({exc}); running fresh")
+            fresh_triage = None
+
+    return _run_single_story(
+        config,
+        task,
+        fresh_triage,
+        sprint_run_id,
+        sprint_name,
+        interactive,
+        notify,
+        # Resume semantics, regardless of the sprint-level --resume flag: the
+        # triage above is the whole point of this path.
+        True,
+        effective_auto_merge,
+        state_update_fn,
+        no_pull,
+        plan_gate,
+        preflight_states,
+        stop_event,
+        base_lands_locally=base_lands_locally,
+    )
+
+
 def _make_worker_phase_fn(
     slug: str,
     worker_phases: dict[str, str],
@@ -1855,6 +2010,7 @@ def run_sprint(
     skipped_issues: "list | None" = None,
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
     force: bool = False,
+    live_story_slugs: "set[str] | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1883,6 +2039,15 @@ def run_sprint(
             resume-equivalent for merged-state reconciliation: every manifest
             story is triaged against merged state before dispatch so a story
             whose PR already landed is never re-entered through WORKSPACE.
+        live_story_slugs: Stories of this same sprint generation whose agent
+            process groups survived the re-exec (resolved by the CLI via
+            ``theforge.sprint.live_stories``). Their worktrees are this run's own
+            live work: protected from the orphan sweep, excluded from the passes
+            that would collide with a running agent, and dispatched through the
+            deferred path that waits for that agent and then resumes the story —
+            this process is the only one that can still finish them. Their
+            existence is also the evidence that startup-only checks (the baseline
+            gate) no longer hold their precondition.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -1904,6 +2069,12 @@ def run_sprint(
     # resume-equivalent for all reconciliation/skip paths.
     reconcile = resume or reexec
 
+    # Stories still executing from before the re-exec. Everything downstream that
+    # would otherwise treat their state as foreign — the orphan worktree sweep,
+    # the baseline gate's "nothing has started yet" precondition, the gate-timeout
+    # load model — is told about them explicitly.
+    _live_story_slugs: set[str] = {s for s in (live_story_slugs or set()) if s}
+
     # Establish that the agents are reachable BEFORE committing wall clock or
     # budget to them (#1952). This runs ahead of the baseline gate, the base
     # pull, and every worktree touch, so a dead credential costs seconds and
@@ -1912,7 +2083,7 @@ def run_sprint(
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
-    sweep_orphan_worktrees(config.project_root, config)
+    sweep_orphan_worktrees(config.project_root, config, protected_slugs=_live_story_slugs)
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
@@ -1925,6 +2096,14 @@ def run_sprint(
         task.slug: (task, source, canonical_ref) for task, source, canonical_ref in task_entries
     }
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
+
+    # Stories of this sprint whose agent survived the re-exec. They stay in the
+    # DAG and are dispatched like any other story, but through the deferred path
+    # (``_run_inherited_story``): wait for the inherited agent, then resume from
+    # whatever it left behind. Excluded only from the work that would collide
+    # with a running agent — startup triage, intake, batch preflight — because
+    # each of those reads or writes a worktree that is being mutated right now.
+    _inflight_slugs: set[str] = {s for s in _live_story_slugs if s in slug_to_context}
 
     # Does ANY story in this sprint merge into the project-root base checkout?
     # This is a sprint-wide question, not a per-story one: story N merging
@@ -1985,12 +2164,17 @@ def run_sprint(
         # not an operator misconfiguration. Fall back to the safe default
         # rather than raising on incidental mock attribute access.
         _mode = "adaptive"
+    # A fresh start contends only with its own configured parallelism. A
+    # continuation additionally contends with the agents it inherited, so the
+    # derived limit must count them — otherwise the gate is measured against a
+    # load model that describes a different run than the one executing.
     _gate_timeout_resolution = resolve_effective_gate_timeout(
         baseline=_baseline_gate_timeout,
         max_parallel=max_parallel,
         host_cores=_host_cores,
         gate_cpu_cores=_gate_cpu_cores,
         mode=_mode,
+        running_stories=len(_live_story_slugs),
     )
     if _gate_timeout_resolution is not None:
         print(
@@ -2000,7 +2184,7 @@ def run_sprint(
         )
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
         _gpc = _gate_timeout_resolution.gate_cpu_cores
-        _mp = _gate_timeout_resolution.max_parallel
+        _mp = _gate_timeout_resolution.actual_parallel or _gate_timeout_resolution.max_parallel
         _hc = _gate_timeout_resolution.host_cores
         print(
             f"[sprint] WARNING: gate CPU demand ({_gpc} cores × parallel {_mp} = "
@@ -2070,7 +2254,20 @@ def run_sprint(
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
-    baseline_gate = _run_baseline_gate(config, resolved)
+    _continuation_reason = _continuation_evidence(
+        reexec=reexec,
+        live_story_slugs=_live_story_slugs,
+    )
+    if _continuation_reason is not None:
+        baseline_gate = _skipped_baseline_gate(config, _continuation_reason)
+        _sprint_logger.emit(
+            "baseline_gate_skipped",
+            reason="reexec_continuation",
+            evidence=_continuation_reason,
+            live_stories=sorted(_live_story_slugs),
+        )
+    else:
+        baseline_gate = _run_baseline_gate(config, resolved)
     resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
     if not bool(baseline_gate.get("passed", False)):
@@ -2277,6 +2474,13 @@ def run_sprint(
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
         for slug, (task, _src, canonical_ref) in slug_to_context.items():
+            if slug in _inflight_slugs:
+                # Triage reads the worktree to decide the re-entry point, and
+                # this one is being written to by a running agent right now — any
+                # verdict taken here describes a half-finished state. Defer it to
+                # dispatch, after the inherited agent has stopped.
+                _log(f"  {slug:<20} DEFERRED (agent still running; triage after it finishes)")
+                continue
             triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
             triages[canonical_ref] = triage
             _log(
@@ -2477,9 +2681,18 @@ def run_sprint(
     # conflicts) are handled by the dropped-slug loop further below and must
     # never consume preflight or worker budget in this generation. Exclude them
     # from every spend/dispatch path here alongside reconcile-skipped stories.
+    #
+    # In-flight stories are excluded from these two passes as well, for a
+    # different reason: they are still scheduled, but an agent is writing to
+    # their worktree right now, so intake and preflight would be reasoning about
+    # (and spending on) a story already being worked.
     _dropped_exclusion = {s for s in (dropped_slugs or {}) if s in slug_to_context}
     _no_dispatch_slugs = skip_slugs | _dropped_exclusion
-    dispatch_tasks = [t for t in normalized.tasks if t.slug not in _no_dispatch_slugs]
+    dispatch_tasks = [
+        t
+        for t in normalized.tasks
+        if t.slug not in _no_dispatch_slugs and t.slug not in _inflight_slugs
+    ]
 
     intake_outcomes = _run_intake_remediation_pass(
         config=config,
@@ -2614,7 +2827,11 @@ def run_sprint(
     # against their stale worktree, or spending budget on an already-dropped
     # story).
     _no_dispatch_slugs = skip_slugs | {s for s in (dropped_slugs or {}) if s in slug_to_context}
-    preflight_tasks = [t for t in normalized.tasks if t.slug not in _no_dispatch_slugs]
+    preflight_tasks = [
+        t
+        for t in normalized.tasks
+        if t.slug not in _no_dispatch_slugs and t.slug not in _inflight_slugs
+    ]
     preflight_states = run_batch_preflight(
         preflight_tasks,
         config,
@@ -2922,6 +3139,13 @@ def run_sprint(
             elif _triage and _triage.action == "skip":
                 _status = "skipped"
                 _detail = {"final_outcome": "SKIPPED"}
+            elif _slug in _inflight_slugs:
+                # Still running from before the re-exec: this run will wait for
+                # that agent and then resume the story, so it is waiting work —
+                # not a drop, and not something an operator should read as idle.
+                _status = "waiting"
+                _blocked_by = [f"in flight: {REASON_IN_FLIGHT}"]
+                _detail = {"in_flight": True, "in_flight_reason": REASON_IN_FLIGHT}
             elif _blocked_by:
                 _status = "blocked"
                 _detail = {}
@@ -3323,6 +3547,12 @@ def run_sprint(
 
                 spec_str = slug_to_spec[task.slug]
                 triage = triages.get(spec_str) if resume else None
+                # A story whose agent survived the re-exec is dispatched through
+                # the deferred path: it waits for that agent, triages what it
+                # left, and resumes — so it reaches a real terminal outcome in
+                # this run instead of being abandoned to the next invocation's
+                # orphan reaper.
+                _inherited = task.slug in _inflight_slugs
                 batch_assignments[task.slug] = batch_number
                 _submission_counter[0] += 1
                 print(
@@ -3337,9 +3567,11 @@ def run_sprint(
                         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     )
 
-                # Create plan gate for fresh parallel runs
+                # Create plan gate for fresh parallel runs. An inherited story
+                # re-enters through triage and never emits PLAN_DONE, so gating
+                # it would block the scheduler on a signal that never comes.
                 gate: threading.Event | None = None
-                if use_plan_gates and triage is None:
+                if use_plan_gates and triage is None and not _inherited:
                     gate = threading.Event()
                     plan_gates[task.slug] = gate
 
@@ -3355,8 +3587,20 @@ def run_sprint(
                 )
                 stop_evt = threading.Event()
                 stop_events[task.slug] = stop_evt
+                _dispatch_kwargs: dict = {"base_lands_locally": _sprint_lands_locally}
+                if _inherited:
+                    _dispatch_fn = _run_inherited_story
+                    _dispatch_kwargs["canonical_ref"] = spec_str
+                    # Half the worker budget to wait for the inherited agent,
+                    # leaving the other half to actually resume the story before
+                    # the scheduler's deadline expires the worker.
+                    _dispatch_kwargs["quiesce_timeout"] = (
+                        float(story_worker_timeouts[task.slug]) / 2.0
+                    )
+                else:
+                    _dispatch_fn = _run_single_story
                 fut = pool.submit(
-                    _run_single_story,
+                    _dispatch_fn,
                     worker_config,
                     task,
                     triage,
@@ -3373,7 +3617,7 @@ def run_sprint(
                     stop_evt,
                     # Keyword, not positional: stop_evt must stay the last
                     # positional argument for callers that index args[-1].
-                    base_lands_locally=_sprint_lands_locally,
+                    **_dispatch_kwargs,
                 )
                 active[task.slug] = fut
                 story_deadlines[task.slug] = time.monotonic() + float(

@@ -575,11 +575,25 @@ def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
     return None
 
 
-def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
-    """Remove orphaned or safely-removable worktrees under .forge/worktrees/."""
+def sweep_orphan_worktrees(
+    project_root: Path,
+    config: ForgeConfig,
+    *,
+    protected_slugs: set[str] | None = None,
+) -> None:
+    """Remove orphaned or safely-removable worktrees under .forge/worktrees/.
+
+    ``protected_slugs`` names worktrees the caller knows are live work of the
+    current run — after a mid-run re-exec, the surviving agent process groups
+    (see :mod:`theforge.sprint.live_stories`). Liveness is not derivable from the
+    git state this sweep inspects: an agent that has not committed yet leaves a
+    clean tree 0 commits ahead of base, which is indistinguishable here from an
+    abandoned worktree. The caller knows; the sweep does not. So it is told.
+    """
     worktrees_root = project_root / ".forge" / "worktrees"
     if not worktrees_root.exists():
         return
+    protected = set(protected_slugs or ())
 
     ok, output = _cu._run_shell("git worktree list --porcelain", project_root)
     registered: dict[Path, str | None] = {}
@@ -602,6 +616,12 @@ def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
         if not candidate.is_dir():
             continue
         slug = candidate.name
+        if slug in protected:
+            _cu._log(
+                f"⚠ WORKSPACE  preserving worktree {slug} — live agent from this "
+                "sprint is still running in it"
+            )
+            continue
         if (lock_dir / f"{slug}.lock").exists():
             continue
         if (candidate / ESCALATED_MARKER_PATH).exists():

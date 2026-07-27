@@ -416,6 +416,7 @@ def sweep_story_locks(
     project_root: Path,
     *,
     slugs: list[str] | None = None,
+    exclude_slugs: set[str] | None = None,
 ) -> list[Path]:
     """Remove unlocked story lock files at sprint launch.
 
@@ -423,6 +424,12 @@ def sweep_story_locks(
     at sprint launch is stale and is removed, regardless of whether its recorded
     PID is dead, recycled, or still alive. Live holders keep their flock and are
     left in place for the conflict gate to inspect precisely.
+
+    ``exclude_slugs`` names stories whose lock file must survive the sweep even
+    though nothing holds its flock. That combination is not a contradiction after
+    a mid-run re-exec: ``os.execv`` closes the lock fd (and so releases the
+    flock) while the story's agent process group keeps running, so an unheld lock
+    is exactly what a live story looks like from the new process image.
     """
     lock_dir = project_root / ".forge" / "locks"
     if not lock_dir.exists():
@@ -432,6 +439,9 @@ def sweep_story_locks(
         lock_paths = sorted(lock_dir.glob("*.lock"))
     else:
         lock_paths = [lock_dir / f"{slug}.lock" for slug in slugs]
+    if exclude_slugs:
+        excluded_names = {f"{slug}.lock" for slug in exclude_slugs}
+        lock_paths = [p for p in lock_paths if p.name not in excluded_names]
 
     removed: list[Path] = []
     for lock_path in lock_paths:
