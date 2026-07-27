@@ -2334,9 +2334,7 @@ def run_sprint(
             "preflight_original_verdict": getattr(
                 result.state, "preflight_cached_original_verdict", None
             ),
-            "preflight_source_run_id": getattr(
-                result.state, "preflight_cached_from_run_id", None
-            ),
+            "preflight_source_run_id": getattr(result.state, "preflight_cached_from_run_id", None),
             "error": result.state.error,
             "error_type": result.state.error_type,
             "outcome_code": result.state.error_type or outcome.lower(),
@@ -2446,9 +2444,9 @@ def run_sprint(
             f"Intake remediation cost: ${_intake_remediation_cost:.4f} (rolled into sprint total)"
         )
     for _slug, _outcome in intake_outcomes.items():
-        story_cost_adjustments[_slug] = (
-            story_cost_adjustments.get(_slug, 0.0) + _intake_outcome_cost(_outcome)
-        )
+        story_cost_adjustments[_slug] = story_cost_adjustments.get(
+            _slug, 0.0
+        ) + _intake_outcome_cost(_outcome)
     for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
         _issue_slug = f"issue-{_issue_num}"
         story_cost_adjustments[_issue_slug] = story_cost_adjustments.get(
@@ -2746,6 +2744,7 @@ def run_sprint(
     # Persist resume-time already-completed stories before any possible re-exec
     # handoff so later generations can recover the full logical sprint history.
     if resume:
+
         def _already_done_story_entry(
             canonical_ref: str,
             slug: str,
