@@ -119,12 +119,44 @@ def has_diagnose_marker(run_id: str, project_root: Path) -> bool:
     return (project_root / ".forge" / "runs" / f"{run_id}.diagnose").exists()
 
 
+_CAUSE_MAX_CHARS = 500
+
+
+def _flatten_cause(cause: str) -> str:
+    """Collapse a terminating cause to a single truncated line.
+
+    The ``.ended`` marker is line-oriented (outcome first, cause second), so a
+    multi-line exception message must not smuggle extra lines into the file.
+    """
+    flat = " ".join(cause.split())
+    if len(flat) > _CAUSE_MAX_CHARS:
+        flat = flat[: _CAUSE_MAX_CHARS - 1] + "…"
+    return flat
+
+
+def format_exception_cause(exc: BaseException) -> str:
+    """Return a short single-line description of a terminating exception."""
+    message = " ".join(str(exc).split())
+    if not message:
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {message}"
+
+
 def write_run_ended(
-    run_id: str, project_root: Path, outcome: str = "stopped", *, force: bool = False
+    run_id: str,
+    project_root: Path,
+    outcome: str = "stopped",
+    *,
+    force: bool = False,
+    cause: str | None = None,
 ) -> None:
     """Write .forge/runs/<run_id>.ended with the terminal outcome.
 
-    outcome is a short string: "stopped", "completed", or "orphaned".
+    outcome is a short string: "stopped", "completed", "failed", or "orphaned".
+    ``cause`` is an optional short reason (e.g. the terminating exception
+    message) persisted on a second line so status surfaces can name *why* a run
+    ended abnormally instead of only that it did.
+
     When force=False (default) the file is not overwritten if it already
     exists — the first writer (usually the SIGTERM handler) wins.
     """
@@ -133,19 +165,37 @@ def write_run_ended(
     ended_file = runs_dir / f"{run_id}.ended"
     if not force and ended_file.exists():
         return
+    payload = outcome
+    if cause:
+        payload = f"{outcome}\n{_flatten_cause(cause)}"
     try:
-        ended_file.write_text(outcome, encoding="utf-8")
+        ended_file.write_text(payload, encoding="utf-8")
     except OSError:
         pass
 
 
 def read_run_ended(run_id: str, project_root: Path) -> str | None:
     """Return the terminal outcome recorded in .forge/runs/<run_id>.ended, or None."""
+    record = read_run_ended_record(run_id, project_root)
+    return record[0] if record is not None else None
+
+
+def read_run_ended_record(run_id: str, project_root: Path) -> tuple[str, str | None] | None:
+    """Return ``(outcome, cause)`` from .forge/runs/<run_id>.ended, or None.
+
+    ``cause`` is None for markers written without one (the common
+    stopped/completed case) and for legacy single-line markers.
+    """
     ended_file = project_root / ".forge" / "runs" / f"{run_id}.ended"
     try:
-        return ended_file.read_text(encoding="utf-8").strip() or None
-    except FileNotFoundError:
+        text = ended_file.read_text(encoding="utf-8")
+    except OSError:
         return None
+    lines = [line.strip() for line in text.splitlines()]
+    if not lines or not lines[0]:
+        return None
+    cause = next((line for line in lines[1:] if line), None)
+    return lines[0], cause
 
 
 def _read_pid_file(pid_file: Path) -> tuple[int, str] | None:
