@@ -893,6 +893,32 @@ def _detect_partial_value(story: dict, audit: dict) -> list[str]:
     return values
 
 
+def _merge_failed_action(story: dict, ref: str) -> str:
+    """Next step for a failed landing, branched on the evidenced cause.
+
+    A merge can fail for reasons that call for opposite operator responses, and
+    the recorded error text is the evidence that distinguishes them. Naming a
+    merge conflict unconditionally (the prior behavior) is wrong whenever the PR
+    was mergeable and merely red, or merely slow — issue #1946.
+    """
+    error = (_nonempty(story.get("error")) or "").lower()
+    if "required checks failed" in error:
+        return (
+            f"fix the required checks named in {ref}'s merge failure, then re-run the "
+            "gate and land it — the PR was abandoned decided-red, not blocked by a "
+            "conflict or a wait budget"
+        )
+    if "timed out" in error:
+        return (
+            f"inspect {ref}'s queued PR: its required checks were still pending when the "
+            "merge wait expired — raise merge_wait_timeout_seconds or land it manually "
+            "once the checks settle"
+        )
+    if "conflict" in error:
+        return f"resolve the merge conflict for {ref} and re-run the merge"
+    return f"inspect {ref}'s PR for the merge failure cause recorded above, then re-run the merge"
+
+
 def _recommend_actions(primary: str, contributing: list[str], story: dict) -> list[str]:
     """Map primary class + contributing factors to actionable next steps."""
     ref = _story_ref(story)
@@ -913,7 +939,7 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
             "not a code defect requiring LLM diagnosis"
         ),
         "intake_shape": f"reshape the {ref} issue body to satisfy the intake gate, then re-run",
-        "merge_failed": f"resolve the merge conflict for {ref} and re-run the merge",
+        "merge_failed": _merge_failed_action(story, ref),
         "merge_arming_failed": (
             f"configure branch protection so auto-merge can arm, or merge {ref} manually"
         ),
@@ -946,9 +972,13 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
         actions.append("wire the provider fallback so the next failure recovers automatically")
     if "operator_gate_timeout" in contributing:
         actions.append("shorten or auto-resolve the operator decision gate that timed out")
-    if "dev_iteration_limit" in contributing and primary != "iteration_exhaustion":
+    # A story that reached the merge queue produced a reviewed, PR-worthy commit;
+    # its landing failed for a post-review reason. Iteration-budget advice there
+    # names a cause the evidence contradicts (issue #1946).
+    iteration_advice_applies = primary not in {"iteration_exhaustion", "merge_failed"}
+    if "dev_iteration_limit" in contributing and iteration_advice_applies:
         actions.append("raise the dev iteration budget or narrow the story scope")
-    if "review_iteration_limit" in contributing and primary != "iteration_exhaustion":
+    if "review_iteration_limit" in contributing and iteration_advice_applies:
         actions.append("raise the review iteration budget or reduce review churn")
 
     return actions

@@ -60,7 +60,7 @@ from .audit import (
     persist_accumulated_story_state,
 )
 from .auth_gate import enforce_sprint_auth_readiness
-from .ci_checks import poll_required_checks
+from .ci_checks import failing_required_pr_checks, poll_required_checks
 from .collision import (
     compute_bundle_assignments,
     compute_synthetic_edges,
@@ -1474,13 +1474,27 @@ def _snapshot_last_known(
     return snapshot
 
 
+def _failing_required_pr_checks(pr_url: str, project_root: Path, base_branch: str) -> list[str]:
+    """Required checks on ``pr_url`` that have reached a terminal failing state.
+
+    Thin seam over :mod:`theforge.sprint.ci_checks` so the queued-PR wait can be
+    tested without a live ``gh``. Never raises: an unanswerable probe returns no
+    failures, which keeps the caller waiting instead of abandoning a PR whose
+    check state we could not read.
+    """
+    try:
+        return failing_required_pr_checks(project_root, pr_url, base_branch)
+    except Exception:  # pragma: no cover - ci_checks already fails soft
+        return []
+
+
 def _poll_queued_pr(
     pr_url: str,
     project_root: Path,
     timeout_seconds: int,
     base_branch: str | None = None,
 ) -> dict[str, str]:
-    """Poll GitHub until a queued PR is merged, closed, or times out.
+    """Poll GitHub until a queued PR is merged, closed, red, or times out.
 
     When ``base_branch`` is supplied, "merged" is only reported once GitHub
     reports MERGED *and* the PR's merge commit is reachable on
@@ -1488,6 +1502,12 @@ def _poll_queued_pr(
     several seconds before the merge commit propagates to the base ref;
     releasing a collision-serialized dependent on the GitHub state alone
     re-creates the race the collision DAG existed to prevent (issue #1402).
+
+    A still-open PR is also probed for terminally-failed required checks each
+    iteration. A decided-red PR can never merge, so waiting on it only burns the
+    merge-wait budget and then misreports the outcome as a queue timeout (issue
+    #1946); such a PR returns ``checks_failed`` immediately, carrying the names
+    of the failing checks. The wait budget is reserved for *pending* checks.
     """
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -1511,10 +1531,35 @@ def _poll_queued_pr(
                     return {"status": "merged"}
             elif state == "CLOSED":
                 return {"status": "closed"}
+            elif base_branch is not None:
+                failing = _failing_required_pr_checks(pr_url, project_root, base_branch)
+                if failing:
+                    return {
+                        "status": "checks_failed",
+                        "failing_checks": ", ".join(failing),
+                    }
 
         if time.monotonic() >= deadline:
             return {"status": "timeout"}
         time.sleep(30)
+
+
+def _queued_pr_failure_message(
+    poll_result: dict[str, str], pr_url: str, timeout_seconds: int
+) -> str:
+    """Render the merge-failure cause for a non-merged queued-PR poll result.
+
+    The cause string is the only evidence downstream RCA has, so each terminal
+    status gets its own wording: "timed out" is reserved for an actual deadline
+    expiry, and a decided-red PR names the required checks that failed.
+    """
+    status = poll_result.get("status", "unknown")
+    if status == "checks_failed":
+        failing = poll_result.get("failing_checks") or "unknown"
+        return f"Queued PR required checks failed ({failing}): {pr_url}"
+    if status == "timeout":
+        return f"Queued PR timed out after {timeout_seconds}s: {pr_url}"
+    return f"Queued PR {status}: {pr_url}"
 
 
 def _merge_visible_on_base(pr_url: str, project_root: Path, base_branch: str) -> bool:
@@ -2991,13 +3036,11 @@ def run_sprint(
                                 mark_merge_failed as _mark_mf,
                             )
 
-                            if poll_result["status"] == "timeout":
-                                _err = (
-                                    f"Queued PR timed out after "
-                                    f"{config.workspace.merge_wait_timeout_seconds}s: {dep_pr_url}"
-                                )
-                            else:
-                                _err = f"Queued PR {poll_result['status']}: {dep_pr_url}"
+                            _err = _queued_pr_failure_message(
+                                poll_result,
+                                dep_pr_url,
+                                config.workspace.merge_wait_timeout_seconds,
+                            )
                             _mark_mf(
                                 dep_result.state,
                                 dep_result,
@@ -3204,13 +3247,9 @@ def run_sprint(
                             mark_merge_failed as _mark_mf,
                         )
 
-                        if _qp_poll["status"] == "timeout":
-                            _err = (
-                                f"Queued PR timed out after "
-                                f"{config.workspace.merge_wait_timeout_seconds}s: {_qp_pr_url}"
-                            )
-                        else:
-                            _err = f"Queued PR {_qp_poll['status']}: {_qp_pr_url}"
+                        _err = _queued_pr_failure_message(
+                            _qp_poll, _qp_pr_url, config.workspace.merge_wait_timeout_seconds
+                        )
                         _mark_mf(_qp_result.state, _qp_result, _err, _qp_result.state.branch_name)
                         _set_outcome(
                             _qp_slug, StoryOutcome.MERGE_FAILED, phase=_qp_result.phase.name
@@ -3645,13 +3684,9 @@ def run_sprint(
                     mark_merge_failed as _mark_mf,
                 )
 
-                if poll_result["status"] == "timeout":
-                    _err = (
-                        f"Queued PR timed out after "
-                        f"{config.workspace.merge_wait_timeout_seconds}s: {pr_url}"
-                    )
-                else:
-                    _err = f"Queued PR {poll_result['status']}: {pr_url}"
+                _err = _queued_pr_failure_message(
+                    poll_result, pr_url, config.workspace.merge_wait_timeout_seconds
+                )
                 _mark_mf(result.state, result, _err, result.state.branch_name)
                 _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
