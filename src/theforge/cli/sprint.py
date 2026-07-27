@@ -17,8 +17,65 @@ from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
 from theforge.sprint.runner import parse_manifest_slugs
 
+# A run's reported disposition must be derived from how it actually ended, not
+# from the absence of a record saying otherwise. ``_BACKSTOP`` carries the
+# outcome for the atexit fallback registered on the detached path, covering
+# failures that escape before/around the per-mode try/finally blocks below.
+_BACKSTOP: dict[str, str | None] = {"outcome": "completed", "cause": None}
+
+# Cause recorded when a sprint process reaches its terminal marker without
+# either completing run_sprint or catching an exception (SIGINT, SystemExit,
+# BaseException escaping the runner).
+_UNKNOWN_END_CAUSE = "sprint process ended before recording a completion"
+
+
+def _exc_cause(exc: BaseException) -> str:
+    """Return a short single-line description of a terminating exception."""
+    from theforge import detach as _detach_mod
+
+    return _detach_mod.format_exception_cause(exc)
+
+
+def _record_run_failure(cause: str) -> None:
+    """Mark the active sprint process as terminating abnormally."""
+    _BACKSTOP["outcome"] = "failed"
+    _BACKSTOP["cause"] = cause
+
+
+def _backstop_run_ended(run_id: str, project_root: Path) -> None:
+    """atexit fallback: write whatever terminal outcome this process observed.
+
+    A no-op when the per-mode ``finally`` already wrote the marker
+    (``write_run_ended`` does not overwrite an existing file).
+    """
+    from theforge import detach as _detach_mod
+
+    _detach_mod.write_run_ended(
+        run_id,
+        project_root,
+        _BACKSTOP["outcome"] or "failed",
+        cause=_BACKSTOP["cause"],
+    )
+
 
 def cmd_sprint(args: object) -> int:
+    """Run multiple stories via a sprint manifest or GitHub query.
+
+    Thin wrapper around :func:`_cmd_sprint` that records an abnormal
+    termination before the exception leaves the command, so the atexit backstop
+    cannot label a crashed sprint as completed.
+    """
+    try:
+        return _cmd_sprint(args)
+    except KeyboardInterrupt:
+        _BACKSTOP.update({"outcome": "stopped", "cause": "interrupted by operator (SIGINT)"})
+        raise
+    except BaseException as exc:
+        _record_run_failure(_exc_cause(exc))
+        raise
+
+
+def _cmd_sprint(args: object) -> int:
     """Run multiple stories via a sprint manifest or GitHub query."""
     from theforge import daemon as _daemon
     from theforge import detach as _detach
@@ -152,14 +209,15 @@ def cmd_sprint(args: object) -> int:
             # Backstop cleanup for early-return paths (all-skipped, no
             # stories, --detach-not-supported guard) that bypass the
             # try/finally in run_sprint blocks. Idempotent — write_run_ended
-            # is a no-op if the .ended marker already exists.
+            # is a no-op if the .ended marker already exists. Writes the
+            # outcome this process actually observed, so an exception escaping
+            # before the per-mode try/finally is not recorded as "completed".
             import atexit as _atexit
 
             _atexit.register(
-                _detach_mod.write_run_ended,
+                _backstop_run_ended,
                 launch_run_id,
                 config.project_root,
-                "completed",
             )
             _atexit.register(_detach_mod.remove_pid, launch_run_id, config.project_root)
         else:
@@ -289,6 +347,11 @@ def cmd_sprint(args: object) -> int:
             print(f"[daemon] Submit failed: {err}", file=sys.stderr)
             return 1
 
+    # Default to a failed disposition: only a run that returns from run_sprint
+    # has been observed to complete. Anything else (exception, SIGINT,
+    # BaseException) must not be recorded as a completion.
+    outcome = "failed"
+    cause: str | None = _UNKNOWN_END_CAUSE
     try:
         result = run_sprint(
             config,
@@ -303,19 +366,28 @@ def cmd_sprint(args: object) -> int:
             dropped_slugs=dropped_slugs,
             force=force,
         )
+    except KeyboardInterrupt:
+        # Ctrl-C is a deliberate termination, not a crash — record it as such
+        # rather than folding it into the failure bucket.
+        outcome, cause = "stopped", "interrupted by operator (SIGINT)"
+        raise
     except Exception as exc:
         import traceback
 
+        cause = _exc_cause(exc)
+        _record_run_failure(cause)
         print(f"Sprint error: {exc}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         return 1
+    else:
+        outcome, cause = "completed", None
     finally:
         release_story_locks(locked_fds)
         # Write terminal marker then remove PID — ensures status is accurate even
         # if run_sprint raises. SIGTERM handler may have already written "stopped";
         # write_run_ended is a no-op when the file already exists.
-        _detach.write_run_ended(run_id, config.project_root, "completed")
+        _detach.write_run_ended(run_id, config.project_root, outcome, cause=cause)
         _detach.remove_pid(run_id, config.project_root)
 
     return 0 if result.specs_failed == 0 else 1
@@ -1128,6 +1200,9 @@ def _run_query_mode(
         )
         return 1
 
+    # See the manifest-mode comment: absence of a completion is not completion.
+    outcome = "failed"
+    cause: str | None = _UNKNOWN_END_CAUSE
     try:
         result = run_sprint(
             config,
@@ -1144,17 +1219,26 @@ def _run_query_mode(
             entry_intake_outcomes=entry_intake_outcomes,
             force=force,
         )
+    except KeyboardInterrupt:
+        # Ctrl-C is a deliberate termination, not a crash — record it as such
+        # rather than folding it into the failure bucket.
+        outcome, cause = "stopped", "interrupted by operator (SIGINT)"
+        raise
     except Exception as exc:
         import traceback
 
+        cause = _exc_cause(exc)
+        _record_run_failure(cause)
         print(f"Sprint error: {exc}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         return 1
+    else:
+        outcome, cause = "completed", None
     finally:
         release_story_locks(locked_fds)
         # Write terminal marker then remove PID — same pattern as manifest mode.
-        _detach.write_run_ended(run_id, config.project_root, "completed")
+        _detach.write_run_ended(run_id, config.project_root, outcome, cause=cause)
         _detach.remove_pid(run_id, config.project_root)
 
     return 0 if result.specs_failed == 0 else 1

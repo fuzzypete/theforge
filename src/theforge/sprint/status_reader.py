@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -847,6 +847,33 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         )
 
     return entries
+
+
+#: Statuses that describe work the sprint process was actively advancing. When
+#: that process is gone, none of them can still be true.
+_IN_FLIGHT_STATUSES = {"running"}
+
+
+def mark_interrupted_entries(entries: list[StoryStatusEntry]) -> list[StoryStatusEntry]:
+    """Rewrite in-flight entries for a run whose owning process is gone.
+
+    Live state records the last phase a story reached; nothing rewrites those
+    entries when the sprint process dies, so a killed story keeps reading as
+    ``running``. Work that was interrupted is not work that is progressing —
+    report it as ``interrupted``, preserving the last known phase as history
+    rather than as current progress.
+    """
+    reconciled: list[StoryStatusEntry] = []
+    for entry in entries:
+        if entry.status not in _IN_FLIGHT_STATUSES:
+            reconciled.append(entry)
+            continue
+        last_detail = (entry.detail or "").strip()
+        detail = "interrupted — sprint process is no longer running"
+        if last_detail:
+            detail = f"{detail}; last: {last_detail}"
+        reconciled.append(replace(entry, status="interrupted", detail=detail))
+    return reconciled
 
 
 def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] | None:
