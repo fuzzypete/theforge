@@ -120,6 +120,31 @@ RC_NUM=n scripts/cut-rc.sh X.Y.Z
   the operator explicitly asks to merge. Surface the gate/review state, then
   merge.
 
+### End-of-sprint audit publish (issue #2006)
+
+The last thing a sprint does is commit `.forge/audits/runs/*` in the project-root
+checkout and push the base branch. A push rejected because the base branch moved
+— usually the merge of this sprint's *own* story PR — is reconciled (`git fetch`
++ `git rebase origin/<base>`) and retried up to three times before the sprint
+fails.
+
+If you find audit commits sitting local, read
+`.forge/audit-publish-state.json` in the project root rather than guessing which
+of the failure modes you hit — the `state` field says which:
+
+| `state` | Meaning | Remedy |
+| --- | --- | --- |
+| `published` | Commit reached `origin/<base>`. | none |
+| `clean` | Nothing was pending this run. | none |
+| `local_only` | Publish deliberately skipped (`auto_push` off on a locally-landing run). | push `<base>` yourself before any run that diffs against `origin/<base>` |
+| `committed_unpublished` | The run died between the commit and the push. | fetch, rebase, push |
+| `push_refused` | Remote refused the push through all retries; `detail` has git's output. | inspect the remote, then fetch/rebase/push |
+| `reconcile_failed` | The fetch or rebase itself failed (e.g. conflicting audit records); any partial rebase was aborted. | resolve by hand |
+| `verify_failed` | Push reported success but `<base>` is still ahead. | fetch, rebase, push |
+
+A *stale* file (state `published`/`clean`) next to unpushed audit commits means
+the run ended before it ever reached the publish step.
+
 ## 6. Dogfood substrate model
 
 - Two runtimes that must stay **disjoint**: the *orchestrator* is the released
