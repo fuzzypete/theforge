@@ -403,10 +403,13 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
         "duration_s": round(sum(all_durations), 2),
         "dev_attempts_total": len(state.dev_results),
         "dev_iterations_productive": len(state.dev_results),
-        "review_cycles_total": state.review_cycle,
+        # Reviewer cycles only; cycles VALIDATE opened are reported separately so
+        # neither readers nor the adaptive learner conflate them (#1981).
+        "review_cycles_total": state.reviewer_cycles_run,
+        "review_cycles_opened_by_validate": state.validate_opened_review_cycles,
         # kept for backward compatibility with older audit readers
         "dev_iterations": len(state.dev_results),
-        "review_cycles": state.review_cycle,
+        "review_cycles": state.reviewer_cycles_run,
     }
 
     return {
@@ -433,7 +436,9 @@ def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig)
             else config.retry.max_dev_iterations
         )
     )
-    review_used = len(state.review_iteration_telemetry)
+    # Budget view: a review cycle VALIDATE bought for a gate or convention
+    # finding was really spent, so exhaustion must not report zero (#1981).
+    review_used = state.review_cycles_spent
     review_max = (
         state.adaptive_review_max
         if state.adaptive_review_max
@@ -453,8 +458,9 @@ def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig)
         "review": {
             "used": review_used,
             "max": review_max,
-            "hit_limit": review_used >= review_max and review_used > 0,
-            "early_finish": 0 < review_used < review_max,
+            "hit_limit": (review_used >= review_max and review_used > 0)
+            or state.review_budget_exhausted,
+            "early_finish": (0 < review_used < review_max and not state.review_budget_exhausted),
             "early_terminated": state.review_early_terminated,
         },
     }
@@ -653,9 +659,14 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "iterations": {
             "dev_attempts_total": len(state.dev_results),
             "dev_iterations_productive": len(state.dev_results),
-            "review_cycles_total": state.review_cycle,
+            # Reviewer view: the adaptive iteration learner percentiles these to
+            # set future max_review_cycles, so cycles VALIDATE opened for its own
+            # blocking findings are excluded — a gate failure must not teach the
+            # router that reviewers need more cycles (#1981).
+            "review_cycles_total": state.reviewer_cycles_run,
             # kept for backward compatibility with older audit readers
-            "review_cycles": state.review_cycle,
+            "review_cycles": state.reviewer_cycles_run,
+            "review_cycles_opened_by_validate": state.validate_opened_review_cycles,
             "dev_iterations": len(state.dev_results),
             "gate_decisions": state.gate_decisions,
             "dev_loop": _serialize_dev_iteration_metrics(state),
@@ -900,6 +911,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "convention_violations": state.convention_violations
         if state.convention_violations
         else None,
+        # Coordinator-raised blocking findings that bought a review cycle. Kept
+        # out of `reviews` on purpose: those are reviewer verdicts, these are the
+        # coordinator's own (#1981).
+        "validate_blocks": state.validate_blocks or None,
         "finding_registry": [
             {
                 "finding_id": r.finding_id,

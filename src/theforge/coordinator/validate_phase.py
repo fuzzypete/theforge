@@ -11,6 +11,7 @@ import types
 from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
+from typing import NamedTuple
 
 from theforge.advisory_conventions import update_advisory_violations
 from theforge.config import ForgeConfig
@@ -53,8 +54,8 @@ class _ValidateOutcome(Enum):
     ``RETRY_DEV`` hands the finding back to the dev inside the current review
     cycle, spending one dev iteration. ``RETRY_DEV_NEW_CYCLE`` does the same
     after the per-cycle dev pool is spent: the engine opens a review cycle,
-    records a synthetic blocking review, and resets the dev budget so the
-    finding has iterations to be fixed in (#1981).
+    records the finding in ``state.validate_blocks``, and resets the dev budget
+    so the finding has iterations to be fixed in (#1981).
     """
 
     PASS = auto()
@@ -171,6 +172,14 @@ def _gate_trace_path(iter_num: int | None) -> str | None:
     inline tail. The path is relative to the worktree root
     (``.forge/traces/{iter}-gate.txt``); ESCALATE worktrees are preserved, so it
     remains resolvable for the surfaces that read an escalation.
+
+    ``iter_num`` is ``state.dev_trace_count`` — the monotonic dev counter, not the
+    per-cycle ``dev_iteration``. The two agreed until a review cycle could be
+    opened from VALIDATE; after that the reset counter repeats iteration numbers
+    and each new cycle's gate trace overwrote the previous cycle's, destroying
+    the first failure's evidence on the repeated-failure path this fix creates
+    (#1981). It also pairs the gate trace with the ``{n}-dev-output.txt`` of the
+    same iteration.
     """
     if iter_num is None:
         return None
@@ -201,7 +210,33 @@ def _new_review_cycle_available(state: CoordinatorState, config: ForgeConfig) ->
     return state.review_cycle + 1 < cap
 
 
-def _blocking_finding_route(state: CoordinatorState, config: ForgeConfig) -> _ValidateOutcome:
+class _BlockRoute(NamedTuple):
+    """Where a coordinator-observed blocking finding goes, and why.
+
+    ``reason`` is carried rather than re-derived at each escalation site so the
+    operator message, the audit flag, and the routing decision cannot drift out
+    of agreement about which budget or signal stopped the retry.
+    """
+
+    outcome: _ValidateOutcome
+    reason: str
+
+
+_BLOCK_REASONS = {
+    "dev_budget_remains": "dev iterations remain in this review cycle",
+    "review_cycle_bought": "the dev pool is spent; a review cycle was opened for the finding",
+    "p2_cleanup": (
+        "P2 cleanup spends the existing dev iteration pool and never opens a review cycle"
+    ),
+    "gate_signature_stalled": (
+        "the gate produced identical output on the last two iterations, so another"
+        " review cycle would not change it"
+    ),
+    "budgets_exhausted": "dev iterations and review cycles are both exhausted",
+}
+
+
+def _blocking_finding_route(state: CoordinatorState, config: ForgeConfig) -> _BlockRoute:
     """Route a coordinator-observed blocking finding (gate failure or hard convention).
 
     Gate execution is coordinator-owned (#1948), so the dev never sees a gate
@@ -210,16 +245,59 @@ def _blocking_finding_route(state: CoordinatorState, config: ForgeConfig) -> _Va
     cycle — the same currency ``review_phase`` spends when a reviewer requests
     changes, and for the same reason: a coordinator-observed blocking finding
     *is* a REQUEST_CHANGES, raised by the coordinator rather than a reviewer.
-    Terminal only when both budgets are gone.
+    Terminal only when both budgets are gone, or when the failure has stopped
+    moving and another cycle would buy nothing.
     """
     if not state.budget.is_exhausted():
-        return _ValidateOutcome.RETRY_DEV
+        return _BlockRoute(_ValidateOutcome.RETRY_DEV, "dev_budget_remains")
     # P2 cleanup runs after APPROVE and is deliberately capped by the existing
     # dev pool (engine skips reset_cycle for it), so it never buys a new cycle:
     # a cleanup iteration that breaks the gate stays terminal.
-    if not state.p2_cleanup_active and _new_review_cycle_available(state, config):
-        return _ValidateOutcome.RETRY_DEV_NEW_CYCLE
-    return _ValidateOutcome.ESCALATE
+    if state.p2_cleanup_active:
+        return _BlockRoute(_ValidateOutcome.ESCALATE, "p2_cleanup")
+    # Buying a cycle is only worth it if the failure is still moving. An
+    # unchanged gate signature across the last two iterations means the dev is
+    # not converging, and another pool of iterations would cost the full
+    # dev × cycle cross-product to learn the same thing.
+    if _gate_signature_stalled(state):
+        return _BlockRoute(_ValidateOutcome.ESCALATE, "gate_signature_stalled")
+    if _new_review_cycle_available(state, config):
+        return _BlockRoute(_ValidateOutcome.RETRY_DEV_NEW_CYCLE, "review_cycle_bought")
+    return _BlockRoute(_ValidateOutcome.ESCALATE, "budgets_exhausted")
+
+
+def _gate_signature_stalled(state: CoordinatorState) -> bool:
+    """Return True when the last two iterations produced identical gate output.
+
+    ``_is_identical_failure`` needs named failing tests, so it cannot see a
+    lint- or format-only failure — the #1972 shape, and exactly the class this
+    fix makes cheap to retry. Comparing output fingerprints catches it without
+    parsing any toolchain's format.
+
+    Deliberately narrow: it gates only the *purchase* of a new review cycle, so
+    a dev always gets its full in-cycle iterations first, and it needs two
+    recorded iterations with equal non-null fingerprints — output carrying a
+    duration or any varying token never matches, which lets the retry proceed.
+    """
+    telemetry = state.dev_iteration_telemetry
+    if len(telemetry) < 2:
+        return False
+    curr = telemetry[-1].gate_output_fingerprint
+    prev = telemetry[-2].gate_output_fingerprint
+    return curr is not None and curr == prev
+
+
+def _apply_block_route(state: CoordinatorState, route: _BlockRoute) -> str:
+    """Record what a terminal routing decision means for budget reporting.
+
+    ``review_budget_exhausted`` is the fact the router acted on: no further
+    review cycle could be opened. Usage reporting reads it rather than comparing
+    counters, because a story stopped by that condition has a cycle in flight and
+    would otherwise be reported as having finished early with budget to spare.
+    """
+    if route.reason == "budgets_exhausted":
+        state.review_budget_exhausted = True
+    return _BLOCK_REASONS[route.reason]
 
 
 def _route_suffix(route: _ValidateOutcome) -> str:
@@ -501,7 +579,7 @@ def _run_validate_phase(
         else:
             _log_phase(state.phase, "running gate...")
         gate_decision, gate_err, gate_output_tail, resolved_gate_cmd, gate_exit_code = (
-            run_gate_full(config, workspace_path, task=task, iter_num=state.dev_iteration)
+            run_gate_full(config, workspace_path, task=task, iter_num=state.dev_trace_count)
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
@@ -547,14 +625,14 @@ def _run_validate_phase(
             debug_telemetry = _run_gate_debug_command(
                 config,
                 workspace_path,
-                iter_num=state.dev_iteration,
+                iter_num=state.dev_trace_count,
             )
             if debug_telemetry is not None:
                 state.gate_debug_telemetry.append(debug_telemetry)
                 gate_err = (
                     f"{gate_err}. Gate debug command ran; see audit "
                     f"iterations.gate_debug[-1] and trace "
-                    f".forge/traces/{state.dev_iteration}-gate-debug.txt."
+                    f".forge/traces/{state.dev_trace_count}-gate-debug.txt."
                     f"\nGate debug output tail:\n{debug_telemetry.output_tail}"
                 )
         record_dev_iteration_telemetry(
@@ -578,7 +656,7 @@ def _run_validate_phase(
         if (
             is_timeout
             and not _is_identical_failure(state.dev_iteration_telemetry)
-            and _timeout_route is not _ValidateOutcome.ESCALATE
+            and _timeout_route.outcome is not _ValidateOutcome.ESCALATE
             and _commits_exist_strict(workspace_path, config.workspace.base_branch)
         ):
             # The original gate process group was already killed by
@@ -590,7 +668,7 @@ def _run_validate_phase(
                 config,
                 workspace_path,
                 task=task,
-                iter_num=state.dev_iteration,
+                iter_num=state.dev_trace_count,
             )
             if diagnostic is not None:
                 state.gate_diagnostic_telemetry.append(diagnostic)
@@ -617,11 +695,11 @@ def _run_validate_phase(
             state.validate_block_detail = gate_err
             _log(
                 f"  ✗ VALIDATE   TIMEOUT  (iter={state.dev_iteration}"
-                f" → retrying dev with RCA packet{_route_suffix(_timeout_route)})"
+                f" → retrying dev with RCA packet{_route_suffix(_timeout_route.outcome)})"
             )
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
-            return _timeout_route, None
+            return _timeout_route.outcome, None
         # Check consecutive identical failures (including timeouts) before escalating.
         if _is_identical_failure(state.dev_iteration_telemetry):
             state.phase = Phase.ESCALATE
@@ -826,7 +904,7 @@ def _run_validate_phase(
             exit_code=gate_exit_code,
             output_tail=gate_output_tail,
             tail_chars=config.validation.gate_output_tail_chars,
-            trace_path=_gate_trace_path(state.dev_iteration),
+            trace_path=_gate_trace_path(state.dev_trace_count),
         )
         record_dev_iteration_telemetry(
             state,
@@ -845,15 +923,16 @@ def _run_validate_phase(
         # review-cycle pool are spent; while either has room the finding goes
         # back to the dev that can fix it (#1981).
         _gate_route = _blocking_finding_route(state, config)
-        if _gate_route is _ValidateOutcome.ESCALATE:
+        _gate_route_reason = _apply_block_route(state, _gate_route)
+        if _gate_route.outcome is _ValidateOutcome.ESCALATE:
             state.phase = Phase.ESCALATE
             state.error = format_gate_failure_summary(
                 f"Gate returned {gate_decision} after {_gate_attempts(state)} gate run(s);"
-                " dev iterations and review cycles are both exhausted",
+                f" {_gate_route_reason}",
                 exit_code=gate_exit_code,
                 output_tail=gate_output_tail,
                 tail_chars=config.validation.gate_output_tail_chars,
-                trace_path=_gate_trace_path(state.dev_iteration),
+                trace_path=_gate_trace_path(state.dev_trace_count),
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
@@ -865,7 +944,7 @@ def _run_validate_phase(
             )
         _log(
             f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration}"
-            f" → retrying{_route_suffix(_gate_route)})"
+            f" → retrying{_route_suffix(_gate_route.outcome)})"
         )
         _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
         if _is_identical_failure(state.dev_iteration_telemetry):
@@ -877,7 +956,7 @@ def _run_validate_phase(
                 exit_code=gate_exit_code,
                 output_tail=gate_output_tail,
                 tail_chars=config.validation.gate_output_tail_chars,
-                trace_path=_gate_trace_path(state.dev_iteration),
+                trace_path=_gate_trace_path(state.dev_trace_count),
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
@@ -904,7 +983,7 @@ def _run_validate_phase(
             )
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
-        return _gate_route, None
+        return _gate_route.outcome, None
     else:
         _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
         state.phase = Phase.ESCALATE
@@ -961,12 +1040,13 @@ def _run_validate_phase(
                 # a mechanical, dev-fixable finding, so it spends dev iterations
                 # first and only buys a review cycle once those are gone (#1981).
                 _cv_route = _blocking_finding_route(state, config)
-                if _cv_route is _ValidateOutcome.ESCALATE:
+                _cv_route_reason = _apply_block_route(state, _cv_route)
+                if _cv_route.outcome is _ValidateOutcome.ESCALATE:
                     state.phase = Phase.ESCALATE
                     state.error = (
                         "Hard convention violations after"
                         f" {_gate_attempts(state)} validation run(s);"
-                        " dev iterations and review cycles are both exhausted"
+                        f" {_cv_route_reason}"
                     )
                     _log(f"✗ ESCALATE   {state.error}")
                     if logger:
@@ -976,10 +1056,10 @@ def _run_validate_phase(
                     return _ValidateOutcome.ESCALATE, CoordinatorResult(
                         success=False, phase=state.phase, state=state, message=state.error
                     )
-                _log(f"  ↩ VALIDATE   returning to dev{_route_suffix(_cv_route)}")
+                _log(f"  ↩ VALIDATE   returning to dev{_route_suffix(_cv_route.outcome)}")
                 if logger:
                     logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
-                return _cv_route, None
+                return _cv_route.outcome, None
             # Only follow-up violations — proceed to PASS
         elif _cv_all:
             state.convention_violations = [

@@ -41,7 +41,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_convention_violation_after_passing_gate_creates_synthetic_blocking_review(
+    def test_convention_violation_after_passing_gate_is_recorded_as_a_validate_block(
         self,
         mock_shell,
         mock_agent,
@@ -102,15 +102,18 @@ class TestConventionViolationRouting:
         mock_fix_prompt.assert_not_called()
         mock_pool.assert_not_called()
         second_validate_state = mock_validate.call_args_list[1].args[0]
-        assert len(second_validate_state.review_results) == 1
-        convention_review = second_validate_state.review_results[0]
-        assert convention_review.verdict == "REQUEST_CHANGES"
-        assert any(f.severity == "P1" for f in convention_review.findings)
-        assert "Hard convention violation" in convention_review.findings[0].description
-        assert convention_review.raw_yaml == {
-            "source": "validate_convention_block",
-            "convention_violations": [],
-        }
+        # The coordinator's finding is recorded in its own channel. The reviewer
+        # record stays untouched: an entry there means a reviewer pool ran, and
+        # per-model attribution, the adaptive review-cycle learner, and the
+        # persistent-P1 lookback all rely on that (#1981).
+        assert second_validate_state.review_results == []
+        assert second_validate_state.review_cycle_metadata == []
+        assert second_validate_state.review_iteration_telemetry == []
+        assert len(second_validate_state.validate_blocks) == 1
+        block = second_validate_state.validate_blocks[0]
+        assert block["kind"] == "convention"
+        assert block["review_cycle"] == 0
+        assert second_validate_state.validate_opened_review_cycles == 1
         assert result.message == "forced stop after synthetic convention review"
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt")
@@ -226,20 +229,3 @@ class TestConventionViolationRouting:
             " dev iterations and review cycles are both exhausted"
         )
         assert len(result.state.review_results) == 0
-
-
-def test_build_convention_blocking_review_injects_fallback_p1_when_details_missing() -> None:
-    state = CoordinatorState(convention_violations=[])
-
-    from theforge.coordinator.engine import _build_convention_blocking_review
-
-    review = _build_convention_blocking_review(state)
-
-    assert review.verdict == "REQUEST_CHANGES"
-    assert len(review.findings) == 1
-    assert review.findings[0].severity == "P1"
-    assert "no violation details were recorded" in review.findings[0].description.lower()
-    assert review.raw_yaml == {
-        "source": "validate_convention_block",
-        "convention_violations": [],
-    }

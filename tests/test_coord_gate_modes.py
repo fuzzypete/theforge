@@ -650,14 +650,14 @@ class TestGateOverride:
 
         result = run_task(config, task)
 
-        # Gate always fails → dev retried until BOTH the dev iteration pool and
-        # the review-cycle pool are spent → ESCALATE (#1981)
+        # Gate always fails → dev retried within the cycle → ESCALATE. The lint
+        # output never changes, so the identical-output breaker refuses to buy a
+        # further review cycle rather than spending the full cross-product (#1981).
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert any(d == "FAIL" for d in result.state.gate_decisions)
-        assert len(result.state.gate_decisions) == (
-            config.retry.max_dev_iterations * config.retry.max_review_cycles
-        )
+        assert len(result.state.gate_decisions) == config.retry.max_dev_iterations
+        assert result.state.validate_opened_review_cycles == 0
         # The reviewer pool never ran: the gate never passed.
         mock_pool.assert_not_called()
 

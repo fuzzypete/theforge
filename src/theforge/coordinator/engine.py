@@ -43,7 +43,6 @@ from theforge.artifacts import (
     ensure_parent_dir,
 )
 from theforge.config import ForgeConfig
-from theforge.review import ReviewFinding, ReviewResult
 from theforge.task import (
     TaskStory,
     load_story,
@@ -76,7 +75,6 @@ from .state import (
     CoordinatorState,
     Phase,
     RetryReason,
-    ReviewCycleMetadata,
 )
 from .util import (
     _generate_run_id,
@@ -135,113 +133,31 @@ def _ensure_runners() -> None:
         LogLevel = _r.LogLevel
 
 
-def _build_convention_blocking_review(state: CoordinatorState) -> ReviewResult:
-    """Create a synthetic blocking review result for hard convention violations."""
-    findings = [
-        ReviewFinding(
-            severity="P1",
-            file=str(violation.get("file", "")),
-            line=None,
-            observed=(
-                f"Hard convention violation [{violation.get('rule', 'unknown')}] in "
-                f"{violation.get('file', 'unknown')}: {violation.get('detail', '')}"
-            ),
-            expected=(
-                "Code merged to main must conform to the project's hard conventions; "
-                "any blocking violation flagged by validate-phase must be resolved "
-                "before approval, regardless of which rule was tripped."
-            ),
-            evidence=(
-                f"{violation.get('file', 'unknown')} (rule: {violation.get('rule', 'unknown')})"
-            ),
-            suggestion="Resolve the hard convention violation before approval.",
-        )
-        for violation in state.convention_violations
-    ]
-    if not findings:
-        findings = [
-            ReviewFinding(
-                severity="P1",
-                file="",
-                line=None,
-                observed=(
-                    "Hard convention violations detected after gate PASS, but no violation "
-                    "details were recorded. Manual investigation required."
-                ),
-                expected=(
-                    "When validate-phase reports any blocking convention violation, the "
-                    "coordinator must surface enough detail for an operator to identify "
-                    "the offending file and rule; opaque violation reports block triage."
-                ),
-                evidence="validate-phase convention check (no detail recorded)",
-                suggestion=(
-                    "Inspect validate-phase convention logs and fix the blocking violation."
-                ),
-            )
-        ]
-    return ReviewResult(
-        verdict="REQUEST_CHANGES",
-        summary=(
-            "Hard convention violations detected after gate PASS; approval is blocked "
-            "until they are fixed."
-        ),
-        findings=findings,
-        story_matches=True,
-        story_mismatches=[],
-        test_adequate=True,
-        test_gaps=[],
-        parse_errors=[],
-        raw_yaml={
-            "source": "validate_convention_block",
-            "convention_violations": state.convention_violations,
-        },
-    )
+def _record_validate_block(state: CoordinatorState) -> None:
+    """Record the coordinator-raised blocking finding that just bought a review cycle.
 
-
-def _build_gate_blocking_review(state: CoordinatorState) -> ReviewResult:
-    """Create a synthetic blocking review result for a coordinator-observed gate failure.
-
-    Gate execution is coordinator-owned, so a gate failure that outlives the
-    dev iteration pool is fed back as a REQUEST_CHANGES the coordinator raised
-    itself, and is recorded in ``review_results`` like any other blocking
-    verdict (#1981).
+    VALIDATE findings are deliberately NOT written into ``review_results`` /
+    ``review_cycle_metadata`` / ``review_iteration_telemetry``. Those three lists
+    are the *reviewer* record: an entry in them means a reviewer pool ran and
+    produced a verdict, and consumers rely on that — per-model findings/cost
+    attribution feeding ``model_profiles.yaml``, the adaptive review-cycle
+    learner, and the persistent-P1 lookback at ``review_results[-2]``. A
+    coordinator-raised gate or convention block is a different kind of event and
+    gets its own record here (#1981).
     """
-    detail = state.validate_block_detail or "The validation gate failed; no detail was recorded."
-    return ReviewResult(
-        verdict="REQUEST_CHANGES",
-        summary="The validation gate failed; approval is blocked until it passes.",
-        findings=[
-            ReviewFinding(
-                severity="P1",
-                file="",
-                line=None,
-                observed=f"The coordinator-owned validation gate failed: {detail}",
-                expected=(
-                    "Code merged to main must pass the project's validation gate; a gate "
-                    "failure observed by the coordinator blocks approval regardless of "
-                    "which check reported it."
-                ),
-                evidence="validate-phase gate execution",
-                suggestion="Reproduce the gate failure in the worktree and fix it.",
-            )
-        ],
-        story_matches=True,
-        story_mismatches=[],
-        test_adequate=True,
-        test_gaps=[],
-        parse_errors=[],
-        raw_yaml={
-            "source": "validate_gate_block",
-            "gate_decisions": list(state.gate_decisions),
-        },
+    kind = "convention" if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS else "gate"
+    state.validate_blocks.append(
+        {
+            "kind": kind,
+            "review_cycle": state.review_cycle,
+            "dev_iterations_spent": state.budget.cycle_count,
+            "gate_decision": state.gate_decisions[-1] if state.gate_decisions else None,
+            "detail": state.validate_block_detail or "",
+            "convention_violations": (
+                list(state.convention_violations) if kind == "convention" else []
+            ),
+        }
     )
-
-
-def _build_validate_blocking_review(state: CoordinatorState) -> ReviewResult:
-    """Return the synthetic review for whichever blocking finding VALIDATE observed."""
-    if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS:
-        return _build_convention_blocking_review(state)
-    return _build_gate_blocking_review(state)
 
 
 # ── Log-tee / SIGTERM context manager ────────────────────────────────
@@ -650,27 +566,17 @@ def _coordinator_loop(
                 return _val_result  # type: ignore[return-value]
             if _val_outcome == _ValidateOutcome.RETRY_DEV_NEW_CYCLE:
                 # The dev iteration pool is spent but the finding is still
-                # fixable, so it is charged to a review cycle: record the
-                # coordinator's own REQUEST_CHANGES and hand it back to dev
-                # (#1981).
+                # fixable, so it is charged to a review cycle and handed back to
+                # the dev. The finding is recorded in state.validate_blocks —
+                # the reviewer record stays reviewer-only (#1981).
                 _block_label = (
                     "Convention violations"
                     if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
                     else "Gate failures"
                 )
+                _record_validate_block(state)
                 state.review_cycle += 1
-                state.review_results.append(_build_validate_blocking_review(state))
-                # Metadata keeps the audit's per-cycle pairing aligned:
-                # build_reviews() zips review_cycle_metadata with review_results
-                # by index, so a synthetic verdict needs a synthetic cycle.
-                state.review_cycle_metadata.append(
-                    ReviewCycleMetadata(
-                        pool_models=["coordinator"],
-                        successful=["coordinator"],
-                        failed=[],
-                        synthesized=False,
-                    )
-                )
+                state.validate_opened_review_cycles += 1
                 _review_cap = state.adaptive_review_max or config.retry.max_review_cycles
                 if state.review_cycle >= _review_cap:
                     # VALIDATE routes to ESCALATE itself when no cycle remains;

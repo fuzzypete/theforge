@@ -196,6 +196,11 @@ class DevIterationTelemetry:
     # failing-gate output to parse (e.g. a PASS). True/False let the audit trail
     # tell a genuine empty ``failed_tests`` from a silently-degraded one.
     gate_output_format_recognized: bool | None = None
+    # SHA-256 of the failing gate output tail. Two consecutive iterations with an
+    # identical fingerprint mean the gate said exactly the same thing twice — the
+    # convergence signal for failures that name no tests (lint/format), which
+    # ``failed_tests`` cannot detect. None on a PASS or an empty tail (#1981).
+    gate_output_fingerprint: str | None = None
     existing_test_failures: bool = False
     is_timeout: bool = False
     files_changed: list[str] = field(default_factory=list)
@@ -572,9 +577,27 @@ class CoordinatorState:
     convention_violations: list[dict] = field(default_factory=list)
     # Operator-readable detail of the most recent coordinator-observed blocking
     # finding in VALIDATE (gate failure summary, or the hard-convention violation
-    # list). Carried to the engine so the synthetic blocking review it records
-    # when the finding opens a new review cycle names the real defect (#1981).
+    # list). Carried to the engine so the record it writes when the finding opens
+    # a new review cycle names the real defect (#1981).
     validate_block_detail: str | None = None
+    # Coordinator-raised blocking findings that bought a review cycle. This is
+    # VALIDATE's own audit record, deliberately separate from the reviewer record
+    # (review_results / review_cycle_metadata / review_iteration_telemetry): an
+    # entry in those means a reviewer pool ran, and per-model attribution, the
+    # adaptive review-cycle learner, and the persistent-P1 lookback all depend on
+    # that. Each entry: kind, review_cycle, dev_iterations_spent, gate_decision,
+    # detail, convention_violations (#1981).
+    validate_blocks: list[dict] = field(default_factory=list)
+    # Count of review cycles opened by VALIDATE rather than by a reviewer verdict.
+    # Monotonic — unlike review_cycle, which resets on extend/reject and decrements
+    # on the exhausted-gate continue. Lets usage reporting show the review budget
+    # this story actually spent while keeping reviewer-cycle counts reviewer-only.
+    validate_opened_review_cycles: int = 0
+    # True when VALIDATE refused a blocking finding because no further review
+    # cycle could be opened. The story stops with a cycle in flight, so counter
+    # comparison alone reports it as having finished early with budget to spare;
+    # usage reporting reads this flag instead (#1981).
+    review_budget_exhausted: bool = False
     plan_validation_findings: list[dict] = field(default_factory=list)
     plan_finding_registry: list[PlanFindingRecord] = field(default_factory=list)
     # Stable identity records for plan review findings across regen cycles,
@@ -729,6 +752,39 @@ class CoordinatorState:
         if any(r.cost_usd is None for r in self.dev_results):
             return None
         return sum(r.cost_usd or 0.0 for r in self.dev_results)
+
+    @property
+    def reviewer_cycles_run(self) -> int:
+        """Review cycles attributable to a reviewer verdict.
+
+        This is the reviewer-facing count: it feeds ``review_cycles_total`` in the
+        audit, which the adaptive iteration learner percentiles to set future
+        ``max_review_cycles``. A cycle VALIDATE bought for its own gate or
+        convention finding is subtracted out — counting it would teach the router
+        that gate failures mean reviewers need more cycles (#1981).
+
+        Takes whichever evidence is larger: recorded reviewer telemetry, or the
+        counter minus VALIDATE's share. Reviewer telemetry alone misses a cycle
+        that escalated before it was recorded; the counter alone can be reset to
+        0 on extend/reject while the VALIDATE counter stays monotonic. Using the
+        larger of the two never reports fewer reviewer cycles than actually ran,
+        and never goes negative.
+        """
+        return max(
+            len(self.review_iteration_telemetry),
+            self.review_cycle - self.validate_opened_review_cycles,
+        )
+
+    @property
+    def review_cycles_spent(self) -> int:
+        """Review-cycle budget consumed, whoever spent it.
+
+        Reviewer cycles plus cycles VALIDATE opened for a coordinator-raised
+        blocking finding. This is the budget-facing count, used by usage
+        reporting so a story that spent review cycles on gate findings is not
+        reported as having spent none.
+        """
+        return self.reviewer_cycles_run + self.validate_opened_review_cycles
 
     @property
     def total_review_cost(self) -> float:

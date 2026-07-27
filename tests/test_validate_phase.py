@@ -36,7 +36,9 @@ def test_blocking_finding_route_spends_dev_iterations_first(tmp_path: Path) -> N
     state = CoordinatorState(dev_iteration=1)
     state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → one left
 
-    assert _blocking_finding_route(state, config) is _ValidateOutcome.RETRY_DEV
+    route = _blocking_finding_route(state, config)
+    assert route.outcome is _ValidateOutcome.RETRY_DEV
+    assert route.reason == "dev_budget_remains"
 
 
 def test_blocking_finding_route_buys_a_review_cycle_when_dev_pool_is_spent(
@@ -47,7 +49,9 @@ def test_blocking_finding_route_buys_a_review_cycle_when_dev_pool_is_spent(
     state = CoordinatorState(dev_iteration=2)
     state.budget.max_iterations = config.retry.max_dev_iterations  # exhausted
 
-    assert _blocking_finding_route(state, config) is _ValidateOutcome.RETRY_DEV_NEW_CYCLE
+    route = _blocking_finding_route(state, config)
+    assert route.outcome is _ValidateOutcome.RETRY_DEV_NEW_CYCLE
+    assert route.reason == "review_cycle_bought"
 
 
 def test_blocking_finding_route_is_terminal_when_both_budgets_are_spent(
@@ -59,7 +63,9 @@ def test_blocking_finding_route_is_terminal_when_both_budgets_are_spent(
     state.budget.max_iterations = config.retry.max_dev_iterations
     state.review_cycle = config.retry.max_review_cycles - 1
 
-    assert _blocking_finding_route(state, config) is _ValidateOutcome.ESCALATE
+    route = _blocking_finding_route(state, config)
+    assert route.outcome is _ValidateOutcome.ESCALATE
+    assert route.reason == "budgets_exhausted"
 
 
 def test_blocking_finding_route_never_buys_a_cycle_during_p2_cleanup(tmp_path: Path) -> None:
@@ -69,7 +75,9 @@ def test_blocking_finding_route_never_buys_a_cycle_during_p2_cleanup(tmp_path: P
     state.budget.max_iterations = config.retry.max_dev_iterations
     state.p2_cleanup_active = True
 
-    assert _blocking_finding_route(state, config) is _ValidateOutcome.ESCALATE
+    route = _blocking_finding_route(state, config)
+    assert route.outcome is _ValidateOutcome.ESCALATE
+    assert route.reason == "p2_cleanup"
 
 
 def test_get_convention_baseline_ref_returns_merge_base(tmp_path: Path) -> None:
@@ -258,6 +266,7 @@ def test_run_validate_phase_runs_gate_debug_command_on_timeout(tmp_path: Path) -
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=1)
     state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_trace_count = 1  # traces are keyed on the monotonic dev counter
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.5)
     state.last_dev_start_commit = "HEAD"
@@ -577,6 +586,8 @@ def test_run_validate_phase_timeout_with_commits_escalates_when_both_budgets_spe
     state = CoordinatorState(dev_iteration=2)
     state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
     state.review_cycle = config.retry.max_review_cycles - 1  # last cycle in flight
+    # Gate traces are keyed on the monotonic dev counter, not the per-cycle one.
+    state.dev_trace_count = 2
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.5)
     state.last_dev_start_commit = "HEAD"
@@ -1355,6 +1366,8 @@ def test_run_validate_phase_gate_fail_escalation_carries_evidence(tmp_path: Path
     state = CoordinatorState(dev_iteration=2)
     state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
     state.review_cycle = config.retry.max_review_cycles - 1  # last cycle in flight
+    # Gate traces are keyed on the monotonic dev counter, not the per-cycle one.
+    state.dev_trace_count = 2
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.5)
     state.last_dev_start_commit = "HEAD"
