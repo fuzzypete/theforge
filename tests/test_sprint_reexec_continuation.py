@@ -38,10 +38,17 @@ from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.launch_guard import (
     REASON_ACTIVE_WORKTREE,
-    REASON_IN_FLIGHT,
     acquire_launch_story_locks,
 )
-from theforge.sprint.live_stories import resolve_live_story_slugs
+from theforge.sprint.live_stories import (
+    await_inherited_agents,
+    reclaim_inherited_agents,
+    resolve_live_story_slugs,
+)
+
+# Beyond any pid this platform hands out, so ``killpg(pgid, 0)`` is reliably
+# "no such group" — a group that has certainly finished.
+_DEAD_PGID = 999999
 
 
 def _make_config(tmp_path: Path) -> ForgeConfig:
@@ -188,10 +195,84 @@ def test_live_story_slugs_ignores_other_processes_and_dead_groups(tmp_path: Path
     assert live == set()
 
 
+# ── waiting for, and reclaiming, an inherited agent ──────────────────
+
+
+def test_await_inherited_agents_returns_when_group_exits(tmp_path: Path) -> None:
+    """The wait ends when the inherited group does, and clears its record."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+
+    alive = iter([True, True, False, False])
+
+    quiesced = await_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        timeout=30,
+        poll_interval=0.01,
+        is_group_alive=lambda _pgid: next(alive, False),
+    )
+
+    assert quiesced is True
+    # The image that registered it is gone, so nothing else would ever clear it.
+    assert not sidecar.exists()
+
+
+def test_await_inherited_agents_reports_overrun_without_killing(tmp_path: Path) -> None:
+    """A wait that times out returns False and leaves the group alone.
+
+    Killing is the caller's decision — the wait must not silently destroy work.
+    """
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+
+    quiesced = await_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        timeout=0.05,
+        poll_interval=0.01,
+        is_group_alive=lambda _pgid: True,
+    )
+
+    assert quiesced is False
+    assert sidecar.exists()
+
+
+def test_reclaim_inherited_agents_kills_survivor_and_clears_record(tmp_path: Path) -> None:
+    """An agent that overruns is terminated, so no second agent shares its
+    worktree and no later reaper inherits the pgid."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+    killed: list[int] = []
+
+    reclaimed = reclaim_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        is_group_alive=lambda _pgid: True,
+        kill_group=lambda pgid: (killed.append(pgid), True)[1],
+    )
+
+    assert reclaimed == [4242]
+    assert killed == [4242]
+    assert not sidecar.exists()
+
+
 # ── launch-guard classification ──────────────────────────────────────
 
 
-def test_reexec_classifies_own_live_worktree_as_in_flight_not_collision(
+def test_reexec_keeps_own_live_worktree_scheduled_not_dropped(
     tmp_path: Path,
 ) -> None:
     """The issue-1945 symptom: a live story must not become a collision drop.
@@ -199,7 +280,9 @@ def test_reexec_classifies_own_live_worktree_as_in_flight_not_collision(
     Its worktree is active (commits ahead of base) and it has no prior-generation
     recorded outcome — the exact combination that used to fall through to
     ``REASON_ACTIVE_WORKTREE``, print "DROPPED … continuing", and leave the
-    worktree unclaimed for the sweep to delete.
+    worktree unclaimed for the sweep to delete. It must come back *scheduled*
+    (with its launch lock held): only this process can finish it, so dropping it
+    would strand the story just as surely as deleting the worktree.
     """
     config = _make_config(tmp_path)
     lock_dir = tmp_path / ".forge" / "locks"
@@ -224,16 +307,15 @@ def test_reexec_classifies_own_live_worktree_as_in_flight_not_collision(
 
     try:
         assert exit_code is None
-        assert dropped["issue-1945"] == REASON_IN_FLIGHT
+        # Not dropped at all — for any reason, least of all a self-collision.
+        assert "issue-1945" not in dropped
         assert REASON_ACTIVE_WORKTREE not in dropped.values()
         # The live slug is never even offered to the worktree collision check.
         assert "issue-1945" not in mock_active.call_args.args[0]
-        # Its lock file survives the launch sweep — that file is what tells the
-        # worktree sweep the directory is claimed.
+        # Both stories are scheduled and hold launch locks.
         assert live_lock.exists()
-        # The remaining story is scheduled normally.
         assert "issue-1992" not in dropped
-        assert len(locked_fds) == 1
+        assert len(locked_fds) == 2
     finally:
         from theforge.sprint.lock import release_story_locks
 
@@ -280,7 +362,6 @@ def test_runner_passes_live_slugs_to_orphan_sweep(tmp_path: Path) -> None:
             manifest_path,
             reexec=True,
             live_story_slugs={"feature-a"},
-            dropped_slugs={"feature-a": REASON_IN_FLIGHT},
         )
 
     assert mock_sweep.call_args.kwargs["protected_slugs"] == {"feature-a"}
@@ -289,22 +370,31 @@ def test_runner_passes_live_slugs_to_orphan_sweep(tmp_path: Path) -> None:
 # ── baseline gate: a startup-only check ──────────────────────────────
 
 
-def test_reexec_with_live_story_skips_baseline_gate_and_continues(tmp_path: Path) -> None:
-    """The whole failure, end to end: live story preserved, gate not re-run.
+def test_reexec_with_live_story_skips_baseline_gate_and_resumes_it(tmp_path: Path) -> None:
+    """The whole failure, end to end: gate not re-run, live story resumed.
 
     Given the incident's inputs — one story still running, one still to do — the
     re-exec must not run the baseline gate (its precondition, "no dev work
-    started", is false), must not drop the live story, and must carry on
-    scheduling the remaining work.
+    started", is false), must not drop the live story, and must carry the live
+    story through to a terminal outcome in this run rather than abandoning it.
+    The sidecar names this pid as owner, so nothing else ever could: once this
+    process exits, the next invocation's orphan reaper kills the group.
     """
     _make_spec_file(tmp_path, "Feature A", "feature-a")
     _make_spec_file(tmp_path, "Feature B", "feature-b")
     manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
     config = _make_config(tmp_path)
 
+    # feature-a's inherited agent has already exited (pgid beyond any real pid),
+    # so the deferred dispatch waits, observes it gone, and resumes immediately.
+    (tmp_path / "feature-a").mkdir()
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=_DEAD_PGID, sandbox_dir=tmp_path / "feature-a"
+    )
+
     with (
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
-        patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full),
+        patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full) as mock_triage,
         patch(
             "theforge.sprint.runner.run_batch_preflight", return_value={}
         ) as mock_batch_preflight,
@@ -317,29 +407,38 @@ def test_reexec_with_live_story_skips_baseline_gate_and_continues(tmp_path: Path
             manifest_path,
             reexec=True,
             live_story_slugs={"feature-a"},
-            dropped_slugs={"feature-a": REASON_IN_FLIGHT},
         )
 
     # (a) The startup-only check did not run against a live sprint.
     mock_gate.assert_not_called()
 
-    # (b) The live story was neither re-dispatched (two agents, one worktree) nor
-    # counted as a failure.
+    # (b) The live story was not dropped: it ran, and it reached a terminal
+    # success like any other story. Both stories are accounted for.
     dispatched = [c.args[1].slug for c in mock_run_task.call_args_list]
-    assert dispatched == ["feature-b"]
-    assert "feature-a" not in [t.slug for t in mock_batch_preflight.call_args.args[0]]
+    assert sorted(dispatched) == ["feature-a", "feature-b"]
+    assert result.specs_succeeded == 2
     assert result.specs_failed == 0
-    assert result.specs_skipped == 1
+    assert result.specs_skipped == 0
 
-    # (c) The sprint continued and finished the remaining work.
-    assert result.specs_succeeded == 1
+    # (c) It did not consume the passes that would have collided with the agent
+    # still writing to its worktree.
+    assert "feature-a" not in [t.slug for t in mock_batch_preflight.call_args.args[0]]
+    # Its triage happened at dispatch (after the wait), not in the startup sweep
+    # that ran while the agent was still writing.
+    triaged_refs = [c.args[0] for c in mock_triage.call_args_list]
+    assert triaged_refs[0] == "feature-b.md"
+    assert triaged_refs.count("feature-a.md") == 1
 
-    # (d) The skip and its evidence are recorded, not silent.
+    # (d) The inherited group's record is cleaned up, so no later reaper acts on
+    # a pgid this run has already settled.
+    assert not sidecar.exists()
+
+    # (e) The gate skip and its evidence are recorded, not silent.
     summary = yaml.safe_load(
         (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text()
     )
     by_slug = {s["slug"]: s for s in summary["stories"]}
-    assert by_slug["feature-a"]["outcome"] == "PRESERVED"
+    assert by_slug["feature-a"]["outcome"] == "DONE"
     audit = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
     baseline = audit["baseline_check"]
     assert baseline["status"] == "skipped"
@@ -455,7 +554,8 @@ def test_cli_threads_live_story_slugs_into_launch_and_runner(
         patch("theforge.cli.sprint.parse_manifest_slugs", return_value=["issue-1945"]),
         patch(
             "theforge.cli.sprint._acquire_launch_locks",
-            return_value=([], None, {"issue-1945": REASON_IN_FLIGHT}),
+            # The guard keeps an in-flight story scheduled: nothing is dropped.
+            return_value=([], None, {}),
         ) as mock_locks,
         patch("theforge.cli.sprint.reacquire_story_locks_in_daemon", return_value=[]),
         patch("theforge.cli.sprint.release_story_locks"),

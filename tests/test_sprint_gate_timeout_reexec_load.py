@@ -32,7 +32,6 @@ from theforge.config import (
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import run_sprint
 from theforge.sprint.gate_timeout_resolver import resolve_effective_gate_timeout
-from theforge.sprint.launch_guard import REASON_IN_FLIGHT
 
 # ── Pure resolver: running_stories is additive load ──────────────────
 
@@ -192,7 +191,6 @@ def test_continuation_timeout_counts_inherited_running_stories(tmp_path: Path, c
             manifest_path,
             reexec=True,
             live_story_slugs={"story-a"},
-            dropped_slugs={"story-a": REASON_IN_FLIGHT},
         )
 
     err = capsys.readouterr().err

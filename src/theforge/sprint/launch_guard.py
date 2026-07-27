@@ -31,10 +31,11 @@ REASON_LOCK_HELD = "story-lock-held-by-other-process"
 # as a fresh ``active-worktree-collision`` and re-consumed.
 REASON_RECONCILE_PRIOR_DONE = "reconciled-prior-generation-done"
 REASON_STRANDED_WORKTREE = "stranded-prior-generation-worktree"
-# A story of *this* sprint generation whose agent process group is still running
-# across the re-exec boundary (the pid survives ``os.execv``). Its worktree is
-# this run's own live work, not a foreign collision: it is neither re-dispatched
-# (that would run two agents in one worktree) nor dropped/swept.
+# Not a drop reason: the deferral marker for a story of *this* sprint generation
+# whose agent process group is still running across the re-exec boundary (the pid
+# survives ``os.execv``). Its worktree is this run's own live work, not a foreign
+# collision. The runner surfaces this string on the story's live status while it
+# waits for the inherited agent to finish, then resumes the story.
 REASON_IN_FLIGHT = "in-flight-current-sprint"
 
 # Prior-generation outcome strings (upper-cased) that mean the story succeeded
@@ -75,10 +76,11 @@ def acquire_launch_story_locks(
 
     ``live_slugs`` names the stories this same process still has in flight across
     a re-exec boundary (see :mod:`theforge.sprint.live_stories`). They are
-    recorded as ``REASON_IN_FLIGHT`` — excluded from dispatch, because their
-    original agent is still running in that worktree, and excluded from every
-    reconciliation that would treat the worktree as foreign (collision
-    classification, lock sweeping).
+    excluded from every reconciliation that would treat their worktree as foreign
+    (escalation scan, collision classification, lock sweeping) but remain
+    schedulable and keep their launch lock: the runner defers each one until its
+    inherited agent exits and then resumes it. Dropping them instead would strand
+    the story, since no other process can adopt an agent group this pid owns.
 
     Invariants the callers rely on:
 
@@ -91,22 +93,25 @@ def acquire_launch_story_locks(
     """
     # ── In-flight stories: this process's own live work, untouchable ────
     #
-    # Resolved before every other check so no reconciliation step — escalation
-    # scan, lock sweep, worktree collision classification — ever gets to look at
-    # a worktree whose agent is still running inside it.
+    # Identified before every other check so no reconciliation step — escalation
+    # scan, worktree collision classification, lock sweep — ever gets to look at
+    # a worktree whose agent is still running inside it. They are NOT dropped:
+    # the story stays scheduled and keeps its launch lock, because this process
+    # is the only one that can still finish it (the runner waits for the
+    # inherited agent, then resumes the story through triage).
     in_flight_slugs = [s for s in slugs if s in (live_slugs or set())]
-    dropped: dict[str, str] = {s: REASON_IN_FLIGHT for s in in_flight_slugs}
+    dropped: dict[str, str] = {}
     if in_flight_slugs:
         print(
             f"[forge] IN-FLIGHT {', '.join(in_flight_slugs)}: agent process group "
             "from this sprint survived the re-exec; preserving the live worktree and "
-            "not re-dispatching.",
+            "deferring the story until its agent finishes.",
             file=sys.stderr,
             flush=True,
         )
 
     # ── Escalated worktrees: always preserved, on every launch path ─────
-    considered = [s for s in slugs if s not in dropped]
+    considered = [s for s in slugs if s not in in_flight_slugs]
     if resume:
         escalated_slugs: list[str] = []
     else:
@@ -177,7 +182,7 @@ def acquire_launch_story_locks(
     # story is reconciled instead of being flattened into a launch collision.
     prior_outcomes = prior_outcomes or {}
     active_worktrees = check_active_worktrees(
-        schedulable,
+        [s for s in schedulable if s not in in_flight_slugs],
         config.workspace.path_pattern,
         config.workspace.base_branch,
         config.project_root,
@@ -186,9 +191,9 @@ def acquire_launch_story_locks(
     stranded_slugs: list[str] = []
     collision_slugs: list[str] = []
     for slug in active_worktrees:
-        if slug in dropped:
-            # Already classified (in-flight / escalated). A later, coarser
-            # classification must never overwrite a more specific one.
+        if slug in dropped or slug in in_flight_slugs:
+            # Already classified (escalated), or live work of this same run. A
+            # later, coarser classification must never overwrite either.
             continue
         prior_outcome = prior_outcomes.get(slug)
         if prior_outcome in _PRIOR_SUCCEEDED_OUTCOMES:
