@@ -592,7 +592,7 @@ def _run_validate_phase(
             {
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
             }
         )
     if logger:
@@ -792,7 +792,7 @@ def _run_validate_phase(
             {
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),

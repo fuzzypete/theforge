@@ -207,7 +207,7 @@ class RunOutcome:
     planner_cli: str | None = None
     planner_cost_usd: float | None = None  # None = cost unmeasured
     planner_attempts: list[RoleAttempt] = field(default_factory=list)
-    reviewers: dict[str, tuple[int, int, float]] = field(default_factory=dict)
+    reviewers: dict[str, tuple[int, int, float | None]] = field(default_factory=dict)
     # Every reviewer invocation this run, including failures (#1388). Unlike
     # ``reviewers`` (which is survivorship-biased — only reviewers that returned a
     # parseable verdict appear), this list carries an entry for each attempt so the

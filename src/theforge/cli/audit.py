@@ -9,6 +9,20 @@ import yaml
 
 from theforge.coordinator.util import _fmt_duration
 
+_UNKNOWN_COST = "unknown"
+
+
+def _cost_str(value: object, *, width: int = 0) -> str:
+    """Render an audit cost field, keeping an unmeasured ``None`` unmeasured.
+
+    The audit stores ``None`` for spend a transport could not measure. Printing
+    it as ``$0.0000`` would present unpriced work as free, so it renders as
+    ``unknown`` instead (#1992).
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"${float(value):>{width}.4f}" if width else f"${float(value):.4f}"
+    return f"{_UNKNOWN_COST:>{width + 1}}" if width else _UNKNOWN_COST
+
 
 def _cmd_audit_ideate(audit: dict) -> int:
     """Print a human-readable summary of an ideation audit record."""
@@ -44,7 +58,7 @@ def _cmd_audit_ideate(audit: dict) -> int:
 
     cost = audit.get("cost", {})
     print()
-    print(f"  Cost:  ${cost.get('total_usd', 0):.4f}")
+    print(f"  Cost:  {_cost_str(cost.get('total_usd'))}")
 
     rounds = audit.get("rounds", [])
     if rounds:
@@ -101,9 +115,9 @@ def cmd_audit(args: object) -> int:
     if preflight:
         pf_verdict = preflight.get("verdict", "?")
         pf_reason = preflight.get("reason", "")
-        pf_cost = preflight.get("cost_usd", 0.0) or 0.0
+        pf_cost = preflight.get("cost_usd")
         print()
-        print(f"  Preflight: {pf_verdict} (${pf_cost:.4f})")
+        print(f"  Preflight: {pf_verdict} ({_cost_str(pf_cost)})")
         if pf_reason:
             print(f"    Reason: {pf_reason}")
 
@@ -138,11 +152,11 @@ def cmd_audit(args: object) -> int:
     # Cost summary
     print()
     print("  Cost")
-    print(f"    Total:  ${cost.get('total_usd', 0):.4f}")
+    print(f"    Total:  {_cost_str(cost.get('total_usd'))}")
     dev_inv = cost.get("dev_invocations", 0)
     rev_inv = cost.get("review_invocations", 0)
-    print(f"    Dev:    ${cost.get('dev_usd', 0):.4f}  ({dev_inv} invocation(s))")
-    print(f"    Review: ${cost.get('review_usd', 0):.4f}  ({rev_inv} invocation(s))")
+    print(f"    Dev:    {_cost_str(cost.get('dev_usd'))}  ({dev_inv} invocation(s))")
+    print(f"    Review: {_cost_str(cost.get('review_usd'))}  ({rev_inv} invocation(s))")
 
     # Per-agent breakdown
     agents = cost.get("agents", [])
@@ -153,10 +167,10 @@ def cmd_audit(args: object) -> int:
         for a in agents:
             role = a.get("role", "?")
             profile = a.get("profile", "?")
-            cost_usd = a.get("cost_usd", 0.0) or 0.0
+            cost_usd = a.get("cost_usd")
             dur = a.get("duration_seconds")
             dur_str = _fmt_duration(dur) if dur is not None else "—"
-            print(f"  {role:<10} {profile:<20} ${cost_usd:>11.4f}  {dur_str:>10}")
+            print(f"  {role:<10} {profile:<20} {_cost_str(cost_usd, width=11)}  {dur_str:>10}")
 
     # Reviews
     if reviews:

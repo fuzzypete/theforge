@@ -338,6 +338,7 @@ def test_state_update_fn_called_in_run_sprint(tmp_path: Path) -> None:
     mock_result = MagicMock()
     mock_result.success = True
     mock_result.state.total_cost = 0.0
+    mock_result.state.total_cost_measured = 0.0
     mock_result.state.preflight_verdict = None
     mock_result.state.log_dir = None
     mock_result.state.review_cycle_metadata = []

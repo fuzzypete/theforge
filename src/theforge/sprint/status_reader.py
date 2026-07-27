@@ -19,7 +19,8 @@ class StoryStatusEntry:
     path: str
     status: str  # "done" | "running" | "waiting" | "blocked" | "failed" | "skipped"
     phase: str | None
-    cost_usd: float
+    # None = the story's cost could not be measured (unknown, not zero) (#1992).
+    cost_usd: float | None
     blocked_by: list[str] = field(default_factory=list)
     bundle_candidate: bool = False
     elapsed_seconds: float | None = None
@@ -187,6 +188,18 @@ def _already_done_detail(outcome_source: object, reason: str | None = None) -> s
     if reason:
         return f"Preflight verdict: {reason}"
     return "ALREADY_DONE"
+
+
+def _story_cost_usd(story: dict) -> float | None:
+    """Read a story row's ``cost_usd``, preserving an unmeasured ``None``.
+
+    ``None`` means at least one phase's spend was never measured. Rendering it
+    as ``$0.00`` would present unpriced work as free (#1992).
+    """
+    raw = story.get("cost_usd", 0.0)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None
 
 
 def _outcome_to_status(outcome: str) -> str:
@@ -784,7 +797,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         slug = story.get("slug", "")
         path = story.get("path", slug)
         outcome = story.get("outcome", "SKIPPED")
-        cost_usd = float(story.get("cost_usd", 0.0))
+        cost_usd = _story_cost_usd(story)
 
         status = _outcome_to_status(outcome)
         phase = _terminal_phase(
@@ -937,7 +950,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 path=story.get("path", slug),
                 status=status_val,
                 phase=phase_display,
-                cost_usd=float(story.get("cost_usd", 0.0)),
+                cost_usd=_story_cost_usd(story),
                 blocked_by=blocked_by_val,
                 bundle_candidate=bool(story.get("bundle_candidate", False)),
                 elapsed_seconds=_elapsed_seconds_from_live_story(story),
@@ -975,7 +988,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                         depends_on,
                         _nonempty_str(story.get("last_phase")),
                     ),
-                    cost_usd=float(story.get("cost_usd", 0.0)),
+                    cost_usd=_story_cost_usd(story),
                     blocked_by=depends_on,
                     bundle_candidate=False,
                     elapsed_seconds=_elapsed_seconds_from_bounds(

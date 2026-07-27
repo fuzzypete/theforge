@@ -8,6 +8,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from theforge.coordinator.util import _fmt_cost_total
+
 #: Width of the STATUS column — wide enough for the longest status label
 #: ("interrupted") so a killed story does not push the row out of alignment.
 _STATUS_WIDTH = 11
@@ -128,6 +130,10 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     terminal_outcome: str | None = None
     terminal_cause: str | None = None
     total_cost_usd: float | None = None
+    # False once any story's cost is known to be unmeasured — the header then
+    # reports the measured lower bound as such instead of as the sprint cost.
+    cost_complete: bool = True
+    cost_measured_usd: float | None = None
     duration_seconds: float | None = None
     sprint_phase: str | None = None
     base_branch: str | None = None
@@ -202,13 +208,24 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
                 summary_data = yaml.safe_load(f) or {}
             sp = summary_data.get("sprint", {})
             total_cost_usd = sp.get("total_cost_usd")
+            cost_complete = sp.get("cost_complete", True) is not False
+            _measured = sp.get("total_cost_measured_usd")
+            cost_measured_usd = _measured if isinstance(_measured, (int, float)) else None
             duration_seconds = sp.get("duration_seconds")
         except Exception:
             pass
 
-    # For live/crashed sprints compute total cost from story entries.
-    if total_cost_usd is None and entries:
-        total_cost_usd = sum(getattr(e, "cost_usd", 0.0) for e in entries)
+    # For live/crashed sprints compute total cost from story entries. A story
+    # whose cost is unknown makes the sprint total incomplete: sum only the
+    # measured ones and report the result as a lower bound (#1992).
+    if total_cost_usd is None and cost_complete and entries:
+        _entry_costs = [getattr(e, "cost_usd", 0.0) for e in entries]
+        _measured_sum = sum(c for c in _entry_costs if c is not None)
+        if all(c is not None for c in _entry_costs):
+            total_cost_usd = _measured_sum
+        else:
+            cost_complete = False
+            cost_measured_usd = _measured_sum
 
     # ── Header ───────────────────────────────────────────────────────────
     if is_live:
@@ -227,6 +244,8 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         header_parts.append(f"phase: {sprint_phase}")
     if total_cost_usd is not None:
         header_parts.append(f"cost: ${total_cost_usd:.2f}")
+    elif not cost_complete:
+        header_parts.append(f"cost: {_fmt_cost_total(None, cost_measured_usd)}")
     if duration_seconds is not None:
         if is_live:
             header_parts.append(f"elapsed: {int(duration_seconds // 60)}m")
@@ -405,7 +424,12 @@ def _print_story_line(
     model_str = model if model else "—"
     if len(model_str) > 24:
         model_str = model_str[:24]
-    cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
+    if cost_usd is None:
+        # Cost-unknown must not render like "no spend": the story ran on a
+        # transport that reported no cost (#1992).
+        cost_str = "unknown"
+    else:
+        cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
     elapsed_str = _format_story_elapsed(elapsed_s)
 
     prefix = " " * indent

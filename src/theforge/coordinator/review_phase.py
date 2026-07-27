@@ -80,12 +80,16 @@ from .state import (
     ReviewIterationTelemetry,
 )
 from .util import (
+    _fmt_cost,
+    _fmt_cost_total,
     _fmt_duration,
     _log,
     _log_phase,
     _log_verbose,
+    _round_cost,
     _run_shell,
     live_complexity_fields,
+    sum_costs,
 )
 
 
@@ -237,7 +241,7 @@ def _run_escalate_gate(
                     auto_merge=auto_merge,
                     notify=notify,
                     logger=logger,
-                    review_cost=state.total_review_cost,
+                    review_cost=state.total_review_cost_measured,
                     review_elapsed=0.0,
                     message=(
                         f"Task '{task.name}' completed. "
@@ -310,7 +314,7 @@ def _run_escalate_gate(
             auto_merge=auto_merge,
             notify=notify,
             logger=None,
-            review_cost=state.total_review_cost,
+            review_cost=state.total_review_cost_measured,
             review_elapsed=0.0,
             message=(
                 f"Task '{task.name}' completed. "
@@ -368,7 +372,7 @@ def _record_review_iteration_telemetry(
     state: CoordinatorState,
     parsed_review: ReviewResult,
     *,
-    review_cost: float,
+    review_cost: float | None,
     review_elapsed: float,
     max_iterations: int,
 ) -> None:
@@ -583,7 +587,7 @@ def _log_review_findings(
     parsed_review: ReviewResult,
     p1_count: int,
     p2_count: int,
-    review_cost: float,
+    review_cost: float | None,
     logger: StructuredLogger | None,
     task: TaskStory,
 ) -> None:
@@ -610,7 +614,7 @@ def _log_review_findings(
             verdict=parsed_review.verdict,
             p1_count=p1_count,
             p2_count=p2_count,
-            cost_usd=round(review_cost, 6),
+            cost_usd=_round_cost(review_cost),
         )
 
 
@@ -625,7 +629,7 @@ def _handle_interactive_review_decision(
     *,
     auto_merge: bool,
     notify: bool,
-    review_cost: float,
+    review_cost: float | None,
     review_elapsed: float,
     run_id: str,
     exhausted_cycles: bool,
@@ -983,7 +987,7 @@ def _run_review_phase(
             {
                 "phase": "REVIEW",
                 "iteration": state.review_cycle + 1,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 **live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
@@ -1019,7 +1023,10 @@ def _run_review_phase(
         parse_retries=0,
     )
     state.review_cycle_metadata.append(meta)
-    _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
+    # Snapshot the result COUNT, not a coerced dollar subtotal: this cycle's
+    # cost is the sum over the results this cycle appends, and that sum stays
+    # None-aware (an unmeasured attempt makes the cycle cost unknown).
+    _review_results_before_cycle = len(state.review_agent_results)
 
     from . import scope_guard  # noqa: PLC0415
     from .workspace_hygiene import (  # noqa: PLC0415
@@ -1268,7 +1275,7 @@ def _run_review_phase(
             {
                 "phase": "REVIEW",
                 "iteration": state.review_cycle,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 **live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
@@ -1285,8 +1292,8 @@ def _run_review_phase(
                 },
             }
         )
-    _review_cost = (
-        sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
+    _review_cost = sum_costs(
+        r.cost_usd for r in state.review_agent_results[_review_results_before_cycle:]
     )
 
     # ── Finding classification (in-process) ───────────────────────────────
@@ -1608,7 +1615,7 @@ def _run_review_phase(
         )
         _log(
             f"  ✓ REVIEW   {_verdict_label}  {_p1_count} P1  {_p2_count} P2"
-            f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
+            f"  {_fmt_cost(_review_cost)}  {_fmt_duration(_review_elapsed)}"
         )
         _append_cycle_history(state, parsed_review)
         # ── P2 cleanup (post-APPROVE advisory iterations) ──────────────
@@ -1629,7 +1636,7 @@ def _run_review_phase(
                     "phase_end",
                     phase="REVIEW",
                     outcome="approve_p2_cleanup",
-                    cost_usd=round(_review_cost, 6),
+                    cost_usd=_round_cost(_review_cost),
                     duration_s=round(_review_elapsed, 2),
                 )
                 logger._safe_emit(
@@ -1712,7 +1719,7 @@ def _run_review_phase(
     _persistent_tag = " (persistent-P1)" if _is_persistent_p1 else ""
     _log(
         f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1{_persistent_tag}  {_p2_count} P2"
-        f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
+        f"  {_fmt_cost(_review_cost)}  {_fmt_duration(_review_elapsed)}"
     )
 
     # Escalate dev model on persistent P1 (only when explicitly enabled via forge.yaml)
@@ -1807,7 +1814,7 @@ def _run_review_phase(
             "phase_end",
             phase="REVIEW",
             outcome="request_changes",
-            cost_usd=round(_review_cost, 6),
+            cost_usd=_round_cost(_review_cost),
             duration_s=round(_review_elapsed, 2),
         )
     _append_cycle_history(state, parsed_review)
@@ -1947,7 +1954,7 @@ def _run_review_only_phase(
 
     _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
-    _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
+    _ro_cost = sum_costs(r.cost_usd for r in state.review_agent_results)
     _ro_elapsed = _pool_elapsed
 
     _log_review_findings(parsed_review, _ro_p1, _ro_p2, _ro_cost, logger, task)
@@ -1955,20 +1962,23 @@ def _run_review_only_phase(
     if parsed_review.verdict == "APPROVE":
         state.phase = Phase.DONE
         _dur = _fmt_duration(_ro_elapsed)
-        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_dur}")
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(_ro_elapsed)}")
+        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  {_fmt_cost(_ro_cost)}  {_dur}")
+        _log(
+            f"✓ DONE   total={_fmt_cost_total(state.total_cost_measured, state.total_cost)}"
+            f"  {_fmt_duration(_ro_elapsed)}"
+        )
         if logger:
             logger._safe_emit(
                 "phase_end",
                 phase="REVIEW",
                 outcome="approve",
-                cost_usd=round(_ro_cost, 6),
+                cost_usd=_round_cost(_ro_cost),
                 duration_s=round(_ro_elapsed, 2),
             )
             logger._safe_emit(
                 "run_end",
                 outcome="done",
-                total_cost_usd=round(state.total_cost, 6),
+                total_cost_usd=_round_cost(state.total_cost_measured),
                 total_duration_s=round(time.monotonic() - task_start, 2),
             )
         _ntfy_done_notify(
@@ -1989,7 +1999,7 @@ def _run_review_only_phase(
     )
     _log(
         f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2"
-        f"  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
+        f"  {_fmt_cost(_ro_cost)}  {_fmt_duration(_ro_elapsed)}"
     )
     _log(f"✗ ESCALATE   {state.error}")
     if logger:
@@ -1997,14 +2007,14 @@ def _run_review_only_phase(
             "phase_end",
             phase="REVIEW",
             outcome="escalate",
-            cost_usd=round(_ro_cost, 6),
+            cost_usd=_round_cost(_ro_cost),
             duration_s=round(_ro_elapsed, 2),
         )
         logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
         logger._safe_emit(
             "run_end",
             outcome="escalate",
-            total_cost_usd=round(state.total_cost, 6),
+            total_cost_usd=_round_cost(state.total_cost_measured),
             total_duration_s=round(time.monotonic() - task_start, 2),
         )
     _escalate_notify(task, state, notify, config)

@@ -254,6 +254,8 @@ def render_frame(
     for e in entries:
         slug = getattr(e, "slug", "") or ""
         path = getattr(e, "path", slug) or slug
+        # Unknown cost contributes no measurable delta; treated as 0 for the
+        # ΔCOST column only, never reported as the story's cost (#1992).
         cost = float(getattr(e, "cost_usd", 0.0) or 0.0)
         prev = prev_costs.get(slug, cost)
         delta = cost - prev

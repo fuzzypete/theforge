@@ -18,6 +18,7 @@ from .audit_substrate import MIGRATION_HELPERS
 from .landing_record import build_landing_record
 from .state import CoordinatorResult, CoordinatorState
 from .trust_status import derive_trust_status
+from .util import _round_cost as _util_round_cost
 
 # Per-run audit-record schema version and the reader-side migration registry
 # are owned by audit_substrate (the reader). They are re-exported here so
@@ -39,7 +40,7 @@ def _round_cost(value: float | None) -> float | None:
     from a genuinely free run and corrupts every cost-based view built on the
     audit substrate.
     """
-    return round(value, 6) if value is not None else None
+    return _util_round_cost(value, 6)
 
 
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
@@ -555,7 +556,7 @@ def _serialize_review_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "repeated_findings_by_severity": item.repeated_findings_by_severity,
             "novel_findings": item.novel_findings,
             "restated_findings": item.restated_findings,
-            "cost_usd": round(item.cost_usd, 6),
+            "cost_usd": _round_cost(item.cost_usd),
             "duration_s": round(item.duration_s, 2),
         }
         for item in state.review_iteration_telemetry

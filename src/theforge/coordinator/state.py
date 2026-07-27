@@ -269,7 +269,9 @@ class ReviewIterationTelemetry:
 
     iteration: int
     max_iterations: int
-    cost_usd: float
+    # None = the transport could not measure this cycle's cost. Never coerce it
+    # to 0.0 — unmeasured spend is not free spend (#1992).
+    cost_usd: float | None
     duration_s: float
     verdict: str
     findings_by_severity: dict[str, int]

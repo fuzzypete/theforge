@@ -38,6 +38,7 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import (
+    _fmt_cost_total,
     _fmt_duration,
     _generate_run_id,
     resolve_timeout,
@@ -626,6 +627,34 @@ def emit_inline_remediation_event(
         logger.warning(msg)
 
 
+def _optional_cost(raw: object) -> float | None:
+    """Coerce a persisted ``cost_usd`` to float, preserving an unmeasured ``None``.
+
+    ``None`` records "the transport could not measure this spend", which is a
+    different fact from ``0.0``. Numeric arithmetic (budget checks, carry-forward
+    sums) may treat unknown as a zero-valued lower bound, but anything that
+    *reports* a story's cost must keep the distinction (#1992).
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None
+
+
+def _story_reported_cost(state: object, adjustment: float = 0.0) -> float | None:
+    """Per-story reported cost: measured total plus adjustment, or ``None``.
+
+    Uses ``CoordinatorState.total_cost_measured`` so a story with any unmeasured
+    phase is reported as cost-unknown instead of as the measured remainder.
+    """
+    if hasattr(state, "total_cost_measured"):
+        measured = state.total_cost_measured
+    else:
+        measured = getattr(state, "total_cost", None)
+    if not isinstance(measured, (int, float)) or isinstance(measured, bool):
+        return None
+    return round(float(measured) + adjustment, 4)
+
+
 def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
     """Return the agent cost recorded in an intake outcome's audit block.
 
@@ -795,7 +824,13 @@ def derive_worker_timeout(
 
 
 def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
-    """Read carry-forward cost for a same-sprint re-exec from sprint-audit.yaml."""
+    """Read carry-forward cost for a same-sprint re-exec from sprint-audit.yaml.
+
+    ``total_cost_usd`` is null when the prior generation had a story whose cost
+    was unmeasured (#1992). Carry-forward is arithmetic, so it falls back to the
+    measured lower bound rather than dropping the prior spend entirely — the
+    cost-unknown signal itself is carried by the per-story entries.
+    """
     if not sprint_id or not os.environ.get("FORGE_PREV_RUN_ID"):
         return 0.0
     audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
@@ -807,7 +842,10 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
         sprint_block = data.get("sprint", {})
         if sprint_block.get("sprint_id") != sprint_id:
             return 0.0
-        return float(sprint_block.get("total_cost_usd", 0.0))
+        total = sprint_block.get("total_cost_usd")
+        if total is None:
+            total = sprint_block.get("total_cost_measured_usd", 0.0)
+        return float(total or 0.0)
     except (OSError, ValueError, TypeError):
         return 0.0
 
@@ -2111,7 +2149,7 @@ def _classify_and_record(
         dag.mark_skipped(task.slug)
 
     if story_state is not None:
-        _transition_fields: dict = {"cost_usd": result.state.total_cost}
+        _transition_fields: dict = {"cost_usd": _story_reported_cost(result.state)}
         if is_landed:
             _transition_fields["landed"] = True
         story_state.transition(task.slug, outcome=outcome, **_transition_fields)
@@ -2588,7 +2626,7 @@ def run_sprint(
                 _prior_slug,
                 _prior.get("path", _prior_slug),
                 outcome=_mapped_outcome,
-                cost_usd=float(_prior.get("cost_usd", 0.0) or 0.0),
+                cost_usd=_optional_cost(_prior.get("cost_usd")),
                 canonical_ref=_prior.get("canonical_ref"),
                 detail=_prior_detail,
             )
@@ -2750,10 +2788,7 @@ def run_sprint(
             "outcome": outcome,
             "outcome_source": outcome_source,
             "verdict": None,
-            "cost_usd": round(
-                float(result.state.total_cost) + story_cost_adjustments.get(slug, 0.0),
-                4,
-            ),
+            "cost_usd": _story_reported_cost(result.state, story_cost_adjustments.get(slug, 0.0)),
             "story_run_id": run_id,
             "preflight": preflight,
             "preflight_original_verdict": getattr(
@@ -3202,7 +3237,7 @@ def run_sprint(
                 "outcome": "ALREADY_DONE",
                 "outcome_source": "resume_skip_merged",
                 "verdict": prior_entry.get("verdict"),
-                "cost_usd": float(prior_entry.get("cost_usd", 0.0) or 0.0),
+                "cost_usd": _optional_cost(prior_entry.get("cost_usd")),
                 "story_run_id": prior_entry.get("story_run_id", run_id),
                 "preflight": prior_entry.get("preflight"),
                 "preflight_original_verdict": prior_entry.get("preflight_original_verdict"),
@@ -4103,10 +4138,12 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                spec_cost = result.state.total_cost
+                spec_cost = result.state.total_cost_measured
                 icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)
-                _log(f"{icon} {slug}   ${spec_cost:.2f}  {dur}")
+                _log(
+                    f"{icon} {slug}   {_fmt_cost_total(spec_cost, result.state.total_cost)}  {dur}"
+                )
 
                 # Auth circuit breaker (#1952): the launch gate proves the
                 # credential was usable at t=0, but an interactive sign-in can
@@ -4184,7 +4221,7 @@ def run_sprint(
                         slug,
                         status=_done_status,
                         phase=result.phase.name,
-                        cost_usd=result.state.total_cost,
+                        cost_usd=_story_reported_cost(result.state),
                     )
 
                 _classify_outcome = _classify_and_record(
@@ -4193,7 +4230,7 @@ def run_sprint(
                 _terminal_model = _terminal_story_model(result)
                 _outcome_fields: dict[str, object] = {
                     "phase": result.phase.name,
-                    "cost_usd": result.state.total_cost,
+                    "cost_usd": _story_reported_cost(result.state),
                 }
                 if _terminal_model is not None:
                     _outcome_fields["current_model"] = _terminal_model
@@ -4346,6 +4383,10 @@ def run_sprint(
         entry = _story_state.get(slug)
         if entry is None:
             return
+        if entry.cost_usd is None:
+            # Unknown + known is still unknown: adding measured intake spend to a
+            # cost-unknown story must not turn it into a confident figure (#1992).
+            return
         _story_state.transition(slug, cost_usd=entry.cost_usd + extra)
 
     for _slug, _outcome in (intake_outcomes or {}).items():
@@ -4376,6 +4417,11 @@ def run_sprint(
         )
 
     final_cost = accumulated_cost + prior_cost
+    # A sprint total is only a total when every story's cost was measured. When
+    # any story ran on a transport that reported no cost, ``final_cost`` is a
+    # measured lower bound and every surface must say so rather than present it
+    # as the sprint's cost (#1992).
+    _cost_complete = all(e.cost_usd is not None for e in _story_state.stories())
     # Banner, summary, notifications, and SprintResult all project from the
     # same canonical structure — by construction they cannot disagree.
     _canonical_counts = _story_state.counts()
@@ -4394,21 +4440,26 @@ def run_sprint(
         specs_skipped=specs_skipped,
         total_cost_usd=final_cost,
         budget_usd=resolved.budget_usd,
+        cost_complete=_cost_complete,
         results=results,
         stopped_reason=stopped_reason,
     )
 
     _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
     _sprint_dur = _fmt_duration(_sprint_elapsed)
+    _sprint_cost_str = _fmt_cost_total(final_cost if _cost_complete else None, final_cost)
     _log(
         f"Sprint complete: {specs_succeeded} succeeded, {specs_failed} failed, "
-        f"{specs_skipped} skipped. Total: ${final_cost:.2f}  {_sprint_dur}"
+        f"{specs_skipped} skipped. "
+        f"Total: {_sprint_cost_str}"
+        f"  {_sprint_dur}"
     )
     _sprint_outcome = "done" if specs_failed == 0 and stopped_reason is None else "partial"
     _sprint_logger.emit(
         "run_end",
         outcome=_sprint_outcome,
-        total_cost_usd=round(final_cost, 6),
+        total_cost_usd=round(final_cost, 6) if _cost_complete else None,
+        total_cost_measured_usd=round(final_cost, 6),
         total_duration_s=round(_sprint_elapsed, 2),
     )
     if notify:
@@ -4429,7 +4480,7 @@ def run_sprint(
                     f"{canonical_total} stories: {specs_succeeded} succeeded "
                     f"\u00b7 {specs_failed} failed \u00b7 {specs_skipped} skipped"
                 ),
-                f"Total cost: ${final_cost:.2f}   Duration: {_sprint_dur}",
+                f"Total cost: {_sprint_cost_str}   Duration: {_sprint_dur}",
             ]
             if stopped_reason:
                 _ntfy_body_lines.append(f"Stopped: {stopped_reason}")
@@ -4448,7 +4499,7 @@ def run_sprint(
                     f"{canonical_total} stories: {specs_succeeded} succeeded "
                     f"\u00b7 {specs_failed} failed \u00b7 {specs_skipped} skipped"
                 ),
-                f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
+                f"Total cost: {_sprint_cost_str}   Duration: {_fmt_duration(_sprint_elapsed)}",
             ]
             if stopped_reason:
                 _sc_body_lines.append(f"Stopped: {stopped_reason}")
@@ -4581,7 +4632,7 @@ def run_sprint(
             stories=_stories,
             run_id=_sprint_run_id,
             config=config,
-            total_cost_usd=final_cost,
+            total_cost_usd=final_cost if _cost_complete else None,
             duration_seconds=_sprint_elapsed,
         )
         _run_hook(

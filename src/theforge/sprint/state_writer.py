@@ -81,7 +81,7 @@ class SprintStateWriter:
                     story.get("path", slug),
                     outcome=story.get("status") or story.get("outcome") or "waiting",
                     phase=story.get("phase"),
-                    cost_usd=float(story.get("cost_usd", 0.0) or 0.0),
+                    cost_usd=_story_cost(story),
                     bundle_candidate=bool(story.get("bundle_candidate", False)),
                     blocked_by=list(story.get("blocked_by") or []),
                     complexity=story.get("complexity"),
@@ -186,6 +186,19 @@ class SprintStateWriter:
                 pass
 
 
+def _story_cost(story: dict) -> float | None:
+    """Read a story dict's ``cost_usd``, preserving an unmeasured ``None``.
+
+    ``None`` means the transport could not measure that story's spend. Coercing
+    it to 0.0 here would report unpriced work as free on every surface that
+    reads the live state file (#1992).
+    """
+    raw = story.get("cost_usd", 0.0)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None if raw is None else 0.0
+
+
 def _load_existing_state(state_path: Path) -> dict | None:
     """Read an existing state file when possible."""
     if not state_path.exists():
@@ -223,7 +236,11 @@ def _has_accumulated_live_state(data: dict | None) -> bool:
         outcome = story.get("outcome", story.get("status"))
         if outcome not in seed_outcomes:
             return True
-        if float(story.get("cost_usd", 0.0) or 0.0) > 0.0:
+        _cost = story.get("cost_usd")
+        if _cost is None and "cost_usd" in story:
+            # Cost-unknown is recorded spend the seed file never has.
+            return True
+        if isinstance(_cost, (int, float)) and float(_cost) > 0.0:
             return True
     return False
 
