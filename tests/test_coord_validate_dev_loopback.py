@@ -325,3 +325,55 @@ def test_reviewer_cycle_counts_exclude_the_cycle_validate_bought(tmp_path: Path)
     # as reviewer demand, but is still visible as budget the story spent.
     assert state.reviewer_cycles_run == 1
     assert state.review_cycles_spent == 2
+
+
+def test_persistent_p1_lookback_survives_a_validate_bought_cycle(tmp_path: Path) -> None:
+    """The cycle VALIDATE buys must not sit between two reviewer verdicts.
+
+    Persistent-P1 detection compares the current review against
+    ``review_results[-2]``. When a coordinator finding was written into that list,
+    the lookback landed on the synthetic entry — whose finding carries no file and
+    can never match a real P1 — so a P1 that recurred across reviewer cycles went
+    undetected and dev-model escalation never fired (#1981).
+    """
+    from coord_test_helpers import REQUEST_CHANGES_REVIEW
+
+    # Three cycles: one bought by the gate failure, two reviewer cycles after it.
+    # VALIDATE and REVIEW draw on the same pool, so two reviewer cycles following
+    # a purchase need a cap of three.
+    config = _conventions_config(tmp_path, max_review_cycles=3)
+    config = dataclasses.replace(config, conventions_hard=None)
+    task = _make_task(tmp_path)
+    _workspace(tmp_path)
+
+    # Gate fails twice (buying a cycle), then passes for every review cycle.
+    with (
+        patch_gate_shell() as mock_shell,
+        _patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        _patch("theforge.coordinator.dev_phase.run_agent") as mock_agent,
+        _patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        _patch(
+            "theforge.coordinator.validate_phase._check_conventions_parallel",
+            return_value=None,
+        ),
+    ):
+        mock_shell.side_effect = _gate_script(["FAIL", "FAIL", "PASS"])
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        # The same P1 is raised by every reviewer cycle.
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+        result = run_task(config, task)
+
+    state = result.state
+    # A cycle was bought, and two reviewer cycles ran after it.
+    assert state.validate_opened_review_cycles == 1
+    reviewer_verdicts = [r.verdict for r in state.review_results]
+    assert reviewer_verdicts == ["REQUEST_CHANGES", "REQUEST_CHANGES"]
+
+    # The lookback lands on the previous *reviewer* verdict, and the recurring
+    # P1 is detected as persistent against it.
+    from theforge.coordinator.preflight import _has_persistent_p1
+
+    assert _has_persistent_p1(state.review_results[-1].findings, state.review_results[-2].findings)

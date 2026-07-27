@@ -578,9 +578,11 @@ def _write_sprint_audit(
                             if review_max is not None and review_used > 0
                             else False
                         ),
-                        "early_finish": (0 < review_used < review_max)
-                        if review_max is not None
-                        else False,
+                        "early_finish": (
+                            (not review_exhausted) and (0 < review_used < review_max)
+                            if review_max is not None
+                            else False
+                        ),
                     },
                 },
                 "reviews": reviews_summary,
@@ -907,9 +909,11 @@ def _write_sprint_summary(
                             if review_max is not None and review_used > 0
                             else False
                         ),
-                        "early_finish": (0 < review_used < review_max)
-                        if review_max is not None
-                        else False,
+                        "early_finish": (
+                            (not review_exhausted) and (0 < review_used < review_max)
+                            if review_max is not None
+                            else False
+                        ),
                     },
                 },
             }

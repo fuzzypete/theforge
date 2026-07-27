@@ -384,7 +384,9 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             "duration_s": round(sum(state.review_durations), 2)
             if state.review_durations
             else None,
-            "cycles": state.review_cycle,
+            # Reviewer cycles only — this block describes the REVIEW phase, and a
+            # cycle VALIDATE opened for its own finding never ran one (#1981).
+            "cycles": state.reviewer_cycles_run,
             "outcome": _final_verdict,
             "per_reviewer": per_reviewer,
         }

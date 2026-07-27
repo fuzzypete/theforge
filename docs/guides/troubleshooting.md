@@ -309,9 +309,16 @@ you don't want fresh worktrees to `git pull --ff-only`.
 **Cause:** The dev agent's implementation has bugs. The gate is coordinator-owned,
 so the dev only sees the result when VALIDATE hands it back — which it does
 automatically, up to `max_dev_iterations` within the cycle. Once those are spent
-the finding buys a review cycle (the dev iteration pool refills with it), so a
-gate failure or hard convention violation escalates only after
-`max_dev_iterations × max_review_cycles` attempts.
+the finding buys a review cycle (the dev iteration pool refills with it), up to a
+ceiling of `max_dev_iterations × max_review_cycles` attempts.
+
+A story stops short of that ceiling when the gate stops moving: if two
+consecutive iterations produce byte-identical gate output, the coordinator will
+not buy another review cycle, because a further pool of iterations would spend
+the full cross-product to learn what the repeated output already says. A
+lint- or format-only failure that the dev does not change is the common case —
+it escalates after `max_dev_iterations` attempts, not the full ceiling. The
+escalation message names which of the two stopped it.
 
 **Fix:** Usually self-correcting. If it escalates:
 ```bash

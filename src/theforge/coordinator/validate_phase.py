@@ -653,12 +653,16 @@ def _run_validate_phase(
         # owns that case). Infrastructure errors (state 4) and empty-worktree
         # timeouts (state 1) continue to escalate.
         _timeout_route = _blocking_finding_route(state, config)
-        if (
+        # Split the shape of the failure from the budget available to it: a
+        # retryable-shaped timeout that only the budget stopped must record why,
+        # so a terminal budget refusal is not reported as a story that finished
+        # early with cycles to spare (#1981).
+        _timeout_retryable = (
             is_timeout
             and not _is_identical_failure(state.dev_iteration_telemetry)
-            and _timeout_route.outcome is not _ValidateOutcome.ESCALATE
             and _commits_exist_strict(workspace_path, config.workspace.base_branch)
-        ):
+        )
+        if _timeout_retryable and _timeout_route.outcome is not _ValidateOutcome.ESCALATE:
             # The original gate process group was already killed by
             # _run_shell_detailed on timeout (spec step 1). Run the diagnostic
             # re-run pass in the same worktree before constructing the retry
@@ -708,6 +712,11 @@ def _run_validate_phase(
                 f" (iteration {state.dev_iteration}): gate error: {gate_err}."
                 f" Remaining retry budget: {state.budget.remaining()}."
             )
+        elif _timeout_retryable:
+            # Retryable in shape; the budget is what stopped it. Record the
+            # refusal so usage reporting can tell this from an early finish.
+            state.phase = Phase.ESCALATE
+            state.error = f"{gate_err}; {_apply_block_route(state, _timeout_route)}"
         else:
             state.phase = Phase.ESCALATE
             state.error = gate_err
