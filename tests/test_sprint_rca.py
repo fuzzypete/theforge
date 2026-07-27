@@ -1178,3 +1178,69 @@ def test_write_no_overwrite_leaves_existing(tmp_path: Path) -> None:
     # overwrite=True regenerates
     write_sprint_rca(d, overwrite=True)
     assert "sentinel" not in path.read_text()
+
+
+def test_merge_failed_check_failure_guidance_names_the_checks(tmp_path: Path) -> None:
+    """Issue #1946: a PR abandoned decided-red must not be told to resolve a
+    merge conflict or raise an iteration budget — it has evidence against both."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-1934",
+                    "outcome": "MERGE_FAILED",
+                    "error": (
+                        "Queued PR required checks failed (gate): https://github.com/x/y/pull/1943"
+                    ),
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-1934"]
+    actions = " ".join(entry["recommended_next_actions"]).lower()
+
+    assert entry["primary_failure_class"] == "merge_failed"
+    assert "required checks" in actions
+    assert "merge conflict" not in actions
+    assert "iteration budget" not in actions
+
+
+def test_merge_failed_timeout_guidance_points_at_the_wait_budget(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-9",
+                    "outcome": "MERGE_FAILED",
+                    "error": "Queued PR timed out after 3600s: https://github.com/x/y/pull/9",
+                }
+            ]
+        ),
+    )
+    actions = " ".join(_build(d)["stories"]["issue-9"]["recommended_next_actions"]).lower()
+
+    assert "merge_wait_timeout_seconds" in actions
+    assert "merge conflict" not in actions
+
+
+def test_merge_failed_conflict_guidance_preserved(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-10",
+                    "outcome": "MERGE_FAILED",
+                    "error": "merge conflict in src/theforge/sprint/runner.py",
+                }
+            ]
+        ),
+    )
+    actions = " ".join(_build(d)["stories"]["issue-10"]["recommended_next_actions"]).lower()
+
+    assert "resolve the merge conflict" in actions

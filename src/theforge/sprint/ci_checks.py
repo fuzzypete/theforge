@@ -18,6 +18,8 @@ _FAIL_CONCLUSIONS = {
     "action_required",
     "startup_failure",
     "stale",
+    # GraphQL StatusContext state for a hard-errored legacy status.
+    "error",
 }
 _PENDING_STATUSES = {"queued", "in_progress", "pending", "waiting", "requested"}
 
@@ -100,18 +102,24 @@ def _summarize_required_checks(
     )
 
 
-def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: int) -> dict:
+def _resolve_owner_repo(project_root: Path) -> str:
     repo = _gh_json(project_root, ["repo", "view", "--json", "nameWithOwner"])
     owner_repo = repo["nameWithOwner"] if isinstance(repo, dict) else None
     if not isinstance(owner_repo, str) or not owner_repo:
         raise RuntimeError("Unable to resolve GitHub repository owner/name")
+    return owner_repo
 
-    sha_raw = _gh_text(
-        project_root, ["api", f"repos/{owner_repo}/branches/{base_branch}", "--jq", ".commit.sha"]
-    )
-    sha = json.loads(sha_raw) if sha_raw.startswith('"') else sha_raw
+
+def _required_check_contexts(
+    project_root: Path, owner_repo: str, base_branch: str
+) -> list[str] | None:
+    """Required status-check contexts for ``base_branch``.
+
+    Returns ``None`` when branch protection (or its required-checks block) does
+    not exist, which callers must treat as "unknown", not as "none failing".
+    """
     try:
-        required_checks_raw = _gh_json(
+        raw = _gh_json(
             project_root,
             [
                 "api",
@@ -122,22 +130,89 @@ def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: 
         )
     except RuntimeError as exc:
         if "404" in str(exc) or "Not Found" in str(exc):
-            return {
-                "status": "skipped",
-                "sha": sha,
-                "failing_checks": [],
-                "message": (
-                    f"Required status checks not configured for {base_branch}; "
-                    f"skipping CI gate for {sha}."
-                ),
-            }
+            return None
         raise
+    return [c for c in raw if isinstance(c, str)] if isinstance(raw, list) else []
 
-    required_checks = (
-        [c for c in required_checks_raw if isinstance(c, str)]
-        if isinstance(required_checks_raw, list)
-        else []
+
+def _normalize_rollup(rollup: object) -> tuple[list[dict], list[dict]]:
+    """Split a ``statusCheckRollup`` payload into check-run / legacy-status shapes.
+
+    The rollup comes from GraphQL, so its enums are upper-case
+    (``COMPLETED``/``FAILURE``); the REST-shaped summarizer expects the
+    lower-case spellings. Normalizing here keeps a single conclusion table.
+    """
+
+    def _lower(value: object) -> str | None:
+        return value.lower() if isinstance(value, str) else None
+
+    check_runs: list[dict] = []
+    statuses: list[dict] = []
+    for entry in rollup if isinstance(rollup, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        context = entry.get("context")
+        if entry.get("__typename") == "StatusContext" or (
+            not isinstance(name, str) and isinstance(context, str)
+        ):
+            if isinstance(context, str):
+                statuses.append({"context": context, "state": _lower(entry.get("state"))})
+        elif isinstance(name, str):
+            check_runs.append(
+                {
+                    "name": name,
+                    "status": _lower(entry.get("status")),
+                    "conclusion": _lower(entry.get("conclusion")),
+                }
+            )
+    return check_runs, statuses
+
+
+def failing_required_pr_checks(project_root: Path, pr_url: str, base_branch: str) -> list[str]:
+    """Names of ``pr_url``'s required checks that have terminally failed.
+
+    Returns an empty list when nothing is decided-red *and* when the required
+    check set or the PR's rollup cannot be resolved: an un-answerable probe must
+    leave the caller waiting rather than abandon a PR on missing information.
+    """
+    try:
+        owner_repo = _resolve_owner_repo(project_root)
+        required_checks = _required_check_contexts(project_root, owner_repo, base_branch)
+        if not required_checks:
+            return []
+        rollup = _gh_json(
+            project_root,
+            ["pr", "view", pr_url, "--json", "statusCheckRollup", "--jq", ".statusCheckRollup"],
+        )
+    except Exception as exc:  # gh missing, network flake, unparseable payload
+        log.debug("Unable to resolve required check status for %s: %s", pr_url, exc)
+        return []
+
+    check_runs, statuses = _normalize_rollup(rollup)
+    _, failing, _ = _summarize_required_checks(required_checks, check_runs, statuses)
+    return failing
+
+
+def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: int) -> dict:
+    owner_repo = _resolve_owner_repo(project_root)
+
+    sha_raw = _gh_text(
+        project_root, ["api", f"repos/{owner_repo}/branches/{base_branch}", "--jq", ".commit.sha"]
     )
+    sha = json.loads(sha_raw) if sha_raw.startswith('"') else sha_raw
+    required_checks = _required_check_contexts(project_root, owner_repo, base_branch)
+    if required_checks is None:
+        return {
+            "status": "skipped",
+            "sha": sha,
+            "failing_checks": [],
+            "message": (
+                f"Required status checks not configured for {base_branch}; "
+                f"skipping CI gate for {sha}."
+            ),
+        }
+
     if not required_checks:
         return {
             "status": "skipped",

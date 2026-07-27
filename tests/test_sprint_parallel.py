@@ -1905,6 +1905,109 @@ class TestQueuedMergePolling:
                 "status": "timeout"
             }
 
+    def test_poll_queued_pr_abandons_on_terminally_failed_required_checks(
+        self, tmp_path: Path
+    ) -> None:
+        """Issue #1946: a decided-red PR can never merge. Waiting on it burns the
+        whole merge-wait budget and then misreports the cause as a timeout, so the
+        poll must return immediately naming the failing checks."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        with (
+            patch(
+                "theforge.sprint.runner.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="OPEN", stderr=""),
+            ),
+            patch(
+                "theforge.sprint.runner._failing_required_pr_checks",
+                return_value=["gate", "lint"],
+            ),
+            patch("theforge.sprint.runner.time.sleep") as sleep,
+        ):
+            result = _poll_queued_pr(
+                "https://github.com/x/y/pull/1",
+                tmp_path,
+                3600,
+                base_branch="main",
+            )
+
+        assert result == {"status": "checks_failed", "failing_checks": "gate, lint"}
+        sleep.assert_not_called()
+
+    def test_poll_queued_pr_keeps_waiting_while_checks_pending(self, tmp_path: Path) -> None:
+        """Pending checks are exactly what the wait budget is for: no failing
+        required check means keep polling until MERGED (or the deadline)."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        states = ["OPEN", "OPEN", "MERGED"]
+
+        def _fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=states.pop(0), stderr="")
+
+        with (
+            patch("theforge.sprint.runner.subprocess.run", side_effect=_fake_run),
+            patch("theforge.sprint.runner._failing_required_pr_checks", return_value=[]) as probe,
+            patch("theforge.sprint.runner.time.sleep") as sleep,
+        ):
+            result = _poll_queued_pr(
+                "https://github.com/x/y/pull/1",
+                tmp_path,
+                3600,
+            )
+
+        assert result == {"status": "merged"}
+        assert sleep.call_count == 2
+        # No base branch → no required-check set to resolve; never probe.
+        probe.assert_not_called()
+
+    def test_poll_queued_pr_timeout_reserved_for_deadline_expiry(self, tmp_path: Path) -> None:
+        """With checks pending (none failing), only the deadline produces a
+        timeout — the status must stay distinguishable from checks_failed."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        monotonic_values = iter([0, 1, 31, 61])
+        with (
+            patch(
+                "theforge.sprint.runner.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="OPEN", stderr=""),
+            ),
+            patch("theforge.sprint.runner._failing_required_pr_checks", return_value=[]),
+            patch("theforge.sprint.runner.time.sleep"),
+            patch(
+                "theforge.sprint.runner.time.monotonic", side_effect=lambda: next(monotonic_values)
+            ),
+        ):
+            result = _poll_queued_pr(
+                "https://github.com/x/y/pull/1",
+                tmp_path,
+                60,
+                base_branch="main",
+            )
+
+        assert result == {"status": "timeout"}
+
+    def test_queued_pr_failure_message_names_the_evidenced_cause(self) -> None:
+        from theforge.sprint.runner import _queued_pr_failure_message
+
+        url = "https://github.com/x/y/pull/7"
+        assert (
+            _queued_pr_failure_message(
+                {"status": "checks_failed", "failing_checks": "gate"}, url, 3600
+            )
+            == f"Queued PR required checks failed (gate): {url}"
+        )
+        assert (
+            _queued_pr_failure_message({"status": "timeout"}, url, 3600)
+            == f"Queued PR timed out after 3600s: {url}"
+        )
+        assert (
+            _queued_pr_failure_message({"status": "closed"}, url, 3600)
+            == f"Queued PR closed: {url}"
+        )
+
     def test_poll_queued_pr_waits_for_origin_main_when_base_branch_set(
         self, tmp_path: Path
     ) -> None:
@@ -2078,6 +2181,94 @@ class TestQueuedMergePolling:
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 0
+
+    def test_merge_queued_failed_checks_recorded_as_check_failure(self, tmp_path: Path) -> None:
+        """Issue #1946: a red PR must be recorded with the failing check names as
+        the cause, not with the generic queue-timeout wording."""
+
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+                ci_check_timeout_seconds=60,
+                merge_wait_timeout_seconds=3600,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/x/y/pull/7",
+                    "merged": False,
+                    "merge_queued": True,
+                    "auto_merge_queued": True,
+                    "success": True,
+                    "error": None,
+                },
+            ),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                return_value={"status": "checks_failed", "failing_checks": "gate"},
+            ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert result.landing_status == "failed"
+        assert result.state.error == (
+            "Queued PR required checks failed (gate): https://github.com/x/y/pull/7"
+        )
+        assert "timed out" not in (result.state.error or "")
+        assert sprint.specs_failed == 1
 
     def test_independent_story_runs_while_merge_is_queued(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")

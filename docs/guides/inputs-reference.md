@@ -292,6 +292,8 @@ workspace:
   pr_labels: []                       # labels applied when on_approve is "pr" or "merge-pr"
   pr_draft: false                     # create PR as draft when on_approve is "pr"
   merge_wait_timeout_seconds: 3600    # max wait for queued merge-pr landing
+                                      # (only pending checks consume it; a PR whose
+                                      #  required checks have failed is abandoned at once)
 
 # ── Validation gate ────────────────────────────────────────
 validation:
