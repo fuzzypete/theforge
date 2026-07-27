@@ -31,19 +31,53 @@ from theforge.coordinator.audit_substrate import (
     CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION,
 )
 from theforge.coordinator.audit_substrate import MIGRATION_HELPERS
-from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.state import (
+    CoordinatorResult,
+    CoordinatorState,
+    DevIterationTelemetry,
+    GateDebugTelemetry,
+    GateDiagnosticTelemetry,
+    Phase,
+    ReviewIterationTelemetry,
+)
+from theforge.coordinator.validate_phase import record_validate_block
 from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+# Lists whose element shape is fixed rather than outcome-dependent, and is
+# therefore part of the schema this guard pins. Each entry is the dotted path of
+# the list itself; the guard records its elements' fields as ``path[].field``.
+#
+# Lists are opaque to the guard by default because many element shapes genuinely
+# do vary by phase outcome, and pinning those would fail on legitimate variation.
+# But a blanket rule also covered the stable ones, which left an entire class of
+# writer change — a field added inside a list entry — unversioned by construction
+# (#1997). These are the structures whose elements come from a single dataclass or
+# a single builder, so their fields drift only when the writer changes.
+#
+# Adding a path here is a deliberate claim that the shape is stable. Removing one
+# is a claim that it is not; say why in the diff.
+_PINNED_LIST_ELEMENTS: tuple[str, ...] = (
+    "iterations.dev_loop",  # DevIterationTelemetry
+    "iterations.gate_debug",  # GateDebugTelemetry
+    "iterations.gate_diagnostic",  # GateDiagnosticTelemetry
+    "iterations.review_loop",  # ReviewIterationTelemetry
+    "iterations.budget_consumption_log",  # RetryBudgetConsumption
+    "validate_blocks",  # validate_phase.record_validate_block
+)
+
+
 def _collect_schema(value: object, path: str = "") -> dict[str, str]:
     """Walk a record and return ``{path: type_name}`` for every node.
 
-    Nested dicts recurse with dotted paths. Lists are recorded as ``"list"``
-    without recursing into elements (element shapes vary by phase outcome
-    and are not part of the stable per-record schema this guard pins).
+    Nested dicts recurse with dotted paths. Lists are recorded as ``"list"``;
+    the guard descends into elements only for the paths in
+    ``_PINNED_LIST_ELEMENTS``, recording the union of element fields as
+    ``path[].field`` so a field added inside an entry is caught. Element shapes
+    outside that set vary by phase outcome and stay opaque.
     """
     out: dict[str, str] = {}
     key = path or "<root>"
@@ -54,6 +88,11 @@ def _collect_schema(value: object, path: str = "") -> dict[str, str]:
             out.update(_collect_schema(v, child_path))
     elif isinstance(value, list):
         out[key] = "list"
+        if path in _PINNED_LIST_ELEMENTS:
+            # Union across entries: a field present on any entry is part of the
+            # shape, so a writer that stops emitting it counts as drift.
+            for element in value:
+                out.update(_collect_schema(element, f"{path}[]"))
     elif isinstance(value, bool):
         out[key] = "bool"
     else:
@@ -81,6 +120,62 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
+def _populate_pinned_lists(state: CoordinatorState) -> None:
+    """Put one entry in every list whose element shape this guard pins.
+
+    The guard can only see an element that exists, so the fixture has to produce
+    one for each path in ``_PINNED_LIST_ELEMENTS``. Entries are built through the
+    real dataclasses and the real recorder rather than hand-written dicts: a field
+    added to ``DevIterationTelemetry`` or to ``record_validate_block`` then shows
+    up here on its own, which is the point — the guard exists to notice writer
+    changes nobody remembered to version (#1997).
+    """
+    state.dev_iteration_telemetry.append(
+        DevIterationTelemetry(iteration=1, max_iterations=3, cost_usd=1.0, duration_s=2.0)
+    )
+    state.gate_debug_telemetry.append(
+        GateDebugTelemetry(
+            iteration=1,
+            command="make gate-debug",
+            ran=True,
+            timeout_s=60,
+            exit_code=1,
+            output_tail="tail",
+            output_truncated=False,
+        )
+    )
+    state.gate_diagnostic_telemetry.append(
+        GateDiagnosticTelemetry(
+            iteration=1,
+            command="pytest -n 0",
+            ran=True,
+            budget_s=300,
+            per_test_timeout_s=10,
+            exit_code=1,
+            timed_out=False,
+            hanging_test=None,
+            output_tail="tail",
+            output_truncated=False,
+        )
+    )
+    state.review_iteration_telemetry.append(
+        ReviewIterationTelemetry(
+            iteration=1,
+            max_iterations=2,
+            cost_usd=1.0,
+            duration_s=2.0,
+            verdict="APPROVE",
+            findings_by_severity={"P1": 0, "P2": 0},
+            new_findings_by_severity={"P1": 0, "P2": 0},
+            repeated_findings_by_severity={"P1": 0, "P2": 0},
+            novel_findings=0,
+            restated_findings=0,
+        )
+    )
+    state.budget.consume(review_cycle=0)
+    record_validate_block(state, outcome="terminal", reason="budgets_exhausted")
+
+
 def _build_canonical_record(tmp_path: Path) -> dict:
     """Generate an audit record from a minimal-but-deterministic state."""
     config = _make_config(tmp_path)
@@ -88,6 +183,7 @@ def _build_canonical_record(tmp_path: Path) -> dict:
     state = CoordinatorState()
     state.started_at = "2026-01-01T00:00:00+00:00"
     state.run_id = "deadbeefcafe"
+    _populate_pinned_lists(state)
     result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
     return generate_audit_log(config, task, result)
 
@@ -196,6 +292,10 @@ def test_audit_record_schema_unchanged(tmp_path: Path) -> None:
         "tests/test_audit_schema_guard.py::test_audit_record_schema_unchanged\n"
         "  4. Commit tests/fixtures/audit_record_schema_v{nxt}.json\n"
         '  5. See ADR-0002 §"Schema versioning is load-bearing"\n\n'
+        "If the writer did not change and you added a path to "
+        "_PINNED_LIST_ELEMENTS, this is the guard seeing more of the same "
+        "record, not a shape change: regenerate the snapshot for the CURRENT "
+        "version and do NOT bump — there is nothing to migrate.\n\n"
         "If unintentional, revert the field change.".format(
             ver=SCHEMA_VERSION,
             nxt=SCHEMA_VERSION + 1,
@@ -406,3 +506,24 @@ def test_migrate_v5_to_v6_is_idempotent_when_field_present() -> None:
     migrated = audit_substrate._migrate_v5_to_v6(v5_record)
 
     assert migrated["symptom_test_escalations"] == existing
+
+
+def test_pinned_list_elements_are_walked_and_others_stay_opaque() -> None:
+    """The guard's coverage is itself pinned, in both directions (#1997).
+
+    Without this, the recursion could be removed and every nested field would go
+    back to being invisible with the snapshot still passing — the failure mode
+    that let two fields land unversioned in the first place.
+    """
+    record = {
+        "iterations": {"dev_loop": [{"gate_result": "FAIL"}]},
+        "reviews": [{"verdict": "APPROVE"}],
+    }
+
+    schema = _collect_schema(record)
+
+    # Pinned: elements are walked, so a field inside an entry is part of the shape.
+    assert schema["iterations.dev_loop[].gate_result"] == "str"
+    # Not pinned: the list is recorded, its elements are not.
+    assert schema["reviews"] == "list"
+    assert not any(key.startswith("reviews[]") for key in schema)
