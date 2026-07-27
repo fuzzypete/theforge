@@ -570,6 +570,11 @@ class CoordinatorState:
     hygiene_resume_audit: dict | None = None
     story_validation_result: StoryValidationResult | None = None
     convention_violations: list[dict] = field(default_factory=list)
+    # Operator-readable detail of the most recent coordinator-observed blocking
+    # finding in VALIDATE (gate failure summary, or the hard-convention violation
+    # list). Carried to the engine so the synthetic blocking review it records
+    # when the finding opens a new review cycle names the real defect (#1981).
+    validate_block_detail: str | None = None
     plan_validation_findings: list[dict] = field(default_factory=list)
     plan_finding_registry: list[PlanFindingRecord] = field(default_factory=list)
     # Stable identity records for plan review findings across regen cycles,

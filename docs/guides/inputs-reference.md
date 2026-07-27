@@ -324,7 +324,10 @@ validation:
 # ── Retry policy ───────────────────────────────────────────
 retry:
   max_dev_iterations: 3      # dev attempts within one review cycle
-  max_review_cycles: 2       # full dev→review loops before ESCALATE
+  max_review_cycles: 2       # full dev→review loops before ESCALATE. A blocking
+                             # finding the coordinator raises itself in VALIDATE
+                             # (gate failure, hard convention violation) also
+                             # spends one, once the dev attempts above are gone.
   max_review_parse_retries: 2  # reviewer output parse/schema error retries
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
 

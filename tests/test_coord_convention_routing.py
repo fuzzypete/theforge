@@ -17,7 +17,7 @@ from coord_test_helpers import (
 
 from theforge.config.types import HardConventionsConfig
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase, RetryReason
 from theforge.task import TaskStory
 
 
@@ -73,8 +73,8 @@ class TestConventionViolationRouting:
         with patch("theforge.coordinator.engine._run_validate_phase") as mock_validate:
             from theforge.coordinator.validate_phase import _ValidateOutcome
 
-            mock_validate.side_effect = [
-                (_ValidateOutcome.REVIEW_CONVENTION_BLOCK, None),
+            outcomes = [
+                (_ValidateOutcome.RETRY_DEV_NEW_CYCLE, None),
                 (
                     _ValidateOutcome.ESCALATE,
                     CoordinatorResult(
@@ -85,6 +85,14 @@ class TestConventionViolationRouting:
                     ),
                 ),
             ]
+
+            def _validate(state, *_args, **_kwargs):
+                # VALIDATE sets the retry reason before handing the finding back;
+                # the engine reads it to pick the synthetic review flavour.
+                state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
+                return outcomes.pop(0)
+
+            mock_validate.side_effect = _validate
             result = run_task(config, task)
 
         assert result.success is False
@@ -121,7 +129,12 @@ class TestConventionViolationRouting:
         mock_fix_prompt,
         tmp_path,
     ):
-        """Convention block with max_review_cycles=1 escalates immediately."""
+        """A new-cycle request the review budget cannot fund escalates immediately.
+
+        VALIDATE routes to ESCALATE itself when no cycle remains; this exercises
+        the engine's own bound, which keeps the state machine finite no matter
+        what a phase returns.
+        """
         base_config = _make_config(tmp_path)
         config = dataclasses.replace(
             base_config,
@@ -144,7 +157,11 @@ class TestConventionViolationRouting:
         with patch("theforge.coordinator.engine._run_validate_phase") as mock_validate:
             from theforge.coordinator.validate_phase import _ValidateOutcome
 
-            mock_validate.return_value = (_ValidateOutcome.REVIEW_CONVENTION_BLOCK, None)
+            def _validate(state, *_args, **_kwargs):
+                state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
+                return (_ValidateOutcome.RETRY_DEV_NEW_CYCLE, None)
+
+            mock_validate.side_effect = _validate
             result = run_task(config, task)
 
         assert result.success is False
@@ -160,7 +177,7 @@ class TestConventionViolationRouting:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_convention_violation_still_escalates_when_dev_budget_exhausted(
+    def test_convention_violation_escalation_from_validate_is_passed_through(
         self,
         mock_shell,
         mock_agent,
@@ -194,14 +211,20 @@ class TestConventionViolationRouting:
                     success=False,
                     phase=Phase.ESCALATE,
                     state=CoordinatorState(phase=Phase.ESCALATE),
-                    message="Hard convention violations after 1 attempts",
+                    message=(
+                        "Hard convention violations after 1 validation run(s);"
+                        " dev iterations and review cycles are both exhausted"
+                    ),
                 ),
             )
             result = run_task(config, task)
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert result.message == "Hard convention violations after 1 attempts"
+        assert result.message == (
+            "Hard convention violations after 1 validation run(s);"
+            " dev iterations and review cycles are both exhausted"
+        )
         assert len(result.state.review_results) == 0
 
 

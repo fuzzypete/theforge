@@ -96,7 +96,7 @@ class TestConventionParallelCheck:
         mock_telemetry,
         tmp_path,
     ):
-        """Gate PASSes with blocking=True violations → outcome is REVIEW_CONVENTION_BLOCK."""
+        """Gate PASSes with blocking=True violations → dev retry inside the current cycle."""
         config = dataclasses.replace(
             _make_config(tmp_path),
             conventions_hard=HardConventionsConfig(max_module_lines=500),
@@ -121,7 +121,7 @@ class TestConventionParallelCheck:
             logger=None,
         )
 
-        assert outcome is _ValidateOutcome.REVIEW_CONVENTION_BLOCK
+        assert outcome is _ValidateOutcome.RETRY_DEV
         assert result is None
         assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
         assert len(state.convention_violations) == 1
@@ -212,7 +212,7 @@ class TestConventionParallelCheck:
         mock_telemetry,
         tmp_path,
     ):
-        """Mixed blocking + follow-up violations: REVIEW_CONVENTION_BLOCK fires; both recorded."""
+        """Mixed blocking + follow-up violations: dev retry fires; both recorded."""
         config = dataclasses.replace(
             _make_config(tmp_path),
             conventions_hard=HardConventionsConfig(max_module_lines=500),
@@ -238,8 +238,8 @@ class TestConventionParallelCheck:
             logger=None,
         )
 
-        # Blocking violations trigger REVIEW_CONVENTION_BLOCK
-        assert outcome is _ValidateOutcome.REVIEW_CONVENTION_BLOCK
+        # Blocking violations send the finding back to dev
+        assert outcome is _ValidateOutcome.RETRY_DEV
         assert result is None
         assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
         # Both violations recorded on state

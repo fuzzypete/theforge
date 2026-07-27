@@ -643,20 +643,23 @@ class TestGateOverride:
 
         mock_shell.side_effect = _as_detailed(shell_side_effect)
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.side_effect = [
-            _make_agent_result(success=True, output="Implemented."),
-            _make_agent_result(success=True, output="Fixed lint."),
-        ]
+        mock_agent.return_value = _make_agent_result(success=True, output="Tried the lint fix.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task)
 
-        # Gate always fails → dev retried → max_dev_iterations exhausted → ESCALATE
+        # Gate always fails → dev retried until BOTH the dev iteration pool and
+        # the review-cycle pool are spent → ESCALATE (#1981)
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert any(d == "FAIL" for d in result.state.gate_decisions)
+        assert len(result.state.gate_decisions) == (
+            config.retry.max_dev_iterations * config.retry.max_review_cycles
+        )
+        # The reviewer pool never ran: the gate never passed.
+        mock_pool.assert_not_called()
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

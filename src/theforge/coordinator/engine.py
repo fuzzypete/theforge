@@ -76,6 +76,7 @@ from .state import (
     CoordinatorState,
     Phase,
     RetryReason,
+    ReviewCycleMetadata,
 )
 from .util import (
     _generate_run_id,
@@ -195,6 +196,52 @@ def _build_convention_blocking_review(state: CoordinatorState) -> ReviewResult:
             "convention_violations": state.convention_violations,
         },
     )
+
+
+def _build_gate_blocking_review(state: CoordinatorState) -> ReviewResult:
+    """Create a synthetic blocking review result for a coordinator-observed gate failure.
+
+    Gate execution is coordinator-owned, so a gate failure that outlives the
+    dev iteration pool is fed back as a REQUEST_CHANGES the coordinator raised
+    itself, and is recorded in ``review_results`` like any other blocking
+    verdict (#1981).
+    """
+    detail = state.validate_block_detail or "The validation gate failed; no detail was recorded."
+    return ReviewResult(
+        verdict="REQUEST_CHANGES",
+        summary="The validation gate failed; approval is blocked until it passes.",
+        findings=[
+            ReviewFinding(
+                severity="P1",
+                file="",
+                line=None,
+                observed=f"The coordinator-owned validation gate failed: {detail}",
+                expected=(
+                    "Code merged to main must pass the project's validation gate; a gate "
+                    "failure observed by the coordinator blocks approval regardless of "
+                    "which check reported it."
+                ),
+                evidence="validate-phase gate execution",
+                suggestion="Reproduce the gate failure in the worktree and fix it.",
+            )
+        ],
+        story_matches=True,
+        story_mismatches=[],
+        test_adequate=True,
+        test_gaps=[],
+        parse_errors=[],
+        raw_yaml={
+            "source": "validate_gate_block",
+            "gate_decisions": list(state.gate_decisions),
+        },
+    )
+
+
+def _build_validate_blocking_review(state: CoordinatorState) -> ReviewResult:
+    """Return the synthetic review for whichever blocking finding VALIDATE observed."""
+    if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS:
+        return _build_convention_blocking_review(state)
+    return _build_gate_blocking_review(state)
 
 
 # ── Log-tee / SIGTERM context manager ────────────────────────────────
@@ -601,14 +648,37 @@ def _coordinator_loop(
                 # to DONE (skip REVIEW and merge) — the cited commits are
                 # already on the base branch.
                 return _val_result  # type: ignore[return-value]
-            if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
+            if _val_outcome == _ValidateOutcome.RETRY_DEV_NEW_CYCLE:
+                # The dev iteration pool is spent but the finding is still
+                # fixable, so it is charged to a review cycle: record the
+                # coordinator's own REQUEST_CHANGES and hand it back to dev
+                # (#1981).
+                _block_label = (
+                    "Convention violations"
+                    if state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
+                    else "Gate failures"
+                )
                 state.review_cycle += 1
-                state.review_results.append(_build_convention_blocking_review(state))
+                state.review_results.append(_build_validate_blocking_review(state))
+                # Metadata keeps the audit's per-cycle pairing aligned:
+                # build_reviews() zips review_cycle_metadata with review_results
+                # by index, so a synthetic verdict needs a synthetic cycle.
+                state.review_cycle_metadata.append(
+                    ReviewCycleMetadata(
+                        pool_models=["coordinator"],
+                        successful=["coordinator"],
+                        failed=[],
+                        synthesized=False,
+                    )
+                )
                 _review_cap = state.adaptive_review_max or config.retry.max_review_cycles
                 if state.review_cycle >= _review_cap:
+                    # VALIDATE routes to ESCALATE itself when no cycle remains;
+                    # this stays as the loop bound so no phase outcome can spin
+                    # the state machine forever.
                     state.phase = Phase.ESCALATE
                     state.error = (
-                        f"Convention violations persisted after {state.review_cycle} cycles. "
+                        f"{_block_label} persisted after {state.review_cycle} cycles. "
                         f"Max cycles ({_review_cap}) exhausted."
                     )
                     _log(f"✗ ESCALATE   {state.error}")
@@ -621,6 +691,9 @@ def _coordinator_loop(
                         state=state,
                         message=state.error,
                     )
+                # Opening a review cycle refills the dev iteration pool, exactly
+                # as review_phase does when it sends findings back to the dev.
+                state.budget.reset_cycle()
                 continue
             elif _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (

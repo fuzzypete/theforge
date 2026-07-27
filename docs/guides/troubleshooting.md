@@ -306,8 +306,12 @@ you don't want fresh worktrees to `git pull --ff-only`.
 
 **Symptom:** `[forge] Gate: FAIL` — tests or lints didn't pass.
 
-**Cause:** The dev agent's implementation has bugs. The coordinator will retry
-automatically up to `max_dev_iterations`.
+**Cause:** The dev agent's implementation has bugs. The gate is coordinator-owned,
+so the dev only sees the result when VALIDATE hands it back — which it does
+automatically, up to `max_dev_iterations` within the cycle. Once those are spent
+the finding buys a review cycle (the dev iteration pool refills with it), so a
+gate failure or hard convention violation escalates only after
+`max_dev_iterations × max_review_cycles` attempts.
 
 **Fix:** Usually self-correcting. If it escalates:
 ```bash

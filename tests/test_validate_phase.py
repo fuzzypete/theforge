@@ -12,12 +12,64 @@ from coord_test_helpers import _make_agent_result, _make_config, _make_task, pat
 from theforge.coordinator.gate import format_gate_failure_summary
 from theforge.coordinator.state import CoordinatorState, DevIterationTelemetry
 from theforge.coordinator.validate_phase import (
+    _blocking_finding_route,
+    _gate_attempts,
     _gate_trace_path,
     _get_convention_baseline_ref,
     _is_identical_failure,
     _run_validate_phase,
     _ValidateOutcome,
 )
+
+
+def test_gate_attempts_counts_gate_runs_not_dev_iterations() -> None:
+    """The attempt count in terminal messages names gate runs performed (#1981)."""
+    state = CoordinatorState(dev_iteration=3)
+    assert _gate_attempts(state) == 0
+    state.gate_decisions.append("FAIL")
+    assert _gate_attempts(state) == 1
+
+
+def test_blocking_finding_route_spends_dev_iterations_first(tmp_path: Path) -> None:
+    """With dev iterations left, a coordinator-observed finding stays in the cycle."""
+    config = _make_config(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → one left
+
+    assert _blocking_finding_route(state, config) is _ValidateOutcome.RETRY_DEV
+
+
+def test_blocking_finding_route_buys_a_review_cycle_when_dev_pool_is_spent(
+    tmp_path: Path,
+) -> None:
+    """A spent dev pool escalates the currency to a review cycle, not to failure."""
+    config = _make_config(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # exhausted
+
+    assert _blocking_finding_route(state, config) is _ValidateOutcome.RETRY_DEV_NEW_CYCLE
+
+
+def test_blocking_finding_route_is_terminal_when_both_budgets_are_spent(
+    tmp_path: Path,
+) -> None:
+    """Terminal only after the dev pool and the review-cycle pool are both gone."""
+    config = _make_config(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.review_cycle = config.retry.max_review_cycles - 1
+
+    assert _blocking_finding_route(state, config) is _ValidateOutcome.ESCALATE
+
+
+def test_blocking_finding_route_never_buys_a_cycle_during_p2_cleanup(tmp_path: Path) -> None:
+    """Post-APPROVE P2 cleanup is capped by the existing dev pool and stays terminal."""
+    config = _make_config(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.p2_cleanup_active = True
+
+    assert _blocking_finding_route(state, config) is _ValidateOutcome.ESCALATE
 
 
 def test_get_convention_baseline_ref_returns_merge_base(tmp_path: Path) -> None:
@@ -472,18 +524,10 @@ def test_run_validate_phase_timeout_without_commits_still_escalates(tmp_path: Pa
     assert state.human_feedback is None
 
 
-def test_run_validate_phase_timeout_with_commits_but_budget_exhausted_escalates(
-    tmp_path: Path,
-) -> None:
-    """Even with commits, an exhausted retry budget terminates rather than retrying."""
-    config = _make_config(tmp_path)
-    task = _make_task(tmp_path)
-    state = CoordinatorState(dev_iteration=2)
-    state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
-    state.dev_results.append(_make_agent_result())
-    state.dev_durations.append(1.5)
-    state.last_dev_start_commit = "HEAD"
-
+def _run_timeout_with_commits(
+    tmp_path: Path, config, task, state: CoordinatorState
+) -> tuple[_ValidateOutcome, object]:
+    """Run VALIDATE for a gate timeout over a worktree that has commits."""
     with (
         patch(
             "theforge.coordinator.validate_phase.run_gate_full",
@@ -495,7 +539,7 @@ def test_run_validate_phase_timeout_with_commits_but_budget_exhausted_escalates(
         ),
         patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
     ):
-        outcome, _result = _run_validate_phase(
+        return _run_validate_phase(
             state,
             config,
             task,
@@ -504,7 +548,44 @@ def test_run_validate_phase_timeout_with_commits_but_budget_exhausted_escalates(
             logger=None,
         )
 
+
+def test_run_validate_phase_timeout_with_commits_spent_dev_pool_opens_review_cycle(
+    tmp_path: Path,
+) -> None:
+    """A spent dev pool buys a review cycle rather than terminating the story (#1981)."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    outcome, result = _run_timeout_with_commits(tmp_path, config, task, state)
+
+    assert outcome is _ValidateOutcome.RETRY_DEV_NEW_CYCLE
+    assert result is None
+    assert state.human_feedback is not None
+
+
+def test_run_validate_phase_timeout_with_commits_escalates_when_both_budgets_spent(
+    tmp_path: Path,
+) -> None:
+    """Only when dev iterations AND review cycles are gone does a timeout terminate."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
+    state.review_cycle = config.retry.max_review_cycles - 1  # last cycle in flight
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    outcome, result = _run_timeout_with_commits(tmp_path, config, task, state)
+
     assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
 
 
 def test_run_validate_phase_already_complete_when_handoff_documents_work_done(
@@ -1273,6 +1354,7 @@ def test_run_validate_phase_gate_fail_escalation_carries_evidence(tmp_path: Path
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=2)
     state.budget.max_iterations = config.retry.max_dev_iterations  # 2 → exhausted
+    state.review_cycle = config.retry.max_review_cycles - 1  # last cycle in flight
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.5)
     state.last_dev_start_commit = "HEAD"
@@ -1307,8 +1389,10 @@ def test_run_validate_phase_gate_fail_escalation_carries_evidence(tmp_path: Path
     assert result.success is False
     # The record consumed by forge status / the escalation comment is state.error.
     assert result.message == state.error
-    # Verdict phrase preserved for existing readers.
-    assert "Gate returned FAIL after 2 attempts" in state.error
+    # Verdict phrase reports gate runs actually performed, not the dev iteration
+    # counter that made one un-retried failure read as exhaustion (#1981).
+    assert "Gate returned FAIL after 1 gate run(s)" in state.error
+    assert "after 2 attempts" not in state.error
     # Exit code travels with the verdict.
     assert "gate exit code 65" in state.error
     # Output tail carried inline — a compile error is identifiable without the run log.
