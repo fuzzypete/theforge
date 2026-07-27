@@ -16,6 +16,29 @@ from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
 
+def _review_usage(state: object) -> tuple[int, int | None, bool]:
+    """Return ``(cycles_spent, cycle_cap, budget_exhausted)`` for a story's review budget.
+
+    Cycles spent counts reviewer cycles plus any cycle VALIDATE opened for a
+    coordinator-raised gate or convention finding, so a story terminated with
+    both budgets gone is not reported as having spent zero review cycles. The cap
+    prefers the adaptive value, which is set even when no reviewer ever ran —
+    falling back to reviewer telemetry alone left ``max`` null and ``hit_limit``
+    false on exactly that path (#1981).
+    """
+    telemetry = list(getattr(state, "review_iteration_telemetry", []) or [])
+    spent = getattr(state, "review_cycles_spent", None)
+    if not isinstance(spent, int):
+        spent = len(telemetry)
+    exhausted = bool(getattr(state, "review_budget_exhausted", False) is True)
+    cap = getattr(state, "adaptive_review_max", None)
+    if not isinstance(cap, int) or cap <= 0:
+        cap = getattr(telemetry[0], "max_iterations", None) if telemetry else None
+    if not isinstance(cap, int):
+        cap = None
+    return spent, cap, exhausted
+
+
 def persist_accumulated_story_state(
     sprint_id: str | None,
     sprint_name: str,
@@ -504,7 +527,7 @@ def _write_sprint_audit(
                 reviews_summary.append(cycle_entry)
 
             dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
-            review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+            review_used, review_max, review_exhausted = _review_usage(res.state)
             dev_max = (
                 getattr(
                     getattr(res.state, "dev_iteration_telemetry", [None])[0],
@@ -512,15 +535,6 @@ def _write_sprint_audit(
                     None,
                 )
                 if getattr(res.state, "dev_iteration_telemetry", [])
-                else None
-            )
-            review_max = (
-                getattr(
-                    getattr(res.state, "review_iteration_telemetry", [None])[0],
-                    "max_iterations",
-                    None,
-                )
-                if getattr(res.state, "review_iteration_telemetry", [])
                 else None
             )
             # Tag the source of an ALREADY_DONE outcome so audit / postmortem
@@ -558,12 +572,17 @@ def _write_sprint_audit(
                     "review": {
                         "used": review_used,
                         "max": review_max,
-                        "hit_limit": (review_used >= review_max)
-                        if review_max is not None and review_used > 0
-                        else False,
-                        "early_finish": (0 < review_used < review_max)
-                        if review_max is not None
-                        else False,
+                        "hit_limit": review_exhausted
+                        or (
+                            (review_used >= review_max)
+                            if review_max is not None and review_used > 0
+                            else False
+                        ),
+                        "early_finish": (
+                            (not review_exhausted) and (0 < review_used < review_max)
+                            if review_max is not None
+                            else False
+                        ),
                     },
                 },
                 "reviews": reviews_summary,
@@ -650,19 +669,12 @@ def _write_sprint_audit(
     usage_distribution = []
     for spec_str, res in result.results:
         dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
-        review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+        review_used, review_max, review_exhausted = _review_usage(res.state)
         dev_max = (
             getattr(
                 getattr(res.state, "dev_iteration_telemetry", [None])[0], "max_iterations", None
             )
             if getattr(res.state, "dev_iteration_telemetry", [])
-            else None
-        )
-        review_max = (
-            getattr(
-                getattr(res.state, "review_iteration_telemetry", [None])[0], "max_iterations", None
-            )
-            if getattr(res.state, "review_iteration_telemetry", [])
             else None
         )
         usage_distribution.append(
@@ -820,7 +832,7 @@ def _write_sprint_summary(
             elif res.success:
                 last_verdict = "APPROVE"
             dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
-            review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+            review_used, review_max, review_exhausted = _review_usage(res.state)
             dev_max = (
                 getattr(
                     getattr(res.state, "dev_iteration_telemetry", [None])[0],
@@ -828,15 +840,6 @@ def _write_sprint_summary(
                     None,
                 )
                 if getattr(res.state, "dev_iteration_telemetry", [])
-                else None
-            )
-            review_max = (
-                getattr(
-                    getattr(res.state, "review_iteration_telemetry", [None])[0],
-                    "max_iterations",
-                    None,
-                )
-                if getattr(res.state, "review_iteration_telemetry", [])
                 else None
             )
             _dev_results_list = list(getattr(res.state, "dev_results", []) or [])
@@ -900,12 +903,17 @@ def _write_sprint_summary(
                     "review": {
                         "used": review_used,
                         "max": review_max,
-                        "hit_limit": (review_used >= review_max)
-                        if review_max is not None and review_used > 0
-                        else False,
-                        "early_finish": (0 < review_used < review_max)
-                        if review_max is not None
-                        else False,
+                        "hit_limit": review_exhausted
+                        or (
+                            (review_used >= review_max)
+                            if review_max is not None and review_used > 0
+                            else False
+                        ),
+                        "early_finish": (
+                            (not review_exhausted) and (0 < review_used < review_max)
+                            if review_max is not None
+                            else False
+                        ),
                     },
                 },
             }
@@ -992,19 +1000,12 @@ def _write_sprint_summary(
     usage_distribution = []
     for spec_str, res in result.results:
         dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
-        review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+        review_used, review_max, review_exhausted = _review_usage(res.state)
         dev_max = (
             getattr(
                 getattr(res.state, "dev_iteration_telemetry", [None])[0], "max_iterations", None
             )
             if getattr(res.state, "dev_iteration_telemetry", [])
-            else None
-        )
-        review_max = (
-            getattr(
-                getattr(res.state, "review_iteration_telemetry", [None])[0], "max_iterations", None
-            )
-            if getattr(res.state, "review_iteration_telemetry", [])
             else None
         )
         usage_distribution.append(

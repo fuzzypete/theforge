@@ -180,6 +180,29 @@ def cmd_audit(args: object) -> int:
                     desc = finding.get("description", "")
                     print(f"      [{sev}] {loc} — {desc}")
 
+    # Coordinator-raised blocking findings (gate / hard convention). These are
+    # not reviewer verdicts, so they are not in Reviews above — but one of them
+    # can spend a review cycle or end the story, so the operator has to see it.
+    validate_blocks = audit.get("validate_blocks") or []
+    if validate_blocks:
+        print()
+        print("  Coordinator blocks (VALIDATE)")
+        for block in validate_blocks:
+            kind = block.get("kind", "?")
+            outcome = block.get("outcome", "?")
+            reason = block.get("reason", "?")
+            cycle = block.get("review_cycle", "?")
+            spent = block.get("dev_iterations_spent", "?")
+            print(f"    [{kind}] cycle {cycle}, {spent} dev iteration(s) → {outcome} ({reason})")
+            for violation in block.get("convention_violations") or []:
+                rule = violation.get("rule", "?")
+                vfile = violation.get("file", "?")
+                print(f"      [{rule}] {vfile}: {violation.get('detail', '')}")
+            detail = (block.get("detail") or "").strip()
+            if detail:
+                first_line = detail.splitlines()[0]
+                print(f"      {first_line}")
+
     if audit.get("error"):
         print()
         error_type = audit.get("error_type")
