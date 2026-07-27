@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from .log_tee import _end_run_log_tee, _safe_signal
 from .state import RetryReason
+from .util import _round_cost
 
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
@@ -49,7 +50,7 @@ def _make_sigterm_handler(
         if state is not None:
             extra["phase_at_crash"] = state.phase.name if state.phase is not None else "UNKNOWN"
             extra["iteration_at_crash"] = state.dev_iteration
-            extra["cost_at_crash"] = round(state.total_cost, 6)
+            extra["cost_at_crash"] = _round_cost(state.total_cost_measured)
         extra["last_event"] = logger.last_event
         logger._safe_emit("run_end", outcome="crashed", **extra)
         if state is not None and task is not None and config is not None:

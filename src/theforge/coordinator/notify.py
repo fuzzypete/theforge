@@ -78,7 +78,8 @@ def _escalate_notify(
     branch = state.branch_name or ""
     first_line = (
         f"{state.review_cycle} cycles exhausted"
-        f" — ${state.total_cost:.2f}  {_cu._fmt_duration(elapsed)}"
+        f" — {_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}"
+        f"  {_cu._fmt_duration(elapsed)}"
     )
     body = "\n".join([first_line, detail, f"Branch: {branch}"])
     if config.notifications.ntfy is not None:
@@ -114,7 +115,7 @@ def _ntfy_crash_notify(
     body = "\n".join(
         [
             f"{phase_name} (iter {state.dev_iteration})",
-            f"Cost at crash: ${state.total_cost:.2f}",
+            f"Cost at crash: {_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}",
             f"Uptime: {_cu._fmt_duration(uptime_seconds)}",
         ]
     )
@@ -145,7 +146,8 @@ def _ntfy_done_notify(
         return
     body = "\n".join(
         [
-            f"APPROVE \u2014 ${state.total_cost:.2f}  {_cu._fmt_duration(elapsed)}",
+            f"APPROVE \u2014 {_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}"
+            f"  {_cu._fmt_duration(elapsed)}",
             (summary or "Approved and merged.")[:120],
             f"Branch: {branch_name}",
         ]
@@ -197,7 +199,7 @@ def _human_review(
     _cu._log(f"  Summary:   {parsed_review.summary}")
     _cu._log(f"  Workspace: {workspace_path}")
     _cu._log(f"  Branch:    {branch_name}")
-    _cu._log(f"  Cost:      ${state.total_cost:.3f}")
+    _cu._log(f"  Cost:      {_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}")
     _cu._log("")
     _cu._log("Options:")
     _cu._log("  [a]pprove  → DONE (ready to merge)")
@@ -298,7 +300,7 @@ def _escalate_gate_interactive(
         _cu._log(f"  Reviewers: {verdicts_str}")
     if gate_result:
         _cu._log(f"  Gate:     {gate_result}")
-    _cu._log(f"  Cost:     ${state.total_cost:.3f}")
+    _cu._log(f"  Cost:     {_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}")
     _cu._log(f"  Dev iter: {state.dev_iteration}  Review cycles: {state.review_cycle}")
     _cu._log("")
     _cu._log("  Choose:")

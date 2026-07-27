@@ -147,6 +147,7 @@ class TestMergePrFunction:
 
         state = MagicMock()
         state.total_cost = 1.5
+        state.total_cost_measured = 1.5
         state.dev_iteration = 1
         state.cycle_history = []
         state.cycle_history_total = 0
@@ -260,6 +261,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         calls: list[list[str]] = []
@@ -326,6 +328,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         current_head = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
@@ -399,6 +402,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         call_counts = {"fetch": 0, "rebase": 0, "push": 0}
@@ -457,6 +461,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         call_counts = {"fetch": 0, "rebase": 0, "push": 0, "merge": 0}
@@ -519,6 +524,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         arming_stderr = (
@@ -560,6 +566,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         def _fake_run(cmd, **kwargs):
@@ -592,6 +599,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         call_counts = {"fetch": 0, "rebase": 0, "push": 0, "merge": 0}
@@ -643,6 +651,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         gh_calls: list[list[str]] = []
@@ -681,6 +690,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         gh_calls: list[list[str]] = []
@@ -715,6 +725,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         gh_calls: list[list[str]] = []
@@ -749,6 +760,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         commands: list[list[str]] = []
@@ -796,6 +808,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         commands: list[list[str]] = []
@@ -834,6 +847,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         def _fake_run(cmd, **kwargs):
@@ -870,6 +884,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         def _fake_run(cmd, **kwargs):
@@ -916,6 +931,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         gh_calls: list[list[str]] = []
@@ -951,6 +967,7 @@ class TestMergePrFunction:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         merge_cwds: list[Path] = []
@@ -1410,6 +1427,7 @@ class TestPrBodyContent:
         )
         state = MagicMock()
         state.total_cost = 2.75
+        state.total_cost_measured = 2.75
         state.dev_iteration = 3
 
         pr_bodies: list[str] = []
@@ -1458,6 +1476,7 @@ class TestPrBodyContent:
         )
         state = MagicMock()
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         pr_bodies: list[str] = []
@@ -1504,6 +1523,7 @@ class TestCreatePrReopenedBranch:
         review = _make_review_result()
         state = MagicMock()
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         current_head = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
@@ -1560,6 +1580,7 @@ class TestCreatePrReopenedBranch:
         review = _make_review_result()
         state = MagicMock()
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         head_sha = "abc1234abc1234abc1234abc1234abc1234abc1"
@@ -1701,6 +1722,7 @@ class TestFastForwardAfterMerge:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         ff_calls: list[list[str]] = []
@@ -1755,6 +1777,7 @@ class TestFastForwardAfterMerge:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         cleanup_calls: list[list[str]] = []
@@ -1798,6 +1821,7 @@ class TestFastForwardAfterMerge:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         ff_calls: list[list[str]] = []
@@ -1848,6 +1872,7 @@ class TestFastForwardAfterMerge:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         cleanup_calls: list[list[str]] = []
@@ -1907,6 +1932,7 @@ class TestFastForwardAfterMerge:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         def _fake_run(cmd, **kwargs):
@@ -1962,6 +1988,7 @@ class TestFastForwardAfterMerge:
         state = MagicMock()
         state.review_results = [review]
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
 
         def _fake_run(cmd, **kwargs):

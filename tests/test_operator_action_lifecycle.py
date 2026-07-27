@@ -99,6 +99,7 @@ def _capture_pr_body(config, task) -> str:
     review = _make_review_result()
     state = MagicMock()
     state.total_cost = 1.0
+    state.total_cost_measured = 1.0
     state.dev_iteration = 1
 
     bodies: list[str] = []
@@ -162,6 +163,7 @@ class TestNoAutoCloseForOperatorAction:
         review = _make_review_result()
         state = MagicMock()
         state.total_cost = 1.0
+        state.total_cost_measured = 1.0
         state.dev_iteration = 1
         bodies: list[str] = []
 

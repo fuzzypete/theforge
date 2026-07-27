@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .util import _round_cost
+
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
     from theforge.task import TaskStory
@@ -278,7 +280,7 @@ def build_post_run_payload(
         "summary": summary,
         "cycles": state.review_cycle,
         "dev_iterations": len(state.dev_results),
-        "total_cost_usd": round(state.total_cost, 4),
+        "total_cost_usd": _round_cost(state.total_cost_measured, 4),
         "duration_seconds": round(duration_seconds, 1),
         "findings": findings,
         "gate_decisions": list(state.gate_decisions),
@@ -311,7 +313,7 @@ def build_post_sprint_payload(
     stories: list[dict],
     run_id: str,
     config: ForgeConfig,
-    total_cost_usd: float = 0.0,
+    total_cost_usd: float | None = 0.0,
     duration_seconds: float = 0.0,
 ) -> dict:
     """Payload for post_sprint hook."""
@@ -320,7 +322,7 @@ def build_post_sprint_payload(
         "project": config.project,
         "sprint": sprint_name,
         "run_id": run_id,
-        "total_cost_usd": round(total_cost_usd, 4),
+        "total_cost_usd": _round_cost(total_cost_usd, 4),
         "duration_seconds": round(duration_seconds, 1),
         "stories": stories,
     }

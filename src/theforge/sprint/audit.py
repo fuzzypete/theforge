@@ -16,6 +16,31 @@ from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
 
+def _optional_cost(value: object) -> float | None:
+    """Round a cost for a sprint record, preserving an unmeasured ``None``.
+
+    A ``None`` cost means the story had at least one phase whose spend the
+    transport could not measure. Rounding it to ``0.0`` would record unpriced
+    work as free in sprint-audit.yaml and sprint-summary.yaml (#1992).
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return round(float(value), 4)
+    return None
+
+
+def _state_reported_cost(state: object) -> float | None:
+    """Per-story cost from a coordinator state, preserving cost-unknown.
+
+    Reads ``total_cost_measured`` — the None-preserving aggregate — so a story
+    with any unmeasured phase is recorded as cost-unknown instead of as the
+    measured remainder. Falls back to ``total_cost`` only for duck-typed states
+    that predate the measured aggregate.
+    """
+    if hasattr(state, "total_cost_measured"):
+        return _optional_cost(state.total_cost_measured)
+    return _optional_cost(getattr(state, "total_cost", None))
+
+
 def _review_usage(state: object) -> tuple[int, int | None, bool]:
     """Return ``(cycles_spent, cycle_cap, budget_exhausted)`` for a story's review budget.
 
@@ -348,7 +373,7 @@ def _load_story_summary_entry_from_audit(
         "outcome": final_phase,
         "outcome_source": outcome_source,
         "verdict": verdict,
-        "cost_usd": round(float(cost_block.get("total_usd", 0.0)), 4)
+        "cost_usd": _optional_cost(cost_block.get("total_usd"))
         if isinstance(cost_block, dict)
         else 0.0,
         "story_run_id": audit_data.get("run_id"),
@@ -547,7 +572,7 @@ def _write_sprint_audit(
                 "path": display_key,
                 "outcome": outcome,
                 "outcome_source": outcome_source,
-                "cost_usd": round(res.state.total_cost, 4),
+                "cost_usd": _state_reported_cost(res.state),
                 "preflight": preflight,
                 "preflight_original_verdict": getattr(
                     res.state, "preflight_cached_original_verdict", None
@@ -608,10 +633,14 @@ def _write_sprint_audit(
             if snapshot:
                 last_cost = snapshot.get("last_cost")
                 if (
-                    not entry.get("cost_usd")
+                    entry.get("cost_usd") is not None
+                    and not entry.get("cost_usd")
                     and isinstance(last_cost, (int, float))
                     and last_cost > 0
                 ):
+                    # Only fills in a genuine zero. A cost-unknown (None) entry
+                    # stays unknown — a live snapshot subtotal is not the
+                    # story's total (#1992).
                     entry["cost_usd"] = round(float(last_cost), 4)
                 last_phase_val = snapshot.get("last_phase")
                 if last_phase_val:
@@ -692,7 +721,20 @@ def _write_sprint_audit(
             "budget_usd": manifest.budget_usd,
             "max_parallel": manifest.max_parallel,
             "sprint_id": sprint_id,
-            "total_cost_usd": round(result.total_cost_usd, 4),
+            # ``None`` when any story's cost was unmeasured: a sprint total over
+            # partially unpriced work is a different statement from a complete
+            # one and must not render as a confident figure (#1992). The measured
+            # lower bound stays available under ``total_cost_measured_usd``.
+            "total_cost_usd": (
+                round(result.total_cost_usd, 4) if getattr(result, "cost_complete", True) else None
+            ),
+            "total_cost_measured_usd": round(result.total_cost_usd, 4),
+            "cost_complete": bool(getattr(result, "cost_complete", True)),
+            # Which work is unpriced, not merely that some is — the budget check
+            # refuses on this list, so it must be traceable (#1992).
+            "unmeasured_spend_sources": list(
+                getattr(result, "unmeasured_spend_sources", ()) or []
+            ),
             "budget_note": "Costs reflect Claude invocations only; Codex/Gemini report $0.00",
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -857,7 +899,7 @@ def _write_sprint_summary(
             if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE":
                 outcome_source = "preflight_verdict"
             _snapshot = live_telemetry_snapshots.get(slug)
-            _entry_cost = round(res.state.total_cost, 4)
+            _entry_cost = _state_reported_cost(res.state)
             _last_phase_val: str | None = None
             if _snapshot:
                 _snap_cost = _snapshot.get("last_cost")
@@ -1049,9 +1091,9 @@ def _write_sprint_summary(
         effective_succeeded = canonical_counts["succeeded"]
         effective_failed = canonical_counts["failed"]
         effective_skipped = canonical_counts["skipped"]
-        effective_cost_usd = round(
-            sum(getattr(e, "cost_usd", 0.0) for e in story_state.stories()), 4
-        )
+        _canonical_costs = [getattr(e, "cost_usd", 0.0) for e in story_state.stories()]
+        effective_cost_complete = all(c is not None for c in _canonical_costs)
+        effective_cost_usd = round(sum(c for c in _canonical_costs if c is not None), 4)
         # Inject any shape-gate-skipped stories (and other canonical-only
         # entries that aren't in canonical_refs) so the summary surfaces them.
         canonical_slugs_in_entries = {e.get("slug") for e in spec_entries if e.get("slug")}
@@ -1078,7 +1120,9 @@ def _write_sprint_summary(
             )
     else:
         effective_specs_total = len(spec_entries)
-        effective_cost_usd = round(sum(e.get("cost_usd", 0.0) for e in spec_entries), 4)
+        _entry_costs = [e.get("cost_usd", 0.0) for e in spec_entries]
+        effective_cost_complete = all(c is not None for c in _entry_costs)
+        effective_cost_usd = round(sum(c for c in _entry_costs if c is not None), 4)
         effective_succeeded = sum(1 for e in spec_entries if e.get("outcome") == "DONE")
         effective_failed = sum(
             1
@@ -1103,6 +1147,13 @@ def _write_sprint_summary(
         accumulated_for_state,
     )
 
+    # Intake remediation spends the sprint budget outside any story's entry, so
+    # an unmeasured intake pass makes the sprint total incomplete even when every
+    # per-story cost is known (#1992).
+    _unmeasured_sources = list(getattr(result, "unmeasured_spend_sources", ()) or [])
+    if _unmeasured_sources:
+        effective_cost_complete = False
+
     summary = {
         "sprint": {
             "name": manifest.name,
@@ -1111,7 +1162,13 @@ def _write_sprint_summary(
             "run_id": run_id,
             "sprint_id": sprint_id,
             "run_log": f"run-{run_id}.log" if run_id else None,
-            "total_cost_usd": effective_cost_usd,
+            # Null when any story's cost is unknown; the measured lower bound is
+            # reported separately so an incomplete total is never mistaken for a
+            # complete one (#1992).
+            "total_cost_usd": effective_cost_usd if effective_cost_complete else None,
+            "total_cost_measured_usd": effective_cost_usd,
+            "cost_complete": effective_cost_complete,
+            "unmeasured_spend_sources": _unmeasured_sources,
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_seconds": round(duration, 1),
