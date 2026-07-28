@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -462,6 +463,153 @@ class TestGitHubIssueSource:
         mock_log.warning.assert_called_once()
         msg = mock_log.warning.call_args[0][0]
         assert "comment" in msg
+
+    def _already_done_result(
+        self,
+        *,
+        reason: str = "Working tree already satisfies the spec.",
+        symptom: dict | None = None,
+        work_type: str = "feature",
+    ) -> SimpleNamespace:
+        """A no-merge ALREADY_DONE CoordinatorResult stand-in."""
+        state = SimpleNamespace(
+            preflight_verdict="ALREADY_DONE",
+            preflight_reason=reason,
+            preflight_work_type=work_type,
+            preflight_symptom_verification=symptom or {},
+            review_results=[],
+        )
+        return SimpleNamespace(success=True, merge=None, state=state)
+
+    def _merge_config(self, tmp_path: Path):
+        config = MagicMock()
+        config.workspace.on_approve = "merge"
+        config.project_root = tmp_path
+        return config
+
+    def test_already_done_already_implemented_closes_completed(self, tmp_path: Path) -> None:
+        """A verified-resolved symptom closes the issue with --reason completed."""
+        task = TaskStory(name="Test", slug="test", github_issue=1879)
+        result = self._already_done_result(
+            reason="Symptom no longer reproduces at HEAD.",
+            symptom={"status": "verified_resolved", "reproduces_now": False},
+            work_type="bug",
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "close" in cmd
+        assert "1879" in cmd
+        assert "--reason" in cmd
+        assert "completed" in cmd
+        # Comment carries the determination and its evidence.
+        comment = cmd[cmd.index("--comment") + 1]
+        assert "ALREADY_DONE" in comment
+        assert "Symptom no longer reproduces at HEAD." in comment
+
+    def test_already_done_premise_obsolete_closes_not_planned(self, tmp_path: Path) -> None:
+        """A never-reproduced symptom closes the issue with --reason 'not planned'."""
+        task = TaskStory(name="Test", slug="test", github_issue=1880)
+        result = self._already_done_result(
+            reason="Bug premise absent from baseline.",
+            symptom={"status": "not_reproduced", "reproduces_now": False},
+            work_type="bug",
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "close" in cmd
+        assert "--reason" in cmd
+        assert "not planned" in cmd
+
+    def test_already_done_ambiguous_routes_to_operator(self, tmp_path: Path) -> None:
+        """An ambiguous disposition comments and adds the operator-action label, no close."""
+        task = TaskStory(name="Test", slug="test", github_issue=1881)
+        result = self._already_done_result(reason="Spec appears satisfied.", symptom={})
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        assert mock_run.call_count == 2
+        comment_cmd = mock_run.call_args_list[0][0][0]
+        label_cmd = mock_run.call_args_list[1][0][0]
+        # First: a durable comment with determination + evidence, no close.
+        assert "comment" in comment_cmd
+        assert "close" not in comment_cmd
+        body = comment_cmd[comment_cmd.index("--body") + 1]
+        assert "ALREADY_DONE" in body
+        assert "Spec appears satisfied." in body
+        # Second: route to the operator-action queue via the label vocabulary.
+        assert "edit" in label_cmd
+        assert "--add-label" in label_cmd
+        assert "operator-action" in label_cmd
+
+    def test_already_done_noop_when_not_merge_mode(self, tmp_path: Path) -> None:
+        """ALREADY_DONE resolution is gated on merge mode like the close path."""
+        task = TaskStory(name="Test", slug="test", github_issue=1882)
+        result = self._already_done_result()
+        config = MagicMock()
+        config.workspace.on_approve = "pr"
+        config.project_root = tmp_path
+        with patch("subprocess.run") as mock_run:
+            GitHubIssueSource().on_complete(task, result, config)
+        mock_run.assert_not_called()
+
+    def test_merged_land_still_uses_close_path(self, tmp_path: Path) -> None:
+        """A real merge still closes with the review summary, never the ALREADY_DONE path."""
+        task = TaskStory(name="Test", slug="test", github_issue=1883)
+        state = SimpleNamespace(
+            preflight_verdict="ALREADY_DONE",  # even if preflight said ALREADY_DONE
+            preflight_reason="x",
+            review_results=[SimpleNamespace(summary="Shipped it")],
+        )
+        result = SimpleNamespace(success=True, merge={"merged": True}, state=state)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "close" in cmd
+        assert "--reason" not in cmd  # merged close uses the legacy no-reason form
+        comment = cmd[cmd.index("--comment") + 1]
+        assert "Completed by TheForge" in comment
+
+    def test_classify_disposition(self) -> None:
+        from theforge.sprint.sources import classify_already_done_disposition
+
+        assert (
+            classify_already_done_disposition(
+                SimpleNamespace(
+                    preflight_symptom_verification={
+                        "status": "verified_resolved",
+                        "reproduces_now": False,
+                    }
+                )
+            )
+            == "already_implemented"
+        )
+        assert (
+            classify_already_done_disposition(
+                SimpleNamespace(
+                    preflight_symptom_verification={
+                        "status": "not_reproduced",
+                        "reproduces_now": False,
+                    }
+                )
+            )
+            == "premise_obsolete"
+        )
+        assert (
+            classify_already_done_disposition(SimpleNamespace(preflight_symptom_verification={}))
+            == "ambiguous"
+        )
 
     def test_fetch_raises_on_malformed_json(self, tmp_path: Path) -> None:
         """Malformed JSON from gh is wrapped in a clear RuntimeError."""

@@ -378,6 +378,9 @@ def _load_story_summary_entry_from_audit(
         else 0.0,
         "story_run_id": audit_data.get("run_id"),
         "preflight": preflight_verdict,
+        "preflight_reason": (
+            preflight_block.get("reason") if isinstance(preflight_block, dict) else None
+        ),
         "preflight_original_verdict": (
             preflight_block.get("original_verdict") if isinstance(preflight_block, dict) else None
         ),
@@ -574,6 +577,7 @@ def _write_sprint_audit(
                 "outcome_source": outcome_source,
                 "cost_usd": _state_reported_cost(res.state),
                 "preflight": preflight,
+                "preflight_reason": getattr(res.state, "preflight_reason", None),
                 "preflight_original_verdict": getattr(
                     res.state, "preflight_cached_original_verdict", None
                 ),
@@ -922,6 +926,7 @@ def _write_sprint_summary(
                 "dev_model": _dev_model,
                 "story_run_id": getattr(res.state, "run_id", None) or run_id,
                 "preflight": preflight,
+                "preflight_reason": getattr(res.state, "preflight_reason", None),
                 "preflight_original_verdict": getattr(
                     res.state, "preflight_cached_original_verdict", None
                 ),

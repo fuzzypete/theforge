@@ -215,6 +215,7 @@ def test_write_sprint_audit_carries_outcome_source_for_both_paths(
     preflight_state = MagicMock()
     preflight_state.preflight_cached = False
     preflight_state.preflight_verdict = "ALREADY_DONE"
+    preflight_state.preflight_reason = "Spec already satisfied."
     preflight_state.preflight_cached_original_verdict = None
     preflight_state.preflight_cached_from_run_id = None
     preflight_state.total_cost = 0.05
