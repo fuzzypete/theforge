@@ -54,12 +54,22 @@ Python that happened to appear on `PATH`.
 ### 1. Cut an RC
 
 ```bash
-scripts/cut-rc.sh X.Y.Z              # first RC: cuts vX.Y.ZrcN with N=0
-scripts/cut-rc.sh X.Y.Z 1            # subsequent RCs: explicit RC_NUM
+scripts/cut-rc.sh X.Y.Z              # cuts the next RC after the highest vX.Y.ZrcN on origin
+scripts/cut-rc.sh X.Y.Z 1            # explicit RC_NUM overrides the computed one
 scripts/cut-rc.sh --dry-run X.Y.Z
 scripts/cut-rc.sh --no-install X.Y.Z # skip the isolated-venv install + launcher repoint
 scripts/cut-rc.sh --resume X.Y.Z N   # finish a cut that aborted after tag-push
 ```
+
+`RC_NUM` is optional. With no `RC_NUM`, the script queries origin for the
+`vX.Y.Zrc*` tags and cuts one past the highest — `rc0` on a release line that
+has none yet — so a repeat cut needs no `git tag --list` lookup first. The
+resolved number and how it was derived are printed in the header
+(`RC number       : 3 (next after highest existing origin tag v0.13.0rc2)`).
+The tag-already-exists guards (local and origin) still run, so a wrong number
+— computed or passed — refuses rather than clobbers. With `--resume` and no
+`RC_NUM`, the script resumes the *highest existing* tag (the one the aborted
+cut targeted), not a fresh next number.
 
 `--resume` is the recovery path when a cut aborts at one of the post-tag steps
 (isolated venv install, managed-launcher repoint, ladder print). Because the
@@ -115,7 +125,8 @@ release's CHANGELOG entry.
 ### 3. Either fix or promote
 
 - **Ladder passes** → `scripts/promote-rc.sh X.Y.Z`
-- **Ladder fails** → fix on `release/vX.Y`, then `scripts/cut-rc.sh X.Y.Z N+1`
+- **Ladder fails** → fix on `release/vX.Y`, then `scripts/cut-rc.sh X.Y.Z` (the
+  next RC number is computed from the tags on origin)
 
 ### 4. Promote the RC to a final release
 

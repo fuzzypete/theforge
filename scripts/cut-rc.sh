@@ -3,7 +3,13 @@
 #
 # Usage: scripts/cut-rc.sh [--dry-run] [--no-install] [--resume] VERSION [RC_NUM]
 #   VERSION   The target final version, e.g. 0.10.0
-#   RC_NUM    The RC number, default 0 (so first RC is 0.10.0rc0)
+#   RC_NUM    The RC number. Optional — when omitted it is computed from the
+#             v<VERSION>rcN tags that exist on origin: one past the highest
+#             (rc0 if the release line has none yet), so a repeat cut needs
+#             no operator lookup. Passing it explicitly overrides the
+#             computed value. With --resume and no RC_NUM, the highest
+#             existing tag is resumed (the one the original cut targeted),
+#             not a fresh next number.
 #   --resume  Re-enter a previous cut past the tag-push step. The post-tag
 #             steps (isolated venv install, launcher repoint, ladder print)
 #             must remain runnable after the operator has fixed whatever
@@ -102,10 +108,59 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 2
 fi
 
-RC_NUM="${RC_NUM:-0}"
-if [[ ! "$RC_NUM" =~ ^[0-9]+$ ]]; then
+if [[ -n "$RC_NUM" && ! "$RC_NUM" =~ ^[0-9]+$ ]]; then
     echo "Error: RC_NUM must be a non-negative integer (got: $RC_NUM)" >&2
     exit 2
+fi
+
+# Print the highest N among the v<VERSION>rcN tags that exist on origin, or
+# nothing if the release line has no RC tags yet. Returns non-zero only when
+# origin itself could not be queried — an empty result is a valid answer, not
+# a failure.
+highest_origin_rc() {
+    local version="$1"
+    local remote_refs=""
+    if ! remote_refs="$(git ls-remote --tags origin "refs/tags/v${version}rc*" 2>/dev/null)"; then
+        return 1
+    fi
+    printf '%s\n' "$remote_refs" \
+        | sed -n "s#.*refs/tags/v${version}rc\([0-9][0-9]*\)\$#\1#p" \
+        | sort -n \
+        | tail -1
+}
+
+# RC_NUM defaulting. An explicit argument always wins; otherwise the number is
+# derived from origin so the operator never has to look up which RCs exist.
+# The tag-collision guards below still run either way, as a backstop against a
+# computed number that is wrong for any reason.
+if [[ -n "$RC_NUM" ]]; then
+    RC_NUM_SOURCE="explicit RC_NUM argument"
+else
+    if ! HIGHEST_RC="$(highest_origin_rc "$VERSION")"; then
+        echo "Error: could not query origin for existing v${VERSION}rc* tags." >&2
+        echo "       Check that the 'origin' remote is reachable, or pass RC_NUM" >&2
+        echo "       explicitly as the second positional argument (e.g. \`$VERSION 3\`)." >&2
+        exit 1
+    fi
+    if [[ "$RESUME" == true ]]; then
+        # Resume must target the RC the original invocation cut — that tag is
+        # already on origin, so it is the highest existing one, NOT the next
+        # free number.
+        if [[ -z "$HIGHEST_RC" ]]; then
+            echo "Error: --resume with no RC_NUM, but no v${VERSION}rc* tag exists on origin." >&2
+            echo "       There is nothing to resume. Run without --resume to cut a" >&2
+            echo "       fresh RC, or pass the RC_NUM you meant explicitly." >&2
+            exit 1
+        fi
+        RC_NUM=$((10#$HIGHEST_RC))
+        RC_NUM_SOURCE="resuming highest existing origin tag v${VERSION}rc${RC_NUM}"
+    elif [[ -z "$HIGHEST_RC" ]]; then
+        RC_NUM=0
+        RC_NUM_SOURCE="no v${VERSION}rc* tags on origin; starting the release line at rc0"
+    else
+        RC_NUM=$((10#$HIGHEST_RC + 1))
+        RC_NUM_SOURCE="next after highest existing origin tag v${VERSION}rc${HIGHEST_RC}"
+    fi
 fi
 
 RC_VERSION="${VERSION}rc${RC_NUM}"
@@ -118,6 +173,7 @@ RELEASE_BRANCH="release/v$(echo "$VERSION" | cut -d. -f1,2)"
 CURRENT_VERSION=""
 
 echo "Cutting RC      : $RC_VERSION"
+echo "RC number       : $RC_NUM ($RC_NUM_SOURCE)"
 echo "RC tag          : $RC_TAG"
 echo "Release branch  : $RELEASE_BRANCH"
 echo "Dry run         : $DRY_RUN"
