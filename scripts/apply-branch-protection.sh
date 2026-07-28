@@ -55,6 +55,16 @@ BRANCH="${ARGS[1]}"
 # status that never arrives; producing a context that is not required leaves a
 # merge ungated. Change both files together and re-apply protection.
 GATE_CONTEXTS='["gate (3.12)"]'
+# NOTE: this body is the COMPLETE ruleset for a release branch, and the PUT
+# replaces protection wholesale — every rule not named here is cleared. In
+# particular required_pull_request_reviews:null disables "require a pull
+# request before merging". That is correct for release/* branches (cut-rc.sh's
+# only callers, all already in this shape), but it makes the script UNSAFE to
+# point at main, which carries a required_pull_request_reviews block this body
+# would silently drop. Narrow main's contexts with the granular endpoint
+# instead, which touches nothing else:
+#   echo '{"strict":false,"contexts":'"$GATE_CONTEXTS"'}' | gh api --method PATCH \
+#     repos/<repo>/branches/main/protection/required_status_checks --input -
 PROTECTION_BODY='{"required_status_checks":{"strict":false,"contexts":'"$GATE_CONTEXTS"'},"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
 
 if [[ "$DRY_RUN" == true ]]; then
