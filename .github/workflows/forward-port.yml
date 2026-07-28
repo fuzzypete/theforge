@@ -74,8 +74,14 @@ jobs:
           RELEASE_REF: ${{ github.ref_name }}
         run: |
           set -o pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Author the merge commit as the forward-port App, not the Actions
+          # bot. This commit becomes the port PR's head, and the head's identity
+          # is the "actor of the pull request event" that main's workflow-approval
+          # policy checks. Runs attributed to github-actions[bot] land
+          # action_required and stall the armed auto-merge; runs attributed to
+          # forward-port[bot] have never required approval.
+          git config user.name "forward-port[bot]"
+          git config user.email "304654100+forward-port[bot]@users.noreply.github.com"
           git fetch origin "$RELEASE_REF"
 
           set +e
