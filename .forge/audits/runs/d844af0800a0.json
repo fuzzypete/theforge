@@ -1,0 +1,142 @@
+{
+  "schema_version": 12,
+  "run_id": "d844af0800a0",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Live-state update payloads are built per phase with no invariant that they carry the same fields",
+    "slug": "issue-1921",
+    "story_path": null,
+    "story_text": "## Problem\n\nEach coordinator phase constructs its own live-state update payload independently. Nothing asserts that these payloads agree on which story-descriptive fields they carry. When a field is added for one phase, the sibling phases silently continue to omit it, and the omission surfaces later as an operator-visible display inconsistency rather than as a test failure.\n\nThis architecture \u2014 per-phase payloads all feeding a single renderer \u2014 makes per-call-site patching the path of least resistance, and there is no mechanical backstop. It has produced the same class of defect repeatedly in sprint status and state-display plumbing (#1093/#1113, #965/#969, #1364/#1917).\n\n## Example\n\nA story in PLAN_REVIEW with a computed complexity score displays the band word, while a story in REVIEW displays the numeric score, because only the DEV-phase payload was updated to carry the number (#1917). No test fails. The inconsistency is visible only in a live dashboard with stories occupying different phases at once.\n\n## Acceptance criteria\n\n- A test asserts that live-state update payloads across coordinator phases carry a consistent set of story-descriptive fields, and fails when one phase omits a field its siblings provide.\n- The assertion picks up newly added fields automatically rather than depending on a hand-maintained per-phase list.\n- Fields that are legitimately phase-specific are declared as such, so the invariant expresses intent rather than being weakened to accommodate them.\n",
+    "github_issue": 1921,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Workspace creation failed: pre-dev rebase onto release/v0.13 failed \u2014 conflicts must be resolved manually: Rebasing (1/1)\nerror: could not apply 0ec4f28... test(coordinator): assert cross-phase live-state payload field consistency (#1921)\nhint: Resolve all conflicts manually, mark them as resolved with\nhint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\nhint: You can instead skip this commit: run \"git rebase --skip\".\nhint: To abort and get back to the state before \"git rebase\", run \"git rebase --abort\".\nhint: Disable this message with \"git config set advice.mergeConflict false\"\nCould not apply 0ec4f28... # test(coordinator): assert cross-phase live-state payload field consistency (#1921)",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-28T05:21:03.570529+00:00",
+    "finished_at": "2026-07-28T05:21:05.603287+00:00",
+    "duration_seconds": 2.032758
+  },
+  "workspace": {
+    "path": null,
+    "branch": null,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": null,
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "dev_usd": 0,
+    "review_usd": 0,
+    "dev_invocations": 0,
+    "review_invocations": 0,
+    "agents": []
+  },
+  "preflight": null,
+  "context_manifests": [],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "pre-dev rebase onto release/v0.13 failed \u2014 conflicts must be resolved manually: Rebasing (1/1)\nerror: could not apply 0ec4f28... test(coordinator): assert cross-phase live-state payload field consistency (#1921)\nhint: Resolve all conflicts manually, mark them as resolved with\nhint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\nhint: You can instead skip this commit: run \"git rebase --skip\".\nhint: To abort and get back to the state before \"git rebase\", run \"git rebase --abort\".\nhint: Disable this message with \"git config set advice.mergeConflict false\"\nCould not apply 0ec4f28... # test(coordinator): assert cross-phase live-state payload field consistency (#1921)",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": null,
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": null
+  },
+  "totals": {
+    "cost_usd": 0.0,
+    "duration_s": 0.0,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 0
+  },
+  "sprint_id": "31da1d0f5546",
+  "sprint_name": "issues-1937,1921"
+}

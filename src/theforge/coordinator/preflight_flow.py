@@ -63,7 +63,7 @@ from .preflight import (
 from .preflight_cache import capture_preflight_cache_snapshot
 from .preflight_evidence import build_partial_evidence
 from .state import CoordinatorResult, CoordinatorState, Phase
-from .util import _fmt_duration, _log_phase
+from .util import _fmt_cost_total, _fmt_duration, _log_phase, _round_cost
 from .validation_complexity import (
     DIMENSION_IMPLEMENTATION,
     VALIDATION_BASELINE_SCORE,
@@ -271,7 +271,7 @@ def _run_preflight_phase(
             {
                 "phase": "PREFLIGHT",
                 "iteration": 0,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 "current_model": preflight_profile.model,
             }
         )
@@ -505,7 +505,7 @@ def _run_preflight_phase(
             {
                 "phase": "PREFLIGHT",
                 "iteration": 0,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 # Fired before the parse step computes preflight_complexity_score,
                 # so the score may still be None. live_complexity_fields omits the
                 # key in that case, preserving any score an earlier phase set on a
@@ -878,7 +878,7 @@ def _run_preflight_phase(
             {
                 "phase": "PREFLIGHT",
                 "iteration": 0,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 # Fired after the parse step; by now preflight_complexity_score is
                 # set whenever the agent emitted a numeric score, so the score
                 # reaches live state immediately for stories that never enter DEV.
@@ -1047,7 +1047,7 @@ def _handle_preflight_verdict(
             logger._safe_emit(
                 "run_end",
                 outcome="infrastructure_abort",
-                total_cost_usd=round(state.total_cost, 6),
+                total_cost_usd=_round_cost(state.total_cost_measured),
                 total_duration_s=round(time.monotonic() - task_start, 2),
             )
         # No _escalate_notify: an escalation notification asserts that the story
@@ -1107,12 +1107,15 @@ def _handle_preflight_verdict(
 
         state.phase = Phase.DONE
         elapsed = time.monotonic() - task_start
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(elapsed)}")
+        _log(
+            f"✓ DONE   total={_fmt_cost_total(state.total_cost_measured, state.total_cost)}"
+            f"  {_fmt_duration(elapsed)}"
+        )
         if logger:
             logger._safe_emit(
                 "run_end",
                 outcome="already_done",
-                total_cost_usd=round(state.total_cost, 6),
+                total_cost_usd=_round_cost(state.total_cost_measured),
                 total_duration_s=round(elapsed, 2),
             )
         _ntfy_done_notify(
@@ -1145,7 +1148,7 @@ def _handle_preflight_verdict(
             logger._safe_emit(
                 "run_end",
                 outcome="escalate",
-                total_cost_usd=round(state.total_cost, 6),
+                total_cost_usd=_round_cost(state.total_cost_measured),
                 total_duration_s=round(time.monotonic() - task_start, 2),
             )
         _escalate_notify(task, state, notify, config)

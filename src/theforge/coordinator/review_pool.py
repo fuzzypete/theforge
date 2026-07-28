@@ -743,7 +743,7 @@ def _run_review_pool(
         reviewer_names=[p.name for p in pool],
         phase="REVIEW",
         iteration=state.review_cycle + 1,
-        cost_usd=state.total_cost,
+        cost_usd=state.total_cost_measured,
         complexity=state.preflight_complexity,
         complexity_score=state.preflight_complexity_score,
         state_update_fn=state_update_fn,

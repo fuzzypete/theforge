@@ -48,11 +48,13 @@ from .state import (
     RetryReason,
 )
 from .util import (
+    _fmt_cost,
     _fmt_duration,
     _log,
     _log_phase,
     _log_verbose,
     resolve_timeout_with_active,
+    sum_costs,
 )
 from .worktree_state import check_worktree_git_consistency
 
@@ -472,11 +474,10 @@ def record_dev_iteration_telemetry(
     duration_attempts = state.dev_durations[-attempt_count:]
     dev_result = dev_attempts[-1]
     duration_s = sum(duration_attempts)
-    cost_usd = (
-        sum(result.cost_usd or 0.0 for result in dev_attempts)
-        if any(result.cost_usd is not None for result in dev_attempts)
-        else None
-    )
+    # None-aware: a MIX of measured and unmeasured attempts is still unknown —
+    # summing only the measured ones would report a partial subtotal as if it
+    # were this iteration's cost (#1992).
+    cost_usd = sum_costs(result.cost_usd for result in dev_attempts)
     baseline = state.last_dev_start_commit or "HEAD"
     files_changed = _git_lines(workspace_path, ["diff", "--name-only", baseline, "HEAD"])
     dirty_files = [
@@ -1062,12 +1063,8 @@ def _run_dev_phase(
         state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
-    _dev_cost_total = sum(result.cost_usd or 0.0 for result in _dev_results_this_iteration)
-    _dev_cost_str = (
-        "${:.2f}".format(_dev_cost_total)
-        if any(result.cost_usd is not None for result in _dev_results_this_iteration)
-        else "unknown"
-    )
+    _dev_cost_total = sum_costs(result.cost_usd for result in _dev_results_this_iteration)
+    _dev_cost_str = _fmt_cost(_dev_cost_total)
     # Glyph reflects the actual outcome: a killed or crashed iteration must not
     # be rendered with the success glyph one line above the failure it caused.
     _dev_glyph = "✓" if dev_result.success else "✗"
@@ -1077,7 +1074,7 @@ def _run_dev_phase(
             "phase_end",
             phase="DEV",
             outcome="success" if dev_result.success else "failure",
-            cost_usd=_dev_cost_total if _dev_cost_str != "unknown" else None,
+            cost_usd=_dev_cost_total,
             duration_s=round(_dev_elapsed, 2),
         )
 

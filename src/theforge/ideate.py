@@ -48,7 +48,9 @@ class IdeationResult:
     rounds: list[IdeationRound]
     final_synthesis: str  # final synthesized spec text
     residual_divergence: list[str]  # items needing human executive decision
-    total_cost_usd: float
+    # None = at least one contributing agent call's cost was unmeasured; the
+    # ideation total is unknown, not zero (#1992).
+    total_cost_usd: float | None
     human_decision_required: bool
 
 
@@ -364,10 +366,28 @@ def _log(msg: str) -> None:
     print(f"[forge] {msg}", file=sys.stderr, flush=True)
 
 
+def _accumulate_cost(total: float | None, cost: float | None) -> float | None:
+    """Add an optional agent cost to a running ideation total.
+
+    ``None`` means the transport could not measure that call's cost, which is
+    not the same statement as "it was free". Once any contributing call is
+    unmeasured the running total is unknown, so it stays ``None`` rather than
+    silently reporting the measured remainder as the ideation cost (#1992).
+    """
+    if total is None or cost is None:
+        return None
+    return total + cost
+
+
+def _fmt_ideation_cost(total: float | None) -> str:
+    """Render an ideation total as ``$1.23``, or ``unknown`` when unmeasured."""
+    return f"${total:.2f}" if total is not None else "unknown"
+
+
 def _failed_result(
     msg: str,
     rounds: list[IdeationRound],
-    total_cost: float,
+    total_cost: float | None,
 ) -> IdeationResult:
     """Return a failed IdeationResult with an error message in final_synthesis."""
     return IdeationResult(
@@ -386,7 +406,7 @@ def _run_single_model_ideation(
     working_dir: Path,
     config: ForgeConfig,
     brief: str,
-) -> "IdeationResult | tuple[str, list[str], list[IdeationRound], float]":
+) -> "IdeationResult | tuple[str, list[str], list[IdeationRound], float | None]":
     """Single-model fast path: one combined Phase 1 + synthesis call.
 
     Intentional design deviation from the spec's "Phase 1 only" wording:
@@ -402,7 +422,7 @@ def _run_single_model_ideation(
     (final_synthesis, residual_divergence, all_rounds, total_cost) on success.
     """
     all_rounds: list[IdeationRound] = []
-    total_cost = 0.0
+    total_cost: float | None = 0.0
 
     _log(f"▸ IDEATE   {pool[0].name}  round=1")
     _log("  ▸ Phase 1   generating spec (single-model)...")
@@ -416,7 +436,7 @@ def _run_single_model_ideation(
         plain_text=True,
     )
     agent_elapsed = time.monotonic() - agent_start
-    total_cost += result.cost_usd or 0.0
+    total_cost = _accumulate_cost(total_cost, result.cost_usd)
     _log(f"  ↳ {pool[0].name} done ({agent_elapsed:.0f}s)")
     if not result.success:
         _log(f"  ✗ {pool[0].name} failed: {result.output[:120]}")
@@ -470,7 +490,7 @@ def _run_multi_model_ideation(
     brief: str,
     synthesis_profile: object,
     max_rounds: int,
-) -> "IdeationResult | tuple[str, list[str], list[IdeationRound], float]":
+) -> "IdeationResult | tuple[str, list[str], list[IdeationRound], float | None]":
     """Multi-model deliberation: Phase 1 → Phase 2 → Phase 3 → loop.
 
     Returns a failed IdeationResult on error, or
@@ -478,7 +498,7 @@ def _run_multi_model_ideation(
     """
     pool_names = "+".join(p.name for p in pool)
     all_rounds: list[IdeationRound] = []
-    total_cost = 0.0
+    total_cost: float | None = 0.0
     current_brief = brief
     residual_divergence: list[str] = []
     final_synthesis = ""
@@ -508,7 +528,7 @@ def _run_multi_model_ideation(
         # Accumulate all pool costs before checking failures so partial runs
         # are fully accounted for in total_cost_usd.
         for r in p1_results:
-            total_cost += r.cost_usd or 0.0
+            total_cost = _accumulate_cost(total_cost, r.cost_usd)
         failed_p1 = next(
             ((profile, r) for profile, r in zip(pool, p1_results) if not r.success), None
         )
@@ -541,7 +561,7 @@ def _run_multi_model_ideation(
         p2_elapsed = time.monotonic() - p2_start
         # Accumulate all pool costs before checking failures.
         for r in p2_results:
-            total_cost += r.cost_usd or 0.0
+            total_cost = _accumulate_cost(total_cost, r.cost_usd)
         failed_p2 = next(
             ((profile, r) for profile, r in zip(pool, p2_results) if not r.success), None
         )
@@ -574,7 +594,7 @@ def _run_multi_model_ideation(
         )
         synth_elapsed = time.monotonic() - synth_start
         _log(f"  ↳ synthesis done ({synth_elapsed:.0f}s)")
-        total_cost += synth_result.cost_usd or 0.0
+        total_cost = _accumulate_cost(total_cost, synth_result.cost_usd)
 
         if not synth_result.success:
             _log(f"  ✗ synthesis failed: {synth_result.output[:120]}")
@@ -749,7 +769,7 @@ def run_ideation(
     mins, secs = divmod(int(elapsed_total), 60)
     dur_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
     spec_label = str(written_path) if written_path else "(no output)"
-    _log(f"✓ IDEATE   story written: {spec_label}  ${total_cost:.2f}  {dur_str}")
+    _log(f"✓ IDEATE   story written: {spec_label}  {_fmt_ideation_cost(total_cost)}  {dur_str}")
     if human_decision_required:
         _log(
             f"⚠ {len(residual_divergence)} item(s) require human decision "

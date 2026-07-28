@@ -592,7 +592,14 @@ def _run_validate_phase(
             {
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
+                # Carry the story-descriptive complexity fields on VALIDATE entry
+                # so this early payload agrees with the sibling VALIDATE payload
+                # (post-gate) and every other phase. Omitting them here left the
+                # live display inconsistent across phases (issue #1921).
+                **_cu.live_complexity_fields(
+                    state.preflight_complexity, state.preflight_complexity_score
+                ),
             }
         )
     if logger:
@@ -792,7 +799,7 @@ def _run_validate_phase(
             {
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),

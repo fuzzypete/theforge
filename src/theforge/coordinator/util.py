@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 
 from theforge.log_level import LogLevel
@@ -101,6 +102,45 @@ def _log_verbose(msg: str) -> None:
 def _fmt_cost(cost: float | None) -> str:
     """Format a cost value as '$1.23', or 'unknown' when cost is None."""
     return f"${cost:.2f}" if cost is not None else "unknown"
+
+
+def sum_costs(values: Iterable[float | None]) -> float | None:
+    """Sum optional costs, returning ``None`` if *any* contributor is unmeasured.
+
+    ``None`` means "the transport could not measure this spend", which is a
+    different statement from ``0.0`` ("this was free"). Coercing the former to
+    the latter reports unpriced work as free, so a single unmeasured addend
+    makes the whole aggregate cost-unknown. An empty iterable is genuinely no
+    spend, so ``0.0``.
+    """
+    total = 0.0
+    for value in values:
+        if value is None:
+            return None
+        total += value
+    return total
+
+
+def _fmt_cost_total(total: float | None, subtotal: float | None = None) -> str:
+    """Render an aggregate cost for an operator.
+
+    A fully measured aggregate renders as ``$1.23``. An aggregate with any
+    unmeasured component renders as ``unknown`` — never as a dollar figure,
+    which would present a partial total as a complete one. When a measured
+    subtotal is available it is shown as an explicit lower bound
+    (``unknown (>= $0.99 measured)``) so the operator sees both that money was
+    spent and that the figure is incomplete.
+    """
+    if total is not None:
+        return f"${total:.2f}"
+    if subtotal:
+        return f"unknown (>= ${subtotal:.2f} measured)"
+    return "unknown"
+
+
+def _round_cost(value: float | None, digits: int = 6) -> float | None:
+    """Round an optional cost, preserving an unmeasured ``None`` as ``None``."""
+    return round(value, digits) if value is not None else None
 
 
 def _log_phase(phase: object, detail: str = "") -> None:

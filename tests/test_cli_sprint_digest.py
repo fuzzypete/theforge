@@ -326,6 +326,66 @@ def test_next_omits_citation_when_action_names_its_story(tmp_path: Path) -> None
 # ── All-DONE tighter digest ───────────────────────────────────────────────────
 
 
+def _already_satisfied_story(num: int) -> dict:
+    """A no-merge, preflight-verdict ALREADY_DONE acceptance (issue #1937)."""
+    return {
+        "slug": f"issue-{num}",
+        "path": f"Issue #{num}",
+        "outcome": "ALREADY_DONE",
+        "outcome_source": "preflight_verdict",
+        "preflight_reason": "Working tree already satisfies the spec; git_state_match.",
+        "merge": False,
+        "landing": None,
+        "cost_usd": 0.05,
+        "started_at": "2026-05-08T00:00:00Z",
+        "finished_at": "2026-05-08T00:01:00Z",
+    }
+
+
+def test_preflight_already_done_split_from_landed(tmp_path: Path) -> None:
+    """A no-op ALREADY_DONE acceptance renders under ALREADY SATISFIED, not LANDED."""
+    name = "already-satisfied"
+    run_id = "runAS"
+    stories = [
+        _landed_story(1, 1.0),
+        _already_satisfied_story(1879),
+    ]
+    _write_summary(tmp_path, name, run_id, stories)
+    output = _render(tmp_path, run_id)
+
+    # The merged land is the only LANDED story — the no-op acceptance is excluded.
+    assert "LANDED (1 of 2)" in output
+    assert "ALREADY SATISFIED (1)" in output
+    assert "#1879" in output
+    assert "no change needed" in output
+    assert "git_state_match" in output
+    # No recovery sections: a no-op acceptance still succeeded.
+    assert "FAILED" not in output
+    assert "forge rca" not in output
+
+
+def test_resume_skip_merged_already_done_stays_landed(tmp_path: Path) -> None:
+    """An ALREADY_DONE story that actually merged stays in LANDED, not split out."""
+    name = "merged-already-done"
+    run_id = "runMAD"
+    merged_already_done = {
+        "slug": "issue-42",
+        "path": "Issue #42",
+        "outcome": "ALREADY_DONE",
+        "outcome_source": "resume_skip_merged",
+        "merge": True,
+        "cost_usd": 2.0,
+        "started_at": "2026-05-08T00:00:00Z",
+        "finished_at": "2026-05-08T00:10:00Z",
+    }
+    stories = [_landed_story(1, 1.0), merged_already_done]
+    _write_summary(tmp_path, name, run_id, stories)
+    output = _render(tmp_path, run_id)
+
+    assert "LANDED (2 of 2)" in output
+    assert "ALREADY SATISFIED" not in output
+
+
 def test_all_done_renders_landed_only(tmp_path: Path) -> None:
     name = "all-done"
     run_id = "runAD"

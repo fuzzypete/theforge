@@ -23,6 +23,7 @@ from ..task import (
 from ..task.story import FrontmatterParseResult, _parse_frontmatter_block
 from .manifest import _build_task_from_story
 from .reopen_context import analyze_reopen_contract, append_reopen_context
+from .shape_gate import OPERATOR_ACTION_LABEL
 
 if TYPE_CHECKING:
     from ..config import ForgeConfig
@@ -79,6 +80,41 @@ def _derive_type_from_labels(labels: list[str], issue_number: int) -> tuple[str 
     )
     _log.warning(warning)
     return None, [warning]
+
+
+def classify_already_done_disposition(state: object) -> str:
+    """Classify why a no-merge ALREADY_DONE acceptance needs no code change.
+
+    Returns one of:
+
+    * ``"already_implemented"`` — the working tree already contains the change
+      the spec asks for. Resolves to a ``completed`` close.
+    * ``"premise_obsolete"`` — the spec's premise no longer exists in the
+      codebase, so the requested change is not applicable. Resolves to a
+      ``not planned`` close.
+    * ``"ambiguous"`` — the two dispositions cannot be told apart from the
+      structured preflight state. The decision is routed to the operator rather
+      than guessed.
+
+    The only mechanical signal available is the structured symptom-verification
+    record preflight writes for bug-typed stories (``preflight_symptom_verification``).
+    Everything else (feature/refactor stories, git-state cache hits) is
+    genuinely ambiguous and must go to the operator.
+    """
+    symptom = getattr(state, "preflight_symptom_verification", None) or {}
+    if not isinstance(symptom, dict):
+        return "ambiguous"
+    status = str(symptom.get("status") or "").strip().lower()
+    reproduces_now = symptom.get("reproduces_now")
+    # A verified-resolved symptom that no longer reproduces means the fix is
+    # present in the code — already implemented.
+    if status == "verified_resolved" and reproduces_now is False:
+        return "already_implemented"
+    # A symptom that was never reproducible against the current baseline means
+    # the bug's premise is gone — premise obsolete.
+    if status == "not_reproduced" and reproduces_now is False:
+        return "premise_obsolete"
+    return "ambiguous"
 
 
 class IssueClosedError(RuntimeError):
@@ -405,13 +441,27 @@ class GitHubIssueSource:
         result: "CoordinatorResult",
         config: "ForgeConfig",
     ) -> None:
-        """Close the issue when on_approve is 'merge' and the merge succeeded."""
+        """Resolve the tracking issue when a story completes successfully.
+
+        Two terminal shapes reach here in merge mode:
+
+        * a merged land — close the issue with the review summary (unchanged);
+        * a no-merge ALREADY_DONE acceptance — the working tree already
+          satisfied the spec, so no PR shipped. Post a durable comment stating
+          the determination and its evidence, then either close with the
+          resolved disposition or route the issue to the operator-action queue
+          when the disposition is ambiguous. Without this branch the issue would
+          be left silently open (issue #1937).
+        """
         if config.workspace.on_approve != "merge":
             return
-        # Only close if actually merged
-        if result.merge is None or not result.merge.get("merged", False):
-            return
         if task.github_issue is None:
+            return
+
+        merged = result.merge is not None and result.merge.get("merged", False)
+        if not merged:
+            if getattr(result.state, "preflight_verdict", None) == "ALREADY_DONE":
+                self._resolve_already_done_issue(task, result, config)
             return
 
         summary = ""
@@ -442,6 +492,101 @@ class GitHubIssueSource:
             _log.warning(
                 "gh issue close #%s failed (exit %d): %s", task.github_issue, proc.returncode, err
             )
+
+    def _resolve_already_done_issue(
+        self,
+        task: TaskStory,
+        result: "CoordinatorResult",
+        config: "ForgeConfig",
+    ) -> None:
+        """Post the ALREADY_DONE determination and resolve/route the issue.
+
+        Always leaves a durable, operator-visible comment carrying the
+        determination and its evidence. Then, depending on the disposition:
+
+        * ``already_implemented`` — close with ``--reason completed``;
+        * ``premise_obsolete`` — close with ``--reason "not planned"``;
+        * ``ambiguous`` — leave the issue open, comment, and add the
+          ``operator-action`` label so it surfaces in the operator-action queue.
+        """
+        number = task.github_issue
+        assert number is not None  # guarded by caller
+        project_root = config.project_root
+        reason = (getattr(result.state, "preflight_reason", None) or "").strip()
+        if not reason:
+            reason = "(no reason recorded)"
+        disposition = classify_already_done_disposition(result.state)
+
+        header = (
+            "TheForge accepted this issue without a code change: preflight determined "
+            "the spec is already satisfied (verdict: ALREADY_DONE). No pull request was "
+            "opened because the working tree already meets the spec."
+        )
+        evidence = f"Evidence: {reason}"
+
+        if disposition == "already_implemented":
+            body = (
+                f"{header}\n\n{evidence}\n\n"
+                "Disposition: already implemented — the change this issue asks for is "
+                "already present in the codebase. Closing as completed."
+            )
+            self._run_issue_gh(
+                ["issue", "close", str(number), "--comment", body, "--reason", "completed"],
+                project_root,
+                f"issue close #{number}",
+            )
+        elif disposition == "premise_obsolete":
+            body = (
+                f"{header}\n\n{evidence}\n\n"
+                "Disposition: premise obsolete — the premise this issue depends on is "
+                "no longer present in the codebase. Closing as not planned."
+            )
+            self._run_issue_gh(
+                ["issue", "close", str(number), "--comment", body, "--reason", "not planned"],
+                project_root,
+                f"issue close #{number}",
+            )
+        else:
+            body = (
+                f"{header}\n\n{evidence}\n\n"
+                "Disposition is ambiguous (already-implemented vs. premise-obsolete). "
+                f"Routing to the operator-action queue via the '{OPERATOR_ACTION_LABEL}' "
+                "label and leaving this issue open for an operator to resolve."
+            )
+            self._run_issue_gh(
+                ["issue", "comment", str(number), "--body", body],
+                project_root,
+                f"issue comment #{number}",
+            )
+            self._run_issue_gh(
+                ["issue", "edit", str(number), "--add-label", OPERATOR_ACTION_LABEL],
+                project_root,
+                f"issue edit #{number}",
+            )
+
+    @staticmethod
+    def _run_issue_gh(args: list[str], project_root: Path, failure_desc: str) -> bool:
+        """Run a ``gh`` subcommand, logging (never raising) on failure.
+
+        Returns True on success. Failures are logged with ``failure_desc`` so an
+        operator can correlate a stuck issue with the failed resolution attempt.
+        """
+        try:
+            proc = subprocess.run(
+                ["gh", *args],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                timeout=30,
+            )
+        except Exception as exc:
+            _log.warning("gh %s failed: %s", failure_desc, exc)
+            return False
+        if proc.returncode != 0:
+            err = proc.stderr.strip() or proc.stdout.strip()
+            _log.warning("gh %s failed (exit %d): %s", failure_desc, proc.returncode, err)
+            return False
+        return True
 
     def on_escalate(
         self,

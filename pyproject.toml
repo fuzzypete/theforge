@@ -4,7 +4,7 @@ version = "0.12.0.dev0"
 description = "Deterministic multi-LLM development orchestrator"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = ["pyyaml>=6.0", "python-dotenv>=1.0"]
 authors = [{name = "Peter Wickersham"}]
 urls = {Homepage = "https://github.com/fuzzypete/theforge", Repository = "https://github.com/fuzzypete/theforge"}
@@ -34,7 +34,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 99
 
 [tool.ruff.lint]

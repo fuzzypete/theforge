@@ -50,14 +50,14 @@ python -c "import theforge"       # verify import works
 
 ### Wrong Python version
 
-**Cause:** TheForge requires Python 3.11+.
+**Cause:** TheForge requires Python 3.12+.
 
 **Fix:**
 ```bash
-python --version                  # must be 3.11+
+python --version                  # must be 3.12+
 # Use pyenv or conda to switch Python versions if needed
-pyenv install 3.11.9
-pyenv local 3.11.9
+pyenv install 3.12.8
+pyenv local 3.12.8
 pip install -e ".[dev]"
 ```
 
