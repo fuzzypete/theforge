@@ -234,15 +234,9 @@ class TestRunSprint:
         assert "Cost not tracked" not in captured.err
         assert "Budget tracks Claude costs only" not in captured.err
 
-    def test_codex_cli_reviewer_emits_targeted_cost_tracking_warning(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """A CLI Codex reviewer should produce a targeted warning naming that reviewer."""
-        _make_spec_file(tmp_path, "Feature A", "feature-a")
-        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
-        config = _make_config(tmp_path)
-        config = replace(
-            config,
+    def _codex_pool_config(self, tmp_path: Path) -> ForgeConfig:
+        return replace(
+            _make_config(tmp_path),
             review_pool=[
                 replace(
                     DEFAULT_REVIEW_PROFILE,
@@ -253,17 +247,79 @@ class TestRunSprint:
                 )
             ],
         )
+
+    def test_codex_cli_reviewer_no_longer_warns_cost_untracked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Codex is measurable since #2019 (`codex exec --json`), so no untracked warning.
+
+        Replaces the previous assertion that codex emitted "Cost not tracked": the
+        warning was the config-time half of a behaviour that deadlocked multi-story
+        sprints, and it is now wrong rather than merely noisy. Gemini keeps the
+        warning (see the gemini case below) — this is not a blanket removal.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = self._codex_pool_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
             run_sprint(config, manifest_path)
 
         captured = capsys.readouterr()
-        assert (
-            "⚠ Cost not tracked for plan_reviewer (codex CLI, gpt-5.4). "
-            "Audit totals will exclude this agent's usage."
-        ) in captured.err
+        assert "Cost not tracked" not in captured.err
         assert "Budget tracks Claude costs only" not in captured.err
+
+    def test_gemini_cli_reviewer_still_warns_cost_untracked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Gemini has no measured-usage transport yet, so its warning must survive."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = replace(
+            _make_config(tmp_path),
+            review_pool=[
+                replace(
+                    DEFAULT_REVIEW_PROFILE,
+                    name="gemini_reviewer",
+                    cli="gemini",
+                    provider=None,
+                    model="gemini-2.5-pro",
+                )
+            ],
+        )
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
+            run_sprint(config, manifest_path)
+
+        assert "Cost not tracked for gemini_reviewer" in capsys.readouterr().err
+
+    def test_multi_story_codex_sprint_dispatches_all_stories_with_measured_total(
+        self, tmp_path: Path
+    ) -> None:
+        """The #2019 regression: a multi-story codex sprint must not skip everything.
+
+        Before the fix every codex pass recorded cost-unknown, so the first budget
+        check refused to dispatch and the whole sprint came back
+        "0 succeeded, 0 failed, N skipped. Total: unknown" despite ample headroom.
+        """
+        for name, slug in (("A", "feature-a"), ("B", "feature-b"), ("C", "feature-c")):
+            _make_spec_file(tmp_path, f"Feature {name}", slug)
+        manifest_path = _make_manifest(
+            tmp_path, ["feature-a.md", "feature-b.md", "feature-c.md"], budget=80.0
+        )
+        config = self._codex_pool_config(tmp_path)
+        results = [_make_coordinator_result(success=True, cost=c) for c in (1.5, 2.0, 2.5)]
+
+        with patch("theforge.sprint.runner.run_task", side_effect=results):
+            sprint_result = run_sprint(config, manifest_path)
+
+        assert sprint_result.specs_total == 3
+        assert sprint_result.specs_succeeded == 3
+        assert sprint_result.specs_skipped == 0
+        assert sprint_result.stopped_reason is None
+        assert sprint_result.total_cost_usd == pytest.approx(6.0)
 
     def test_success_path(self, tmp_path: Path) -> None:
         """Two specs both succeed, costs accumulate, audit written."""

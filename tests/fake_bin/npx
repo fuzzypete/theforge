@@ -5,6 +5,21 @@ Routes to fake codex or gemini behaviour based on the package argument.
 
 Codex (FAKE_CODEX_MODE):
   happy         — write "Task complete." to the -o output file, exit 0 (default)
+  json_usage    — emit the `codex exec --json` JSONL event stream (thread.started,
+                  item.completed agent_message, turn.completed with a real token
+                  usage split incl. cached/cache-write/reasoning) on stdout AND
+                  write the last message to -o, exit 0
+  json_two_turns
+                — like json_usage but with TWO turn.completed events, so tests can
+                  pin how multi-turn usage is accumulated
+  json_no_output_file
+                — emit the JSONL event stream but leave -o empty, so the runner
+                  must reconstruct agent text from the events rather than dumping
+                  raw JSONL into handoff/review parsing
+  json_partial_hang
+                — emit a turn.completed usage event, flush, then hang past the
+                  runner timeout, so the killed-run partial-cost path can be
+                  exercised end to end
   usage         — write a JSON blob with a token `usage` block to the -o file
   usage_stdout  — write plain text to the -o file, print a SINGLE-LINE token
                   summary carrying an input+output split to stdout (a synthetic
@@ -52,6 +67,51 @@ if "@openai/codex" in args:
                 fh.write(output_text + "\n")
         else:
             print(output_text)
+        sys.exit(0)
+    # Token split mirroring a real `codex exec --json` turn.completed event:
+    # cached_input_tokens is a SUBSET of input_tokens, reasoning_output_tokens a
+    # SUBSET of output_tokens.
+    _TURN_USAGE = {
+        "input_tokens": 12892,
+        "cached_input_tokens": 9088,
+        "cache_write_input_tokens": 256,
+        "output_tokens": 2100,
+        "reasoning_output_tokens": 1400,
+    }
+
+    def _emit_events(turns=1, agent_text="Task complete."):
+        print(json.dumps({"type": "thread.started", "thread_id": "th_fake"}))
+        print(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": "i1", "type": "agent_message", "text": agent_text},
+                }
+            )
+        )
+        for _ in range(turns):
+            print(json.dumps({"type": "turn.completed", "usage": dict(_TURN_USAGE)}))
+        sys.stdout.flush()
+
+    if mode in ("json_usage", "json_two_turns", "json_no_output_file", "json_partial_hang"):
+        # Event mode only exists because forge asked for it. Fail loudly rather
+        # than emitting JSONL a real CLI would not have produced.
+        if "--json" not in args:
+            sys.stderr.write("fake npx(codex): event mode requested without --json\n")
+            sys.exit(2)
+    if mode in ("json_usage", "json_two_turns", "json_no_output_file"):
+        if output_file and mode != "json_no_output_file":
+            with open(output_file, "w") as fh:
+                fh.write("Task complete.\n")
+        _emit_events(turns=2 if mode == "json_two_turns" else 1)
+        sys.exit(0)
+    if mode == "json_partial_hang":
+        _emit_events(turns=1)
+        # Hang past the runner timeout so the kill path fires with usage already
+        # on the wire.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
         sys.exit(0)
     if mode == "usage":
         blob = {

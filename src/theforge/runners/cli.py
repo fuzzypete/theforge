@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from theforge.agent_types import AgentResult
+from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 
@@ -87,22 +87,45 @@ def _run_with_heartbeat(
     return outcome, elapsed
 
 
+def _decode_stream(raw: object) -> str:
+    """Coerce a subprocess stream (str, bytes, or None) to text."""
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
 def _handle_exception(
     exc: BaseException,
     *,
     profile: ModelProfile,
     cli_name: str,
+    partial_cost_fn: Callable[[str], tuple[float | None, tuple[ModelUsage, ...]]] | None = None,
 ) -> AgentResult | None:
-    """Handle common subprocess exceptions. Returns AgentResult or None to re-raise."""
+    """Handle common subprocess exceptions. Returns AgentResult or None to re-raise.
+
+    ``partial_cost_fn`` is an opt-in seam for transports that can price the output
+    a killed run had already emitted. It receives the partial stdout salvaged from
+    the ``TimeoutExpired`` and returns ``(cost_usd, model_usage)``; returning
+    ``(None, ())`` keeps the run cost-unknown. Runners that don't pass it (Claude,
+    which reconstructs partial spend from its own stream loop, and Gemini) behave
+    exactly as before.
+    """
     if isinstance(exc, subprocess.TimeoutExpired):
+        cost_usd: float | None = None
+        model_usage: tuple[ModelUsage, ...] = ()
+        if partial_cost_fn is not None:
+            cost_usd, model_usage = partial_cost_fn(_decode_stream(exc.stdout))
         return AgentResult(
             success=False,
             output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
             session_id=None,
-            cost_usd=None,
+            cost_usd=cost_usd,
             exit_code=-1,
             raw={},
             profile_name=profile.name,
+            model_usage=model_usage,
             # A timeout is a distinct, retryable failure kind — classify it so
             # the coordinator can hand back to dev instead of escalating.
             failure_code="timeout",

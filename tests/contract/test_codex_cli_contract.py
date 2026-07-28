@@ -7,6 +7,7 @@ Validates that argv constructed by the runner is accepted by the installed
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,10 @@ from tests.contract.conftest import assert_cli_accepts_argv
 from theforge.config import ModelProfile
 from theforge.runners import runner_codex
 
-pytestmark = pytest.mark.cli_contract
+# NOTE: the cli_contract marker is applied per-test, not module-wide, because the
+# JSON-mode contract below is asserted against argv and a recorded payload rather
+# than a spawned binary — so it belongs in the default gate (repo invariant: no
+# real provider CLI calls there), while the argv-acceptance test stays opt-in.
 
 
 def _profile(**kwargs) -> ModelProfile:
@@ -110,7 +114,73 @@ def _replace_npx_with_codex(argv: list[str]) -> list[str]:
         ),
     ],
 )
+@pytest.mark.cli_contract
 def test_codex_argv_accepted(shape: str, builder) -> None:
     require_cli("codex")
     argv = _replace_npx_with_codex(builder())
     assert_cli_accepts_argv(f"codex/{shape}", argv)
+
+
+@pytest.mark.parametrize(
+    "shape,builder",
+    [
+        (
+            "exec_fresh",
+            lambda: runner_codex.build_argv(
+                profile=_profile(),
+                working_dir=Path("/tmp"),
+                output_file=Path("/tmp/contract-out.txt"),
+                prompt="contract-check",
+            ),
+        ),
+        (
+            "exec_resume",
+            lambda: runner_codex.build_resume_argv(
+                profile=_profile(),
+                output_file=Path("/tmp/contract-out.txt"),
+                session_id="00000000-0000-0000-0000-000000000000",
+            ),
+        ),
+    ],
+)
+def test_codex_invoked_in_json_event_mode(shape: str, builder) -> None:
+    """Forge must ask codex for machine-readable events on BOTH paths (#2019).
+
+    Cost measurement depends entirely on the `turn.completed` usage event, which
+    only exists in `--json` mode. Parametrizing resume alongside fresh is
+    deliberate: the resume subcommand already rejects flags the fresh path accepts
+    (`--sandbox`), so a future CLI that also stops accepting `--json` there would
+    otherwise silently return codex to cost-blind on resumed dev iterations.
+    """
+    argv = builder()
+    assert "--json" in argv
+
+
+# Codex `turn.completed.usage` fields observed on the real CLI. The parser must
+# accept this shape without depending on any human-readable summary text.
+_OBSERVED_TURN_COMPLETED = {
+    "type": "turn.completed",
+    "usage": {
+        "input_tokens": 12892,
+        "cached_input_tokens": 9088,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 21,
+        "reasoning_output_tokens": 14,
+    },
+}
+
+
+def test_parser_accepts_observed_turn_completed_usage_shape() -> None:
+    """Lock the event shape the extraction path is built against.
+
+    Runs without the real binary on purpose (repo invariant: no real provider CLI
+    calls in the default gate). What it pins is the payload contract — if codex
+    renames these fields, this fails here rather than as silent cost-unknown.
+    """
+    usage = runner_codex._usage_from_events(json.dumps(_OBSERVED_TURN_COMPLETED))
+    assert usage is not None
+    assert usage.input_tokens == 12892
+    assert usage.cached_input_tokens == 9088
+    assert usage.cache_write_input_tokens == 0
+    assert usage.output_tokens == 21
+    assert usage.reasoning_output_tokens == 14

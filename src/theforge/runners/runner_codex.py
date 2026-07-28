@@ -1,7 +1,14 @@
 """Codex (OpenAI) CLI runner.
 
-Invokes `npx @openai/codex exec --full-auto` as a subprocess,
-captures output via a temp file, and returns an AgentResult.
+Invokes `npx @openai/codex exec --json --full-auto` as a subprocess, captures
+agent text via a temp file (`-o`), and returns an AgentResult.
+
+``--json`` puts codex in machine-readable event mode, which is the ONLY way its
+token usage reaches forge: the human transport prints a bare total that cannot be
+priced against an (input, output) table. Recording every run cost-unknown is what
+deadlocked multi-story sprints on the fail-closed budget check (#2019). Usage is
+parsed from ``turn.completed`` events, priced with cached input discounted, and
+salvaged from partial output when a run is killed mid-flight.
 """
 
 from __future__ import annotations
@@ -11,6 +18,8 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -61,11 +70,21 @@ def build_argv(
     output_file: Path,
     prompt: str,
 ) -> list[str]:
-    """Construct argv for a fresh `codex exec` invocation."""
+    """Construct argv for a fresh `codex exec` invocation.
+
+    ``--json`` puts codex in machine-readable event mode: it streams JSONL thread
+    events on stdout, including a ``turn.completed`` event carrying the turn's
+    token usage split. Without it the only usage figure codex prints is a bare
+    human-readable total, which cannot be priced against an (input, output) table
+    — so every run was recorded cost-unknown and a multi-story sprint deadlocked
+    on the fail-closed budget check (#2019). The ``-o`` last-message file is kept
+    for agent text; ``--json`` only changes what stdout carries.
+    """
     cmd: list[str] = [
         "npx",
         "@openai/codex",
         "exec",
+        "--json",
         "--full-auto",
         "-m",
         profile.model,
@@ -107,12 +126,21 @@ def build_resume_argv(
     the ``--full-auto`` alias is intentionally dropped because it is deprecated
     (codex maps it to ``--sandbox workspace-write``) and would contradict an
     explicit ``read-only`` override.
+
+    ``--json`` is reasserted here for the same reason it is set on the fresh path
+    (#2019): usage is only machine-readable in event mode, and a resumed dev
+    iteration is exactly as billable as the first one. The resume subcommand is
+    known to reject some flags the fresh path accepts (``--sandbox``, above), so
+    the contract test parametrizes resume alongside fresh — a future CLI that
+    stops accepting ``--json`` on resume surfaces there rather than at dogfood
+    time.
     """
     cmd: list[str] = [
         "npx",
         "@openai/codex",
         "exec",
         "resume",
+        "--json",
         "-m",
         profile.model,
     ]
@@ -181,6 +209,177 @@ def _coerce_int(value: Any) -> int | None:
         if digits.isdigit():
             return int(digits)
     return None
+
+
+# ── JSON event stream (`codex exec --json`) ───────────────────────────
+
+
+@dataclass(frozen=True)
+class _CodexUsage:
+    """Token usage recovered from codex ``turn.completed`` events.
+
+    Mirrors codex's own ``TokenUsage`` shape. Two containment relationships hold
+    there and are relied on for pricing:
+
+    * ``cached_input_tokens`` is a SUBSET of ``input_tokens`` (codex's own
+      ``non_cached_input()`` is ``input - cached``), so cached tokens are
+      discounted out of the input total rather than charged on top of it.
+    * ``reasoning_output_tokens`` is a SUBSET of ``output_tokens``, so it is
+      recorded for visibility but NOT added to billable output — doing so would
+      charge reasoning twice and overstate measured spend, which is exactly the
+      dishonesty #1992 set out to remove.
+
+    ``cache_write_input_tokens`` is likewise part of ``input_tokens`` and carries
+    no surcharge on OpenAI pricing, so it is recorded but priced at the normal
+    input rate (i.e. left inside the uncached remainder).
+    """
+
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_write_input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_output_tokens: int = 0
+
+    def __add__(self, other: "_CodexUsage") -> "_CodexUsage":
+        return _CodexUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            cache_write_input_tokens=(
+                self.cache_write_input_tokens + other.cache_write_input_tokens
+            ),
+            output_tokens=self.output_tokens + other.output_tokens,
+            reasoning_output_tokens=(self.reasoning_output_tokens + other.reasoning_output_tokens),
+        )
+
+
+def _iter_codex_events(stdout: str) -> "Iterator[dict[str, Any]]":
+    """Yield parsed JSONL event objects from a `codex exec --json` stdout stream.
+
+    Non-JSON lines are skipped rather than treated as an error: codex may
+    interleave a plain-text banner or warning, and a partially-written final line
+    is normal in the killed-run path.
+    """
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def _first_int(block: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _coerce_int(block.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _parse_usage_block(block: dict[str, Any]) -> _CodexUsage | None:
+    """Parse one codex ``usage`` object; None when it carries no token counts."""
+    input_tokens = _first_int(block, ("input_tokens", "prompt_tokens"))
+    output_tokens = _first_int(block, ("output_tokens", "completion_tokens"))
+    if input_tokens is None and output_tokens is None:
+        return None
+    return _CodexUsage(
+        input_tokens=input_tokens or 0,
+        cached_input_tokens=_first_int(block, ("cached_input_tokens", "cached_tokens")) or 0,
+        cache_write_input_tokens=(
+            _first_int(block, ("cache_write_input_tokens", "cache_creation_input_tokens")) or 0
+        ),
+        output_tokens=output_tokens or 0,
+        reasoning_output_tokens=(
+            _first_int(block, ("reasoning_output_tokens", "reasoning_tokens")) or 0
+        ),
+    )
+
+
+def _usage_from_events(stdout: str) -> _CodexUsage | None:
+    """Sum the ``usage`` of every ``turn.completed`` event in a codex event stream.
+
+    Each ``turn.completed`` reports the usage of the turn that just finished, so
+    turns are summed — the same convention the Claude runner uses for its own
+    per-message usage events. A single-turn ``codex exec`` (the common case) makes
+    sum and last-event identical; the choice only matters for a run that completes
+    several turns in one process, where summing is what "what this process spent"
+    means. Returns None when no turn ever reported usage.
+    """
+    total: _CodexUsage | None = None
+    for event in _iter_codex_events(stdout):
+        if event.get("type") != "turn.completed":
+            continue
+        block = event.get("usage")
+        if not isinstance(block, dict):
+            turn = event.get("turn")
+            block = turn.get("usage") if isinstance(turn, dict) else None
+        if not isinstance(block, dict):
+            continue
+        parsed = _parse_usage_block(block)
+        if parsed is None:
+            continue
+        total = parsed if total is None else total + parsed
+    return total
+
+
+def _agent_text_from_events(stdout: str) -> str | None:
+    """Reconstruct the agent's visible message text from a codex event stream.
+
+    Only used when the ``-o`` last-message file came back empty. Before ``--json``
+    that fallback dumped raw stdout, which under event mode would feed JSONL
+    straight into handoff and review parsing.
+    """
+    texts: list[str] = []
+    for event in _iter_codex_events(stdout):
+        etype = event.get("type")
+        item = event.get("item") if isinstance(event.get("item"), dict) else None
+        if etype in ("item.completed", "item.updated") and item is not None:
+            kind = item.get("type") or item.get("item_type")
+            if kind in ("agent_message", "assistant_message"):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+        elif etype in ("agent_message", "assistant_message"):
+            text = event.get("text") or event.get("message")
+            if isinstance(text, str) and text.strip():
+                texts.append(text.strip())
+    if not texts:
+        return None
+    return "\n\n".join(texts)
+
+
+def _error_text_from_events(stdout: str) -> str | None:
+    """Collect error/failure messages from a codex event stream.
+
+    Needed because ``--json`` can carry a failure entirely on stdout as an
+    ``error``/``turn.failed`` event. Without surfacing it into ``AgentResult.output``
+    the CLI→API quota fallback classifier, which pattern-matches that text, would
+    stop seeing rate-limit and quota errors on this transport.
+    """
+    messages: list[str] = []
+    for event in _iter_codex_events(stdout):
+        if event.get("type") not in ("error", "turn.failed", "thread.failed"):
+            continue
+        for candidate in (event.get("message"), event.get("error"), event.get("detail")):
+            if isinstance(candidate, str) and candidate.strip():
+                messages.append(candidate.strip())
+                break
+            if isinstance(candidate, dict):
+                nested = candidate.get("message")
+                if isinstance(nested, str) and nested.strip():
+                    messages.append(nested.strip())
+                    break
+    if not messages:
+        return None
+    return "\n".join(messages)
+
+
+def _looks_like_codex_events(stdout: str) -> bool:
+    """True when stdout is a codex JSONL event stream rather than human text."""
+    return next(_iter_codex_events(stdout), None) is not None
 
 
 def _usage_from_json(result_json: dict[str, Any]) -> tuple[int, int] | None:
@@ -268,7 +467,20 @@ def _extract_codex_cost(
     cannot, ``cost_usd`` is ``None`` (cost-unknown, surfaced loudly) — never
     ``0.0``, so an unmeasured run stays distinct from a genuinely free one.
     """
-    usage = _usage_from_json(result_json) or _usage_from_text(stdout)
+    event_usage = _usage_from_events(stdout)
+    if event_usage is not None:
+        return _price_codex_usage(profile=profile, usage=event_usage)
+
+    # Legacy/defensive fallbacks: a structured-output blob in the -o file, or a
+    # synthetic single-line stdout summary carrying an explicit input+output
+    # split. Neither distinguishes cache tiers, so they price flat — which is why
+    # the line-scan is skipped entirely once stdout is known to be an event
+    # stream. There the event parser is authoritative, and letting the regex match
+    # a JSON usage line instead would silently re-charge cached input at the full
+    # rate, reintroducing the overstatement the split exists to avoid.
+    usage = _usage_from_json(result_json)
+    if usage is None and not _looks_like_codex_events(stdout):
+        usage = _usage_from_text(stdout)
     if usage is None:
         model = profile.model or "?"
         if model not in _COST_UNMEASURED_WARNED:
@@ -279,17 +491,75 @@ def _extract_codex_cost(
             )
         return None, ()
     input_tokens, output_tokens = usage
-    cost = _estimate_cost("openai", profile.model, input_tokens, output_tokens)
+    return _price_codex_usage(
+        profile=profile,
+        usage=_CodexUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
+
+
+def _price_codex_usage(
+    *,
+    profile: ModelProfile,
+    usage: _CodexUsage,
+) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Price a recovered codex usage split into (cost_usd, model_usage).
+
+    Cached input is discounted rather than charged at the uncached rate; reasoning
+    output is recorded but not re-billed (it is already inside ``output_tokens``).
+    ``cost_usd`` is None when the model has no pricing entry, but the usage split
+    is still returned so the audit records the measured tokens.
+    """
+    cost = _estimate_cost(
+        "openai",
+        profile.model,
+        usage.input_tokens,
+        usage.output_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+    )
     model_usage = (
         ModelUsage(
             model=profile.model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=0,
-            cache_creation_tokens=0,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cached_input_tokens,
+            cache_creation_tokens=usage.cache_write_input_tokens,
             cost_usd=cost,
+            thinking_tokens=usage.reasoning_output_tokens,
         ),
     )
+    return cost, model_usage
+
+
+def _partial_codex_cost(
+    *,
+    profile: ModelProfile,
+    stdout: str,
+) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Price the usage a killed codex run emitted before it was terminated.
+
+    A timed-out run still cost real money for every turn it completed. Because
+    ``codex exec --json`` emits ``turn.completed`` as each turn lands, the partial
+    stdout salvaged from the timeout usually carries priceable usage. Only when no
+    turn ever reported usage is the run recorded cost-unknown — the honest answer
+    then, but no longer the automatic one.
+    """
+    usage = _usage_from_events(stdout)
+    label = profile.name or profile.model or "?"
+    if usage is None:
+        key = f"partial:{label}:{profile.model}"
+        if key not in _COST_UNMEASURED_WARNED:
+            _COST_UNMEASURED_WARNED.add(key)
+            _log(
+                f"  WARNING: Codex CLI run for {label} was killed before reporting any "
+                "token usage; recording cost-unknown, NOT $0.00."
+            )
+        return None, ()
+    cost, model_usage = _price_codex_usage(profile=profile, usage=usage)
+    if cost is not None:
+        _log(
+            f"  {label} killed mid-run: recovered partial cost ${cost:.4f} from "
+            "codex turn.completed usage (run did not finish)."
+        )
     return cost, model_usage
 
 
@@ -361,7 +631,14 @@ def _run_codex(
     try:
         if outcome.exception:
             result = _handle_exception(
-                outcome.exception, profile=profile, cli_name="npx @openai/codex"
+                outcome.exception,
+                profile=profile,
+                cli_name="npx @openai/codex",
+                # Salvage usage from the partial event stream before declaring a
+                # killed run unmeasurable (#2019).
+                partial_cost_fn=lambda partial: _partial_codex_cost(
+                    profile=profile, stdout=partial
+                ),
             )
             if result:
                 return result
@@ -382,7 +659,25 @@ def _run_codex(
             pass
 
         if not output_text:
-            output_text = proc.stdout or proc.stderr or "(no output)"
+            # Under `--json` stdout is a JSONL event stream, so the old raw-stdout
+            # fallback would feed event objects into handoff/review parsing.
+            # Reconstruct the agent's message from the events instead; fall back to
+            # raw stdout only when it is not an event stream at all.
+            raw_stdout = proc.stdout or ""
+            reconstructed = _agent_text_from_events(raw_stdout)
+            if reconstructed:
+                output_text = reconstructed
+            elif _looks_like_codex_events(raw_stdout):
+                # No agent message means the run failed. Surface the event
+                # stream's error text so the CLI→API quota fallback classifier
+                # can still see rate-limit/quota strings.
+                output_text = (
+                    _error_text_from_events(raw_stdout)
+                    or proc.stderr
+                    or "(no agent message in codex event stream)"
+                )
+            else:
+                output_text = raw_stdout or proc.stderr or "(no output)"
 
         # Try JSON parse for structured response
         result_json: dict[str, Any] = {}
