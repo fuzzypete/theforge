@@ -9,8 +9,6 @@ build/
 
 # Virtual environments
 .venv/
-# Per-interpreter gate-matrix venvs provisioned by `make gate-py PY=<version>`.
-.venv-*/
 venv/
 
 # IDE

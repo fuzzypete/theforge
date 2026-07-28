@@ -1352,20 +1352,6 @@ def test_gate_trace_path_none_for_baseline_run() -> None:
     assert _gate_trace_path(2) == ".forge/traces/2-gate.txt"
 
 
-def test_gate_trace_path_prefers_the_trace_the_gate_actually_wrote() -> None:
-    """Under an interpreter matrix the verdict's trace is the failing leg's (#1945).
-
-    Deriving the name from the iteration alone would name ``2-gate.txt``, which a
-    matrix run never writes, so the escalation would point at a missing file and
-    hide which interpreter failed.
-    """
-    written = [".forge/traces/2-gate-py3.11.txt", ".forge/traces/2-gate-py3.12.txt"]
-    assert _gate_trace_path(2, written) == ".forge/traces/2-gate-py3.12.txt"
-    # Empty list = gate skipped or run_gate_full stubbed; fall back to derivation.
-    assert _gate_trace_path(2, []) == ".forge/traces/2-gate.txt"
-    assert _gate_trace_path(None, []) is None
-
-
 def test_run_validate_phase_gate_fail_escalation_carries_evidence(tmp_path: Path) -> None:
     """Budget-exhausted gate FAIL escalation carries exit code, output tail, and trace.
 
@@ -1427,55 +1413,6 @@ def test_run_validate_phase_gate_fail_escalation_carries_evidence(tmp_path: Path
     assert "make[2]: *** [test-ios] Error 65" in state.error
     # The full-output trace is named as the artifact holding the complete output.
     assert ".forge/traces/2-gate.txt" in state.error
-
-
-def test_run_validate_phase_escalation_names_the_failing_matrix_leg_trace(
-    tmp_path: Path,
-) -> None:
-    """A matrix gate FAIL escalates against the leg's trace, not the legacy name (#1945).
-
-    Seam test for the VALIDATE→terminal-outcome boundary: run_gate_full reports
-    the traces it wrote through the ``trace_names`` out-parameter, and the
-    escalation must name the last one. Deriving from the iteration alone would
-    point an operator at ``2-gate.txt``, which a matrix run never writes, and
-    would not say which interpreter rejected the commit.
-    """
-    config = _make_config(tmp_path)
-    task = _make_task(tmp_path)
-    state = CoordinatorState(dev_iteration=2)
-    state.budget.max_iterations = config.retry.max_dev_iterations
-    state.review_cycle = config.retry.max_review_cycles - 1
-    state.dev_trace_count = 2
-    state.dev_results.append(_make_agent_result())
-    state.dev_durations.append(1.5)
-    state.last_dev_start_commit = "HEAD"
-
-    def _fake_gate(*_args, **kwargs):
-        traces = kwargs.get("trace_names")
-        if traces is not None:
-            traces.append(".forge/traces/2-gate-py3.11.txt")
-            traces.append(".forge/traces/2-gate-py3.12.txt")
-        return ("FAIL", None, "1 failed", "make gate-py PY=3.12", 1)
-
-    with (
-        patch(
-            "theforge.coordinator.validate_phase.run_gate_full",
-            side_effect=_fake_gate,
-        ),
-        patch(
-            "theforge.coordinator.validate_phase._get_handoff_content",
-            return_value="summary: pending",
-        ),
-        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
-    ):
-        outcome, result = _run_validate_phase(
-            state, config, task, tmp_path, notify=False, logger=None
-        )
-
-    assert outcome is _ValidateOutcome.ESCALATE
-    assert result is not None
-    assert ".forge/traces/2-gate-py3.12.txt" in state.error
-    assert ".forge/traces/2-gate.txt" not in state.error
 
 
 def test_run_validate_phase_escalates_on_consecutive_timeouts(tmp_path: Path) -> None:

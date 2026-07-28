@@ -36,7 +36,6 @@ from .models import (
     resolve_agent_spec,
 )
 from .types import (
-    PYTHON_VERSION_PLACEHOLDER,
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
@@ -92,7 +91,6 @@ __all__ = [
     "PlanAgentReviewConfig",
     "PlanConfig",
     "PlanReviewConfig",
-    "PYTHON_VERSION_PLACEHOLDER",
     "RecencyConfig",
     "RetryPolicy",
     "SandboxConfig",

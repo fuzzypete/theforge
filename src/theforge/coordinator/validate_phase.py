@@ -163,23 +163,15 @@ def _is_identical_failure(telemetry: list[DevIterationTelemetry]) -> bool:
     return False
 
 
-def _gate_trace_path(iter_num: int | None, written: list[str] | None = None) -> str | None:
+def _gate_trace_path(iter_num: int | None) -> str | None:
     """Return the worktree-relative gate trace path written for this iteration.
-
-    ``written`` is the trace list ``run_gate_full`` filled in. Its last entry is
-    authoritative: under an interpreter matrix the verdict comes from a specific
-    leg and the file on disk is ``{iter}-gate-py{version}.txt``, so deriving the
-    name from ``iter_num`` alone would name a path that does not exist and hide
-    which interpreter failed (#1945). The derivation below is the fallback for
-    callers that did not collect traces — including the ~30 tests that stub
-    ``run_gate_full`` — and stays correct for single-leg gates.
 
     Mirrors ``run_gate_full``'s trace-write gate: a trace is persisted only when
     ``iter_num is not None``. Baseline gate runs (``iter_num is None``) produce
     no trace, so no artifact is named and the terminal outcome falls back to its
-    inline tail. The path is relative to the worktree root; ESCALATE worktrees
-    are preserved, so it remains resolvable for the surfaces that read an
-    escalation.
+    inline tail. The path is relative to the worktree root
+    (``.forge/traces/{iter}-gate.txt``); ESCALATE worktrees are preserved, so it
+    remains resolvable for the surfaces that read an escalation.
 
     ``iter_num`` is ``state.dev_trace_count`` — the monotonic dev counter, not the
     per-cycle ``dev_iteration``. The two agreed until a review cycle could be
@@ -189,8 +181,6 @@ def _gate_trace_path(iter_num: int | None, written: list[str] | None = None) -> 
     (#1981). It also pairs the gate trace with the ``{n}-dev-output.txt`` of the
     same iteration.
     """
-    if written:
-        return written[-1]
     if iter_num is None:
         return None
     return f".forge/traces/{iter_num}-gate.txt"
@@ -625,10 +615,6 @@ def _run_validate_phase(
     # gate was skipped or run_gate_full was stubbed; the stall brake then has no
     # signature to compare and fails open.
     _gate_digest: list[str] = []
-    # Worktree-relative paths of the gate traces actually written, in run order.
-    # Empty when the gate was skipped or run_gate_full was stubbed, in which case
-    # _gate_trace_path falls back to deriving the single-leg name.
-    _gate_traces: list[str] = []
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
         _log("  Gate: none (story override)")
@@ -648,7 +634,6 @@ def _run_validate_phase(
                 task=task,
                 iter_num=state.dev_trace_count,
                 output_digest=_gate_digest,
-                trace_names=_gate_traces,
             )
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
@@ -984,7 +969,7 @@ def _run_validate_phase(
             exit_code=gate_exit_code,
             output_tail=gate_output_tail,
             tail_chars=config.validation.gate_output_tail_chars,
-            trace_path=_gate_trace_path(state.dev_trace_count, _gate_traces),
+            trace_path=_gate_trace_path(state.dev_trace_count),
         )
         record_dev_iteration_telemetry(
             state,
@@ -1013,7 +998,7 @@ def _run_validate_phase(
                 exit_code=gate_exit_code,
                 output_tail=gate_output_tail,
                 tail_chars=config.validation.gate_output_tail_chars,
-                trace_path=_gate_trace_path(state.dev_trace_count, _gate_traces),
+                trace_path=_gate_trace_path(state.dev_trace_count),
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
@@ -1037,7 +1022,7 @@ def _run_validate_phase(
                 exit_code=gate_exit_code,
                 output_tail=gate_output_tail,
                 tail_chars=config.validation.gate_output_tail_chars,
-                trace_path=_gate_trace_path(state.dev_trace_count, _gate_traces),
+                trace_path=_gate_trace_path(state.dev_trace_count),
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:

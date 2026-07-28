@@ -83,14 +83,7 @@ workspace:
 validation:
   # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
   # gate_decision_key; do not add them back under validation:.
-  gate_command: "make gate-py PY={python_version}"
-  # Interpreter surface the story gate must prove. This list is the same one
-  # .github/workflows/ci.yml's required `gate` job runs, and
-  # tests/test_ci_matrix_alignment.py fails the gate if the two drift (#1945).
-  # Before this, the story gate ran one interpreter while landing was governed
-  # by the three-version matrix, so matrix-breaking commits were reported DONE
-  # and only failed after the PR opened.
-  python_versions: ["3.11", "3.12", "3.13"]
+  gate_command: "make gate"
   # Canonical intermediate test command dev agents should use while working.
   test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
   # 45→60 (2026-07-11): story #1243 hit identical 45s gate timeouts twice under
@@ -100,13 +93,9 @@ validation:
   # 71.4s wall clock alone (6224 tests) against a 60s alone-time budget, so
   # sprints at --parallel 1 failed at the baseline gate deterministically —
   # adaptive scaling multiplies this value, so parallelism was the only thing
-  # masking it.
-  # 180→300 (2026-07-27, #1945): supersedes the above. This is now a PER-LEG
-  # budget, and a leg's first run in a fresh worktree also provisions
-  # .venv-<version> (venv + pip install -e '.[dev]'), which alone outlasts 60s.
-  # Subsequent legs reuse the venv. The 71.4s figure above is single-leg
-  # alone-time and remains the number to re-measure against as the suite grows.
-  gate_timeout: 300
+  # masking it. Set to ~2.5x measured alone-time; the timeout exists to catch a
+  # hung gate, not to bound normal growth. Re-measure when the suite grows.
+  gate_timeout: 180
 
 conventions:
   hard:

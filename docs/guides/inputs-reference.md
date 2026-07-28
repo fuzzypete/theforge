@@ -305,17 +305,7 @@ workspace:
 # ── Validation gate ────────────────────────────────────────
 validation:
   gate_command: "make gate"            # must exit 0 on success
-  python_versions: []                  # optional interpreter matrix for the gate, e.g. ["3.11", "3.12"].
-                                       # When set, gate_command MUST contain {python_version}; it runs once
-                                       # per entry and the gate passes only if every leg passes. Point this
-                                       # at the same versions your required merge checks run so a commit CI
-                                       # would reject cannot be reported as passing the story gate. Entries
-                                       # must be quoted MAJOR.MINOR strings (unquoted 3.11 is a YAML float
-                                       # and is rejected). A declared interpreter missing from PATH is an
-                                       # infrastructure error, not a gate FAIL. Omit the key for the legacy
-                                       # single-run gate. A story-level gate_override runs single-leg.
-  gate_timeout: 600                    # seconds; per gate leg — with a matrix, the wall-clock budget is
-                                       # this value times the number of versions
+  gate_timeout: 600                    # seconds; default varies
   gate_debug_command: ~                # optional: runs after gate_timeout for diagnostics
   gate_debug_timeout: ~                # seconds; default: same resolved value as gate_timeout
   gate_diagnostic_enabled: true        # run the serialized hang-diagnostic pass on gate timeout
