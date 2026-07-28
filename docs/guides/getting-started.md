@@ -11,7 +11,7 @@ feature branch.
 
 ## What you need
 
-1. **Python 3.11+**
+1. **Python 3.12+**
 2. **At least one AI CLI** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
    is recommended to start. Codex and Gemini are optional.
 3. **A git repository** with tests

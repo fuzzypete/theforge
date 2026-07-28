@@ -1,7 +1,7 @@
 # TheForge
 
 [![CI](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml/badge.svg)](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/github/v/tag/fuzzypete/theforge?sort=semver&label=version&color=orange)](CHANGELOG.md)
 

@@ -48,11 +48,13 @@ BRANCH="${ARGS[1]}"
 #      release branch with a red gate — a protection hole on the hardened line.
 #
 # These context names are the check names produced by .github/workflows/ci.yml:
-# its `gate` job runs a matrix over python-version ["3.11","3.12","3.13"],
-# yielding checks "gate (3.11)", "gate (3.12)", "gate (3.13)". If the ci.yml
-# job name or the python-version matrix changes, update GATE_CONTEXTS to match
-# or auto-merge arming will silently break again.
-GATE_CONTEXTS='["gate (3.11)","gate (3.12)","gate (3.13)"]'
+# its `gate` job runs a matrix over python-version ["3.12"], yielding the check
+# "gate (3.12)". If the ci.yml job name or the python-version matrix changes,
+# update GATE_CONTEXTS to match or auto-merge arming will silently break again.
+# Requiring a context the matrix does not produce leaves every PR waiting on a
+# status that never arrives; producing a context that is not required leaves a
+# merge ungated. Change both files together and re-apply protection.
+GATE_CONTEXTS='["gate (3.12)"]'
 PROTECTION_BODY='{"required_status_checks":{"strict":false,"contexts":'"$GATE_CONTEXTS"'},"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
 
 if [[ "$DRY_RUN" == true ]]; then
