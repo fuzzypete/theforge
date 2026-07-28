@@ -1,0 +1,2224 @@
+{
+  "schema_version": 12,
+  "run_id": "dd76b4d9c8cb",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Forward-port unconditionally reverts pyproject.toml to main, silently dropping non-version changes",
+    "slug": "issue-2016",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nThe forward-port workflow reverts `pyproject.toml` and `CHANGELOG.md` to main's\ncopy on every port, unconditionally, whether or not the merge conflicted. Any\nchange to those files made on a release branch for a reason other than a version\nbump or changelog roll is silently discarded in transit, and the port still\nreports success.\n\n`.github/workflows/forward-port.yml`:\n\n```bash\n# Even when the merge is clean, never let release-line version bumps\n# or changelog rolls land on main.\ngit checkout ORIG_HEAD -- pyproject.toml CHANGELOG.md\n```\n\n`ORIG_HEAD` is main. The intent \u2014 keeping release-line `rc` versions and\nchangelog rolls off main \u2014 is correct and necessary. The mechanism discards the\nentire file rather than the fields that must not propagate.\n\nObserved on PR #2001 (forward-port of `release/v0.13` into `main`). #2012\nnarrowed the supported interpreter set, changing three things on the release\nbranch:\n\n```\n.github/workflows/ci.yml   python-version: [\"3.11\",\"3.12\",\"3.13\"] -> [\"3.12\"]\npyproject.toml             requires-python = \">=3.11\"             -> \">=3.12\"\npyproject.toml             [tool.ruff] target-version = \"py311\"   -> \"py312\"\n```\n\nThe port carried the `ci.yml` change and discarded both `pyproject.toml`\nchanges. The resulting tree declares a single-version CI matrix alongside a\nfloor and lint target for the version that was removed.\n\nThe inconsistency was caught only because #2012 also shipped\n`tests/test_apply_branch_protection.py::test_requires_python_floor_matches_ci_matrix`,\nwhich the port did carry:\n\n```\nFAILED tests/test_apply_branch_protection.py::test_requires_python_floor_matches_ci_matrix\nAssertionError: assert '>=3.11' == '>=3.12'\n```\n\nWithout that test the port would have merged, and main would hold a narrowed CI\nmatrix with an unnarrowed floor and lint target, with no signal that anything was\nlost.\n\n## Diagnosis\n\n**Observed symptom:** a forward-port produced a tree containing part of a change,\nand the omission was detectable only by a test that happened to assert the\nrelationship between a file that was ported and a file that was not.\n\n**Evidence.** The unconditional revert is the block quoted above. It runs after\nthe merge on every invocation, outside the `if [ \"$merge_rc\" -ne 0 ]` branch that\nhandles conflicts, so a clean merge is affected identically to a conflicted one.\nThe conflict branch above it does the same thing for the same two files via\n`git checkout --ours`.\n\nConfirmed by diffing the two branches directly. Three differences exist in\n`pyproject.toml` between `origin/main` and `origin/release/v0.13`:\n\n```\nversion           \"0.12.0.dev0\"  vs \"0.13.0rc9\"    <- the case the guard exists for\nrequires-python   \">=3.11\"       vs \">=3.12\"       <- dropped\n[tool.ruff] target-version  \"py311\" vs \"py312\"     <- dropped\n```\n\n**Ruled out \u2014 a stale forward-port branch.** Regenerating the branch reproduces\nthe result, because the revert is part of the port itself rather than an artifact\nof when the branch was last updated.\n\n**Ruled out \u2014 a merge conflict resolved in the wrong direction.** The revert is\nunconditional; no conflict is required for the loss to occur, and the workflow's\nown comment states this is deliberate for the clean-merge case.\n\n**Ruled out \u2014 long-running silent erosion.** The diff above shows the only\nnon-version differences are the two introduced by #2012. Nothing earlier was\nlost, because until now no release-branch change had touched these files for a\nnon-version reason. The defect has been latent, not active.\n\n**Confirmed cause:** the guard is scoped to files rather than to the content\nthat must not propagate. `pyproject.toml` holds the project version *and*\npackaging metadata, tool configuration, dependencies, and test settings.\nProtecting the version by reverting the file protects everything else in it from\nbeing ported too.\n\n**Fix-success criterion:** a forward-port carries every release-branch change to\n`pyproject.toml` except the `[project] version` field, and every change to\n`CHANGELOG.md` except release-roll entries; main's version and changelog remain\nuntouched. Given `release/v0.13` at the time of PR #2001 as input, the port\nproduces a main tree with `requires-python = \">=3.12\"`, `target-version =\n\"py312\"`, and main's own `version` unchanged.\n\n## Expected behavior\n\nA guard that exists to stop one specific thing from propagating has to be scoped\nto that thing. Protecting a field by discarding the file that contains it makes\nevery unrelated change in that file conditional on nobody noticing, and the\nbroader the file's purpose the more it silently swallows \u2014 `pyproject.toml`\ncarries the interpreter floor, tool configuration, dependencies, and packaging\nmetadata alongside the version the guard is actually defending.\n\nThe stronger requirement is that dropping content must never be silent. This\nworkflow already distinguishes a real failure from a no-op: unresolvable\nconflicts abort the port and file an issue, and an already-ported tree exits\ncleanly. Discarding a change sits between those two and is reported as neither,\nso a port that loses work is indistinguishable from one that carried everything.\nWhere an automated step decides not to propagate something, that decision is\ninformation the operator needs, and it should be surfaced at least as loudly as\nthe conflicts the same workflow already refuses to guess at.\n\nThis matters more than an ordinary reporting gap because of what the workflow\nguarantees. Main is documented as a strict superset of every release line, and\nother work depends on that being true. A step that can quietly make it false\nconverts a stated invariant into an assumption that happens to hold, and there is\nno way to tell which one is in force at any given moment.\n",
+    "github_issue": 2016,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug Diagnosis section missing required component: affected code path"
+    ]
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Forward-port unconditionally reverts pyproject.toml to main, silently dropping non-version changes' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2016",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-28T17:24:43.776582+00:00",
+    "finished_at": "2026-07-28T17:42:59.819592+00:00",
+    "duration_seconds": 1096.04301
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2016",
+    "branch": "feat/issue-2016",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 3.5859155000000014,
+        "duration_s": 611.46,
+        "meaningful_progress": true,
+        "files_changed": [
+          ".github/workflows/forward-port.yml",
+          "scripts/forward_port_guard.py",
+          "tests/test_forward_port_guard.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 3.0365089999999997,
+        "duration_s": 205.63,
+        "meaningful_progress": true,
+        "files_changed": [
+          "CONVENTIONS.md"
+        ],
+        "files_changed_count": 1,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": null,
+        "duration_s": 97.21
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": null,
+        "duration_s": 99.3
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 6,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 6,
+      "base_review": 5,
+      "profile_history_runs": 150,
+      "profile_avg_iterations": 1.6,
+      "profile_avg_cost_usd": 4.42838,
+      "profile_raw_dev_max": 2.4,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 8.8568,
+      "review_history_sample_size": 18,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 150 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-28T17:24:44.663953+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-07-28T17:37:08.591404+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 6.622424500000001,
+    "review_usd": null,
+    "dev_invocations": 2,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 3.5859155000000014,
+        "duration_seconds": 611.4605962911155,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.005286
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 3.580629500000001
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 3.0365089999999997,
+        "duration_seconds": 205.62716020899825,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 3.0365089999999997
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 48.54181960399728,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 48.54181960399728,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 49.57398770842701,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 49.57398770842701,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The unconditional git checkout ORIG_HEAD -- pyproject.toml CHANGELOG.md in .github/workflows/forward-port.yml is confirmed present and unchanged; it reverts entire files rather than scoping to the version/changelog-roll fields, and drops are never surfaced.",
+    "complexity": "medium",
+    "complexity_score": 6,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "8 operator-visible surfaces enumerated in acceptance criteria: --ours, change and discarded both, changelog.md, ci.yml, except the, github/workflows/ci.yml, github/workflows/forward-port.yml, pyproject.toml",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "ci",
+      "config"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.23493550000000002,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "6c01f27351f7",
+    "cache_snapshot": {
+      "worktree_head": "c71263c99c6ebe2a7d7377a46c92ebbd94ac95ae",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "c71263c99c6ebe2a7d7377a46c92ebbd94ac95ae",
+      "story_content_hash": "a7b248fe044d0aa18a68719d944703eee1ff222bfe63a80da6066afbeea88967"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "c71263c99c6ebe2a7d7377a46c92ebbd94ac95ae",
+      "current_worktree_head": "c71263c99c6ebe2a7d7377a46c92ebbd94ac95ae",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "c71263c99c6ebe2a7d7377a46c92ebbd94ac95ae",
+      "current_evaluation_base_branch_head": "c71263c99c6ebe2a7d7377a46c92ebbd94ac95ae",
+      "cached_story_content_hash": "a7b248fe044d0aa18a68719d944703eee1ff222bfe63a80da6066afbeea88967",
+      "current_story_content_hash": "a7b248fe044d0aa18a68719d944703eee1ff222bfe63a80da6066afbeea88967",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.23493550000000002,
+        "duration_s": 27.73,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 6,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:ci+config (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 6,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2016/iter_1.yaml",
+      "handoff": {
+        "summary": "Replaced forward-port.yml's unconditional `git checkout ORIG_HEAD -- pyproject.toml CHANGELOG.md` (and the equivalent `--ours` on the conflict path) with a content-scoped guard, scripts/forward_port_guard.py. Its `protect` mode takes the merged tree's file and restores only main's `[project] version` and main's `[Unreleased]` changelog section, dropping the versioned sections a release roll created; every other release-branch change to those files ports through. Its `resolve` mode three-way merges a conflicted version file after normalising the version/roll scope on all three sides to main's copy, so the rc bump no longer conflicts (including by line-adjacency with requires-python) and only genuine conflicts remain. Both modes self-verify the rewrite against the merge result \u2014 a TOML round-trip comparison for pyproject, a section-by-section comparison for the changelog \u2014 and raise GuardError with a `::error::` annotation and a non-zero exit for anything they would discard outside that scope or cannot classify, which routes through the workflow's existing merge --abort -> issue + Slack failure path. The exclusion report is echoed to the job summary and referenced in the PR body. Verified end-to-end against two throwaway git repos reproducing the PR #2001 clean-merge case and a conflicted-version-file case.",
+        "commits": [
+          {
+            "sha": "332ae91",
+            "message": "fix(forward-port): scope the version guard to content, not whole files"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A forward-port carries every release-branch change to pyproject.toml except the [project] version field",
+            "status": "MET",
+            "notes": "protect_pyproject rewrites only the `version = ...` line inside the [project] table (a version key in any other table is left alone) and verifies via tomllib that nothing else differs from the merge result. Covered by test_release_v013_port_keeps_main_version_and_carries_the_rest, test_pyproject_dependency_added_on_the_release_line_ports_through, test_version_outside_the_project_table_is_not_mistaken_for_it."
+          },
+          {
+            "criterion": "A forward-port carries every change to CHANGELOG.md except release-roll entries; main's changelog remains untouched",
+            "status": "MET",
+            "notes": "protect_changelog parses the file into preamble + `## ` sections, keeps main's [Unreleased] verbatim, keeps every section main also has (so unrelated release-branch edits port), and drops only version-keyed sections main lacks \u2014 i.e. exactly the roll. A non-version section main lacks is a hard error rather than a guess, and a main changelog without [Unreleased] is refused outright per the plan's 'fail rather than guess' clause."
+          },
+          {
+            "criterion": "Given release/v0.13 at the time of PR #2001, the port produces a main tree with requires-python = \">=3.12\", target-version = \"py312\", and main's own version unchanged",
+            "status": "MET",
+            "notes": "Pinned as a named regression test on the real inputs, and reproduced end-to-end in a throwaway git repo running the workflow's shell logic."
+          },
+          {
+            "criterion": "Dropping content must never be silent \u2014 surfaced at least as loudly as the conflicts the workflow already refuses to guess at",
+            "status": "MET",
+            "notes": "Every port prints what was excluded and how many release-line changed lines it carried, to stdout and to $GITHUB_STEP_SUMMARY, and the PR body points at it. Anything outside the allowed scope exits 1 with a `::error::` annotation; `set -o pipefail` was added so the piped invocation actually fails the step, which reaches the existing 'File issue on failure' and Slack steps."
+          },
+          {
+            "criterion": "Conflicted version files are not resolved by discarding the release line's changes",
+            "status": "MET",
+            "notes": "Not an explicit AC but the same defect: `git checkout --ours` was silently equivalent to the whole-file revert on the conflict path. Replaced with the normalised three-way merge; a residual conflict aborts the port and reports the file, rather than picking a side."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The guard lives at scripts/forward_port_guard.py rather than under src/. Convention 7 names src/tests/docs, but this is repo release tooling invoked by a GitHub workflow, not part of the shipped theforge package; scripts/derive_changelog.py is the existing precedent for a unit-tested Python helper there. Flagging in case the reviewer wants it moved.",
+          "Plan step 2 asked to 'preserve main's release-roll-only changelog content while allowing unrelated release-branch changelog edits to remain'. Implemented as: main's [Unreleased] wins outright, sections present in main keep their merged content, version-keyed sections absent from main are dropped as rolls. A release-line edit made *inside* a rolled version section is therefore dropped with that section \u2014 it is roll content by construction and has no landing place on main. Anything not classifiable under that rule fails the port."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2016/iter_2.yaml",
+      "handoff": {
+        "summary": "Iteration 2 was an advisory cleanup pass against the single carried P2 (new helper at scripts/forward_port_guard.py vs the 'no files outside src/, tests/, docs/' convention). No implementation code changed. Rather than move release tooling into the shipped package, I recorded the convention exception in CONVENTIONS.md: a new 'Release and CI tooling lives in scripts/, not in the package' subsection under Workflow And Git Hygiene, naming the existing residents (cut-rc.sh, promote-rc.sh, release.sh, derive_changelog.py, apply-branch-protection.sh, forward_port_guard.py), the test that decides the carve-out (called by a Makefile target or a GitHub workflow, never `import theforge`), and the requirement that such helpers stay unit-tested from tests/. The iteration-1 implementation is unchanged: scripts/forward_port_guard.py provides `protect` (restore only main's [project] version and its [Unreleased] section, drop the versioned sections a release roll created, self-verify the rewrite against the merge result, GuardError + ::error:: + non-zero exit for anything else) and `resolve` (three-way merge a conflicted version file with the roll normalised away on all three sides), and forward-port.yml routes both paths through it with `set -o pipefail` so a guard failure reaches the existing issue + Slack reporting.",
+        "commits": [
+          {
+            "sha": "332ae91",
+            "message": "fix(forward-port): scope the version guard to content, not whole files"
+          },
+          {
+            "sha": "bb4618b",
+            "message": "docs(conventions): record the scripts/ carve-out for release and CI tooling"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A forward-port carries every release-branch change to pyproject.toml except the [project] version field",
+            "status": "MET",
+            "notes": "Unchanged from iteration 1. protect_pyproject rewrites only the `version = ...` line inside the [project] table and verifies via tomllib that nothing else differs from the merge result."
+          },
+          {
+            "criterion": "A forward-port carries every change to CHANGELOG.md except release-roll entries; main's changelog remains untouched",
+            "status": "MET",
+            "notes": "Unchanged from iteration 1. Section-scoped: main's [Unreleased] wins, sections main also has keep their merged content, only version-keyed sections main lacks are dropped; anything unclassifiable fails the port."
+          },
+          {
+            "criterion": "Given release/v0.13 at the time of PR #2001, the port produces a main tree with requires-python = \">=3.12\", target-version = \"py312\", and main's own version unchanged",
+            "status": "MET",
+            "notes": "Unchanged from iteration 1; pinned by test_release_v013_port_keeps_main_version_and_carries_the_rest and reproduced end-to-end in a throwaway git repo."
+          },
+          {
+            "criterion": "Dropping content must never be silent \u2014 surfaced at least as loudly as the conflicts the workflow already refuses to guess at",
+            "status": "MET",
+            "notes": "Unchanged from iteration 1. Exclusions are reported to stdout and $GITHUB_STEP_SUMMARY on every port; out-of-scope drops exit 1 with a ::error:: annotation into the existing issue + Slack failure path."
+          },
+          {
+            "criterion": "Carried P2: scripts/forward_port_guard.py sits outside src/, tests/, docs/",
+            "status": "MET",
+            "notes": "Resolved via the exception route the finding offered. CONVENTIONS.md now records the scripts/ carve-out for repo release/CI tooling. See story_deviations for the forge.yaml half, which cannot be committed from this worktree."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The agent-facing copy of that convention lives in forge.yaml (conventions.soft), not CONVENTIONS.md. forge.yaml is marked skip-worktree in this worktree (git ls-files -v -> S), so the matching edit cannot be committed from here; I reverted my local edit to HEAD content rather than leave an uncommittable divergence. Operator action: update the forge.yaml soft-convention string to match the CONVENTIONS.md carve-out, or the next story will see the old wording and re-file this P2.",
+          "Carried from iteration 1: plan step 2's changelog rule drops a release-line edit made *inside* a rolled version section along with that section. It is roll content by construction and has no landing place on main; anything not classifiable under that rule fails the port rather than being dropped."
+        ],
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The behavior matches the forward-port guard spec; one non-blocking convention deviation remains for the new scripts helper location. | [google-gemini-3.5-flash] Replaced forward-port.yml's whole-file reverts with a content-scoped guard that protects pyproject.toml's version and CHANGELOG.md's [Unreleased] section while carrying all other release-branch changes.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "scripts/forward_port_guard.py",
+          "line": 1,
+          "description": "The change added scripts/forward_port_guard.py under scripts/ while project convention 7 restricts new files to src/, tests/, or docs/.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A forward-port carries every release-branch change to pyproject.toml except the [project] version field",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:105 restores only the [project] version line from main and scripts/forward_port_guard.py:134 verifies the TOML content outside that field is unchanged from the merge result; .github/workflows/forward-port.yml:141 invokes that protection in the workflow. tests/test_forward_port_guard.py:104 covers the PR #2001 requires-python and ruff target-version regression, tests/test_forward_port_guard.py:129 covers a dependency addition porting through, and tests/test_forward_port_guard.py:146 covers version keys outside [project].; Implemented in scripts/forward_port_guard.py:protect_pyproject (lines 79-108) and verified by tests/test_forward_port_guard.py:test_release_v013_port_keeps_main_version_and_carries_the_rest (lines 101-119)."
+        },
+        {
+          "criterion": "A forward-port carries every change to CHANGELOG.md except release-roll entries; main's changelog remains untouched",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:217 restores main's [Unreleased] section, keeps sections already present on main, drops only version-keyed sections absent from main, and scripts/forward_port_guard.py:280 verifies non-roll sections are not dropped; .github/workflows/forward-port.yml:144 invokes that protection in the workflow. tests/test_forward_port_guard.py:173 covers release-roll exclusion, tests/test_forward_port_guard.py:182 covers unrelated existing-section edits porting through, tests/test_forward_port_guard.py:192 covers preamble changes, and tests/test_forward_port_guard.py:211 plus tests/test_forward_port_guard.py:226 cover refusal to guess.; Implemented in scripts/forward_port_guard.py:protect_changelog (lines 214-271) and verified by tests/test_forward_port_guard.py:test_changelog_roll_is_excluded_by_section_not_by_reverting_the_file (lines 169-176)."
+        },
+        {
+          "criterion": "Given release/v0.13 at the time of PR #2001, the port produces a main tree with requires-python = '>=3.12', target-version = 'py312', and main's own version unchanged",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:111 reads main's version, scripts/forward_port_guard.py:122 replaces only the merged version line, and scripts/forward_port_guard.py:128 verifies the result. tests/test_forward_port_guard.py:104 uses the PR #2001 values and asserts version = 0.12.0.dev0 remains while requires-python = >=3.12 and target-version = py312 port through."
+        },
+        {
+          "criterion": "Dropping content must never be silent \u2014 surfaced at least as loudly as the conflicts the workflow already refuses to guess at",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:123 and scripts/forward_port_guard.py:262 report excluded content, scripts/forward_port_guard.py:439 emits a GitHub error annotation and exits non-zero on GuardError, and .github/workflows/forward-port.yml:76 enables pipefail so the tee pipeline fails the step. .github/workflows/forward-port.yml:141 sends reports to the step summary, and .github/workflows/forward-port.yml:210 routes failures to the existing issue path. tests/test_forward_port_guard.py:319 covers non-zero annotated guard failure and tests/test_forward_port_guard.py:346 covers workflow pipefail wiring.; Implemented in .github/workflows/forward-port.yml (lines 76, 141-147) with 'set -o pipefail' and 'tee -a $GITHUB_STEP_SUMMARY', and scripts/forward_port_guard.py (lines 438-442) printing '::error::' annotations and returning exit code 1."
+        },
+        {
+          "criterion": "Conflicted version files are not resolved by discarding the release line's changes",
+          "status": "VERIFIED",
+          "evidence": ".github/workflows/forward-port.yml:87 enters the conflict branch, .github/workflows/forward-port.yml:104 loops over conflicted version files, and .github/workflows/forward-port.yml:115 calls the guard's resolve mode instead of checkout --ours. scripts/forward_port_guard.py:349 normalises protected content and uses git merge-file, while scripts/forward_port_guard.py:396 raises on remaining genuine conflicts. tests/test_forward_port_guard.py:247 covers pyproject conflict resolution carrying release-line changes, tests/test_forward_port_guard.py:267 covers changelog conflict resolution, and tests/test_forward_port_guard.py:280 covers genuine conflicts failing instead of picking a side.; Implemented in scripts/forward_port_guard.py:resolve (lines 361-413) and .github/workflows/forward-port.yml (lines 99-137) using a normalized three-way merge, and verified by tests/test_forward_port_guard.py:test_resolve_merges_a_conflicted_pyproject_instead_of_taking_ours (lines 249-269)."
+        },
+        {
+          "criterion": "Given release/v0.13 at the time of PR #2001, the port produces a main tree with requires-python = \">=3.12\", target-version = \"py312\", and main's own version unchanged",
+          "status": "VERIFIED",
+          "evidence": "Verified by tests/test_forward_port_guard.py:test_release_v013_port_keeps_main_version_and_carries_the_rest (lines 101-119) using the exact inputs from PR #2001."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The implementation scopes forward-port protection to the intended version and changelog-roll content, wires the guard into the workflow, and the focused guard tests pass. | [google-gemini-3.5-flash] The content-scoped forward-port guard is fully implemented, robustly tested, and correctly integrated into the workflow.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "scripts/forward_port_guard.py",
+          "line": 1,
+          "description": "The new helper script scripts/forward_port_guard.py is created outside the src/, tests/, or docs/ directories.",
+          "reviewers": [
+            "google-gemini-3.5-flash"
+          ],
+          "reporter": "google-gemini-3.5-flash"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A forward-port carries every release-branch change to pyproject.toml except the [project] version field",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:105 restores only the [project] version line from main, scripts/forward_port_guard.py:134 verifies via TOML comparison that no other pyproject content changed, .github/workflows/forward-port.yml:141 invokes the guard at runtime, and tests/test_forward_port_guard.py:104 covers the PR #2001 requires-python and ruff target-version regression.; scripts/forward_port_guard.py:105-131 implements protect_pyproject which replaces only the version line in the [project] table and verifies that nothing else differs. tests/test_forward_port_guard.py:101-116 and tests/test_forward_port_guard.py:127-136 test this behavior."
+        },
+        {
+          "criterion": "A forward-port carries every change to CHANGELOG.md except release-roll entries; main's changelog remains untouched",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:217 restores main's Unreleased section while keeping matching existing sections and dropping only version-keyed roll sections absent from main, scripts/forward_port_guard.py:280 verifies non-roll content is not dropped, .github/workflows/forward-port.yml:144 invokes the changelog guard at runtime, and tests/test_forward_port_guard.py:173 and tests/test_forward_port_guard.py:182 cover roll exclusion and non-roll changelog edits.; scripts/forward_port_guard.py:217-277 implements protect_changelog which parses the changelog into sections, keeps main's [Unreleased] section, drops versioned sections that are not in main, and verifies that no other sections are altered. tests/test_forward_port_guard.py:171-180 and tests/test_forward_port_guard.py:183-191 test this behavior."
+        },
+        {
+          "criterion": "Given release/v0.13 at the time of PR #2001, the port produces a main tree with requires-python = \">=3.12\", target-version = \"py312\", and main's own version unchanged",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:111 takes main's version line while leaving merged pyproject content intact, and tests/test_forward_port_guard.py:104 asserts version = 0.12.0.dev0, requires-python = >=3.12, and target-version = py312 for the reproduced release/v0.13 inputs."
+        },
+        {
+          "criterion": "Dropping content must never be silent \u2014 surfaced at least as loudly as the conflicts the workflow already refuses to guess at",
+          "status": "VERIFIED",
+          "evidence": "scripts/forward_port_guard.py:251 raises GuardError for unclassifiable changelog sections, scripts/forward_port_guard.py:439 emits a GitHub error annotation and exits nonzero, .github/workflows/forward-port.yml:76 sets pipefail so the tee pipeline does not swallow guard failure, and tests/test_forward_port_guard.py:211 and tests/test_forward_port_guard.py:319 cover loud failure paths.; scripts/forward_port_guard.py:439-442 prints a ::error:: annotation and exits with code 1 on any GuardError. .github/workflows/forward-port.yml:76 sets set -o pipefail so that any failure in the guard script fails the workflow step, which triggers the existing failure path."
+        },
+        {
+          "criterion": "Carried P2: scripts/forward_port_guard.py sits outside src/, tests/, docs/",
+          "status": "VERIFIED",
+          "evidence": "CONVENTIONS.md:213 records the scripts carve-out for release and CI tooling, CONVENTIONS.md:220 requires those helpers to remain unit-tested from tests, and tests/test_forward_port_guard.py:303 exercises the script through its CLI.; CONVENTIONS.md:213-224 documents the scripts/ carve-out for release and CI tooling, and tests/test_forward_port_guard.py unit tests the helper script."
+        },
+        {
+          "criterion": "Given release/v0.13 at the time of PR #2001, the port produces a main tree with requires-python = '>=3.12', target-version = 'py312', and main's own version unchanged",
+          "status": "VERIFIED",
+          "evidence": "tests/test_forward_port_guard.py:101-116 reproduces this exact scenario using the real inputs from PR #2001 and asserts that main's version is kept while requires-python and target-version are updated."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2017",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2016",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2017",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2017",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-28T17:42:59.819592+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1134 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1416 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 794 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 992 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2263 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1641 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1535 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1635 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1914 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1167 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2026 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 936 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1163 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1118 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1307 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1252 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 4715 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1004 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1489 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1271 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1107 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1539 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1246 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1746 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1510 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "626faaf780b20848",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "scripts/forward_port_guard.py",
+      "line": 1,
+      "severity": "P2",
+      "description": "The change added scripts/forward_port_guard.py under scripts/ while project convention 7 restricts new files to src/, tests/, or docs/.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "62b602a4432a535a",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "scripts/forward_port_guard.py",
+      "line": 1,
+      "severity": "P2",
+      "description": "The new helper script scripts/forward_port_guard.py is created outside the src/, tests/, or docs/ directories.",
+      "reporter": "google-gemini-3.5-flash",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 6,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 5,
+            "completed": 5,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 6,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "ci",
+          "config"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4",
+        "domain_head": "openai-gpt-5.4",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8226,
+        "weighted_success_rate": 0.824,
+        "sample_size": 62,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.824,
+          "threshold": 0.6,
+          "sample_size": 62,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:ci+config",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "ci",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:ci+config (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 44,
+            "completed": 37,
+            "raw": 0.8409,
+            "weighted": 0.8259,
+            "rate": 0.8259,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 27,
+            "completed": 23,
+            "raw": 0.8519,
+            "weighted": 0.8443,
+            "rate": 0.8443,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 55,
+            "completed": 55,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 44,
+            "completed": 37,
+            "raw": 0.8409,
+            "weighted": 0.8259,
+            "rate": 0.8259,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 27,
+            "completed": 23,
+            "raw": 0.8519,
+            "weighted": 0.8443,
+            "rate": 0.8443,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.234936,
+      "duration_s": 27.73,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 6.622425,
+      "duration_s": 817.09,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 71.68,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 196.23,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 1112.73,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "d76d09105aff",
+  "sprint_name": "issues-2016"
+}
