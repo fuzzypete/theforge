@@ -249,3 +249,82 @@ def test_cut_rc_invokes_helper_with_release_branch():
     assert "apply-branch-protection.sh" in cut_rc
     assert '"$RELEASE_BRANCH"' in cut_rc
     assert '[[ "$DRY_RUN" == true ]] && PROTECT_ARGS+=("--dry-run")' in cut_rc
+
+
+def test_cut_rc_release_branch_satisfies_the_release_guard():
+    """The RC path must never trip the release/* guard.
+
+    cut-rc.sh runs under `set -e` and does NOT swallow this helper's exit code
+    (pinned by test_cut_rc_isolation.py), so a refusal would abort the cut. The
+    guard is safe only because RELEASE_BRANCH is always release/-prefixed —
+    pin that derivation here rather than trusting it.
+    """
+    cut_rc = (REPO_ROOT / "scripts" / "cut-rc.sh").read_text()
+    assert 'RELEASE_BRANCH="release/v' in cut_rc, (
+        "cut-rc.sh must derive a release/-prefixed branch or the helper's "
+        "release/* guard would abort the cut"
+    )
+
+
+def test_refuses_non_release_branch_by_default(sandbox):
+    """The wholesale PUT must not reach a branch it would silently damage.
+
+    PROTECTION_BODY sets required_pull_request_reviews:null, so applying it to
+    main would disable 'require a pull request before merging' with no error
+    and nothing in a diff to notice. Refuse instead of PUTting.
+    """
+    log = _write_fake_gh(sandbox, put_exit=0)
+
+    result = _run("fuzzypete/theforge", "main")
+
+    assert result.returncode == 2, result.stdout
+    assert "refusing to apply the release-branch ruleset to 'main'" in result.stderr
+    # The refusal must be actionable: name the rule at risk, and hand over the
+    # granular endpoint that changes contexts without touching anything else.
+    assert "required_pull_request_reviews" in result.stderr
+    assert "protection/required_status_checks" in result.stderr
+    assert "--force" in result.stderr
+    assert not log.exists(), f"gh was called for a refused branch: {log.read_text()}"
+
+
+def test_dry_run_also_refuses_non_release_branch(sandbox):
+    """--dry-run must report the refusal, not preview a PUT that would fail.
+
+    A dry-run that prints a plausible PUT body for main would tell the operator
+    the command is fine when the real run rejects it.
+    """
+    log = _write_fake_gh(sandbox, put_exit=0)
+
+    result = _run("--dry-run", "fuzzypete/theforge", "main")
+
+    assert result.returncode == 2, result.stdout
+    assert "refusing to apply the release-branch ruleset" in result.stderr
+    assert "would apply branch protection" not in result.stdout
+    assert not log.exists(), f"gh was called in a refused dry-run: {log.read_text()}"
+
+
+def test_force_allows_non_release_branch(sandbox):
+    """--force is the deliberate escape hatch (e.g. a new release-line branch)."""
+    log = _write_fake_gh(sandbox, put_exit=0)
+
+    result = _run("--force", "fuzzypete/theforge", "some-other-branch")
+
+    assert result.returncode == 0, result.stderr
+    assert "branch protected; auto-merge enabled" in result.stdout
+    calls = log.read_text().strip().splitlines()
+    assert len(calls) == 1 and "PUT" in calls[0], f"expected a single PUT, got: {calls}"
+    # --force must not alter the body it applies.
+    put_body = json.loads((sandbox / "gh.put_body.json").read_text())
+    assert put_body["required_status_checks"]["contexts"] == ["gate (3.12)"]
+
+
+def test_release_branches_are_unaffected_by_the_guard(sandbox):
+    """Every release/* form the RC ladder produces must pass the guard."""
+    for branch in ("release/v0.10", "release/v0.13", "release/v1.0"):
+        log = _write_fake_gh(sandbox, put_exit=0)
+
+        result = _run("fuzzypete/theforge", branch)
+
+        assert result.returncode == 0, f"{branch}: {result.stderr}"
+        assert "refusing" not in result.stderr, f"{branch} must not be refused"
+        log.unlink()

@@ -3,9 +3,13 @@
 # branch so GitHub's enablePullRequestAutoMerge mutation works and CI is
 # required before a merge.
 #
-# Usage: scripts/apply-branch-protection.sh [--dry-run] <repo> <branch>
+# Usage: scripts/apply-branch-protection.sh [--dry-run] [--force] <repo> <branch>
 #
 # Behavior:
+#   - Refuse any branch outside release/* unless --force is given. The PUT
+#     below is a WHOLESALE replacement shaped for release branches; pointed at
+#     a branch with richer protection it silently deletes the rules it does not
+#     name. See the guard and the PROTECTION_BODY note for the full rationale.
 #   - Always PUT the protection ruleset — this brings the branch up to the
 #     required state whether or not it was already protected. (An earlier
 #     revision preserved existing protection untouched; that left branches
@@ -21,21 +25,24 @@
 set -uo pipefail
 
 DRY_RUN=false
+FORCE=false
 ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=true ;;
+        --force) FORCE=true ;;
         *) ARGS+=("$arg") ;;
     esac
 done
 
 if [[ "${#ARGS[@]}" -ne 2 ]]; then
-    echo "Usage: $0 [--dry-run] <repo> <branch>" >&2
+    echo "Usage: $0 [--dry-run] [--force] <repo> <branch>" >&2
     exit 2
 fi
 
 REPO="${ARGS[0]}"
 BRANCH="${ARGS[1]}"
+
 # required_status_checks.contexts must name the CI checks that must pass before
 # a merge. Two reasons this must be non-empty (an empty [] fails both):
 #   1. Auto-merge arming: GitHub's enablePullRequestAutoMerge mutation needs
@@ -55,17 +62,45 @@ BRANCH="${ARGS[1]}"
 # status that never arrives; producing a context that is not required leaves a
 # merge ungated. Change both files together and re-apply protection.
 GATE_CONTEXTS='["gate (3.12)"]'
-# NOTE: this body is the COMPLETE ruleset for a release branch, and the PUT
-# replaces protection wholesale — every rule not named here is cleared. In
-# particular required_pull_request_reviews:null disables "require a pull
-# request before merging". That is correct for release/* branches (cut-rc.sh's
-# only callers, all already in this shape), but it makes the script UNSAFE to
-# point at main, which carries a required_pull_request_reviews block this body
-# would silently drop. Narrow main's contexts with the granular endpoint
-# instead, which touches nothing else:
-#   echo '{"strict":false,"contexts":'"$GATE_CONTEXTS"'}' | gh api --method PATCH \
-#     repos/<repo>/branches/main/protection/required_status_checks --input -
+# This body is the COMPLETE ruleset for a release branch: the PUT replaces
+# protection wholesale, so every rule not named here is cleared. Note
+# required_pull_request_reviews:null in particular — it disables "require a
+# pull request before merging". The guard below is what keeps that from
+# reaching a branch where it would be destructive.
 PROTECTION_BODY='{"required_status_checks":{"strict":false,"contexts":'"$GATE_CONTEXTS"'},"enforce_admins":null,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}'
+
+# Mechanical guard: this ruleset is only safe on release/* branches.
+#
+# Release branches are already exactly this shape — cut-rc.sh has been applying
+# this same body to them — so the wholesale PUT is faithful there. Other
+# branches are not: main carries a required_pull_request_reviews block, and
+# PUTting this body at it silently disables "require a pull request before
+# merging" on the default branch. No error, no diff, nothing to notice.
+#
+# This is not hypothetical. During the #2012 sprint a review instructed "run
+# apply-branch-protection.sh for each protected branch"; following that
+# literally would have stripped main's PR requirement. A comment saying so was
+# already present and did not prevent it, so the constraint is enforced here
+# instead of described.
+#
+# Guarded before the --dry-run branch so a preview reports the refusal too,
+# rather than printing a PUT that a real run would reject. cut-rc.sh always
+# passes release/v<major>.<minor>, so this can never fire on the RC path.
+#
+# --force covers the deliberate case: bringing a genuinely new release-line
+# branch up to this shape. To change ONLY the required contexts on some other
+# branch, use the granular endpoint named in the refusal message instead.
+if [[ "$FORCE" != true && "$BRANCH" != release/* ]]; then
+    echo "[forge] ✗ refusing to apply the release-branch ruleset to '$BRANCH'" >&2
+    echo "[forge]   This PUT replaces protection wholesale and would clear every" >&2
+    echo "[forge]   rule it does not name (notably required_pull_request_reviews," >&2
+    echo "[forge]   i.e. 'require a pull request before merging')." >&2
+    echo "[forge]   To change ONLY the required checks, use the granular endpoint:" >&2
+    echo "[forge]     echo '{\"strict\":false,\"contexts\":$GATE_CONTEXTS}' | gh api --method PATCH \\" >&2
+    echo "[forge]       repos/$REPO/branches/$BRANCH/protection/required_status_checks --input -" >&2
+    echo "[forge]   Re-run with --force if replacing the whole ruleset is intended." >&2
+    exit 2
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
     echo "+ (dry-run) gh api --method PUT repos/$REPO/branches/$BRANCH/protection --input -"
