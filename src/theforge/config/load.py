@@ -49,6 +49,7 @@ from .role_derivation import derive_roles
 from .sandbox_capabilities import get_preset
 from .secrets import _parse_notifications
 from .types import (
+    PYTHON_VERSION_PLACEHOLDER,
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
@@ -597,6 +598,73 @@ def _validated_gate_timeout_scale(raw: Any) -> str:
     return raw
 
 
+_PYTHON_VERSION_RE = re.compile(r"^\d+\.\d+$")
+
+
+def _validated_python_versions(raw: Any, gate_command: str) -> tuple[str, ...]:
+    """Validate ``validation.python_versions`` — the gate's interpreter matrix.
+
+    Returns ``()`` when unset, which keeps the legacy single-run gate. When set,
+    loading is strict rather than forgiving: this list decides which environment
+    surface the story gate proves, so a malformed entry that silently degraded
+    to "run once under whatever interpreter happens to be around" would restore
+    the exact defect the field exists to close (#1945) while looking configured.
+
+    Entries must be quoted ``MAJOR.MINOR`` strings. Unquoted ``3.11`` is a YAML
+    float and is rejected by the string check with an explicit hint, because
+    ``str(3.1)`` would silently drop a trailing zero and name a different
+    interpreter than the operator wrote.
+
+    ``gate_command`` is cross-validated: a matrix without the
+    ``{python_version}`` placeholder would run the identical command on every
+    leg, reporting matrix coverage it never had.
+    """
+    if raw is None:
+        if PYTHON_VERSION_PLACEHOLDER in gate_command:
+            raise ValueError(
+                "forge.yaml validation.gate_command uses {python_version} but "
+                "validation.python_versions is not set — declare the interpreter "
+                "versions the gate must cover."
+            )
+        return ()
+    if isinstance(raw, str) or not isinstance(raw, list | tuple):
+        raise ValueError(
+            "forge.yaml validation.python_versions must be a list of quoted version "
+            f'strings (e.g. ["3.11", "3.12"]), got {type(raw).__name__}.'
+        )
+    if not raw:
+        raise ValueError(
+            "forge.yaml validation.python_versions must not be empty — omit the key "
+            "entirely to run the gate once under the default interpreter."
+        )
+    versions: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            raise ValueError(
+                "forge.yaml validation.python_versions entries must be quoted strings, "
+                f"got {entry!r} ({type(entry).__name__}). Unquoted 3.11 is parsed as a "
+                'YAML float — write ["3.11", "3.12"].'
+            )
+        if not _PYTHON_VERSION_RE.match(entry):
+            raise ValueError(
+                "forge.yaml validation.python_versions entries must be MAJOR.MINOR "
+                f"version strings, got {entry!r}."
+            )
+        if entry in versions:
+            raise ValueError(
+                f"forge.yaml validation.python_versions contains duplicate entry {entry!r}."
+            )
+        versions.append(entry)
+    if PYTHON_VERSION_PLACEHOLDER not in gate_command:
+        raise ValueError(
+            "forge.yaml validation.python_versions is set but validation.gate_command "
+            f"{gate_command!r} has no {{python_version}} placeholder — every matrix leg "
+            "would run the identical command. Add the placeholder or remove "
+            "python_versions."
+        )
+    return tuple(versions)
+
+
 def _resolve_project_root(config_path: Path) -> Path:
     """Resolve the project root for a given forge.yaml path.
 
@@ -675,8 +743,9 @@ def load_config(config_path: Path) -> ForgeConfig:
             "Gate pass/fail is now determined by exit code only. "
             "Remove handoff_file and gate_decision_key from your forge.yaml."
         )
+    gate_command = str(val_data.get("gate_command", DEFAULT_VALIDATION.gate_command))
     validation = ValidationConfig(
-        gate_command=val_data.get("gate_command", DEFAULT_VALIDATION.gate_command),
+        gate_command=gate_command,
         gate_timeout=_validated_gate_timeout(val_data.get("gate_timeout")),
         gate_output_tail_chars=int(
             val_data.get("gate_output_tail_chars", DEFAULT_VALIDATION.gate_output_tail_chars)
@@ -704,6 +773,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         default_test_target=str(
             val_data.get("default_test_target", DEFAULT_VALIDATION.default_test_target)
         ),
+        python_versions=_validated_python_versions(val_data.get("python_versions"), gate_command),
     )
 
     # ── v0.8 models: key ──────────────────────────────────────────────

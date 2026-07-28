@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # Keep in sync with validation.python_versions in forge.yaml — that is
+        # the list the local story gate runs. tests/test_ci_matrix_alignment.py
+        # fails (here and in the story gate) if the two ever diverge, so a
+        # commit cannot pass the story gate and then be rejected by this job for
+        # covering a version the gate never ran (#1945).
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
