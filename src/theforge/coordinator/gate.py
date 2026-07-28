@@ -119,6 +119,7 @@ def run_gate_full(
     iter_num: int | None = None,
     *,
     output_digest: list[str] | None = None,
+    trace_names: list[str] | None = None,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
 
@@ -151,7 +152,15 @@ def run_gate_full(
     identically on every run while the failure detail changes above the window
     (#1981).
 
-    It is an out-parameter rather than a sixth return value because the 5-tuple is
+    ``trace_names``, when given, receives the worktree-relative path of every leg
+    trace actually written, in run order. A matrix leg writes
+    ``{iter}-gate-py{version}.txt``, not ``{iter}-gate.txt``, so a caller that
+    names a trace in a terminal outcome has to be told which file exists —
+    otherwise an escalation on a python3.11 failure points a reader at a path
+    that was never created. The last entry is the leg the verdict came from,
+    since legs stop at the first non-PASS.
+
+    Both are out-parameters rather than extra return values because the 5-tuple is
     unpacked at every call site including ~30 mocked tests; widening it — or
     returning a record — would churn all of them to carry one scalar that only
     one caller reads. A caller-supplied list keeps it explicit and per-call, so
@@ -175,12 +184,17 @@ def run_gate_full(
     gate_timeout = config.validation.gate_timeout or 600
     tail_chars = config.validation.gate_output_tail_chars
 
+    def _record_trace(name: str | None) -> str | None:
+        if name is not None and trace_names is not None:
+            trace_names.append(f".forge/traces/{name}")
+        return name
+
     if not versions:
         decision, error, output, exit_code = _run_gate_leg(
             config,
             workspace_path,
             gate_cmd,
-            trace_name=(f"{iter_num}-gate.txt" if iter_num is not None else None),
+            trace_name=_record_trace(f"{iter_num}-gate.txt" if iter_num is not None else None),
             gate_timeout=gate_timeout,
         )
         if output_digest is not None:
@@ -214,7 +228,9 @@ def run_gate_full(
             config,
             workspace_path,
             leg_cmd,
-            trace_name=(f"{iter_num}-gate-py{version}.txt" if iter_num is not None else None),
+            trace_name=_record_trace(
+                f"{iter_num}-gate-py{version}.txt" if iter_num is not None else None
+            ),
             gate_timeout=gate_timeout,
         )
         outputs.append(f"=== gate matrix leg: python{version} ===\n{output}")

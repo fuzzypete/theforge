@@ -162,6 +162,56 @@ class TestMatrixTelemetry:
         assert "leg 3.12" in (traces / "2-gate-py3.12.txt").read_text(encoding="utf-8")
 
 
+class TestTraceAttribution:
+    """The trace a terminal outcome names must be the file the verdict came from."""
+
+    def test_reports_every_leg_trace_in_run_order(
+        self, tmp_path: Path, all_interpreters_present
+    ) -> None:
+        config = _matrix_config(tmp_path, "echo leg {python_version}", ("3.11", "3.12"))
+        traces: list[str] = []
+
+        run_gate_full(config, tmp_path, task=None, iter_num=2, trace_names=traces)
+
+        assert traces == [".forge/traces/2-gate-py3.11.txt", ".forge/traces/2-gate-py3.12.txt"]
+
+    def test_failing_leg_trace_is_last_and_exists_on_disk(
+        self, tmp_path: Path, all_interpreters_present
+    ) -> None:
+        # A python3.12 failure must not be reported against `2-gate.txt`, which
+        # a matrix run never writes.
+        config = _matrix_config(
+            tmp_path, "test {python_version} != 3.12", ("3.11", "3.12", "3.13")
+        )
+        traces: list[str] = []
+
+        decision, _error, _tail, _cmd, _exit_code = run_gate_full(
+            config, tmp_path, task=None, iter_num=2, trace_names=traces
+        )
+
+        assert decision == "FAIL"
+        assert traces[-1] == ".forge/traces/2-gate-py3.12.txt"
+        assert (tmp_path / traces[-1]).exists()
+
+    def test_no_trace_reported_without_an_iteration(
+        self, tmp_path: Path, all_interpreters_present
+    ) -> None:
+        config = _matrix_config(tmp_path, "echo leg {python_version}", ("3.11",))
+        traces: list[str] = []
+
+        run_gate_full(config, tmp_path, task=None, iter_num=None, trace_names=traces)
+
+        assert traces == []
+
+    def test_single_leg_gate_reports_the_legacy_trace(self, tmp_path: Path) -> None:
+        config = _matrix_config(tmp_path, "echo single", ())
+        traces: list[str] = []
+
+        run_gate_full(config, tmp_path, task=None, iter_num=1, trace_names=traces)
+
+        assert traces == [".forge/traces/1-gate.txt"]
+
+
 class TestSingleRunGateUnchanged:
     def test_no_declared_versions_runs_once_and_writes_the_legacy_trace(
         self, tmp_path: Path
