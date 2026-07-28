@@ -152,6 +152,42 @@ plan_agent_review:
 
 
 def test_sprint_warning_mentions_tracked_api_fallback(tmp_path):
+    """An untracked CLI with an auto-paired API fallback says the fallback IS tracked.
+
+    Uses the gemini transport rather than codex: since #2019 codex reports real
+    per-turn token usage (`codex exec --json`) and so is no longer in the
+    untracked set, which means it no longer reaches this warning branch at all.
+    Gemini has no measured-usage transport yet and is the remaining subject.
+    """
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - gemini-cli/gemini-2.5-pro
+plan:
+  enabled: true
+  cli: gemini
+  model: gemini-2.5-pro
+""",
+    )
+    with _auth_ok, _import_ok:
+        cfg = load_config(cfg_path)
+
+    warnings = _agent_cost_tracking_warnings(cfg)
+    assert any(
+        "API fallback to google/gemini-2.5-pro will be tracked if it triggers" in warning
+        for warning in warnings
+    )
+    assert any("planner" in warning for warning in warnings)
+
+
+def test_sprint_warning_omits_codex_now_that_usage_is_measured(tmp_path):
+    """Codex must not appear in the pre-sprint untracked-cost warnings (#2019).
+
+    The warning was the config-time half of a behaviour whose runtime half
+    deadlocked multi-story sprints: every codex pass recorded cost-unknown, so the
+    first budget check refused to dispatch anything.
+    """
     cfg_path = _write(
         tmp_path,
         """
@@ -166,12 +202,7 @@ plan:
     with _auth_ok, _import_ok:
         cfg = load_config(cfg_path)
 
-    warnings = _agent_cost_tracking_warnings(cfg)
-    assert any(
-        "API fallback to openai/gpt-5.4 will be tracked if it triggers" in warning
-        for warning in warnings
-    )
-    assert any("planner" in warning for warning in warnings)
+    assert not [w for w in _agent_cost_tracking_warnings(cfg) if "codex" in w]
 
 
 def test_models_null_still_raises_clean_schema_error_with_legacy_plan_agent_review(tmp_path):

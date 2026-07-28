@@ -131,6 +131,11 @@ _DEFAULT_MAX_ITERATIONS = 75
 
 _MISSING_PRICING_WARNED: set[tuple[str, str]] = set()
 
+# Fraction of the uncached input rate charged for a cache HIT. OpenAI and
+# Anthropic both bill cached input at 10% of the normal input rate; callers that
+# need a different discount pass ``cached_input_rate_mult`` explicitly.
+CACHED_INPUT_RATE_MULT = 0.1
+
 
 def _estimate_cost(
     provider: str,
@@ -139,8 +144,16 @@ def _estimate_cost(
     output_tokens: int,
     *,
     thinking_tokens: int = 0,
+    cached_input_tokens: int = 0,
+    cached_input_rate_mult: float = CACHED_INPUT_RATE_MULT,
 ) -> float | None:
-    """Estimate cost from pricing table; returns None if model unknown."""
+    """Estimate cost from pricing table; returns None if model unknown.
+
+    ``cached_input_tokens`` is the SUBSET of ``input_tokens`` that was served from
+    the provider's prompt cache, and is discounted to ``cached_input_rate_mult`` of
+    the input rate rather than double-counted. Callers that cannot distinguish the
+    cache tier leave it at 0 and get the previous flat-rate behaviour unchanged.
+    """
     price = PRICING_TABLE.get((provider, model))
     if price is None:
         key = (provider, model)
@@ -153,9 +166,15 @@ def _estimate_cost(
             )
             _MISSING_PRICING_WARNED.add(key)
         return None
+    # Clamp rather than trust: a provider reporting more cached tokens than input
+    # tokens would otherwise produce a negative uncached count and understate spend.
+    cached = max(0, min(cached_input_tokens, input_tokens))
+    uncached_input_tokens = input_tokens - cached
     billable_output_tokens = output_tokens + thinking_tokens
-    return ((input_tokens / 1_000_000) * price[0]) + (
-        (billable_output_tokens / 1_000_000) * price[1]
+    return (
+        ((uncached_input_tokens / 1_000_000) * price[0])
+        + ((cached / 1_000_000) * price[0] * cached_input_rate_mult)
+        + ((billable_output_tokens / 1_000_000) * price[1])
     )
 
 
