@@ -11,7 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # Single supported interpreter. Widening multi-version support is a
+        # one-line edit to this list — add the matching contexts to
+        # GATE_CONTEXTS in scripts/apply-branch-protection.sh and re-apply
+        # protection, or the new checks are never required.
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
 
