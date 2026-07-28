@@ -289,6 +289,12 @@ def read_run_status(run_id: str, slug: str, project_root: Path) -> dict:
             content = log_path.read_text(encoding="utf-8", errors="replace")
             for line in reversed(content.splitlines()):
                 if "Total cost:" in line or "total_cost" in line:
+                    # A total rendered as "unknown (>= $X measured)" is a lower
+                    # bound, not the run's cost. Scraping the dollar figure out
+                    # of it would re-present unpriced work as a complete total,
+                    # so the cost stays unknown (#1992).
+                    if "unknown" in line:
+                        break
                     m = re.search(r"\$([0-9]+\.[0-9]+)", line)
                     if m:
                         cost_usd = float(m.group(1))

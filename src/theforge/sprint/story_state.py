@@ -203,7 +203,9 @@ class StoryStateEntry:
     path: str
     outcome: StoryOutcome = StoryOutcome.WAITING
     phase: str | None = None
-    cost_usd: float = 0.0
+    # None = at least one contributing phase's cost was unmeasured, so this
+    # story's cost is unknown — never coerce it to 0.0 (#1992).
+    cost_usd: float | None = 0.0
     bundle_candidate: bool = False
     blocked_by: list[str] = field(default_factory=list)
     complexity: str | None = None
@@ -292,7 +294,7 @@ class SprintStoryState:
         *,
         outcome: StoryOutcome | str = StoryOutcome.WAITING,
         phase: str | None = None,
-        cost_usd: float = 0.0,
+        cost_usd: float | None = 0.0,
         bundle_candidate: bool = False,
         blocked_by: list[str] | None = None,
         complexity: str | None = None,
@@ -318,7 +320,12 @@ class SprintStoryState:
             entry.path = path
             if phase is not None:
                 entry.phase = phase
-            entry.cost_usd = cost_usd if cost_usd else entry.cost_usd
+            if cost_usd is None:
+                # Cost-unknown is a real state, not a missing value: it must not
+                # be silently replaced by a previously recorded number.
+                entry.cost_usd = None
+            elif cost_usd:
+                entry.cost_usd = cost_usd
             entry.bundle_candidate = bundle_candidate
             if blocked_by is not None:
                 entry.blocked_by = list(blocked_by)
@@ -391,8 +398,11 @@ class SprintStoryState:
             for k, v in fields.items():
                 if k == "phase" and isinstance(v, (str, type(None))):
                     entry.phase = v  # type: ignore[assignment]
-                elif k == "cost_usd" and isinstance(v, (int, float)):
-                    entry.cost_usd = float(v)
+                elif k == "cost_usd":
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        entry.cost_usd = float(v)
+                    elif v is None:
+                        entry.cost_usd = None
                 elif k == "blocked_by" and isinstance(v, list):
                     entry.blocked_by = list(v)
                 elif k == "complexity":
@@ -466,7 +476,12 @@ class SprintStoryState:
                 d.get("path", slug),
                 outcome=d.get("outcome") or d.get("status") or "waiting",
                 phase=d.get("phase"),
-                cost_usd=float(d.get("cost_usd", 0.0)),
+                cost_usd=(
+                    float(d["cost_usd"])
+                    if isinstance(d.get("cost_usd"), (int, float))
+                    and not isinstance(d.get("cost_usd"), bool)
+                    else (0.0 if "cost_usd" not in d else None)
+                ),
                 bundle_candidate=bool(d.get("bundle_candidate", False)),
                 blocked_by=list(d.get("blocked_by") or []),
                 complexity=d.get("complexity"),

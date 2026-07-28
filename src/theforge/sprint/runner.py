@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import shlex
@@ -37,6 +38,7 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import (
+    _fmt_cost_total,
     _fmt_duration,
     _generate_run_id,
     resolve_timeout,
@@ -60,6 +62,7 @@ from .audit import (
     persist_accumulated_story_state,
 )
 from .auth_gate import enforce_sprint_auth_readiness
+from .budget import evaluate_budget
 from .ci_checks import failing_required_pr_checks, poll_required_checks
 from .collision import (
     compute_bundle_assignments,
@@ -77,6 +80,7 @@ from .dag import (
 from .display import _print_worker_status, _story_header
 from .gate_timeout_resolver import resolve_effective_gate_timeout
 from .launch_guard import (
+    REASON_IN_FLIGHT,
     REASON_RECONCILE_PRIOR_DONE,
     REASON_STRANDED_WORKTREE,
 )
@@ -102,6 +106,32 @@ _STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
 _STORY_RUN_AUDIT_COMMIT_CMD = (
     f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
 )
+
+# Where the outcome of the publish step is recorded. Lives under .forge/ (which
+# .gitignore denies wholesale), so writing it never dirties the base-branch
+# checkout the sprint is publishing from.
+_STORY_RUN_AUDIT_PUBLISH_STATE_PATH = ".forge/audit-publish-state.json"
+
+# A push rejected because the base branch moved is reconciled and retried. Three
+# attempts covers the sprint's own merges landing while the push is in flight;
+# beyond that the remote is being advanced by something other than this run and
+# looping longer just delays the operator's answer.
+_STORY_RUN_AUDIT_PUSH_ATTEMPTS = 3
+
+# Publish end states, recorded to ``_STORY_RUN_AUDIT_PUBLISH_STATE_PATH`` and
+# carried on ``StoryRunAuditPublishError.state``. They exist so that an operator
+# looking at local-only audit commits can tell *which* thing happened: the run
+# never got here (no/stale record), it got here and the remote refused
+# (``push_refused``), or publishing was deliberately skipped (``local_only``).
+AUDIT_PUBLISH_CLEAN = "clean"
+AUDIT_PUBLISH_COMMITTED = "committed_unpublished"
+AUDIT_PUBLISH_PUBLISHED = "published"
+AUDIT_PUBLISH_LOCAL_ONLY = "local_only"
+AUDIT_PUBLISH_COMMIT_FAILED = "commit_failed"
+AUDIT_PUBLISH_PUSH_REFUSED = "push_refused"
+AUDIT_PUBLISH_RECONCILE_FAILED = "reconcile_failed"
+AUDIT_PUBLISH_VERIFY_FAILED = "verify_failed"
+
 run_agent = None
 log_agent_result = None
 
@@ -110,6 +140,75 @@ def _log(msg: str) -> None:
     # Worker-slug prefixing (parallel attribution) is applied centrally by
     # ``_log_line``; do not prepend it here or it would double-tag.
     _log_line("[sprint]", msg)
+
+
+class StoryRunAuditPublishError(RuntimeError):
+    """Canonical story run audits could not be published to the base branch.
+
+    ``state`` is one of the ``AUDIT_PUBLISH_*`` constants and names the end
+    state the checkout was left in. It is a ``RuntimeError`` subclass because
+    the sprint entry point already treats a publish failure as fatal; the extra
+    attribute only makes the *kind* of failure legible to callers and tests.
+    """
+
+    def __init__(self, message: str, *, state: str) -> None:
+        super().__init__(message)
+        self.state = state
+
+
+def _record_audit_publish_state(
+    project_root: Path,
+    base_branch: str,
+    state: str,
+    detail: str | None = None,
+) -> None:
+    """Record the publish end state next to the checkout it describes.
+
+    Best-effort: a sprint must not fail because this marker could not be
+    written, and the marker must never mask the error it is describing.
+    """
+    path = project_root / _STORY_RUN_AUDIT_PUBLISH_STATE_PATH
+    payload = {
+        "state": state,
+        "base_branch": base_branch,
+        "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "detail": detail,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:  # pragma: no cover — filesystem-level failure
+        _log(f"Warning: could not record story run audit publish state: {exc}")
+
+
+def _reconcile_base_with_origin(project_root: Path, base_branch: str) -> None:
+    """Fetch origin and rebase the local base branch onto its current head.
+
+    Raises ``StoryRunAuditPublishError`` when the reconcile itself cannot be
+    completed, aborting any partial rebase so the checkout is left usable.
+    """
+    from ..coordinator import util as _cu  # noqa: PLC0415
+
+    quoted_base = shlex.quote(base_branch)
+    ok_fetch, fetch_out = _cu._run_shell(f"git fetch origin {quoted_base}", project_root)
+    if not ok_fetch:
+        raise StoryRunAuditPublishError(
+            f"Failed to fetch origin/{base_branch} while publishing story run audits: "
+            f"{fetch_out.strip()}",
+            state=AUDIT_PUBLISH_RECONCILE_FAILED,
+        )
+
+    ok_rebase, rebase_out = _cu._run_shell(
+        f"git rebase origin/{quoted_base}",
+        project_root,
+    )
+    if not ok_rebase:
+        _cu._run_shell("git rebase --abort", project_root)
+        raise StoryRunAuditPublishError(
+            f"Failed to rebase '{base_branch}' onto origin/{base_branch} while publishing "
+            f"story run audits: {rebase_out.strip()}",
+            state=AUDIT_PUBLISH_RECONCILE_FAILED,
+        )
 
 
 def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: bool) -> None:
@@ -127,6 +226,15 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
     opted out of pushing them. Pushing a branch publishes all of its ancestors,
     so a push here would then also publish those local merges. In that one
     configuration the commit stays local and the fact is warned about instead.
+
+    A rejected push is not a failure of this step so much as a statement about
+    where the remote is: the sprint's own merges are what usually advance the
+    base branch, so a run that landed stories is the *normal* case for the local
+    branch being behind. So a rejection is reconciled (fetch + rebase onto the
+    current remote head) and retried, and only exhausting that raises. Whichever
+    end state the checkout lands in is recorded to
+    ``.forge/audit-publish-state.json`` so it survives to where the state is
+    observed.
     """
     from ..coordinator import util as _cu  # noqa: PLC0415
 
@@ -140,20 +248,41 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
         project_root,
     )
     if not ok_status:
-        raise RuntimeError(f"Failed to inspect story run audits: {status_out}")
+        raise StoryRunAuditPublishError(
+            f"Failed to inspect story run audits: {status_out}",
+            state=AUDIT_PUBLISH_COMMIT_FAILED,
+        )
     if not status_out.strip():
+        # Nothing pending. Record it so a marker from an earlier run cannot be
+        # mistaken for this one's outcome.
+        _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_CLEAN)
         return
 
     ok_add, add_out = _cu._run_shell(f"git add -- {quoted_audit_dir}", project_root)
     if not ok_add:
-        raise RuntimeError(f"Failed to stage story run audits: {add_out}")
+        raise StoryRunAuditPublishError(
+            f"Failed to stage story run audits: {add_out}",
+            state=AUDIT_PUBLISH_COMMIT_FAILED,
+        )
 
     ok_commit, commit_out = _cu._run_shell(_STORY_RUN_AUDIT_COMMIT_CMD, project_root)
     if not ok_commit:
-        raise RuntimeError(f"Failed to commit story run audits: {commit_out}")
+        raise StoryRunAuditPublishError(
+            f"Failed to commit story run audits: {commit_out}",
+            state=AUDIT_PUBLISH_COMMIT_FAILED,
+        )
     _log("Committed canonical story run audit records to the base branch checkout.")
+    # Written before the push so that a crash mid-publish is distinguishable
+    # from a run that never reached this function at all.
+    _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_COMMITTED)
 
     if not publish:
+        _record_audit_publish_state(
+            project_root,
+            base_branch,
+            AUDIT_PUBLISH_LOCAL_ONLY,
+            detail="workspace.auto_push is off for a run that lands stories locally",
+        )
         _log(
             f"⚠ SPRINT  story run audit records remain local: this run merges stories into "
             f"'{base_branch}' with workspace.auto_push off, so pushing would also publish those "
@@ -163,35 +292,76 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
         return
 
     quoted_base = shlex.quote(base_branch)
-    ok_push, push_out = _cu._run_shell(
-        f"git push origin {quoted_base}",
-        project_root,
-    )
-    if not ok_push:
-        raise RuntimeError(
-            f"Failed to push story run audits to origin/{base_branch}: {push_out.strip()}"
+    push_out = ""
+    for attempt in range(1, _STORY_RUN_AUDIT_PUSH_ATTEMPTS + 1):
+        ok_push, push_out = _cu._run_shell(
+            f"git push origin {quoted_base}",
+            project_root,
         )
+        if ok_push:
+            break
+        if attempt == _STORY_RUN_AUDIT_PUSH_ATTEMPTS:
+            _record_audit_publish_state(
+                project_root,
+                base_branch,
+                AUDIT_PUBLISH_PUSH_REFUSED,
+                detail=push_out.strip(),
+            )
+            raise StoryRunAuditPublishError(
+                f"Failed to push story run audits to origin/{base_branch} after "
+                f"{_STORY_RUN_AUDIT_PUSH_ATTEMPTS} attempts (fetch + rebase between "
+                f"attempts): {push_out.strip()}",
+                state=AUDIT_PUBLISH_PUSH_REFUSED,
+            )
+        _log(
+            f"Push of story run audits to origin/{base_branch} was refused "
+            f"(attempt {attempt}/{_STORY_RUN_AUDIT_PUSH_ATTEMPTS}); reconciling with the "
+            f"current remote head and retrying."
+        )
+        try:
+            _reconcile_base_with_origin(project_root, base_branch)
+        except StoryRunAuditPublishError as exc:
+            _record_audit_publish_state(
+                project_root,
+                base_branch,
+                exc.state,
+                detail=str(exc),
+            )
+            raise
 
     ok_ahead, ahead_out = _cu._run_shell(
         f"git rev-list --count origin/{quoted_base}..{quoted_base}",
         project_root,
     )
     if not ok_ahead:
-        raise RuntimeError(
+        message = (
             f"Failed to verify story run audits reached origin/{base_branch}: {ahead_out.strip()}"
         )
+        _record_audit_publish_state(
+            project_root, base_branch, AUDIT_PUBLISH_VERIFY_FAILED, detail=message
+        )
+        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_VERIFY_FAILED)
     try:
         ahead = int(ahead_out.strip())
     except ValueError:
-        raise RuntimeError(
+        message = (
             f"Failed to verify story run audits reached origin/{base_branch}: "
             f"unexpected rev-list output {ahead_out.strip()!r}"
-        ) from None
+        )
+        _record_audit_publish_state(
+            project_root, base_branch, AUDIT_PUBLISH_VERIFY_FAILED, detail=message
+        )
+        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_VERIFY_FAILED) from None
     if ahead > 0:
-        raise RuntimeError(
+        message = (
             f"Story run audits were committed but '{base_branch}' is still {ahead} commit(s) "
             f"ahead of origin/{base_branch} after push. Publish or reset it before rerunning."
         )
+        _record_audit_publish_state(
+            project_root, base_branch, AUDIT_PUBLISH_VERIFY_FAILED, detail=message
+        )
+        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_VERIFY_FAILED)
+    _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_PUBLISHED)
     _log(f"Pushed canonical story run audit records to origin/{base_branch}.")
 
 
@@ -458,6 +628,34 @@ def emit_inline_remediation_event(
         logger.warning(msg)
 
 
+def _optional_cost(raw: object) -> float | None:
+    """Coerce a persisted ``cost_usd`` to float, preserving an unmeasured ``None``.
+
+    ``None`` records "the transport could not measure this spend", which is a
+    different fact from ``0.0``. Numeric arithmetic (budget checks, carry-forward
+    sums) may treat unknown as a zero-valued lower bound, but anything that
+    *reports* a story's cost must keep the distinction (#1992).
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None
+
+
+def _story_reported_cost(state: object, adjustment: float = 0.0) -> float | None:
+    """Per-story reported cost: measured total plus adjustment, or ``None``.
+
+    Uses ``CoordinatorState.total_cost_measured`` so a story with any unmeasured
+    phase is reported as cost-unknown instead of as the measured remainder.
+    """
+    if hasattr(state, "total_cost_measured"):
+        measured = state.total_cost_measured
+    else:
+        measured = getattr(state, "total_cost", None)
+    if not isinstance(measured, (int, float)) or isinstance(measured, bool):
+        return None
+    return round(float(measured) + adjustment, 4)
+
+
 def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
     """Return the agent cost recorded in an intake outcome's audit block.
 
@@ -465,16 +663,27 @@ def _intake_outcome_cost(outcome: IntakeOutcome) -> float:
     outside CoordinatorState.total_cost. Sprint cost rollups must consult
     this seam so reported sprint totals reflect actual spend.
     """
+    return _intake_outcome_cost_measured(outcome) or 0.0
+
+
+def _intake_outcome_cost_measured(outcome: IntakeOutcome) -> float | None:
+    """Intake agent cost, or ``None`` when an agent ran without reporting cost.
+
+    ``attempted`` is what separates "no agent ran, so genuinely free" from "an
+    agent ran on a transport that reported no cost". Only the latter is
+    cost-unknown; collapsing it to ``0.0`` would let unpriced intake spend pass
+    the sprint budget check as if it were free (#1992).
+    """
     agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
     if not isinstance(agent, dict):
         return 0.0
     raw = agent.get("cost_usd")
     if raw is None:
-        return 0.0
+        return None if agent.get("attempted") else 0.0
     try:
         return float(raw)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _intake_finding_codes(outcome: IntakeOutcome) -> list[str]:
@@ -627,7 +836,13 @@ def derive_worker_timeout(
 
 
 def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
-    """Read carry-forward cost for a same-sprint re-exec from sprint-audit.yaml."""
+    """Read carry-forward cost for a same-sprint re-exec from sprint-audit.yaml.
+
+    ``total_cost_usd`` is null when the prior generation had a story whose cost
+    was unmeasured (#1992). Carry-forward is arithmetic, so it falls back to the
+    measured lower bound rather than dropping the prior spend entirely — the
+    cost-unknown signal itself is carried by the per-story entries.
+    """
     if not sprint_id or not os.environ.get("FORGE_PREV_RUN_ID"):
         return 0.0
     audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
@@ -639,9 +854,38 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
         sprint_block = data.get("sprint", {})
         if sprint_block.get("sprint_id") != sprint_id:
             return 0.0
-        return float(sprint_block.get("total_cost_usd", 0.0))
+        total = sprint_block.get("total_cost_usd")
+        if total is None:
+            total = sprint_block.get("total_cost_measured_usd", 0.0)
+        return float(total or 0.0)
     except (OSError, ValueError, TypeError):
         return 0.0
+
+
+def _prior_sprint_cost_incomplete(project_root: Path, sprint_id: str | None) -> bool:
+    """Return True when the prior generation recorded an incomplete sprint cost.
+
+    A carried total from a generation that could not measure all of its spend is
+    itself a lower bound; the budget check must know that before enforcing a cap
+    against it (#1992). Absent/unreadable records report False — the pre-#1992
+    shape simply carries no completeness claim.
+    """
+    if not sprint_id:
+        return False
+    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
+    if not audit_path.exists():
+        return False
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        sprint_block = data.get("sprint", {})
+        if not isinstance(sprint_block, dict):
+            return False
+        if sprint_block.get("sprint_id") != sprint_id:
+            return False
+        return sprint_block.get("cost_complete") is False
+    except (OSError, yaml.YAMLError, AttributeError):
+        return False
 
 
 def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
@@ -924,6 +1168,62 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             check=False,
         )
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def _continuation_evidence(
+    *,
+    reexec: bool,
+    live_story_slugs: set[str],
+) -> str | None:
+    """Describe why this launch is a continuation of in-flight work, or None.
+
+    A re-exec is not, on its own, evidence that work is in flight: the source
+    change can be observed by the sprint's *own* first pull, before any story has
+    started, and such a launch is still a genuine start. What distinguishes a
+    continuation is observed live work — agent process groups this same pid
+    spawned before the re-exec and that are still running. Startup-only checks
+    are skipped on exactly that evidence, never on the re-exec flag alone, so a
+    launch that has not started anything keeps its full startup sequence.
+
+    Deliberately narrow: prior *recorded* outcomes are not used as evidence,
+    because a sprint id is stable across separate invocations of the same sprint
+    and would make an unrelated later run skip its baseline gate.
+    """
+    if not reexec or not live_story_slugs:
+        return None
+    return (
+        "agent process groups still running for "
+        f"{', '.join(sorted(live_story_slugs))} after the re-exec"
+    )
+
+
+def _skipped_baseline_gate(config: ForgeConfig, evidence: str) -> dict[str, object]:
+    """The baseline-gate record for a run that legitimately did not run it.
+
+    The baseline gate answers one question — was the merge base green *before any
+    dev work started* — and a continuation cannot ask it: work has started, and
+    the host is busy running it, so a failure would report a conclusion about the
+    code drawn from a measurement of our own load. Skipping is recorded
+    explicitly, with its evidence, rather than silently omitted.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return {
+        "status": "skipped",
+        "passed": True,
+        "exit_code": 0,
+        "duration_seconds": 0.0,
+        "started_at": now,
+        "finished_at": now,
+        "merge_base": None,
+        "command": config.validation.gate_command,
+        "skip_reason": "reexec_continuation",
+        "skip_evidence": evidence,
+        "message": (
+            "Baseline gate skipped: this process is continuing an in-flight sprint "
+            f"after a mid-run re-exec ({evidence}); the gate's precondition — no dev "
+            "work started — no longer holds"
+        ),
+    }
 
 
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
@@ -1406,6 +1706,104 @@ def _run_single_story(
     return task, result, elapsed, started_at, finished_at
 
 
+def _run_inherited_story(
+    config: ForgeConfig,
+    task: TaskStory,
+    triage: "StoryTriage | None",
+    sprint_run_id: str,
+    sprint_name: str,
+    interactive: bool,
+    notify: bool,
+    resume: bool,
+    effective_auto_merge: bool,
+    state_update_fn: "Callable[[dict], None] | None",
+    no_pull: bool = False,
+    plan_gate: "threading.Event | None" = None,
+    preflight_states: dict[str, CoordinatorState] | None = None,
+    stop_event: "threading.Event | None" = None,
+    base_lands_locally: bool | None = None,
+    *,
+    canonical_ref: str,
+    quiesce_timeout: float,
+) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
+    """Resume a story whose agent process group survived a mid-run re-exec.
+
+    Occupies a worker slot exactly like a normal dispatch — which is honest, the
+    story *is* consuming one — and does three things before handing off to
+    :func:`_run_single_story`:
+
+    1. Waits for the inherited agent group to finish. Two agents must never write
+       to one worktree, and nothing else can adopt this group: its sidecar names
+       this pid as owner, so the moment this process exits a later invocation's
+       orphan reaper will kill it.
+    2. Reclaims the group if the wait overruns, so an agent that is wedged cannot
+       hold the story hostage past the worker timeout.
+    3. Triages the worktree *then*, not at sprint start — the re-entry point
+       (review / dev / fresh) is only knowable once the agent has stopped
+       writing.
+
+    The worker deadline the scheduler enforces covers this whole call, so
+    ``quiesce_timeout`` is deliberately a fraction of it: the story must still
+    have time to actually run after the wait.
+    """
+    from .live_stories import await_inherited_agents, reclaim_inherited_agents  # noqa: PLC0415
+
+    quiesced = await_inherited_agents(
+        task.slug,
+        project_root=config.project_root,
+        path_pattern=config.workspace.path_pattern,
+        timeout=quiesce_timeout,
+        stop_event=stop_event,
+        log=_log,
+    )
+    if not quiesced:
+        killed = reclaim_inherited_agents(
+            task.slug,
+            project_root=config.project_root,
+            path_pattern=config.workspace.path_pattern,
+        )
+        _log(
+            f"IN-FLIGHT {task.slug}: inherited agent still running after "
+            f"{int(quiesce_timeout)}s — terminated process group(s) "
+            f"{', '.join(str(p) for p in killed) or 'none'} and resuming from whatever "
+            "it committed"
+        )
+
+    fresh_triage = triage
+    if fresh_triage is None:
+        try:
+            fresh_triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
+            _log(
+                f"IN-FLIGHT {task.slug}: resuming "
+                f"{fresh_triage.action.upper().replace('_', ' ')} ({fresh_triage.reason})"
+            )
+        except Exception as exc:
+            # Triage is an optimisation over "start over"; losing it must not
+            # lose the story.
+            _log(f"WARN {task.slug}: could not triage inherited worktree ({exc}); running fresh")
+            fresh_triage = None
+
+    return _run_single_story(
+        config,
+        task,
+        fresh_triage,
+        sprint_run_id,
+        sprint_name,
+        interactive,
+        notify,
+        # Resume semantics, regardless of the sprint-level --resume flag: the
+        # triage above is the whole point of this path.
+        True,
+        effective_auto_merge,
+        state_update_fn,
+        no_pull,
+        plan_gate,
+        preflight_states,
+        stop_event,
+        base_lands_locally=base_lands_locally,
+    )
+
+
 def _make_worker_phase_fn(
     slug: str,
     worker_phases: dict[str, str],
@@ -1789,7 +2187,7 @@ def _classify_and_record(
         dag.mark_skipped(task.slug)
 
     if story_state is not None:
-        _transition_fields: dict = {"cost_usd": result.state.total_cost}
+        _transition_fields: dict = {"cost_usd": _story_reported_cost(result.state)}
         if is_landed:
             _transition_fields["landed"] = True
         story_state.transition(task.slug, outcome=outcome, **_transition_fields)
@@ -1855,6 +2253,7 @@ def run_sprint(
     skipped_issues: "list | None" = None,
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
     force: bool = False,
+    live_story_slugs: "set[str] | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1883,6 +2282,15 @@ def run_sprint(
             resume-equivalent for merged-state reconciliation: every manifest
             story is triaged against merged state before dispatch so a story
             whose PR already landed is never re-entered through WORKSPACE.
+        live_story_slugs: Stories of this same sprint generation whose agent
+            process groups survived the re-exec (resolved by the CLI via
+            ``theforge.sprint.live_stories``). Their worktrees are this run's own
+            live work: protected from the orphan sweep, excluded from the passes
+            that would collide with a running agent, and dispatched through the
+            deferred path that waits for that agent and then resumes the story —
+            this process is the only one that can still finish them. Their
+            existence is also the evidence that startup-only checks (the baseline
+            gate) no longer hold their precondition.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -1904,6 +2312,12 @@ def run_sprint(
     # resume-equivalent for all reconciliation/skip paths.
     reconcile = resume or reexec
 
+    # Stories still executing from before the re-exec. Everything downstream that
+    # would otherwise treat their state as foreign — the orphan worktree sweep,
+    # the baseline gate's "nothing has started yet" precondition, the gate-timeout
+    # load model — is told about them explicitly.
+    _live_story_slugs: set[str] = {s for s in (live_story_slugs or set()) if s}
+
     # Establish that the agents are reachable BEFORE committing wall clock or
     # budget to them (#1952). This runs ahead of the baseline gate, the base
     # pull, and every worktree touch, so a dead credential costs seconds and
@@ -1912,7 +2326,7 @@ def run_sprint(
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
-    sweep_orphan_worktrees(config.project_root, config)
+    sweep_orphan_worktrees(config.project_root, config, protected_slugs=_live_story_slugs)
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
@@ -1925,6 +2339,14 @@ def run_sprint(
         task.slug: (task, source, canonical_ref) for task, source, canonical_ref in task_entries
     }
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
+
+    # Stories of this sprint whose agent survived the re-exec. They stay in the
+    # DAG and are dispatched like any other story, but through the deferred path
+    # (``_run_inherited_story``): wait for the inherited agent, then resume from
+    # whatever it left behind. Excluded only from the work that would collide
+    # with a running agent — startup triage, intake, batch preflight — because
+    # each of those reads or writes a worktree that is being mutated right now.
+    _inflight_slugs: set[str] = {s for s in _live_story_slugs if s in slug_to_context}
 
     # Does ANY story in this sprint merge into the project-root base checkout?
     # This is a sprint-wide question, not a per-story one: story N merging
@@ -1985,12 +2407,17 @@ def run_sprint(
         # not an operator misconfiguration. Fall back to the safe default
         # rather than raising on incidental mock attribute access.
         _mode = "adaptive"
+    # A fresh start contends only with its own configured parallelism. A
+    # continuation additionally contends with the agents it inherited, so the
+    # derived limit must count them — otherwise the gate is measured against a
+    # load model that describes a different run than the one executing.
     _gate_timeout_resolution = resolve_effective_gate_timeout(
         baseline=_baseline_gate_timeout,
         max_parallel=max_parallel,
         host_cores=_host_cores,
         gate_cpu_cores=_gate_cpu_cores,
         mode=_mode,
+        running_stories=len(_live_story_slugs),
     )
     if _gate_timeout_resolution is not None:
         print(
@@ -2000,7 +2427,7 @@ def run_sprint(
         )
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
         _gpc = _gate_timeout_resolution.gate_cpu_cores
-        _mp = _gate_timeout_resolution.max_parallel
+        _mp = _gate_timeout_resolution.actual_parallel or _gate_timeout_resolution.max_parallel
         _hc = _gate_timeout_resolution.host_cores
         print(
             f"[sprint] WARNING: gate CPU demand ({_gpc} cores × parallel {_mp} = "
@@ -2070,7 +2497,20 @@ def run_sprint(
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
-    baseline_gate = _run_baseline_gate(config, resolved)
+    _continuation_reason = _continuation_evidence(
+        reexec=reexec,
+        live_story_slugs=_live_story_slugs,
+    )
+    if _continuation_reason is not None:
+        baseline_gate = _skipped_baseline_gate(config, _continuation_reason)
+        _sprint_logger.emit(
+            "baseline_gate_skipped",
+            reason="reexec_continuation",
+            evidence=_continuation_reason,
+            live_stories=sorted(_live_story_slugs),
+        )
+    else:
+        baseline_gate = _run_baseline_gate(config, resolved)
     resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
     if not bool(baseline_gate.get("passed", False)):
@@ -2103,10 +2543,21 @@ def run_sprint(
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
+    # Every source of spend this sprint could not measure, in the order it was
+    # discovered ("issue-1945" for a story, "intake:issue-1946" for a
+    # remediation pass, "carried:..." for spend inherited on resume). While this is
+    # non-empty, ``accumulated_cost`` is a measured LOWER BOUND, not the
+    # sprint's spend — the budget check must refuse to certify a cap it cannot
+    # evaluate rather than dispatch more work against an understated total
+    # (#1992). Guarded by ``cost_lock`` alongside ``accumulated_cost``.
+    unmeasured_spend: list[str] = []
     # Entry-level intake remediation runs in the CLI before run_sprint and
     # spends the same sprint-authorized budget; fold its agent cost into
     # the sprint total so operator-visible accounting matches actual spend.
     if entry_intake_outcomes:
+        for _issue_num, _entry_outcome in entry_intake_outcomes.items():
+            if _intake_outcome_cost_measured(_entry_outcome) is None:
+                unmeasured_spend.append(f"entry-intake:issue-{_issue_num}")
         _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
         if _entry_intake_cost > 0.0:
             accumulated_cost += _entry_intake_cost
@@ -2179,6 +2630,12 @@ def run_sprint(
             _prior_slug = _prior.get("slug")
             if not _prior_slug:
                 continue
+            # An earlier generation's unpriced story is still unpriced spend
+            # this sprint carries. Without re-flagging it here, a --resume would
+            # start with an empty ledger and enforce the cap against a carried
+            # lower bound as if it were complete (#1992).
+            if "cost_usd" in _prior and _prior.get("cost_usd") is None:
+                unmeasured_spend.append(f"carried:{_prior_slug}")
             _prior_outcome = (_prior.get("outcome") or "").upper()
             if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
                 _defer_prior_cost(_prior_slug, _prior)
@@ -2224,7 +2681,7 @@ def run_sprint(
                 _prior_slug,
                 _prior.get("path", _prior_slug),
                 outcome=_mapped_outcome,
-                cost_usd=float(_prior.get("cost_usd", 0.0) or 0.0),
+                cost_usd=_optional_cost(_prior.get("cost_usd")),
                 canonical_ref=_prior.get("canonical_ref"),
                 detail=_prior_detail,
             )
@@ -2273,10 +2730,21 @@ def run_sprint(
         )
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
+        if _prior_sprint_cost_incomplete(config.project_root, _sprint_id):
+            # The carried total came from a generation that recorded incomplete
+            # cost, so it is a lower bound too (#1992).
+            unmeasured_spend.append("carried:prior-generation")
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
         for slug, (task, _src, canonical_ref) in slug_to_context.items():
+            if slug in _inflight_slugs:
+                # Triage reads the worktree to decide the re-entry point, and
+                # this one is being written to by a running agent right now — any
+                # verdict taken here describes a half-finished state. Defer it to
+                # dispatch, after the inherited agent has stopped.
+                _log(f"  {slug:<20} DEFERRED (agent still running; triage after it finishes)")
+                continue
             triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
             triages[canonical_ref] = triage
             _log(
@@ -2379,10 +2847,7 @@ def run_sprint(
             "outcome": outcome,
             "outcome_source": outcome_source,
             "verdict": None,
-            "cost_usd": round(
-                float(result.state.total_cost) + story_cost_adjustments.get(slug, 0.0),
-                4,
-            ),
+            "cost_usd": _story_reported_cost(result.state, story_cost_adjustments.get(slug, 0.0)),
             "story_run_id": run_id,
             "preflight": preflight,
             "preflight_original_verdict": getattr(
@@ -2477,9 +2942,18 @@ def run_sprint(
     # conflicts) are handled by the dropped-slug loop further below and must
     # never consume preflight or worker budget in this generation. Exclude them
     # from every spend/dispatch path here alongside reconcile-skipped stories.
+    #
+    # In-flight stories are excluded from these two passes as well, for a
+    # different reason: they are still scheduled, but an agent is writing to
+    # their worktree right now, so intake and preflight would be reasoning about
+    # (and spending on) a story already being worked.
     _dropped_exclusion = {s for s in (dropped_slugs or {}) if s in slug_to_context}
     _no_dispatch_slugs = skip_slugs | _dropped_exclusion
-    dispatch_tasks = [t for t in normalized.tasks if t.slug not in _no_dispatch_slugs]
+    dispatch_tasks = [
+        t
+        for t in normalized.tasks
+        if t.slug not in _no_dispatch_slugs and t.slug not in _inflight_slugs
+    ]
 
     intake_outcomes = _run_intake_remediation_pass(
         config=config,
@@ -2491,6 +2965,9 @@ def run_sprint(
     # Intake remediation agent spend (auto_fix LLM rewrites) must roll up
     # into the sprint total. Without this, sprint.total_cost_usd silently
     # excludes every dollar spent on intake auto-fix attempts.
+    for _intake_slug, _intake_outcome in intake_outcomes.items():
+        if _intake_outcome_cost_measured(_intake_outcome) is None:
+            unmeasured_spend.append(f"intake:{_intake_slug}")
     _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
     if _intake_remediation_cost > 0.0:
         accumulated_cost += _intake_remediation_cost
@@ -2614,7 +3091,11 @@ def run_sprint(
     # against their stale worktree, or spending budget on an already-dropped
     # story).
     _no_dispatch_slugs = skip_slugs | {s for s in (dropped_slugs or {}) if s in slug_to_context}
-    preflight_tasks = [t for t in normalized.tasks if t.slug not in _no_dispatch_slugs]
+    preflight_tasks = [
+        t
+        for t in normalized.tasks
+        if t.slug not in _no_dispatch_slugs and t.slug not in _inflight_slugs
+    ]
     preflight_states = run_batch_preflight(
         preflight_tasks,
         config,
@@ -2818,7 +3299,7 @@ def run_sprint(
                 "outcome": "ALREADY_DONE",
                 "outcome_source": "resume_skip_merged",
                 "verdict": prior_entry.get("verdict"),
-                "cost_usd": float(prior_entry.get("cost_usd", 0.0) or 0.0),
+                "cost_usd": _optional_cost(prior_entry.get("cost_usd")),
                 "story_run_id": prior_entry.get("story_run_id", run_id),
                 "preflight": prior_entry.get("preflight"),
                 "preflight_original_verdict": prior_entry.get("preflight_original_verdict"),
@@ -2922,6 +3403,13 @@ def run_sprint(
             elif _triage and _triage.action == "skip":
                 _status = "skipped"
                 _detail = {"final_outcome": "SKIPPED"}
+            elif _slug in _inflight_slugs:
+                # Still running from before the re-exec: this run will wait for
+                # that agent and then resume the story, so it is waiting work —
+                # not a drop, and not something an operator should read as idle.
+                _status = "waiting"
+                _blocked_by = [f"in flight: {REASON_IN_FLIGHT}"]
+                _detail = {"in_flight": True, "in_flight_reason": REASON_IN_FLIGHT}
             elif _blocked_by:
                 _status = "blocked"
                 _detail = {}
@@ -3287,28 +3775,25 @@ def run_sprint(
                     break
 
                 with cost_lock:
-                    cumulative = prior_cost + accumulated_cost
-                if cumulative >= resolved.budget_usd:
-                    dag.mark_skipped(task.slug)
-                    _budget_reason = (
-                        "budget exhausted "
-                        f"(sprint ${accumulated_cost:.2f} + carried ${prior_cost:.2f} = "
-                        f"${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
+                    _budget_decision = evaluate_budget(
+                        accumulated_cost=accumulated_cost,
+                        prior_cost=prior_cost,
+                        budget_usd=resolved.budget_usd,
+                        unmeasured_spend=list(unmeasured_spend),
                     )
+                if _budget_decision is not None:
+                    dag.mark_skipped(task.slug)
+                    _budget_reason = _budget_decision.story_reason
                     _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=_budget_reason)
                     if stopped_reason is None:
-                        _budget_math = (
-                            f"sprint ${accumulated_cost:.2f} + carried ${prior_cost:.2f} = "
-                            f"${cumulative:.2f} >= ${resolved.budget_usd:.2f}"
-                        )
-                        stopped_reason = f"Budget exhausted ({_budget_math})"
+                        stopped_reason = _budget_decision.stopped_reason
                         if notify and config.notifications.backend not in ("ntfy", "none"):
                             from ..notify_backends import send_notifications
 
                             send_notifications(
                                 config,
-                                f'TheForge: budget exceeded \u2014 "{resolved.name}"',
-                                f"{_budget_math} \u2014 remaining stories skipped",
+                                _budget_decision.notification_title(resolved.name),
+                                f"{_budget_decision.detail} \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} ({_budget_reason})")
                     _record_current_story_entry(task.slug, "SKIPPED", error=_budget_reason)
@@ -3323,6 +3808,12 @@ def run_sprint(
 
                 spec_str = slug_to_spec[task.slug]
                 triage = triages.get(spec_str) if resume else None
+                # A story whose agent survived the re-exec is dispatched through
+                # the deferred path: it waits for that agent, triages what it
+                # left, and resumes — so it reaches a real terminal outcome in
+                # this run instead of being abandoned to the next invocation's
+                # orphan reaper.
+                _inherited = task.slug in _inflight_slugs
                 batch_assignments[task.slug] = batch_number
                 _submission_counter[0] += 1
                 print(
@@ -3337,9 +3828,11 @@ def run_sprint(
                         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     )
 
-                # Create plan gate for fresh parallel runs
+                # Create plan gate for fresh parallel runs. An inherited story
+                # re-enters through triage and never emits PLAN_DONE, so gating
+                # it would block the scheduler on a signal that never comes.
                 gate: threading.Event | None = None
-                if use_plan_gates and triage is None:
+                if use_plan_gates and triage is None and not _inherited:
                     gate = threading.Event()
                     plan_gates[task.slug] = gate
 
@@ -3355,8 +3848,20 @@ def run_sprint(
                 )
                 stop_evt = threading.Event()
                 stop_events[task.slug] = stop_evt
+                _dispatch_kwargs: dict = {"base_lands_locally": _sprint_lands_locally}
+                if _inherited:
+                    _dispatch_fn = _run_inherited_story
+                    _dispatch_kwargs["canonical_ref"] = spec_str
+                    # Half the worker budget to wait for the inherited agent,
+                    # leaving the other half to actually resume the story before
+                    # the scheduler's deadline expires the worker.
+                    _dispatch_kwargs["quiesce_timeout"] = (
+                        float(story_worker_timeouts[task.slug]) / 2.0
+                    )
+                else:
+                    _dispatch_fn = _run_single_story
                 fut = pool.submit(
-                    _run_single_story,
+                    _dispatch_fn,
                     worker_config,
                     task,
                     triage,
@@ -3373,7 +3878,7 @@ def run_sprint(
                     stop_evt,
                     # Keyword, not positional: stop_evt must stay the last
                     # positional argument for callers that index args[-1].
-                    base_lands_locally=_sprint_lands_locally,
+                    **_dispatch_kwargs,
                 )
                 active[task.slug] = fut
                 story_deadlines[task.slug] = time.monotonic() + float(
@@ -3687,15 +4192,22 @@ def run_sprint(
                 story_times[slug] = (t0, t1)
 
                 with cost_lock:
+                    # The budget can only ever be enforced against measured
+                    # spend. Record the shortfall alongside it so the dispatch
+                    # check knows the running total is a lower bound (#1992).
+                    if result.state.total_cost_measured is None:
+                        unmeasured_spend.append(slug)
                     accumulated_cost += result.state.total_cost
 
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                spec_cost = result.state.total_cost
+                spec_cost = result.state.total_cost_measured
                 icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)
-                _log(f"{icon} {slug}   ${spec_cost:.2f}  {dur}")
+                _log(
+                    f"{icon} {slug}   {_fmt_cost_total(spec_cost, result.state.total_cost)}  {dur}"
+                )
 
                 # Auth circuit breaker (#1952): the launch gate proves the
                 # credential was usable at t=0, but an interactive sign-in can
@@ -3773,7 +4285,7 @@ def run_sprint(
                         slug,
                         status=_done_status,
                         phase=result.phase.name,
-                        cost_usd=result.state.total_cost,
+                        cost_usd=_story_reported_cost(result.state),
                     )
 
                 _classify_outcome = _classify_and_record(
@@ -3782,7 +4294,7 @@ def run_sprint(
                 _terminal_model = _terminal_story_model(result)
                 _outcome_fields: dict[str, object] = {
                     "phase": result.phase.name,
-                    "cost_usd": result.state.total_cost,
+                    "cost_usd": _story_reported_cost(result.state),
                 }
                 if _terminal_model is not None:
                     _outcome_fields["current_model"] = _terminal_model
@@ -3935,6 +4447,10 @@ def run_sprint(
         entry = _story_state.get(slug)
         if entry is None:
             return
+        if entry.cost_usd is None:
+            # Unknown + known is still unknown: adding measured intake spend to a
+            # cost-unknown story must not turn it into a confident figure (#1992).
+            return
         _story_state.transition(slug, cost_usd=entry.cost_usd + extra)
 
     for _slug, _outcome in (intake_outcomes or {}).items():
@@ -3965,6 +4481,14 @@ def run_sprint(
         )
 
     final_cost = accumulated_cost + prior_cost
+    # A sprint total is only a total when every story's cost was measured. When
+    # any story ran on a transport that reported no cost, ``final_cost`` is a
+    # measured lower bound and every surface must say so rather than present it
+    # as the sprint's cost (#1992). Intake remediation spends the same budget
+    # outside any story's CoordinatorState, so its unmeasured passes count too.
+    _cost_complete = not unmeasured_spend and all(
+        e.cost_usd is not None for e in _story_state.stories()
+    )
     # Banner, summary, notifications, and SprintResult all project from the
     # same canonical structure — by construction they cannot disagree.
     _canonical_counts = _story_state.counts()
@@ -3983,21 +4507,27 @@ def run_sprint(
         specs_skipped=specs_skipped,
         total_cost_usd=final_cost,
         budget_usd=resolved.budget_usd,
+        cost_complete=_cost_complete,
+        unmeasured_spend_sources=tuple(unmeasured_spend),
         results=results,
         stopped_reason=stopped_reason,
     )
 
     _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
     _sprint_dur = _fmt_duration(_sprint_elapsed)
+    _sprint_cost_str = _fmt_cost_total(final_cost if _cost_complete else None, final_cost)
     _log(
         f"Sprint complete: {specs_succeeded} succeeded, {specs_failed} failed, "
-        f"{specs_skipped} skipped. Total: ${final_cost:.2f}  {_sprint_dur}"
+        f"{specs_skipped} skipped. "
+        f"Total: {_sprint_cost_str}"
+        f"  {_sprint_dur}"
     )
     _sprint_outcome = "done" if specs_failed == 0 and stopped_reason is None else "partial"
     _sprint_logger.emit(
         "run_end",
         outcome=_sprint_outcome,
-        total_cost_usd=round(final_cost, 6),
+        total_cost_usd=round(final_cost, 6) if _cost_complete else None,
+        total_cost_measured_usd=round(final_cost, 6),
         total_duration_s=round(_sprint_elapsed, 2),
     )
     if notify:
@@ -4018,7 +4548,7 @@ def run_sprint(
                     f"{canonical_total} stories: {specs_succeeded} succeeded "
                     f"\u00b7 {specs_failed} failed \u00b7 {specs_skipped} skipped"
                 ),
-                f"Total cost: ${final_cost:.2f}   Duration: {_sprint_dur}",
+                f"Total cost: {_sprint_cost_str}   Duration: {_sprint_dur}",
             ]
             if stopped_reason:
                 _ntfy_body_lines.append(f"Stopped: {stopped_reason}")
@@ -4037,7 +4567,7 @@ def run_sprint(
                     f"{canonical_total} stories: {specs_succeeded} succeeded "
                     f"\u00b7 {specs_failed} failed \u00b7 {specs_skipped} skipped"
                 ),
-                f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
+                f"Total cost: {_sprint_cost_str}   Duration: {_fmt_duration(_sprint_elapsed)}",
             ]
             if stopped_reason:
                 _sc_body_lines.append(f"Stopped: {stopped_reason}")
@@ -4130,7 +4660,13 @@ def run_sprint(
             publish=_base_branch_tracks_origin(config, lands_locally=_sprint_lands_locally),
         )
     except RuntimeError as exc:
-        _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}")
+        _state = getattr(exc, "state", None)
+        _state_suffix = (
+            f" [state={_state}; recorded in {_STORY_RUN_AUDIT_PUBLISH_STATE_PATH}]"
+            if _state
+            else ""
+        )
+        _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}{_state_suffix}")
         raise
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
@@ -4164,7 +4700,7 @@ def run_sprint(
             stories=_stories,
             run_id=_sprint_run_id,
             config=config,
-            total_cost_usd=final_cost,
+            total_cost_usd=final_cost if _cost_complete else None,
             duration_seconds=_sprint_elapsed,
         )
         _run_hook(

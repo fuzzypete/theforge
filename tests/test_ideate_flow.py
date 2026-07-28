@@ -805,7 +805,12 @@ test_target: tests/
 
 
 def test_none_cost_usd_does_not_crash_accumulation(tmp_path: Path) -> None:
-    """cost_usd=None from a pool agent must not crash total_cost accumulation."""
+    """cost_usd=None from a pool agent makes the ideation total cost-unknown.
+
+    Contract change (#1992): an unmeasured agent cost is no longer coerced to
+    $0.00. The run still completes, but its total is reported as unknown rather
+    than as the measured remainder of the other calls.
+    """
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
     def pool_with_none_cost(*, prompt, profiles, working_dir, **kwargs):
@@ -828,8 +833,8 @@ def test_none_cost_usd_does_not_crash_accumulation(tmp_path: Path) -> None:
     ):
         result = run_ideation(config, "Build a feature", None, max_rounds=1)
 
-    assert result.total_cost_usd is not None
-    assert result.total_cost_usd >= 0.0
+    assert result.success
+    assert result.total_cost_usd is None
 
 
 def test_plain_text_forwarded_to_run_agent_pool(tmp_path: Path) -> None:

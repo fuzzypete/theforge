@@ -305,6 +305,7 @@ def test_escalate_notify_calls_send_notifications_when_ntfy_is_none():
     state = MagicMock()
     state.review_cycle = 2
     state.total_cost = 1.50
+    state.total_cost_measured = 1.50
     state.error = "Too many cycles"
     state.branch_name = "feat/test"
     state.started_at = None

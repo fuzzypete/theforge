@@ -21,27 +21,34 @@ from .trust_status import derive_trust_status, is_tainted
 
 def _extract_reviewers(
     state: CoordinatorState,
-) -> dict[str, tuple[int, int, float]]:
+) -> dict[str, tuple[int, int, float | None]]:
     """Per-reviewer ``(cycles, findings, cost)`` from cycle metadata + telemetry.
 
     Findings are the per-cycle aggregate (shared view across reviewers); cost
     is split evenly across successful reviewers in each cycle. Attribution is
     approximate but reasonable without per-reviewer telemetry.
     """
-    out: dict[str, tuple[int, int, float]] = {}
+    out: dict[str, tuple[int, int, float | None]] = {}
     meta_list = state.review_cycle_metadata or []
     tele_list = state.review_iteration_telemetry or []
     for idx, meta in enumerate(meta_list):
         tele = tele_list[idx] if idx < len(tele_list) else None
         findings = sum(int(v) for v in tele.findings_by_severity.values()) if tele else 0
-        cost = float(tele.cost_usd) if tele else 0.0
+        # An unmeasured cycle cost stays None all the way into the profile fold
+        # (_update_review handles it): splitting $0.00 across reviewers would
+        # teach the router that a cost-unmeasured transport is free (#1992).
+        cost = (float(tele.cost_usd) if tele.cost_usd is not None else None) if tele else 0.0
         participants = list(meta.successful or [])
         if not participants:
             continue
-        per_head_cost = cost / len(participants) if participants else 0.0
+        per_head_cost = (cost / len(participants)) if cost is not None else None
         for name in participants:
             prev = out.get(name, (0, 0, 0.0))
-            out[name] = (prev[0] + 1, prev[1] + findings, prev[2] + per_head_cost)
+            prev_cost = prev[2]
+            new_cost = (
+                None if per_head_cost is None or prev_cost is None else prev_cost + per_head_cost
+            )
+            out[name] = (prev[0] + 1, prev[1] + findings, new_cost)
     return out
 
 

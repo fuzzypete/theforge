@@ -1,0 +1,1775 @@
+{
+  "schema_version": 12,
+  "run_id": "3dcd2e32efda",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "ALREADY_DONE / git_state_match acceptance leaves the tracking issue open with no comment or disposition, yet counts as landed",
+    "slug": "issue-1937",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nWhen preflight accepts a story via ALREADY_DONE \u2014 the working tree already satisfies the spec, or the spec's premise is obsolete \u2014 the run terminates at DONE and is reported in the sprint summary with the same \"landed\" status as a story that merged a change. But the story's tracking issue is left open, receives no comment, and is given no disposition. The only record that the run evaluated the issue lives in the run audit; an operator scanning open issues cannot tell the story was already assessed, or why.\n\n## Expected behavior\n\nA story that terminates without a merge because its spec is already satisfied must still leave a durable, operator-visible record on its tracking issue stating that determination and the evidence for it, and must resolve the issue's disposition rather than leaving it silently open. Where the disposition is genuinely ambiguous \u2014 already-implemented versus premise-obsolete \u2014 the run must route that decision to the operator rather than guess or do nothing. A run that merges and resolves no work must be reported distinctly from one that shipped a change, so the sprint summary never presents a no-op acceptance as equivalent to a landed change.\n\n## Diagnosis\n\n- **Observed symptom:** #1879 was accepted via `git_state_match` (0 dev iterations, no PR, `landing: null`), reported under \"LANDED (3 of 4)\", and its issue remained OPEN with no comment.\n- **Ruled out:** the auto-close mechanism being broken \u2014 it works for merged stories (`completion.py:369` writes `Closes #N` and GitHub closes on merge). The gap is specific to the path that produces no PR.\n- **Confirmed cause:** issue closure is bolted solely to the PR-merge event. The ALREADY_DONE termination in `preflight_flow.py` sets `phase=DONE` and emits a local `run_end outcome=already_done` plus a notify, but never posts an issue comment and never invokes the available explicit close path (`sprint/sources.py:438`). Separately, the sprint summary classifies any DONE outcome as landed regardless of whether a merge occurred.\n- **Affected code path:** `preflight_flow.py` ALREADY_DONE termination; the sprint summary's landed classification; the issue-resolution plumbing (PR-body `Closes #N` vs. explicit `gh issue close`, and the operator action queue as the routing target for ambiguous dispositions).\n- **Fix-success criterion:** an ALREADY_DONE acceptance posts a comment on the tracking issue with the determination and evidence, resolves the issue's disposition or queues it for the operator, and is reported in the sprint summary as distinct from a merged land.\n",
+    "github_issue": 1937,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'ALREADY_DONE / git_state_match acceptance leaves the tracking issue open with no comment or disposition, yet counts as landed' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-1937",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-28T05:21:06.771331+00:00",
+    "finished_at": "2026-07-28T05:32:43.301348+00:00",
+    "duration_seconds": 696.530017
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1937",
+    "branch": "feat/issue-1937",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": null,
+        "duration_s": 111.77,
+        "meaningful_progress": false,
+        "files_changed": [],
+        "files_changed_count": 0,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": null,
+        "duration_s": 84.92
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 7,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "openai-gpt-5.4",
+      "model_actual": "gpt-5.4",
+      "model_provider": null,
+      "model_cli": "codex",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 7,
+      "base_review": 5,
+      "profile_history_runs": 61,
+      "profile_avg_iterations": 1.2131,
+      "profile_avg_cost_usd": 0.0,
+      "profile_raw_dev_max": 1.8197,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 854.78,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 1283,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": false,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 1350,
+      "chosen_dev_cost_estimate_usd": 0.01,
+      "review_history_sample_size": 18,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 61 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout scaled from static per-iteration baseline. review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-28T05:28:30.729925+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": null,
+    "review_usd": null,
+    "dev_invocations": 1,
+    "review_invocations": 2,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": null,
+        "duration_seconds": 111.76504379091784,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 42.39397558302153,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 42.39397558302153,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed by direct inspection that ALREADY_DONE termination in preflight_flow.py never comments on or closes the tracking issue, and that the sprint summary (rca.py DONE_OUTCOMES, sprint_digest.py _print_landed) treats ALREADY_DONE identically to a merged DONE \u2014 the gap described in the spec is real and unfixed.",
+    "complexity": "medium",
+    "complexity_score": 7,
+    "implementation_complexity_score": 7,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 7",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "api"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.46750429999999993,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "2a2e73caf006",
+    "cache_snapshot": {
+      "worktree_head": "0cfaa9c20d990bbfc061f503f4e184e63a50c337",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "135e8c78da7fcbf1f432d99be5ea9eebbfd9c61b",
+      "story_content_hash": "e64ea78449b50c3c14dc1be63d8aeeffc16d7e802861f72ef2765b722f350cb0"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "0cfaa9c20d990bbfc061f503f4e184e63a50c337",
+      "current_worktree_head": "0cfaa9c20d990bbfc061f503f4e184e63a50c337",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "135e8c78da7fcbf1f432d99be5ea9eebbfd9c61b",
+      "current_evaluation_base_branch_head": "135e8c78da7fcbf1f432d99be5ea9eebbfd9c61b",
+      "cached_story_content_hash": "e64ea78449b50c3c14dc1be63d8aeeffc16d7e802861f72ef2765b722f350cb0",
+      "current_story_content_hash": "e64ea78449b50c3c14dc1be63d8aeeffc16d7e802861f72ef2765b722f350cb0",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.46750429999999993,
+        "duration_s": 67.18,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 7,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 148 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 7,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1937/iter_1.yaml",
+      "handoff": {
+        "summary": "The requested ALREADY_DONE/no-merge acceptance behavior was already implemented on this branch at commit 0cfaa9c. I verified that GitHub issue resolution for no-merge ALREADY_DONE runs through the sprint source completion hook, posts durable evidence comments, closes deterministically when the disposition is known, routes ambiguous cases via the operator-action label, carries preflight_reason into sprint summary data, and renders no-op acceptances under a separate ALREADY SATISFIED digest bucket. I then ran the required pytest command for the full test suite and confirmed the branch is green with a clean worktree, so no additional code changes or duplicate commit were warranted.",
+        "commits": [
+          {
+            "sha": "0cfaa9c",
+            "message": "fix(sprint): resolve tracking issue on no-merge ALREADY_DONE acceptance"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "An ALREADY_DONE acceptance posts a comment on the tracking issue with the determination and evidence.",
+            "status": "MET",
+            "notes": "Verified in sprint source completion handling and covered by story-source seam tests for close/comment behavior."
+          },
+          {
+            "criterion": "An ALREADY_DONE acceptance resolves the issue's disposition or queues it for the operator when ambiguous.",
+            "status": "MET",
+            "notes": "Verified deterministic completed/not-planned close reasons plus ambiguous routing via operator-action label; covered by seam tests."
+          },
+          {
+            "criterion": "Sprint summary reports a no-op ALREADY_DONE acceptance distinctly from a merged land.",
+            "status": "MET",
+            "notes": "Verified digest split into ALREADY SATISFIED versus LANDED using outcome_source/merge evidence; covered by digest tests."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "No new code change or new commit was created in this run because the requested implementation was already present at HEAD (0cfaa9c)."
+        ],
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The change satisfies the no-merge ALREADY_DONE issue-resolution and sprint-digest visibility requirements. | [google-gemini-3.5-flash] The ALREADY_DONE acceptance flow is fully resolved, with tracking issues properly commented, closed, or routed, and sprint digests distinctly reporting no-op acceptances.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: ALREADY_DONE / git_state_match acceptance leaves the tracking issue open with no comment or disposition, yet counts as landed",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:4375 invokes StorySource.on_complete for successful story results, and src/theforge/sprint/sources.py:461-465 routes successful no-merge ALREADY_DONE results into explicit issue resolution. src/theforge/sprint/sources.py:527-548 closes deterministically with a durable comment for classified already-implemented or premise-obsolete dispositions, while src/theforge/sprint/sources.py:549-564 comments and adds the operator-action label for ambiguous disposition. src/theforge/sprint/audit.py:574-580 and src/theforge/sprint/audit.py:919-929 persist outcome_source and preflight_reason into sprint data, and src/theforge/cli/sprint_digest.py:109-115 plus src/theforge/cli/sprint_digest.py:173-209 render no-merge preflight ALREADY_DONE under ALREADY SATISFIED instead of LANDED. tests/test_story_sources.py:490-551 covers comment, close reason, and operator routing for no-merge ALREADY_DONE; tests/test_cli_sprint_digest.py:345-386 covers the LANDED versus ALREADY SATISFIED split; tests/test_status_reader_already_done_source.py:204-279 covers persisted preflight outcome source data. Focused pytest for these regression tests passed."
+        },
+        {
+          "criterion": "An ALREADY_DONE acceptance posts a comment on the tracking issue with the determination and evidence.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/sources.py:461-465 and 496-565 implement the comment posting with determination and evidence. Covered by tests in tests/test_story_sources.py:491-545."
+        },
+        {
+          "criterion": "An ALREADY_DONE acceptance resolves the issue's disposition or queues it for the operator when ambiguous.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/sources.py:85-117 (classify_already_done_disposition) and 527-565 resolve the disposition or add the operator-action label. Covered by tests in tests/test_story_sources.py:491-545 and 571-611."
+        },
+        {
+          "criterion": "Sprint summary reports a no-op ALREADY_DONE acceptance distinctly from a merged land.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_digest.py:105-113 and 173-209 split and render no-op acceptances under 'ALREADY SATISFIED'. Covered by tests in tests/test_cli_sprint_digest.py:329-389."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] The entire behavior the plan proposes to build is already present on this branch, committed as 0cfaa9c 'fix(sprint): resolve tracking issue on no-merge ALREADY_DONE acceptance'. sources.py:438-565 already handles the no-merge path (comment with preflight_reason evidence, close --reason completed / not planned, operator-action label for ambiguous); sources.py:85 classify_already_done_disposition derives the disposition; audit.py carries preflight_reason into the summary; sprint_digest.py:105/174/193 already splits an ALREADY SATISFIED bucket out of LANDED. Implementing the plan as written would add a second, parallel mechanism that double-comments and double-closes the issue.\n  Suggestion: Re-run preflight against current HEAD. If the fix is complete, the story is ALREADY_DONE. If a gap remains, re-scope the plan to the residual gap (e.g. non-merge-mode sources, or the sprint summary's own counters as distinct from the digest) rather than to the already-shipped surfaces.\n- [P1-impl] [claude-opus] Step 2 puts the hook call in src/theforge/coordinator/preflight_flow.py. The coordinator has no reference to a sprint story source: on_complete/on_escalate are invoked from exactly one place, src/theforge/sprint/runner.py:4381-4400, with (task, result, config); preflight_flow.py imports nothing from theforge.sprint except dag._is_branch_merged and has no TaskStory-source handle. It also runs in single-run (forge run) mode where no sprint source exists at all. Calling a source hook from there inverts the layering and has no plumbing to do it.\n  Suggestion: Keep the coordinator's job to recording the determination on CoordinatorState/CoordinatorResult (preflight_verdict / preflight_reason, both of which already exist at coordinator/state.py:396+), and let sprint/runner.py's existing on_complete dispatch do the GitHub-side resolution \u2014 which is how the shipped fix is wired.\n- [P1-impl] [claude-opus] Step 3 says to 'extend the existing operator action queue model with a minimal action type \u2026 carrying issue id, story id, candidate dispositions \u2026 and the evidence text'. src/theforge/operator_action_queue.py (226 lines) is a read-only derived view: build_operator_action_queue queries gh for open issues labeled operator-action (_gh_list_operator_actions) and resolves depends_on closure states. There is no persisted queue, no entry-creation API, and no action-type concept to extend \u2014 OperatorActionEntry is recomputed from GitHub on every call.\n  Suggestion: Route ambiguous dispositions by applying shape_gate.OPERATOR_ACTION_LABEL to the issue (plus the explanatory comment), which is what makes the issue appear in build_operator_action_queue's output \u2014 no new model needed.\n- [P1-impl] [claude-opus] Step 4 says to 'stop treating ALREADY_DONE as equivalent to merged DONE in the landed bucket' by modifying rca.py. rca.DONE_OUTCOMES (rca.py:49) is the succeeded set, not a display bucket: sprint_digest.py computes non_done = outcomes not in DONE_OUTCOMES, which drives RCA classification and the failure/recovery sections. Removing ALREADY_DONE from it would push a successful no-op acceptance into the RCA recovery surface and out of the all-DONE early return, and diverges from the parallel success sets in launch_guard.py:44 and story_state.py:106/125 that the plan does not touch.\n  Suggestion: Distinguish the bucket by merge evidence (outcome_source == 'preflight_verdict' and no merge/landing), leaving DONE_OUTCOMES intact \u2014 the shipped _is_already_satisfied predicate in sprint_digest.py:193 is exactly this shape.",
+    "cost_usd": null,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "REQUEST_CHANGES",
+        "cost_usd": 0.643475
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "medium",
+        "unique_p1_count": 4,
+        "total_p1_count": 4,
+        "latency_s": 98.11,
+        "latency_per_p1_s": 24.53,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 375.97,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "The entire behavior the plan proposes to build is already present on this branch, committed as 0cfaa9c 'fix(sprint): resolve tracking issue on no-merge ALREADY_DONE acceptance'. sources.py:438-565 already handles the no-merge path (comment with preflight_reason evidence, close --reason completed / not planned, operator-action label for ambiguous); sources.py:85 classify_already_done_disposition derives the disposition; audit.py carries preflight_reason into the summary; sprint_digest.py:105/174/193 already splits an ALREADY SATISFIED bucket out of LANDED. Implementing the plan as written would add a second, parallel mechanism that double-comments and double-closes the issue.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 puts the hook call in src/theforge/coordinator/preflight_flow.py. The coordinator has no reference to a sprint story source: on_complete/on_escalate are invoked from exactly one place, src/theforge/sprint/runner.py:4381-4400, with (task, result, config); preflight_flow.py imports nothing from theforge.sprint except dag._is_branch_merged and has no TaskStory-source handle. It also runs in single-run (forge run) mode where no sprint source exists at all. Calling a source hook from there inverts the layering and has no plumbing to do it.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 3 says to 'extend the existing operator action queue model with a minimal action type \u2026 carrying issue id, story id, candidate dispositions \u2026 and the evidence text'. src/theforge/operator_action_queue.py (226 lines) is a read-only derived view: build_operator_action_queue queries gh for open issues labeled operator-action (_gh_list_operator_actions) and resolves depends_on closure states. There is no persisted queue, no entry-creation API, and no action-type concept to extend \u2014 OperatorActionEntry is recomputed from GitHub on every call.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 says to 'stop treating ALREADY_DONE as equivalent to merged DONE in the landed bucket' by modifying rca.py. rca.DONE_OUTCOMES (rca.py:49) is the succeeded set, not a display bucket: sprint_digest.py computes non_done = outcomes not in DONE_OUTCOMES, which drives RCA classification and the failure/recovery sections. Removing ALREADY_DONE from it would push a successful no-op acceptance into the RCA recovery surface and out of the all-DONE early return, and diverges from the parallel success sets in launch_guard.py:44 and story_state.py:106/125 that the plan does not touch.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2009",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1937",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2009",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2009",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-28T05:32:43.301348+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "WARN",
+    "cost_usd": 0.149136,
+    "duration_s": 34.06744741695002,
+    "findings": [
+      {
+        "category": "requirement",
+        "description": "The Expected-behavior clause 'A run that merges and resolves no work must be reported distinctly from one that shipped a change' is self-contradictory: the story is otherwise entirely about the ALREADY_DONE path, which by definition produces no PR and no merge (confirmed in Diagnosis: '0 dev iterations, no PR, landing: null'). Saying such a run 'merges' work contradicts the rest of the story's premise that no merge occurs, and could lead an implementer to build the distinct-reporting logic around merged-but-trivial PRs rather than the actual no-merge ALREADY_DONE termination path.",
+        "split_suggestion": null
+      }
+    ]
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 7,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 3,
+            "completed": 3,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 7,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.9122,
+              "weighted": 1.0,
+              "runs": 148,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 1.0
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "api"
+              ],
+              "raw": 0.7895,
+              "weighted": 0.7895,
+              "runs": 19,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.7895,
+              "by_domain": {
+                "backend": {
+                  "runs": 19,
+                  "raw": 0.7895,
+                  "weighted": 0.7895,
+                  "tainted_runs": 0
+                },
+                "api": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "api"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "api": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "api"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "api"
+          ],
+          "raw": 0.7895,
+          "weighted": 0.7895,
+          "runs": 19,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.7895,
+          "by_domain": {
+            "backend": {
+              "runs": 19,
+              "raw": 0.7895,
+              "weighted": 0.7895,
+              "tainted_runs": 0
+            },
+            "api": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.9122,
+        "weighted_success_rate": 1.0,
+        "sample_size": 148,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "demoted_by",
+        "mechanism": "post_plan_checkpoint",
+        "from_tier": "strong",
+        "to_tier": "mid"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 1.0,
+          "threshold": 0.6,
+          "sample_size": 148,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": true,
+        "decision": "downgrade",
+        "baseline_tier": "strong",
+        "final_tier": "mid",
+        "plan_present": true,
+        "rationale": "plan_review_clean_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:api+backend",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "api",
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "gpt-5.4",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 148 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset; post-plan checkpoint demotion strong \u2192 mid (clean plan-review on medium)"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 36,
+            "completed": 32,
+            "raw": 0.8889,
+            "weighted": 0.8866,
+            "rate": 0.8866,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 26,
+            "completed": 22,
+            "raw": 0.8462,
+            "weighted": 0.8371,
+            "rate": 0.8371,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 49,
+            "completed": 49,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 36,
+            "completed": 32,
+            "raw": 0.8889,
+            "weighted": 0.8866,
+            "rate": 0.8866,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 26,
+            "completed": 22,
+            "raw": 0.8462,
+            "weighted": 0.8371,
+            "rate": 0.8371,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.467504,
+      "duration_s": 67.18,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": null,
+      "duration_s": 29.71,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Add an explicit no-merge acceptance path for ALREADY_DONE so sprint issue handling can comment, close or route disposition, and audit the decision. Then split sprint reporting so already-done/no-op acceptances are visible separately from merged landed stories.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Introduce sprint source plumbing for no-merge acceptance issue disposition",
+            "files": [
+              "src/theforge/sprint/sources.py"
+            ],
+            "action": "modify",
+            "details": "Add a source-level hook alongside the existing merge-gated on_complete and on_escalate paths for ALREADY_DONE/no-merge acceptance. Reuse the existing GitHub issue comment and explicit close capabilities already present near sprint/sources.py:402-441 and sprint/sources.py:438; do not route through the PR-body Closes mechanism because no PR exists. The hook should accept the story issue identity, determination, and evidence, post a durable comment, and close the issue only when the disposition is unambiguous."
+          },
+          {
+            "id": 2,
+            "description": "Call the new no-merge acceptance hook from ALREADY_DONE termination",
+            "files": [
+              "src/theforge/coordinator/preflight_flow.py"
+            ],
+            "action": "modify",
+            "details": "In the ALREADY_DONE branch that currently sets phase=DONE and emits run_end outcome=already_done, collect the existing determination/evidence already used for git_state_match or obsolete-premise acceptance and pass it to the sprint source hook before final DONE notification. Emit an audit event recording the issue disposition action taken, including whether the issue was closed or routed for operator review.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Route ambiguous already-done disposition to the operator instead of guessing",
+            "files": [
+              "src/theforge/operator_action_queue.py",
+              "src/theforge/coordinator/preflight_flow.py"
+            ],
+            "action": "modify",
+            "details": "Extend the existing operator action queue model with a minimal action type for ambiguous ALREADY_DONE disposition, carrying issue id, story id, candidate dispositions such as already_implemented versus premise_obsolete, and the evidence text. In preflight_flow.py, use this queue path when the preflight result does not deterministically establish which disposition should close the issue, and still post an issue comment explaining that operator disposition is required.",
+            "depends_on": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Report already-done no-op acceptances separately from merged landed stories",
+            "files": [
+              "src/theforge/sprint/rca.py",
+              "src/theforge/cli/sprint_digest.py",
+              "src/theforge/sprint/runner.py"
+            ],
+            "action": "modify",
+            "details": "Stop treating ALREADY_DONE as equivalent to merged DONE in the landed bucket. Keep merged DONE stories under LANDED, add a distinct summary bucket and rendered section for ALREADY_DONE/no-op accepted stories, and ensure runner-produced summary data preserves enough merge/outcome information for the digest to distinguish no-PR acceptance from shipped changes."
+          },
+          {
+            "id": 5,
+            "description": "Add focused integration and summary tests for the new behavior",
+            "files": [
+              "tests"
+            ],
+            "action": "modify",
+            "details": "Add seam-level tests covering ALREADY_DONE termination through issue disposition plumbing: comment posted with evidence, unambiguous disposition closes the issue via explicit close, ambiguous disposition queues operator action, and sprint digest separates already-done no-op acceptances from merged landed stories. Prefer existing fake GitHub/source fixtures and sprint digest snapshot/assertion patterns rather than introducing new test infrastructure.",
+            "depends_on": [
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "An ALREADY_DONE acceptance posts a comment on the tracking issue with the determination and evidence",
+            "steps": [
+              1,
+              2,
+              5
+            ]
+          },
+          {
+            "criterion": "An ALREADY_DONE acceptance resolves the issue's disposition or queues it for the operator when ambiguous",
+            "steps": [
+              1,
+              2,
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "A run that merges and resolves no work is reported distinctly from one that shipped a change, so the sprint summary never presents a no-op acceptance as equivalent to a landed change",
+            "steps": [
+              4,
+              5
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The spec requires choosing between already-implemented and premise-obsolete, but the existing ALREADY_DONE signal may not always encode that distinction cleanly.",
+            "mitigation": "Only auto-close when the existing preflight evidence deterministically identifies the disposition; otherwise create the operator queue action and leave the issue visibly commented but not silently closed."
+          },
+          {
+            "description": "Issue closure is currently coupled to PR merge semantics, so reusing on_complete directly would preserve the bug.",
+            "mitigation": "Add a separate no-merge acceptance hook that uses explicit issue comment/close operations and is invoked from the ALREADY_DONE branch."
+          },
+          {
+            "description": "Changing DONE_OUTCOMES globally could affect RCA or digest code that expects ALREADY_DONE to be terminal.",
+            "mitigation": "Keep ALREADY_DONE terminal for lifecycle semantics, but separate terminal outcome classification from the sprint summary's landed/merged presentation."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": null,
+      "duration_s": 375.98,
+      "iterations": 2,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "REQUEST_CHANGES",
+          "cost_usd": 0.643475
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": null,
+      "duration_s": 111.77,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 46.74,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 84.79,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 716.17,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "31da1d0f5546",
+  "sprint_name": "issues-1937,1921"
+}

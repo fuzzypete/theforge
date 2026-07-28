@@ -10,7 +10,7 @@ Use this example to answer three questions quickly:
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - Claude Code CLI installed and authenticated
 - TheForge installed from the repo root
 - `pytest` available

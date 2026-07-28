@@ -60,6 +60,13 @@ class SprintResult:
     specs_skipped: int  # ALREADY_DONE or budget-stopped
     total_cost_usd: float
     budget_usd: float
+    # False when at least one story's cost could not be measured. ``total_cost_usd``
+    # is then only a measured lower bound, not the sprint's cost (#1992).
+    cost_complete: bool = True
+    # Every spend source this sprint could not measure (story slugs, intake
+    # passes). Recorded so an operator can trace WHICH work is unpriced rather
+    # than only that the total is incomplete.
+    unmeasured_spend_sources: tuple[str, ...] = ()
     results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
     stopped_reason: str | None = None  # why sprint stopped early, if it did
 

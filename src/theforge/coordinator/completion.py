@@ -20,7 +20,7 @@ from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
 from .run_setup import delete_merge_state, load_merge_state, save_merge_state
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, MergeStepState, Phase
-from .util import _fmt_duration, _log, _log_verbose, _run_shell
+from .util import _fmt_cost_total, _fmt_duration, _log, _log_verbose, _round_cost, _run_shell
 from .workspace import _deindex_forge_artifacts, _merge_branch
 from .worktree_state import check_worktree_git_consistency
 
@@ -387,7 +387,7 @@ def _create_pr(
         f"## Review\n\n"
         f"- **Verdict:** APPROVE ({p1_count} P1, {p2_count} P2)\n"
         f"- **Reviewers:** {reviewer_names}\n"
-        f"- **Cost:** ${state.total_cost:.2f}\n"
+        f"- **Cost:** {_fmt_cost_total(state.total_cost_measured, state.total_cost)}\n"
         f"- **Dev iterations:** {state.dev_iteration}\n"
         f"- **Tests:** N/A\n\n"
         f"## Findings\n\n"
@@ -1578,7 +1578,7 @@ def _finalize_approve(
     auto_merge: bool,
     notify: bool,
     logger: "StructuredLogger | None",
-    review_cost: float,
+    review_cost: float | None,
     review_elapsed: float,
     message: str,
     run_id: str = "",
@@ -1620,11 +1620,14 @@ def _finalize_approve(
             "phase_end",
             phase="REVIEW",
             outcome="approve",
-            cost_usd=round(review_cost, 6),
+            cost_usd=_round_cost(review_cost),
             duration_s=round(review_elapsed, 2),
         )
     _task_elapsed = time.monotonic() - task_start
-    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(_task_elapsed)}")
+    _log(
+        f"✓ DONE   total={_fmt_cost_total(state.total_cost_measured, state.total_cost)}"
+        f"  {_fmt_duration(_task_elapsed)}"
+    )
     _ntfy_done_notify(
         task, state, config, notify, parsed_review.summary, _task_elapsed, branch_name
     )

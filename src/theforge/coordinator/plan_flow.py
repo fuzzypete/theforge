@@ -79,7 +79,14 @@ from .preflight_evidence import render_partial_evidence
 from .remote_gates import _plan_review_remote
 from .reviewer_progress import ReviewerProgressChannel
 from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
-from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout_with_active
+from .util import (
+    _fmt_cost,
+    _fmt_duration,
+    _log_phase,
+    _round_cost,
+    resolve_timeout_with_active,
+    sum_costs,
+)
 
 if TYPE_CHECKING:
     from theforge.agent_types import AgentResult
@@ -686,7 +693,7 @@ def _run_plan_phase(
             {
                 "phase": "PLAN",
                 "iteration": 0,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
@@ -747,7 +754,7 @@ def _run_plan_phase(
             {
                 "phase": "PLAN",
                 "iteration": 0,
-                "cost_usd": state.total_cost,
+                "cost_usd": state.total_cost_measured,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
@@ -845,7 +852,7 @@ def _run_plan_phase(
                 "phase_end",
                 phase="PLAN",
                 outcome="success",
-                cost_usd=round(plan_result.cost_usd or 0.0, 6),
+                cost_usd=_round_cost(plan_result.cost_usd),
                 duration_s=round(_plan_elapsed, 2),
             )
 
@@ -1023,7 +1030,7 @@ def _run_plan_agent_review(
             reviewer_names=_pool_names,
             phase="PLAN_REVIEW",
             iteration=_attempt,
-            cost_usd=state.total_cost,
+            cost_usd=state.total_cost_measured,
             complexity=state.preflight_complexity,
             complexity_score=state.preflight_complexity_score,
             state_update_fn=state_update_fn,
@@ -1283,7 +1290,7 @@ def _run_plan_agent_review(
                 message=state.error,
             )
 
-        _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
+        _total_pr_cost = sum_costs(r.cost_usd for r in pr_results)
 
         # ── Plan finding identity tracking ────────────────────────────────
         # Snapshot registry before this cycle so new inserts don't interfere.
@@ -1385,7 +1392,7 @@ def _run_plan_agent_review(
                     "phase_end",
                     phase="PLAN_REVIEW",
                     outcome="approve",
-                    cost_usd=round(_total_pr_cost, 6),
+                    cost_usd=_round_cost(_total_pr_cost),
                     duration_s=round(_pr_elapsed, 2),
                     plan_regen_disposition=state.plan_regen_disposition,
                 )
@@ -1426,7 +1433,7 @@ def _run_plan_agent_review(
                     "phase_end",
                     phase="PLAN_REVIEW",
                     outcome="advisory",
-                    cost_usd=round(_total_pr_cost, 6),
+                    cost_usd=_round_cost(_total_pr_cost),
                     duration_s=round(_pr_elapsed, 2),
                 )
             _write_log_artifact(state.log_dir, "plan.md", plan_text)
@@ -1453,7 +1460,7 @@ def _run_plan_agent_review(
                 "phase_end",
                 phase="PLAN_REVIEW",
                 outcome="reject",
-                cost_usd=round(_total_pr_cost, 6),
+                cost_usd=_round_cost(_total_pr_cost),
                 duration_s=round(_pr_elapsed, 2),
                 plan_regen_disposition=state.plan_regen_disposition,
             )

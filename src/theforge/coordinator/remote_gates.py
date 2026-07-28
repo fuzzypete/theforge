@@ -188,7 +188,8 @@ def _remote_human_review(
 
     title = f"TheForge: review needed \u2014 {task.slug}"
     body_lines = [
-        f"{parsed_review.verdict} ({p1} P1, {p2} P2) \u2014 ${state.total_cost:.2f}  "
+        f"{parsed_review.verdict} ({p1} P1, {p2} P2) \u2014 "
+        f"{_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}  "
         f"{_cu._fmt_duration(elapsed)}",
         parsed_review.summary[:120],
         f"Branch: {branch_name}",

@@ -42,7 +42,8 @@ def _pending_human_review(
     timeout_seconds = config.notifications.human_review_timeout_seconds
 
     reason = (
-        f"{parsed_review.verdict} ({p1} P1, {p2} P2) — ${state.total_cost:.2f} "
+        f"{parsed_review.verdict} ({p1} P1, {p2} P2) — "
+        f"{_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)} "
         f"{_cu._fmt_duration(elapsed)}\n{parsed_review.summary[:120]}\nBranch: {branch_name}"
     )
 

@@ -1,0 +1,2612 @@
+{
+  "schema_version": 12,
+  "run_id": "0986a9920a77",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Unmeasured cost is coerced to zero at every aggregation, so unpriced work is reported as free",
+    "slug": "issue-1992",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nCost that a transport could not measure is recorded as unmeasured at the runner,\nand then converted to zero at every point that aggregates it. Work of unknown\ncost is therefore reported as free, and a story's total is presented as a\nconfident figure with no indication that its largest component is missing.\n\nStory #1945 in sprint `de80af667f1c` (2026-07-26) ran three dev iterations,\neach logged as unmeasured:\n\n```\n[issue-1945]   [DEV] OK | exit=0 | cost=unknown | output=2410 chars   \u2713 DEV  unknown  7m 49s\n[issue-1945]   [DEV] OK | exit=0 | cost=unknown | output=1872 chars   \u2713 DEV  unknown  2m 14s\n[issue-1945]   [DEV] OK | exit=0 | cost=unknown | output=1942 chars   \u2713 DEV  unknown  2m 59s\n```\n\nThe sprint had announced this at startup:\n\n```\n\u26a0 CLI cost not tracked for dev (codex CLI, gpt-5.4-mini); API fallback to openai/gpt-5.4 will be tracked if it triggers.\n\u26a0 CLI cost not tracked for openai-gpt-5.4 (codex CLI, gpt-5.4); ...\n```\n\nThirteen minutes of dev work produced three commits and 456 insertions,\nincluding two new test files. `forge status` reported the story at **$0.99** \u2014\nthe portion contributed by a review pool on a transport that does report cost.\nNothing in that figure indicates the dev cost is absent rather than negligible.\n\n## Diagnosis\n\n**Observed symptom:** a story whose entire dev phase was unpriced was reported\nwith a specific dollar amount, indistinguishable in presentation from a story\nwhose cost was fully measured.\n\n**Evidence \u2014 the runner deliberately preserves the distinction.**\n`_extract_codex_cost` (`src/theforge/runners/runner_codex.py:258`) states the\nintent in its own docstring:\n\n> Recover real cost from codex output; never fabricate a zero. [\u2026] when it\n> cannot, `cost_usd` is `None` (cost-unknown, surfaced loudly) \u2014 never `0.0`, so\n> an unmeasured run stays distinct from a genuinely free one.\n\nThe domain model carries the same distinction explicitly \u2014\n`src/theforge/model_profiles.py:162` declares\n`dev_cost_usd: float | None` with the comment\n`# None = the transport could not measure cost`.\n\n**Evidence \u2014 every aggregation discards it.** Twenty sites coerce the optional\nto zero with `or 0.0`, including the story-level accessors that produce the\nreported totals: `src/theforge/coordinator/state.py:739`, `:754`, `:791`,\n`:804`, `:813`, `:837`, `:849`, `:853`, `:865`;\n`src/theforge/coordinator/dev_phase.py:476` and `:1065`;\n`src/theforge/coordinator/review_phase.py:1022`, `:1289`, `:1950`;\n`src/theforge/coordinator/plan_flow.py:848` and `:1286`; and four more in\n`src/theforge/ideate.py`. A `None` produced to mean \"not measured\" becomes an\naddend of `0.0` meaning \"cost nothing\", one call above the code that was careful\nnot to write `0.0`.\n\n**Ruled out \u2014 a defect in codex cost extraction.** Recovering usage from CLI\noutput is best-effort by nature, and returning `None` rather than a fabricated\nfigure is the correct behavior. The transport is not what fails here.\n\n**Ruled out \u2014 the startup warning being sufficient.** The warning is emitted\nonce per model at sprint start, hundreds of log lines before any per-story\ntotal. Nothing attached to the reported figure indicates it is partial, and no\nartifact \u2014 status output, sprint summary, or audit record \u2014 carries the\ndistinction forward.\n\n**Ruled out \u2014 duplicate of #1972.** That issue concerns cost committed in an\nearlier process being dropped when a sprint re-execs, and it assumes the cost\nwas measured in the first place. This is cost never measured, coerced to zero\nwithin a single process. Both understate totals; neither fix addresses the\nother's mechanism.\n\n**Confirmed cause:** the optional cost type expresses three states \u2014 a measured\namount, a genuine zero, and unmeasured \u2014 and the aggregation layer maps it onto\na numeric type that expresses two. The collapse is silent, so nothing\ndownstream can recover what was lost.\n\n**Consequence beyond display.** These totals are the substrate other decisions\nread. The dispatch-time budget check sums them, so unmeasured spend does not\ncount against a cap. The audit records that carry per-story cost feed adaptive\nrouting and any subsequent analysis of what work costs, which means a\nsystematic understatement attaches specifically to stories that ran on\ncost-unmeasured transports rather than distributing evenly. Any comparison of\ncost across stories is therefore biased by which transport happened to serve\nthem.\n\n**Fix-success criterion:** a story with any unmeasured component is not\nreported as a plain dollar figure; the unmeasured state survives aggregation and\nreaches the operator-facing surfaces and the audit record. Given #1945 as\ninput, its reported cost identifies that the dev phase was unmeasured rather\nthan presenting `$0.99` as the story's cost, and anything consuming per-story\ncost can tell that record apart from one whose cost is complete.\n\n## Expected behavior\n\nA value that was defined to distinguish \"not measured\" from \"zero\" must retain\nthat distinction everywhere it is consumed, because the entire purpose of\nproducing it was to prevent the substitution that happens downstream. Where\naggregation cannot represent the difference, the aggregate itself is the thing\nthat must change, rather than the inputs being flattened to fit it \u2014 a total\nover partially unmeasured components is a different kind of statement from a\ntotal over complete ones, and presenting the two identically makes the more\nmisleading of them look the more authoritative.\n\nThis matters most where the figure is consumed by something other than a reader.\nEnforcement compares a total against a limit, and routing decisions read\nrecorded cost as evidence about what work costs. Both treat the number as a\nmeasurement, so a systematic understatement that correlates with which transport\nserved a story does not merely misinform an operator \u2014 it biases every decision\nthat reads the record afterward, in a direction that no consumer can detect or\ncorrect for.\n\nFinally, a warning issued once at startup does not discharge the obligation at\nthe point of report. An operator reading a per-story figure is entitled to know\nwhether that figure is complete, and completeness is a property of the\nindividual number, not of a notice that appeared earlier in an unrelated part of\nthe output.\n",
+    "github_issue": 1992,
+    "fix_ready": false,
+    "readiness_warnings": [
+      "bug Diagnosis section missing required component: affected code path"
+    ]
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Unmeasured cost is coerced to zero at every aggregation, so unpriced work is reported as free' completed. Review approved after 2 cycle(s), 1 dev iteration(s). Branch: feat/issue-1992",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-27T19:33:10.964480+00:00",
+    "finished_at": "2026-07-27T20:18:21.006395+00:00",
+    "duration_seconds": 2710.041915
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1992",
+    "branch": "feat/issue-1992",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 18.909442000000002,
+        "duration_s": 1440.49,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/cli/audit.py",
+          "src/theforge/cli/sprint_status.py",
+          "src/theforge/cli/status.py",
+          "src/theforge/cli/status_watch.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/completion.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/hooks.py",
+          "src/theforge/coordinator/model_profiles_bridge.py",
+          "src/theforge/coordinator/notify.py",
+          "src/theforge/coordinator/pending_hitl.py",
+          "src/theforge/coordinator/plan_flow.py",
+          "src/theforge/coordinator/preflight_flow.py",
+          "src/theforge/coordinator/remote_gates.py",
+          "src/theforge/coordinator/review_phase.py",
+          "src/theforge/coordinator/review_pool.py",
+          "src/theforge/coordinator/signals.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/coordinator/util.py",
+          "src/theforge/coordinator/validate_phase.py",
+          "src/theforge/detach.py",
+          "src/theforge/ideate.py",
+          "src/theforge/model_profiles.py",
+          "src/theforge/sprint/audit.py",
+          "src/theforge/sprint/manifest.py",
+          "src/theforge/sprint/runner.py",
+          "src/theforge/sprint/state_writer.py",
+          "src/theforge/sprint/status_reader.py",
+          "src/theforge/sprint/story_state.py",
+          "tests/test_coord_merge_pr.py",
+          "tests/test_daemon.py",
+          "tests/test_ideate_flow.py",
+          "tests/test_notify_backends.py",
+          "tests/test_operator_action_lifecycle.py",
+          "tests/test_unmeasured_cost_reporting.py"
+        ],
+        "files_changed_count": 36,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 12.5653345,
+        "duration_s": 567.51,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/audit.py",
+          "src/theforge/sprint/budget.py",
+          "src/theforge/sprint/manifest.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_unmeasured_cost_reporting.py"
+        ],
+        "files_changed_count": 5,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 2.575327,
+        "duration_s": 244.58
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.650289,
+        "duration_s": 345.51
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 92,
+      "profile_avg_iterations": 1.9022,
+      "profile_avg_cost_usd": 9.467132,
+      "profile_raw_dev_max": 2.8533,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 23.6678,
+      "review_history_sample_size": 14,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 92 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-27T19:33:11.790810+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-27T20:02:13.547796+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 31.474776500000004,
+    "review_usd": null,
+    "dev_invocations": 2,
+    "review_invocations": 7,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 18.909442000000002,
+        "duration_seconds": 1440.4866232918575,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.007273999999999999
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 18.902168000000003
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 12.5653345,
+        "duration_seconds": 567.5143657501321,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 12.5653345
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 64.38041036102611,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 64.38041036102611,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.7957681999999997,
+        "duration_seconds": 64.38041036102611,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.064449
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.7313191999999995
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.779559,
+        "duration_seconds": 115.10042793063137,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.779559
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 115.10042793063137,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 115.10042793063137,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.6502891999999996,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.6502891999999996
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The unmeasured\u2192zero coercion is real and only partially fixed: state.py/audit.py already added *_measured properties that preserve None, but state.total_cost (the coercing accessor) is still read directly by completion.py, notify.py, and engine.py for operator-facing totals, notifications, and audit total_cost_usd fields, and dev_phase.py/review_phase.py/plan_flow.py/ideate.py still sum with `or 0.0` for their own logged/aggregated totals.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "cli"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.6862908999999999,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "1509ff98832f",
+    "cache_snapshot": {
+      "worktree_head": "89e904a15faf97402b88aff137493adfa8a4f384",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "89e904a15faf97402b88aff137493adfa8a4f384",
+      "story_content_hash": "c42703a6a9f948bf8ba5b249898f5d0805cec06de53da990ebbc3b1e30947abe"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "89e904a15faf97402b88aff137493adfa8a4f384",
+      "current_worktree_head": "89e904a15faf97402b88aff137493adfa8a4f384",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "89e904a15faf97402b88aff137493adfa8a4f384",
+      "current_evaluation_base_branch_head": "89e904a15faf97402b88aff137493adfa8a4f384",
+      "cached_story_content_hash": "c42703a6a9f948bf8ba5b249898f5d0805cec06de53da990ebbc3b1e30947abe",
+      "current_story_content_hash": "c42703a6a9f948bf8ba5b249898f5d0805cec06de53da990ebbc3b1e30947abe",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.6862908999999999,
+        "duration_s": 180.0,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.65 \u2265 threshold 0.60 over 92 admissible runs \u2014 pre-promotion held) (profile success_rate=0.65 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1992/iter_1.yaml",
+      "handoff": {
+        "summary": "Made the unmeasured-cost signal survive aggregation instead of being coerced to 0.0. The None-preserving CoordinatorState.total_*_cost_measured properties are now the canonical source for reported and persisted totals, with the coercing accessors retained only where a numeric lower bound is required (budget arithmetic, carry-forward). Added shared util helpers (sum_costs, _fmt_cost_total, _round_cost) so a partially unmeasured aggregate renders as 'unknown (>= $X measured)' and never as a plain dollar figure. Propagated nullable cost through operator surfaces (PR body, DONE logs, ntfy/backend notifications, human-review and pending-HITL prompts, live state_update payloads), structured records (run_end, post_run/post_sprint hooks, cost_at_crash, review-pool handoff), per-phase aggregation (dev iterations, review cycles, plan review now None-aware so a measured/unmeasured MIX is unknown), ideation totals, the model-profile routing fold, and the whole sprint surface (StoryStateEntry.cost_usd, live state file, status reader, sprint-summary.yaml and sprint-audit.yaml, which now carry null total_cost_usd plus cost_complete=false and a separately labelled total_cost_measured_usd). CLI renderers (forge audit, forge status, forge sprint-status) show 'unknown' rather than $0.0000, and forge status no longer scrapes a dollar lower bound out of an unknown total log line.",
+        "commits": [
+          {
+            "sha": "5653dfa",
+            "message": "fix(cost): preserve unmeasured cost through aggregation instead of coercing to zero"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A story with any unmeasured component is not reported as a plain dollar figure",
+            "status": "MET",
+            "notes": "PR body, DONE log, notifications, HITL prompts and sprint-status rows all render 'unknown' / 'unknown (>= $X measured)' when total_cost_measured is None. Pinned by TestPullRequestBody and TestOperatorRendering in tests/test_unmeasured_cost_reporting.py."
+          },
+          {
+            "criterion": "The unmeasured state survives aggregation and reaches the operator-facing surfaces",
+            "status": "MET",
+            "notes": "state.total_cost_measured is read at every operator surface; per-phase sums use the new None-aware sum_costs so a mix of measured and unmeasured attempts is unknown rather than a partial subtotal."
+          },
+          {
+            "criterion": "The unmeasured state reaches the audit record; anything consuming per-story cost can tell that record apart from one whose cost is complete",
+            "status": "MET",
+            "notes": "Per-run audit totals.cost_usd / cost.total_usd are null; sprint-summary and sprint-audit carry null total_cost_usd plus explicit cost_complete=false and total_cost_measured_usd. The substrate's total_cost_usd column was already nullable and stores the null without fallback coercion."
+          },
+          {
+            "criterion": "Given #1945 as input, the reported cost identifies that the dev phase was unmeasured rather than presenting $0.99 as the story's cost",
+            "status": "MET",
+            "notes": "tests/test_unmeasured_cost_reporting.py reproduces exactly that state (three unmeasured dev results + a $0.99 review result) and asserts total_cost_measured is None, the audit totals are null, and the PR body says 'unknown' rather than '$0.99'."
+          },
+          {
+            "criterion": "Routing/adaptive consumers are not taught that unpriced work was free",
+            "status": "MET",
+            "notes": "_extract_reviewers passes None per reviewer into model_profiles._update_review, which already routes unknown cost to its unknown-count path rather than folding a 0.0."
+          },
+          {
+            "criterion": "Dispatch-time budget check counts unmeasured spend against a cap",
+            "status": "PARTIAL",
+            "notes": "Budget enforcement and re-exec carry-forward still use the coercing total as an explicit zero-valued LOWER BOUND, documented as such in the code. Making the cap nullable would change enforcement semantics (what does 'unknown vs limit' mean?), which is a design decision the spec's ACs do not settle. Flagged as a deviation below."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Budget enforcement (sprint accumulated_cost) and same-sprint carry-forward still consume the coercing numeric total as a lower bound rather than becoming nullable. The plan explicitly permits leaving coercing accessors where a numeric subtotal is required; comparing an unknown total against a cap has no single obviously-correct semantics (fail closed and stop the sprint, or continue?) and the spec states the consequence without prescribing the behavior. Every REPORTING path is fixed; only the arithmetic-enforcement path retains the lower bound, and it is commented as such.",
+          "Sprint totals keep a numeric total_cost_measured_usd alongside the nulled total_cost_usd. Without it, a mid-sprint re-exec would read null and drop all prior spend from carry-forward, understating totals worse than the bug being fixed."
+        ],
+        "deferred_items": [
+          "7 tests fail in this sandbox for environmental reasons unrelated to the change: tests/test_sprint_lock.py (5) and tests/test_sprint_reexec_collision.py (1) fail with PermissionError from multiprocessing semaphore creation, and tests/test_cut_rc_isolation.py fails on mktemp being denied. No locking or subprocess-isolation code was touched. 6193 passed; ruff check and ruff format --check pass."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1992/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 addresses the single P1: sprint budget enforcement still compared only the measured lower bound, so a sprint kept dispatching stories after one finished with unmeasured cost. Extracted the policy into a new pure, stdlib-only src/theforge/sprint/budget.py \u2014 evaluate_budget() returns a BudgetBlock or None. Exhaustion is evaluated first and keeps its exact prior wording (existing operator surfaces and tests depend on it); when the measured lower bound is under the cap but any spend was unmeasured, the check now fails closed with an explicit 'budget unverifiable' reason that names the unpriced sources, because a cap cannot be enforced against a total known to be understated. Treated as a pattern bug rather than one line: three sources feed the same understatement and all three now register in a runner-level unmeasured_spend ledger guarded by cost_lock \u2014 completed stories whose total_cost_measured is None, intake remediation passes whose agent ran without reporting cost (new _intake_outcome_cost_measured uses the audit block's `attempted` flag to separate 'no agent ran, genuinely free' from 'agent ran on an unpriced transport'), and spend carried into a --resume from a generation that recorded cost_complete: false (new _prior_sprint_cost_incomplete). Per convention 6 the refusal is traceable: SprintResult.unmeasured_spend_sources plus an unmeasured_spend_sources field on both sprint-audit.yaml and sprint-summary.yaml, and unmeasured intake spend now also clears cost_complete on the summary (it lives outside every story's CoordinatorState). Iteration 0's work is unchanged: unmeasured cost still survives aggregation through state, phase logs, PR body/notifications/HITL, run_end/audit records, sprint story and summary surfaces, and the CLI renderers.",
+        "commits": [
+          {
+            "sha": "5653dfa",
+            "message": "fix(cost): preserve unmeasured cost through aggregation instead of coercing to zero"
+          },
+          {
+            "sha": "402cefb",
+            "message": "fix(sprint): fail closed when the budget cannot be evaluated against unmeasured spend (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A story with any unmeasured component is not reported as a plain dollar figure",
+            "status": "MET",
+            "notes": "PR body, DONE log, notifications, HITL prompts and sprint-status rows render 'unknown' / 'unknown (>= $X measured)'. Pinned by TestPullRequestBody and TestOperatorRendering."
+          },
+          {
+            "criterion": "The unmeasured state survives aggregation and reaches the operator-facing surfaces",
+            "status": "MET",
+            "notes": "Every operator surface reads state.total_cost_measured; per-phase sums use None-aware sum_costs so a mix of measured and unmeasured attempts is unknown, not a partial subtotal."
+          },
+          {
+            "criterion": "The unmeasured state reaches the audit record; anything consuming per-story cost can tell that record apart from one whose cost is complete",
+            "status": "MET",
+            "notes": "Per-run audit totals are null; sprint audit/summary carry null total_cost_usd plus cost_complete=false, total_cost_measured_usd, and now unmeasured_spend_sources naming the specific work."
+          },
+          {
+            "criterion": "Given #1945 as input, the reported cost identifies that the dev phase was unmeasured rather than presenting $0.99",
+            "status": "MET",
+            "notes": "tests/test_unmeasured_cost_reporting.py reproduces that exact state and asserts total_cost_measured is None, audit totals null, PR body 'unknown' not '$0.99'."
+          },
+          {
+            "criterion": "Routing/adaptive consumers are not taught that unpriced work was free",
+            "status": "MET",
+            "notes": "_extract_reviewers passes None per reviewer into model_profiles._update_review, which routes unknown cost to its unknown-count path."
+          },
+          {
+            "criterion": "Dispatch-time budget check accounts for unmeasured spend (review P1)",
+            "status": "MET",
+            "notes": "evaluate_budget fails closed when spend is unmeasured and the measured bound is under the cap. Covered by TestBudgetEnforcement (unit: proceed / exhausted-wording preserved / exhaustion-beats-unverifiable / unverifiable-blocks / source elision / intake attempted-vs-not) and TestBudgetEnforcementSeam (run_sprint end to end: story 2 is never dispatched after story 1 runs unpriced; the audit records cost_complete=false, null total, and the unmeasured sources; a fully measured two-story sprint still dispatches both and sets no stopped_reason)."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Behavioral change the operator should know about: a sprint whose dev transport does not report cost (e.g. codex, the motivating #1945 case) now STOPS after its first story rather than continuing against an unverifiable cap. This is the spec's stated requirement \u2014 enforcement must not treat an understated number as a measurement \u2014 and the fail-closed option the reviewer named, but it is a real usability cliff on unpriced transports. No config opt-out was added: inventing a policy knob would exceed the approved plan, and the solo-operator convention says skip compat ramps. Worth a follow-up issue if the operator wants an explicit 'allow unmeasured spend' escape hatch.",
+          "Budget ARITHMETIC (accumulated_cost, carry-forward sums) still uses the coercing numeric total as an explicit lower bound, documented as such. Only the DECISION is now three-valued. Making the sums nullable would break carry-forward across re-exec without improving the decision, which the completeness ledger already handles.",
+          "Sprint totals keep a numeric total_cost_measured_usd alongside the nulled total_cost_usd so a mid-sprint re-exec does not drop all prior spend from carry-forward."
+        ],
+        "deferred_items": [
+          "Review P2 (.forge/audits/runs/8cc3a661a179.json committed): not from this branch. That file and the whole .forge/audits/runs/ tree were committed by ffe62c6 'chore(audit): record sprint run audits' on main and are deliberately tracked there; `git show --stat` on both of my commits shows no .forge/ paths. Removing another commit's intentional artifacts is outside this story.",
+          "7 tests fail in this sandbox for environmental reasons unrelated to the change: tests/test_sprint_lock.py (5) and tests/test_sprint_reexec_collision.py (1) fail with PermissionError from multiprocessing semaphore creation, and tests/test_cut_rc_isolation.py fails on mktemp being denied. No locking or subprocess-isolation code was touched in either iteration. 6202 passed; ruff check and ruff format --check clean."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "a68258017e02cfec"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 1,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The reporting and audit paths mostly preserve unknown cost, but sprint budget enforcement still consumes the legacy lower-bound total and committed generated audit artifacts violate repo hygiene. | [google-gemini-3.5-flash] The implementation successfully preserves unmeasured cost through aggregation instead of coercing to zero, with excellent test coverage. | [claude-sonnet] Unmeasured cost now survives aggregation end to end (state \u2192 phase logs \u2192 PR body/notifications/HITL \u2192 run_end/audit \u2192 sprint summary/audit \u2192 CLI renderers); full suite (6137 tests) passes and ruff is clean, with only the previously-flagged budget-arithmetic lower bound left coercing by deliberate, well-justified design.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/runner.py",
+          "line": 3969,
+          "description": "After a story with unmeasured cost finishes, the sprint budget check still compares only the measured lower bound, so the sprint can continue launching later stories even though prior spend is unknown.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P2",
+          "file": ".forge/audits/runs/8cc3a661a179.json",
+          "line": 1,
+          "description": "The change adds generated run-audit JSON artifacts under .forge/audits/runs to version control.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A story with any unmeasured component is not reported as a plain dollar figure",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/util.py:124 renders unknown totals as unknown or an explicit measured lower bound, src/theforge/coordinator/completion.py:390 uses that renderer in the PR body, and tests/test_unmeasured_cost_reporting.py:518 verifies the #1945-shaped PR body says unknown instead of $0.99.; src/theforge/coordinator/util.py:124 (_fmt_cost_total) and src/theforge/cli/sprint_status.py:424 (_print_story_line) render 'unknown' or 'unknown (>= $X measured)' when total_cost_measured is None. Covered by TestOperatorRendering in tests/test_unmeasured_cost_reporting.py."
+        },
+        {
+          "criterion": "The unmeasured state survives aggregation and reaches the operator-facing surfaces",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/state.py:891 makes total_cost_measured return None when any phase aggregate is unmeasured, src/theforge/coordinator/util.py:107 makes per-phase sum_costs None-aware, and tests/test_unmeasured_cost_reporting.py:70 verifies the three-unmeasured-dev plus measured-review state has total_cost_measured is None.; src/theforge/coordinator/state.py:891 (total_cost_measured) aggregates per-phase costs using None-aware sum_costs. Covered by TestStateAggregation in tests/test_unmeasured_cost_reporting.py."
+        },
+        {
+          "criterion": "The unmeasured state reaches the audit record; anything consuming per-story cost can tell that record apart from one whose cost is complete",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/audit.py:698 stores state.total_cost_measured in cost.total_usd, src/theforge/sprint/audit.py:728 writes null sprint total_cost_usd when cost_complete is false, and tests/test_unmeasured_cost_reporting.py:117 and tests/test_unmeasured_cost_reporting.py:270 verify per-run and sprint audit totals are null for the partial-cost case.; src/theforge/sprint/audit.py:721 (_write_sprint_audit) and src/theforge/sprint/audit.py:1150 (_write_sprint_summary) write null total_cost_usd and cost_complete=false. Covered by TestStructuredRecords in tests/test_unmeasured_cost_reporting.py."
+        },
+        {
+          "criterion": "Given #1945 as input, the reported cost identifies that the dev phase was unmeasured rather than presenting $0.99 as the story's cost",
+          "status": "VERIFIED",
+          "evidence": "tests/test_unmeasured_cost_reporting.py:51 constructs the #1945 shape with three unmeasured dev results and a $0.99 review result, tests/test_unmeasured_cost_reporting.py:70 verifies the aggregate is unknown, and tests/test_unmeasured_cost_reporting.py:518 verifies the PR body does not report $0.99 as the story cost.; tests/test_unmeasured_cost_reporting.py:70 (test_measured_total_is_unknown_when_dev_unmeasured) and tests/test_unmeasured_cost_reporting.py:498 (TestPullRequestBody) verify that the reported cost is 'unknown' rather than '$0.99'."
+        },
+        {
+          "criterion": "Routing/adaptive consumers are not taught that unpriced work was free",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/model_profiles_bridge.py:40 preserves None review telemetry cost, src/theforge/model_profiles.py:719 routes None cost into the unknown-cost path, and tests/test_unmeasured_cost_reporting.py:168 verifies _extract_reviewers returns cost is None for an unmeasured reviewer cycle.; src/theforge/coordinator/model_profiles_bridge.py:22 (_extract_reviewers) passes None for unmeasured reviewer cost, which is handled correctly by model_profiles._update_review. Covered by test_profile_fold_receives_unmeasured_reviewer_cost in tests/test_unmeasured_cost_reporting.py."
+        },
+        {
+          "criterion": "Dispatch-time budget check counts unmeasured spend against a cap",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/sprint/runner.py:3969 still adds result.state.total_cost, the legacy measured lower bound, into accumulated_cost, while src/theforge/sprint/runner.py:3548 compares that lower bound to resolved.budget_usd before dispatch; tests/test_unmeasured_cost_reporting.py has no budget-enforcement regression for an unknown prior story cost.; src/theforge/sprint/runner.py:3969 uses result.state.total_cost (the legacy coercing total) as a lower bound for budget checks, ensuring known spend is counted against the cap. Covered by TestSprintTotals in tests/test_unmeasured_cost_reporting.py."
+        },
+        {
+          "criterion": "Symptom resolution: cost a transport could not measure was coerced to zero at every aggregation point, so unpriced work was reported as free and a story's total was presented as a confident figure with its largest component silently missing.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/util.py adds sum_costs/_fmt_cost_total/_round_cost so a None-preserving aggregate renders as \"unknown (>= $X measured)\" and never as a bare dollar figure; these are threaded into every operator surface (completion.py:390 PR body, completion.py:1626 DONE log, notify.py escalate/crash/done/human-review, pending_hitl.py, remote_gates.py, cli/sprint_status.py, cli/status.py, cli/audit.py), every structured record (run_end, post_run/post_sprint hooks, cost_at_crash, sprint-audit.yaml/sprint-summary.yaml with cost_complete=false and total_cost_measured_usd), and the routing fold (model_profiles_bridge.py _extract_reviewers passes None through rather than 0.0). tests/test_unmeasured_cost_reporting.py reproduces the exact #1945 shape (3 unmeasured dev AgentResults + 1 review result at $0.99) via _issue_1945_state() and asserts state.total_cost_measured is None, the PR body says \"- **Cost:** unknown\" (not \"$0.99\"), and sprint/audit totals are null with cost_complete=false \u2014 this is the test that would have caught the original bug. All 27 tests in that file pass, and the full suite (6137 tests, excluding 6 sandbox-environmental failures the dev correctly identified as unrelated to this change) passes with ruff clean. One deliberate, documented gap remains: sprint/runner.py:3969 still accumulates the coercing result.state.total_cost for the dispatch-time budget-cap comparison (:3549-3555), so unmeasured spend still doesn't count against the cap \u2014 the dev flagged this as an unresolved design question (no spec-settled semantics for \"unknown vs. cap\") rather than an oversight, and it does not affect any operator-facing or audit-record surface, which are all fixed."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior budget-enforcement P1 is resolved, and I found no blocking regressions in the current change. | [google-gemini-3.5-flash] The unmeasured cost preservation and budget fail-closed enforcement are beautifully implemented and fully verified by comprehensive tests. | [claude-sonnet] Iteration 1 correctly fixes the cycle-1 P1: sprint budget enforcement now fails closed via the new pure evaluate_budget() decision function when any spend is unmeasured, with unit tests and an end-to-end seam test (story 2 never dispatched after story 1 runs unpriced). No regressions found in the touched files; full suite (6148 tests) passes and ruff is clean.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: unmeasured story cost is no longer reported as a plain dollar total or consumed by budget enforcement as if it were free.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/state.py:744 and src/theforge/coordinator/state.py:891 preserve None through phase and grand-total aggregation; src/theforge/coordinator/util.py:124 renders incomplete totals as unknown or an explicit measured lower bound; src/theforge/coordinator/completion.py:390 and src/theforge/coordinator/audit.py:405 consume the None-preserving total for PR bodies and run audit totals; src/theforge/sprint/story_state.py:203 and src/theforge/sprint/audit.py:728 make story and sprint records nullable with cost_complete metadata; src/theforge/sprint/runner.py:4027 records completed unmeasured stories in unmeasured_spend and src/theforge/sprint/runner.py:3610 invokes evaluate_budget before later dispatches; src/theforge/sprint/budget.py:85 returns an unverifiable block when the measured lower bound is under the cap but unmeasured spend exists. tests/test_unmeasured_cost_reporting.py:52 reproduces the issue-1945 shape, tests/test_unmeasured_cost_reporting.py:117 verifies audit totals stay null, tests/test_unmeasured_cost_reporting.py:515 verifies the PR body reports unknown instead of $0.99, and tests/test_unmeasured_cost_reporting.py:641 verifies a second story is not dispatched after unmeasured spend. I ran pytest tests/test_unmeasured_cost_reporting.py -q: 38 passed."
+        },
+        {
+          "criterion": "A story with any unmeasured component is not reported as a plain dollar figure",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/coordinator/util.py:124 (_fmt_cost_total) and src/theforge/cli/sprint_status.py:424. Tested in tests/test_unmeasured_cost_reporting.py:TestOperatorRendering.; Unchanged from cycle 1, re-verified: src/theforge/coordinator/util.py _fmt_cost_total renders \"unknown (>= $X measured)\", never a bare dollar figure, and is used at every operator surface. tests/test_unmeasured_cost_reporting.py::TestPullRequestBody and TestOperatorRendering pass (38/38 tests in the file pass under this iteration)."
+        },
+        {
+          "criterion": "The unmeasured state survives aggregation and reaches the operator-facing surfaces",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/coordinator/state.py:891 (total_cost_measured) and src/theforge/coordinator/util.py:107 (sum_costs). Tested in tests/test_unmeasured_cost_reporting.py:TestStateAggregation.; Unchanged from cycle 1: state.py total_*_cost_measured properties, sum_costs in util.py, and their use across engine.py/plan_flow.py/preflight_flow.py/review_phase.py/ validate_phase.py. TestPhaseAggregationSeams and TestStateAggregation pass."
+        },
+        {
+          "criterion": "The unmeasured state reaches the audit record; anything consuming per-story cost can tell that record apart from one whose cost is complete",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/audit.py:694 and src/theforge/sprint/audit.py:1111. Tested in tests/test_unmeasured_cost_reporting.py:TestStructuredRecords.; sprint/audit.py _write_sprint_audit/_write_sprint_summary emit null total_cost_usd, cost_complete=false, total_cost_measured_usd, and (new in this iteration) unmeasured_spend_sources (sprint/audit.py:733-737, :1163). TestSprintTotals and TestBudgetEnforcementSeam::test_sprint_records_which_spend_was_unmeasured assert against real YAML written to tmp_path and pass."
+        },
+        {
+          "criterion": "Given #1945 as input, the reported cost identifies that the dev phase was unmeasured rather than presenting $0.99",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/runner.py:4031 and src/theforge/sprint/runner.py:4322. Tested in tests/test_unmeasured_cost_reporting.py:TestPullRequestBody."
+        },
+        {
+          "criterion": "Routing/adaptive consumers are not taught that unpriced work was free",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/coordinator/model_profiles_bridge.py:21 (_extract_reviewers). Tested in tests/test_unmeasured_cost_reporting.py:TestStructuredRecords:test_profile_fold_receives_unmeasured_reviewer_cost.; model_profiles_bridge.py _extract_reviewers threads None through per-reviewer cost accumulation; TestStructuredRecords.test_profile_fold_receives_unmeasured_reviewer_cost pins this and passes."
+        },
+        {
+          "criterion": "Dispatch-time budget check accounts for unmeasured spend (review P1)",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/budget.py:66 (evaluate_budget) and src/theforge/sprint/runner.py:3611. Tested in tests/test_unmeasured_cost_reporting.py:TestBudgetEnforcement and TestBudgetEnforcementSeam.; New src/theforge/sprint/budget.py evaluate_budget() checks exhaustion first (preserving exact prior wording, confirmed by test_measured_spend_over_cap_still_reports_exhausted), then returns an \"unverifiable\" BudgetBlock when unmeasured_spend is non-empty and the measured lower bound is under the cap. runner.py:3608-3632 wires this into the dispatch loop under cost_lock, replacing the old cumulative >= budget_usd check. Three sources feed unmeasured_spend: completed stories (runner.py:4029-4031, via result.state.total_cost_measured is None), intake remediation passes (_intake_outcome_cost_measured using the attempted flag, runner.py:499-517), and carried cost from an incomplete prior generation (_prior_sprint_cost_incomplete, runner.py:698-721). TestBudgetEnforcement (7 unit tests: proceed-under-cap, exhausted-wording-preserved, exhaustion-beats-unverifiable, unverifiable-blocks, source-elision, intake attempted-vs-not) and TestBudgetEnforcementSeam (test_second_story_is_not_dispatched_after_unmeasured_spend confirms mock_run.call_count == 1 out of 2 stories, result.stopped_reason starts with \"Budget unverifiable\"; test_fully_measured_sprint_dispatches_every_story confirms both stories still dispatch with no regression to the exhausted-budget path) all pass. Full suite: 6148 passed."
+        },
+        {
+          "criterion": "Given #1945 as input, the reported cost identifies that the dev phase was unmeasured rather than presenting $0.99 as the story's cost",
+          "status": "VERIFIED",
+          "evidence": "tests/test_unmeasured_cost_reporting.py _issue_1945_state() reproduces this exactly; TestStateAggregation.test_measured_total_is_unknown_when_dev_unmeasured and TestPullRequestBody both pass."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2008",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1992",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2008",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2008",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-27T20:18:21.006395+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1134 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1416 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 794 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 992 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2263 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1641 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1535 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1632 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1914 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1167 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2026 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 936 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1156 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1118 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1302 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1252 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 4542 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1004 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1020 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1489 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1271 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1107 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1539 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1114 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1246 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1746 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1077 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1510 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "a68258017e02cfec",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/runner.py",
+      "line": 3969,
+      "severity": "P1",
+      "description": "After a story with unmeasured cost finishes, the sprint budget check still compares only the measured lower bound, so the sprint can continue launching later stories even though prior spend is unknown.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "98d62f4d3a3c180d",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": ".forge/audits/runs/8cc3a661a179.json",
+      "line": 1,
+      "severity": "P2",
+      "description": "The change adds generated run-audit JSON artifacts under .forge/audits/runs to version control.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 3,
+            "completed": 3,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8478,
+              "weighted": 0.6525,
+              "runs": 92,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.6525
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": 0.7778,
+              "weighted": 0.85,
+              "runs": 27,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.85,
+              "by_domain": {
+                "backend": {
+                  "runs": 18,
+                  "raw": 0.7778,
+                  "weighted": 0.7778,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 9,
+                  "raw": 0.7778,
+                  "weighted": 0.7778,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "cli"
+          ],
+          "raw": 0.7778,
+          "weighted": 0.85,
+          "runs": 27,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.85,
+          "by_domain": {
+            "backend": {
+              "runs": 18,
+              "raw": 0.7778,
+              "weighted": 0.7778,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 9,
+              "raw": 0.7778,
+              "weighted": 0.7778,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8478,
+        "weighted_success_rate": 0.6525,
+        "sample_size": 92,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.6525,
+          "threshold": 0.6,
+          "sample_size": 92,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+cli",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.65 \u2265 threshold 0.60 over 92 admissible runs \u2014 pre-promotion held) (profile success_rate=0.65 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 34,
+            "completed": 30,
+            "raw": 0.8824,
+            "weighted": 0.8781,
+            "rate": 0.8781,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 23,
+            "completed": 20,
+            "raw": 0.8696,
+            "weighted": 0.8636,
+            "rate": 0.8636,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 46,
+            "completed": 46,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 34,
+            "completed": 30,
+            "raw": 0.8824,
+            "weighted": 0.8781,
+            "rate": 0.8781,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 23,
+            "completed": 20,
+            "raw": 0.8696,
+            "weighted": 0.8636,
+            "rate": 0.8636,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.686291,
+      "duration_s": 180.0,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 31.474777,
+      "duration_s": 2008.0,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 100.72,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 538.44,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 4.225616,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2827.17,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "fb46c8fab499",
+  "sprint_name": "issues-2006,1992,1937"
+}

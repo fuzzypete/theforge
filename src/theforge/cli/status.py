@@ -218,7 +218,11 @@ def _historical_row_from_substrate(record: dict) -> tuple[float, str, str, str, 
         stopped = sprint_block.get("stopped_reason")
         status_str = "stopped" if stopped else "completed"
         cost_usd = sprint_block.get("total_cost_usd")
-        if cost_usd is None:
+        if cost_usd is None and sprint_block.get("cost_complete") is not False:
+            # A sprint that recorded cost_complete=False has a null total on
+            # purpose: at least one story's spend was never measured. Falling
+            # back to a numeric subtotal would report it as the sprint's cost
+            # (#1992).
             cost_usd = (record.get("totals") or {}).get("cost_usd")
         dur_s = sprint_block.get("duration_seconds")
         if dur_s is None:
@@ -245,7 +249,12 @@ def _historical_row_from_substrate(record: dict) -> tuple[float, str, str, str, 
         if dur_s is None and isinstance(timing, dict):
             dur_s = timing.get("duration_seconds")
 
-    cost_str = f"${cost_usd:.2f}" if isinstance(cost_usd, (int, float)) else "—"
+    if isinstance(cost_usd, (int, float)):
+        cost_str = f"${cost_usd:.2f}"
+    elif sprint_block is not None and sprint_block.get("cost_complete") is False:
+        cost_str = "unknown"
+    else:
+        cost_str = "—"
     if isinstance(dur_s, (int, float)) and dur_s > 0:
         elapsed_str = f"{int(dur_s // 60)}m"
     else:

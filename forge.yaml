@@ -89,7 +89,13 @@ validation:
   # 45→60 (2026-07-11): story #1243 hit identical 45s gate timeouts twice under
   # --parallel 3 load, then passed instantly when resumed solo. Modest bump to
   # absorb parallel contention; revisit if timeouts persist at 60.
-  gate_timeout: 60
+  # 60→180 (2026-07-27): the suite outgrew the budget. `make gate` measured
+  # 71.4s wall clock alone (6224 tests) against a 60s alone-time budget, so
+  # sprints at --parallel 1 failed at the baseline gate deterministically —
+  # adaptive scaling multiplies this value, so parallelism was the only thing
+  # masking it. Set to ~2.5x measured alone-time; the timeout exists to catch a
+  # hung gate, not to bound normal growth. Re-measure when the suite grows.
+  gate_timeout: 180
 
 conventions:
   hard:
