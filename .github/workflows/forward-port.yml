@@ -26,9 +26,18 @@ name: Forward-port release to main
 #   can push to a release branch outside a checked PR.
 # - pyproject.toml and CHANGELOG.md always keep main's version: release-line
 #   commits bump the RC/release version and roll the changelog, and those
-#   must never overwrite main's dev version or its [Unreleased] section.
+#   must never overwrite main's dev version or its [Unreleased] section. That
+#   guard is scoped to the CONTENT, not the files (#2016): reverting the whole
+#   of pyproject.toml also reverted requires-python and the ruff target-version,
+#   silently, while still reporting success. scripts/forward_port_guard.py
+#   restores only [project] version and main's [Unreleased] section, drops the
+#   versioned sections the roll created, and fails the port if anything else
+#   would be discarded.
 # - Any conflict outside those two files aborts the port and files an issue
-#   instead of guessing.
+#   instead of guessing. Conflicts *inside* them are three-way merged with the
+#   release side's version/roll content normalised back to the merge base, so
+#   only genuine conflicts remain — and those abort the port too, rather than
+#   resolving to --ours and dropping the release-line change with it.
 # - "Already ported?" stays a content check (merged tree == main tree) — cheap
 #   and correct regardless of strategy; a merge commit additionally keeps the
 #   ancestry so conflicts don't recur.
@@ -64,6 +73,7 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref_name }}
         run: |
+          set -o pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin "$RELEASE_REF"
@@ -86,15 +96,55 @@ jobs:
               echo "EOF" >> "$GITHUB_OUTPUT"
               exit 1
             fi
-            # Version files conflict on every rc cut / release bump: keep main's.
-            git checkout --ours -- pyproject.toml CHANGELOG.md
-            git add pyproject.toml CHANGELOG.md
+            # Version files conflict on every rc cut / release bump. Resolving
+            # them with --ours would also revert whatever else the release line
+            # changed in them (#2016), so instead three-way merge each file with
+            # the release side's version/roll content normalised back to the
+            # merge base. Only genuine conflicts survive that, and they abort.
+            for vf in $conflicts; do
+              case "$vf" in
+                pyproject.toml) kind=pyproject ;;
+                CHANGELOG.md) kind=changelog ;;
+                *) continue ;;
+              esac
+              ok=true
+              git show ":1:$vf" > "$RUNNER_TEMP/fp-base" 2>/dev/null || ok=false
+              git show ":2:$vf" > "$RUNNER_TEMP/fp-ours" 2>/dev/null || ok=false
+              git show ":3:$vf" > "$RUNNER_TEMP/fp-theirs" 2>/dev/null || ok=false
+              if [ "$ok" = true ]; then
+                python3 scripts/forward_port_guard.py resolve --kind "$kind" \
+                  --base "$RUNNER_TEMP/fp-base" \
+                  --ours "$RUNNER_TEMP/fp-ours" \
+                  --theirs "$RUNNER_TEMP/fp-theirs" \
+                  --output "$vf" || ok=false
+              else
+                echo "::error::$vf conflicted with no merge-base stage; cannot resolve safely."
+              fi
+              if [ "$ok" != true ]; then
+                git merge --abort
+                echo "conflict_files<<EOF" >> "$GITHUB_OUTPUT"
+                echo "$vf (unresolvable version-file conflict)" >> "$GITHUB_OUTPUT"
+                echo "EOF" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              git add "$vf"
+            done
             git commit --no-edit
           fi
 
           # Even when the merge is clean, never let release-line version bumps
-          # or changelog rolls land on main.
-          git checkout ORIG_HEAD -- pyproject.toml CHANGELOG.md
+          # or changelog rolls land on main — but drop ONLY that content. Every
+          # other release-branch change to these files ports normally, and the
+          # guard fails the port if it would discard anything else (#2016).
+          git show ORIG_HEAD:pyproject.toml > "$RUNNER_TEMP/fp-main-pyproject"
+          git show ORIG_HEAD:CHANGELOG.md > "$RUNNER_TEMP/fp-main-changelog"
+          python3 scripts/forward_port_guard.py protect --kind pyproject \
+            --main "$RUNNER_TEMP/fp-main-pyproject" --merged pyproject.toml \
+            | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          python3 scripts/forward_port_guard.py protect --kind changelog \
+            --main "$RUNNER_TEMP/fp-main-changelog" --merged CHANGELOG.md \
+            | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
           if ! git diff --cached --quiet -- pyproject.toml CHANGELOG.md || ! git diff --quiet -- pyproject.toml CHANGELOG.md; then
             git add pyproject.toml CHANGELOG.md
             git commit --amend --no-edit
@@ -147,7 +197,7 @@ jobs:
           if [ -z "$existing" ]; then
             gh pr create --base main --head "$branch" \
               --title "Forward-port $RELEASE_REF into main" \
-              --body "Automated forward-port of \`$RELEASE_REF\` (@ ${{ github.sha }}) into main. Version files (pyproject.toml, CHANGELOG.md) keep main's copies by design. Opened by forward-port.yml via the forward-port GitHub App so pull_request CI runs with PR-associated checks (#1646)."
+              --body "Automated forward-port of \`$RELEASE_REF\` (@ ${{ github.sha }}) into main. main keeps its own \`[project] version\` and its \`[Unreleased]\` changelog section; every other release-line change to those files is carried, and anything else the guard would drop fails the port instead (#2016). See the run summary for exactly what was excluded. Opened by forward-port.yml via the forward-port GitHub App so pull_request CI runs with PR-associated checks (#1646)."
             existing=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
           fi
 
