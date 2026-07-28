@@ -686,6 +686,34 @@ def test_estimate_cost_for_gpt_5_4_variants():
     assert _estimate_cost("openai", "gpt-5.4-pro", 1_000_000, 500_000) == pytest.approx(75.0)
 
 
+def test_estimate_cost_discounts_cached_input_tokens():
+    """Cached input is a subset of input_tokens, billed at 10% of the input rate."""
+    from theforge.runners.schema_utils import _estimate_cost
+
+    # gpt-5.4-mini: (0.25, 2.00)/Mtok. 1M input of which 800k cached.
+    expected = (0.2 * 0.25) + (0.8 * 0.25 * 0.1) + (0.5 * 2.00)
+    assert _estimate_cost(
+        "openai", "gpt-5.4-mini", 1_000_000, 500_000, cached_input_tokens=800_000
+    ) == pytest.approx(expected)
+
+
+def test_estimate_cost_cached_default_preserves_flat_rate_behaviour():
+    """Callers that can't distinguish cache tiers are unchanged."""
+    from theforge.runners.schema_utils import _estimate_cost
+
+    assert _estimate_cost("openai", "gpt-5.4-mini", 1_000_000, 500_000) == pytest.approx(
+        _estimate_cost("openai", "gpt-5.4-mini", 1_000_000, 500_000, cached_input_tokens=0)
+    )
+
+
+def test_estimate_cost_clamps_impossible_cached_count():
+    """More cached than input would otherwise go negative and understate spend."""
+    from theforge.runners.schema_utils import _estimate_cost
+
+    cost = _estimate_cost("openai", "gpt-5.4-mini", 1_000, 0, cached_input_tokens=9_999)
+    assert cost == pytest.approx((1_000 / 1e6) * 0.25 * 0.1)
+
+
 def test_estimate_cost_warns_once_for_unknown_model(caplog):
     from theforge.runners import schema_utils
 

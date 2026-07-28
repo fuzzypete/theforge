@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -11,7 +12,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from theforge.config import ModelProfile
-from theforge.runners.runner_codex import _run_codex
+from theforge.runners.runner_codex import (
+    _agent_text_from_events,
+    _CodexUsage,
+    _error_text_from_events,
+    _price_codex_usage,
+    _run_codex,
+    _usage_from_events,
+)
 
 # Spawn seam patched by the argv-construction tests below.
 _RUN_TARGET = "theforge.runners.runner_codex.process_group.run_in_process_group"
@@ -176,6 +184,141 @@ class TestCodexSandboxFlag:
         assert env_passed["PATH"].split(os.pathsep)[0] == str(venv_bin)
         assert env_passed["VIRTUAL_ENV"] == str(tmp_path / ".venv")
         assert env_passed["OPENAI_API_KEY"] == "secret"
+
+
+class TestCodexJsonInvocationMode:
+    """Codex must be invoked in machine-readable event mode (#2019).
+
+    Without ``--json`` the only usage figure codex prints is a bare human total,
+    which cannot be priced — so every run was recorded cost-unknown and any
+    multi-story sprint on a codex pool deadlocked on the fail-closed budget check.
+    """
+
+    def test_fresh_run_requests_json_events(self, tmp_path: Path) -> None:
+        profile = _make_profile(sandbox_mode="workspace-write")
+        mock_proc = _make_subprocess_mock()
+        with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
+            with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
+                _run_codex(prompt="do it", profile=profile, working_dir=tmp_path)
+        cmd = _extract_codex_cmd(mock_run)
+        assert "--json" in cmd
+        # Flag must apply to `exec`, i.e. sit after the subcommand.
+        assert cmd.index("--json") > cmd.index("exec")
+
+    def test_resume_requests_json_events(self, tmp_path: Path) -> None:
+        profile = _make_profile(sandbox_mode="workspace-write")
+        mock_proc = _make_subprocess_mock()
+        with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
+            _run_codex(
+                prompt="continue",
+                profile=profile,
+                working_dir=tmp_path,
+                session_id="sess-abc123",
+            )
+        cmd = _extract_codex_cmd(mock_run)
+        assert "--json" in cmd
+        assert cmd.index("--json") > cmd.index("resume")
+
+    def test_output_last_message_file_still_requested(self, tmp_path: Path) -> None:
+        """Agent text still comes from -o; --json only changes what stdout carries."""
+        profile = _make_profile(sandbox_mode="none")
+        mock_proc = _make_subprocess_mock()
+        with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
+            with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
+                _run_codex(prompt="do it", profile=profile, working_dir=tmp_path)
+        assert "-o" in _extract_codex_cmd(mock_run)
+
+
+class TestCodexEventUsageParsing:
+    """Unit coverage for the `turn.completed` usage parser."""
+
+    _EVENT = (
+        '{"type":"thread.started","thread_id":"t1"}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":12892,'
+        '"cached_input_tokens":9088,"cache_write_input_tokens":0,'
+        '"output_tokens":21,"reasoning_output_tokens":14}}\n'
+    )
+
+    def test_parses_full_split(self) -> None:
+        usage = _usage_from_events(self._EVENT)
+        assert usage is not None
+        assert usage.input_tokens == 12892
+        assert usage.cached_input_tokens == 9088
+        assert usage.output_tokens == 21
+        assert usage.reasoning_output_tokens == 14
+
+    def test_sums_multiple_turns(self) -> None:
+        usage = _usage_from_events(self._EVENT + self._EVENT.splitlines()[1] + "\n")
+        assert usage is not None
+        assert usage.input_tokens == 12892 * 2
+        assert usage.output_tokens == 42
+
+    def test_ignores_non_turn_events_and_garbage_lines(self) -> None:
+        stream = 'preamble text\n{"type":"item.completed"}\n{"broken\n'
+        assert _usage_from_events(stream) is None
+
+    def test_tolerates_truncated_final_line(self) -> None:
+        """A killed run's last line is often half-written; earlier turns still count."""
+        usage = _usage_from_events(self._EVENT + '{"type":"turn.compl')
+        assert usage is not None
+        assert usage.input_tokens == 12892
+
+    def test_agent_text_reconstructed_from_events(self) -> None:
+        stream = (
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Done here."}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n'
+        )
+        assert _agent_text_from_events(stream) == "Done here."
+
+    def test_agent_text_none_when_no_message_event(self) -> None:
+        assert _agent_text_from_events(self._EVENT) is None
+
+    def test_error_events_surface_for_quota_fallback_classification(self) -> None:
+        """Failures carried only on stdout must still reach AgentResult.output.
+
+        The CLI→API fallback classifier pattern-matches that text, so an error
+        stranded inside the event stream would silently disable quota fallback.
+        """
+        stream = '{"type":"error","message":"429 rate limit exceeded"}\n'
+        assert _error_text_from_events(stream) == "429 rate limit exceeded"
+
+    def test_error_text_reads_nested_message(self) -> None:
+        stream = '{"type":"turn.failed","error":{"message":"usage limit reached"}}\n'
+        assert _error_text_from_events(stream) == "usage limit reached"
+
+
+class TestCodexCachedTokenPricing:
+    """Cached input must be discounted, and reasoning output must not be re-billed."""
+
+    def test_cached_input_is_discounted_not_charged_at_full_rate(self) -> None:
+        profile = _make_profile()
+        usage = _CodexUsage(
+            input_tokens=12892,
+            cached_input_tokens=9088,
+            output_tokens=21,
+            reasoning_output_tokens=14,
+        )
+        cost, model_usage = _price_codex_usage(profile=profile, usage=usage)
+        # o4-mini: (1.10, 4.40)/Mtok. uncached = 12892 - 9088 = 3804.
+        expected = (3804 / 1e6) * 1.10 + (9088 / 1e6) * 1.10 * 0.1 + (21 / 1e6) * 4.40
+        assert cost == pytest.approx(expected)
+        # A flat-rate charge would be strictly larger — that overstatement is the
+        # bug this guards.
+        assert cost < (12892 / 1e6) * 1.10 + (21 / 1e6) * 4.40
+
+    def test_reasoning_tokens_recorded_but_not_double_billed(self) -> None:
+        profile = _make_profile()
+        usage = _CodexUsage(input_tokens=0, output_tokens=1000, reasoning_output_tokens=800)
+        cost, model_usage = _price_codex_usage(profile=profile, usage=usage)
+        assert cost == pytest.approx((1000 / 1e6) * 4.40)
+        assert model_usage[0].thinking_tokens == 800
+
+    def test_cache_write_tokens_surface_in_model_usage(self) -> None:
+        profile = _make_profile()
+        usage = _CodexUsage(input_tokens=100, cache_write_input_tokens=40, output_tokens=10)
+        _, model_usage = _price_codex_usage(profile=profile, usage=usage)
+        assert model_usage[0].cache_creation_tokens == 40
+        assert model_usage[0].cache_read_tokens == 0
 
 
 class TestCodexResumeSandboxReassertion:
@@ -346,6 +489,78 @@ class TestCodexLifecycle:
         )
         assert result.cost_usd == pytest.approx(0.0033)
         assert len(result.model_usage) == 1
+
+    def test_json_event_usage_yields_measured_cost(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A `codex exec --json` turn.completed event is parsed into measured cost."""
+        self._patch_env(monkeypatch, "json_usage")
+        profile = _make_profile(sandbox_mode="none")  # o4-mini: (1.10, 4.40)/Mtok
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is True
+        assert result.cost_usd is not None
+        assert len(result.model_usage) == 1
+        usage = result.model_usage[0]
+        assert usage.input_tokens == 12892
+        assert usage.cache_read_tokens == 9088
+        assert usage.cache_creation_tokens == 256
+        assert usage.output_tokens == 2100
+        assert usage.thinking_tokens == 1400
+        expected = (3804 / 1e6) * 1.10 + (9088 / 1e6) * 1.10 * 0.1 + (2100 / 1e6) * 4.40
+        assert result.cost_usd == pytest.approx(expected)
+
+    def test_json_mode_does_not_leak_events_into_agent_output(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Empty -o file falls back to the agent message, not the raw JSONL stream."""
+        self._patch_env(monkeypatch, "json_no_output_file")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.output == "Task complete."
+        assert "turn.completed" not in result.output
+        assert result.cost_usd is not None
+
+    def test_multi_turn_usage_accumulates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Two turn.completed events sum, so a multi-turn run is fully accounted."""
+        self._patch_env(monkeypatch, "json_two_turns")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.model_usage[0].input_tokens == 12892 * 2
+        assert result.model_usage[0].output_tokens == 2100 * 2
+
+    def test_killed_run_recovers_partial_usage_before_cost_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A run killed on timeout keeps the usage it already emitted (#2019).
+
+        The old path discarded TimeoutExpired output entirely and returned
+        cost_usd=None even when the CLI had already reported a completed turn.
+        """
+        self._patch_env(monkeypatch, "json_partial_hang")
+        profile = replace(_make_profile(sandbox_mode="none"), timeout_seconds=3)
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.failure_code == "timeout"
+        assert result.cost_usd is not None
+        assert result.model_usage[0].input_tokens == 12892
+
+    def test_killed_run_without_usage_stays_cost_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No usage emitted before the kill → cost-unknown remains the honest answer."""
+        self._patch_env(monkeypatch, "grandchild_hang")
+        profile = replace(_make_profile(sandbox_mode="none"), timeout_seconds=3)
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd is None
+        assert result.model_usage == ()
 
     def test_real_total_only_summary_is_cost_unknown_not_fabricated(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

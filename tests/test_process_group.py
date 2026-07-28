@@ -238,6 +238,38 @@ class TestRunInProcessGroup:
             "grandchild survived group timeout kill"
         )
 
+    def test_timeout_preserves_partial_stdout_as_text(self, tmp_path: Path) -> None:
+        """Output written before the kill survives on the exception, decoded (#2019).
+
+        The raised TimeoutExpired previously carried either nothing or bytes-joined
+        garbage in text mode, so a killed agent's already-reported token usage was
+        unrecoverable and the run could only be recorded cost-unknown.
+        """
+        script = "import sys,time;print('partial line');sys.stdout.flush();time.sleep(30)"
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            process_group.run_in_process_group(
+                [sys.executable, "-c", script],
+                timeout=1.5,
+                capture_output=True,
+                text=True,
+            )
+        assert isinstance(excinfo.value.stdout, str)
+        assert "partial line" in excinfo.value.stdout
+
+    def test_timeout_drain_is_bounded(self, tmp_path: Path) -> None:
+        """A timeout must not become an unbounded wait on a surviving writer (#1959)."""
+        script = "import sys,time;print('x');sys.stdout.flush();time.sleep(30)"
+        start = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            process_group.run_in_process_group(
+                [sys.executable, "-c", script],
+                timeout=1.0,
+                capture_output=True,
+                text=True,
+            )
+        # timeout + two bounded grace windows, with slack for a loaded CI box.
+        assert time.monotonic() - start < 1.0 + 4 * process_group.KILL_GRACE_SECONDS + 5.0
+
 
 # ---------------------------------------------------------------------------
 # Runner-level group kill (real fake-CLI subprocess trees)
