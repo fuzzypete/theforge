@@ -1479,6 +1479,242 @@ def test_cut_fails_loud_when_pinned_rc_build_python_is_missing(tmp_path: Path) -
     assert not (repo / ".forge" / "rc-envs" / "v0.99.0rc0").exists()
 
 
+def _build_rc_num_fixture(tmp_path: Path, origin_tags: list[str]) -> tuple[Path, Path, dict]:
+    """Fixture for the RC_NUM auto-computation tests.
+
+    Builds a fake repo plus a ``git`` shim whose ``ls-remote`` answers from
+    ``origin_tags`` (bare tag names, e.g. ``["v0.99.0rc0"]``) using the same
+    glob semantics real ``git ls-remote <pattern>`` uses, so both the
+    highest-tag query (``refs/tags/v0.99.0rc*``) and the exact-tag collision
+    guard (``refs/tags/v0.99.0rc3``) are exercised against one source of truth.
+
+    Returns (repo, script_copy, env).
+    """
+    repo = tmp_path / "fake_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "pyproject.toml").write_text('version = "0.99.0"\n')
+    (repo / "Makefile").write_text("gate:\n\t@true\n")
+    # The fixture's pinned interpreter and RC envs live in the work tree; keep
+    # them ignored so the script's clean-tree check sees a clean repo.
+    (repo / ".gitignore").write_text(".venv/\n.forge/\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+
+    real_git = subprocess.run(
+        ["bash", "-c", "command -v git"], capture_output=True, text=True
+    ).stdout.strip()
+    assert real_git
+
+    bin_dir = tmp_path / "shim_bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/bin/sh\nif [ \"$3\" != '' ]; then echo 0; fi\nexit 0\n")
+    (bin_dir / "gh").chmod(0o755)
+    (bin_dir / "make").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "make").chmod(0o755)
+
+    tag_list = " ".join(origin_tags) if origin_tags else ""
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            case "$1" in
+                ls-remote)
+                    # git ls-remote --tags origin <pattern>
+                    for t in {tag_list}; do
+                        case "refs/tags/$t" in
+                            $4) printf 'deadbeef\\trefs/tags/%s\\n' "$t" ;;
+                        esac
+                    done
+                    exit 0
+                    ;;
+                push|pull) exit 0 ;;
+            esac
+            exec {real_git} "$@"
+            """
+        )
+    )
+    git_shim.chmod(0o755)
+
+    _provision_repo_pinned_python(repo, tmp_path / "pip_calls.log")
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".local" / "bin").mkdir(parents=True)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{fake_home}/.local/bin:{bin_dir}:/usr/bin:/bin"
+    env.pop("VIRTUAL_ENV", None)
+
+    script_copy = tmp_path / "cut-rc.sh"
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    script_text = re.sub(
+        r"^export PATH=\"/opt/homebrew/bin:\$PATH\"\s*$",
+        ": # PATH override stripped for hermetic test",
+        script_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    script_copy.write_text(script_text)
+    script_copy.chmod(0o755)
+    _provision_apply_branch_protection_sibling(script_copy)
+
+    return repo, script_copy, env
+
+
+def _run_cut_rc(repo: Path, script_copy: Path, env: dict, *args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["bash", str(script_copy), "--dry-run", "--no-install", *args],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_auto_rc_num_is_next_after_highest_origin_tag(tmp_path: Path) -> None:
+    """With no RC_NUM, the script must cut one past the highest existing
+    ``v<VERSION>rcN`` tag on origin instead of always attempting rc0.
+    """
+    repo, script_copy, env = _build_rc_num_fixture(
+        tmp_path, ["v0.99.0rc0", "v0.99.0rc1", "v0.99.0rc2"]
+    )
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0")
+    assert rc == 0, f"cut-rc.sh should compute rc3 and proceed. Output:\n{combined}"
+    assert "Cutting RC      : 0.99.0rc3" in combined, combined
+    # It must also report how the number was derived — the operator should not
+    # have to infer it.
+    assert re.search(r"RC number\s+: 3 \(next after highest existing origin tag", combined), (
+        f"cut-rc.sh must report the computed RC number and its source. Output:\n{combined}"
+    )
+
+
+def test_auto_rc_num_sorts_numerically_not_lexically(tmp_path: Path) -> None:
+    """rc10 is higher than rc9 — a lexical max would compute rc10 again."""
+    repo, script_copy, env = _build_rc_num_fixture(
+        tmp_path, ["v0.99.0rc8", "v0.99.0rc9", "v0.99.0rc10"]
+    )
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0")
+    assert rc == 0, combined
+    assert "Cutting RC      : 0.99.0rc11" in combined, combined
+
+
+def test_auto_rc_num_starts_at_zero_on_a_fresh_release_line(tmp_path: Path) -> None:
+    """A release line with no RC tags still cuts rc0, unchanged from before."""
+    repo, script_copy, env = _build_rc_num_fixture(tmp_path, ["v0.98.0rc4"])
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0")
+    assert rc == 0, combined
+    assert "Cutting RC      : 0.99.0rc0" in combined, combined
+    assert "starting the release line at rc0" in combined
+
+
+def test_explicit_rc_num_overrides_computed_number(tmp_path: Path) -> None:
+    """An explicit RC_NUM still wins over whatever origin's tags imply."""
+    repo, script_copy, env = _build_rc_num_fixture(
+        tmp_path, ["v0.99.0rc0", "v0.99.0rc1", "v0.99.0rc2"]
+    )
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0", "7")
+    assert rc == 0, combined
+    assert "Cutting RC      : 0.99.0rc7" in combined, combined
+    assert "explicit RC_NUM argument" in combined
+
+
+def test_origin_tag_collision_guard_still_refuses_a_colliding_number(tmp_path: Path) -> None:
+    """The existing tag-already-exists guard must remain a backstop: an
+    explicit (or wrongly computed) number that collides with an origin tag
+    still refuses rather than proceeding to bump/commit/tag.
+    """
+    repo, script_copy, env = _build_rc_num_fixture(
+        tmp_path, ["v0.99.0rc0", "v0.99.0rc1", "v0.99.0rc2"]
+    )
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0", "1")
+    assert rc != 0, f"colliding RC_NUM must be refused. Output:\n{combined}"
+    assert "already exists on origin" in combined
+
+
+def test_local_tag_collision_guard_still_runs(tmp_path: Path) -> None:
+    """The local tag guard also stays in place ahead of the origin check."""
+    repo, script_copy, env = _build_rc_num_fixture(tmp_path, [])
+    subprocess.run(["git", "-C", str(repo), "tag", "v0.99.0rc0"], check=True)
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0")
+    assert rc != 0, f"locally existing tag must be refused. Output:\n{combined}"
+    assert "already exists locally" in combined
+
+
+def test_resume_without_rc_num_targets_highest_existing_tag(tmp_path: Path) -> None:
+    """--resume must re-enter the RC the aborted cut targeted — the highest
+    tag already on origin — not a freshly computed next number.
+    """
+    repo, script_copy, env = _build_rc_num_fixture(
+        tmp_path, ["v0.99.0rc0", "v0.99.0rc1", "v0.99.0rc2"]
+    )
+    rc, combined = _run_cut_rc(repo, script_copy, env, "--resume", "0.99.0")
+    assert rc == 0, f"--resume should resume rc2. Output:\n{combined}"
+    assert "Cutting RC      : 0.99.0rc2" in combined, combined
+    assert "resuming highest existing origin tag v0.99.0rc2" in combined
+    assert "0.99.0rc3" not in combined
+
+
+def test_resume_with_explicit_rc_num_targets_that_rc(tmp_path: Path) -> None:
+    """An explicit RC_NUM under --resume is still honoured verbatim."""
+    repo, script_copy, env = _build_rc_num_fixture(
+        tmp_path, ["v0.99.0rc0", "v0.99.0rc1", "v0.99.0rc2"]
+    )
+    rc, combined = _run_cut_rc(repo, script_copy, env, "--resume", "0.99.0", "1")
+    assert rc == 0, combined
+    assert "Cutting RC      : 0.99.0rc1" in combined, combined
+
+
+def test_resume_without_rc_num_fails_when_no_rc_tags_exist(tmp_path: Path) -> None:
+    """There is nothing to resume on a release line with no RC tags; the
+    script must say so rather than silently resolve to rc0 and then fail on
+    the resume-requires-tag check with a less specific message.
+    """
+    repo, script_copy, env = _build_rc_num_fixture(tmp_path, [])
+    rc, combined = _run_cut_rc(repo, script_copy, env, "--resume", "0.99.0")
+    assert rc != 0, combined
+    assert "no v0.99.0rc* tag exists on origin" in combined
+
+
+def test_unreachable_origin_fails_loud_instead_of_defaulting_to_rc0(tmp_path: Path) -> None:
+    """If origin cannot be queried, the computed number would be a guess.
+    Refuse and tell the operator to pass RC_NUM instead of silently cutting
+    rc0 on a line that may already have RCs.
+    """
+    repo, script_copy, env = _build_rc_num_fixture(tmp_path, [])
+    git_shim = tmp_path / "shim_bin" / "git"
+    real_git = subprocess.run(
+        ["bash", "-c", "command -v git"], capture_output=True, text=True
+    ).stdout.strip()
+    git_shim.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            case "$1" in
+                ls-remote)
+                    echo "fatal: could not read from remote repository" >&2
+                    exit 128
+                    ;;
+                push|pull) exit 0 ;;
+            esac
+            exec {real_git} "$@"
+            """
+        )
+    )
+    git_shim.chmod(0o755)
+
+    rc, combined = _run_cut_rc(repo, script_copy, env, "0.99.0")
+    assert rc != 0, f"unreachable origin must fail loud. Output:\n{combined}"
+    assert "could not query origin" in combined
+    assert "Cutting RC" not in combined
+
+
 @pytest.mark.skipif(
     not SCRIPT.exists(),
     reason="cut-rc.sh not present",
