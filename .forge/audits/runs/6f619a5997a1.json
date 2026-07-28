@@ -1,0 +1,1988 @@
+{
+  "schema_version": 12,
+  "run_id": "6f619a5997a1",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Codex CLI runs are recorded cost-unmeasured, so any multi-story sprint using a Codex-backed model cannot dispatch",
+    "slug": "issue-2019",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nA sprint whose model pool includes a Codex-CLI-backed model skips every story\nbefore dispatching any of them. In `hdp` run `d5e69156e8b2`, intake remediation\nran an agent pass on four issues, each recorded cost-unknown, and the first\nbudget check then refused to dispatch:\n\n```\nSKIPPED issue-231 (budget unverifiable (spend unmeasured for 4 source(s)\n[intake:issue-231, intake:issue-245, intake:issue-246, intake:issue-248];\nmeasured $0.00 of $80.00 cap is a lower bound, so the cap cannot be verified))\n...\nSprint complete: 0 succeeded, 0 failed, 4 skipped. Total: unknown  4m 54s\n```\n\nThe `$80.00` cap was never the binding constraint \u2014 the sprint spent real money\non four agent passes and then refused to proceed because it could not state what\nit had spent. Single-story sprints hide this: `hdp` run `b79139ae6648` also\nlogged cost-unmeasured but completed, because a budget check that blocks\n*further* dispatch has nothing left to block when only one story exists.\n\n## Expected behavior\n\nWhen a CLI-backed agent transport can report machine-readable token usage, forge\nshould invoke it in a mode that captures that usage and should contribute the\nresulting measured cost to audit and budget totals, accounting for discounted\ntoken classes where the transport distinguishes them. A transport that is only\ncost-blind because of how forge chose to invoke it should not be treated as\ninherently unmeasurable, and should not be able to deadlock a sprint that has\nample remaining budget. Where usage genuinely cannot be recovered \u2014 a run killed\nbefore any usage is emitted \u2014 recording cost-unknown remains correct, but forge\nshould first recover whatever usage the run did emit before declaring the total\nunmeasurable.\n\n## Diagnosis\n\n- **Observed symptom:** every story in a multi-story sprint is SKIPPED with\n  \"budget unverifiable\" when any agent pass runs on a Codex-CLI-backed model,\n  even though measured spend is far below the cap.\n\n- **Evidence:** `hdp` run `d5e69156e8b2` (`.forge/logs/issues-248,245,246,231/run-d5e69156e8b2.log`)\n  logs `WARNING: Codex CLI run for model=gpt-5.4-mini completed cost-unmeasured\n  (no token usage in output); recording cost-unknown, NOT $0.00.` for four intake\n  passes, then skips all four stories at the first budget check. Probing the CLI\n  directly with `codex exec --json` shows the usage split is in fact emitted:\n  `{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":12892,\"cached_input_tokens\":9088,\n  \"cache_write_input_tokens\":0,\"output_tokens\":21,\"reasoning_output_tokens\":14}}`.\n  `theforge` itself carries the same exposure \u2014 79 run logs under `.forge/logs/`\n  contain `cost-unmeasured`.\n\n- **Confirmed cause:** `runner_codex.build_argv` invokes `codex exec` in\n  human-readable mode without `--json`, so the only usage figure reaching forge\n  is the CLI's bare total-token summary line. `_usage_from_json` receives `{}`\n  (the `-o` last-message file is plain text, so `json.loads` fails) and\n  `_usage_from_text` returns None by design, since a bare total cannot be split\n  into input and output for pricing. `_extract_codex_cost` therefore returns\n  cost-unknown, `sprint.runner` appends the pass to `unmeasured_spend`, and\n  `sprint.budget.evaluate_budget` fails closed per #1992. The two behaviors are\n  individually correct and jointly produce a guaranteed deadlock.\n\n- **Affected code path:** `runners.runner_codex.build_argv` and\n  `build_resume_argv` (invocation mode); `runners.runner_codex._extract_codex_cost`,\n  `_usage_from_json`, `_usage_from_text` (usage recovery);\n  `runners.cli._run_with_heartbeat` and `_handle_exception` (killed-run path,\n  which discards `TimeoutExpired.stdout` and returns `cost_usd=None, raw={}`);\n  `sprint.runner._UNTRACKED_COST_CLIS`; `runners.schema_utils._estimate_cost` and\n  `PRICING_TABLE` (which already prices `gpt-5.4` and `gpt-5.4-mini`).\n\n- **Fix-success criterion:** a multi-story sprint whose stories run on a\n  Codex-CLI-backed model dispatches all stories and reports a non-`unknown`\n  sprint total, with per-story cost present in the audit.\n\n## Scope notes\n\nTwo questions the implementation has to settle; neither is prescribed here.\n\nCached input is a correctness question, not a rounding one. In the probe above,\n9,088 of 12,892 input tokens were cached, and these are billed at a steep\ndiscount. `_estimate_cost` currently takes a flat `(input_tokens, output_tokens)`\npair and would charge the cached portion at full rate, overstating spend\nseveralfold on the input side. Since #1992's premise is that a reported number\nmust mean what it says, a knowingly-inflated figure would undercut the fix it\ncompletes. The relationship between `reasoning_output_tokens` and `output_tokens`\n(subset or additive) also needs confirming against a real multi-turn run rather\nthan a trivial probe; `_estimate_cost` already has a `thinking_tokens` seam.\n\nKilled runs are a second, larger change. Unlike the Claude runner, which streams\nstdout line-by-line and can therefore reconstruct partial spend via\n`_reconstruct_partial_cost`, the Codex runner reads stdout only from a completed\n`CompletedProcess` and drops partial output entirely on timeout. Capturing usage\nfrom a killed run requires incremental reads, not a flag change. A long dev run\nappears to emit `turn.completed` per turn, so accumulating usage as it arrives\nwould make partial accounting possible; that should be confirmed by observing a\nreal run before being designed around.\n\n## Test impact\n\n`tests/test_sprint_lifecycle.py::test_codex_cli_reviewer_emits_targeted_cost_tracking_warning`\nasserts the current untracked-cost warning and guards `codex` membership in\n`sprint.runner._UNTRACKED_COST_CLIS`; it is load-bearing and must change with the\nbehavior. `tests/fake_bin/npx` already models `usage`, `usage_stdout`, and the\nbare-total human summary, so a JSONL mode extends the existing harness.\n`tests/contract/test_codex_cli_contract.py` substitutes the real `codex` binary\nand is where the invocation mode should be locked against the actual CLI rather\nthan the fake. `tests/test_runner_codex.py` covers the extraction helpers.\nAnything parsing Codex stdout should be re-checked for format sensitivity \u2014\n`runners.stuck_detection` first; agent text itself comes from the `-o` file and\nshould be unaffected.\n\n## Operator impact\n\nThis currently blocks the `hdp` dogfood line. The available workaround is to\nswitch the pool from the `openai/` prefix (Codex CLI transport) to `openai-api/`\n(metered API transport), which the operator has declined on cost grounds, so\n`hdp` stays blocked until this lands.\n",
+    "github_issue": 2019,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Codex CLI runs are recorded cost-unmeasured, so any multi-story sprint using a Codex-backed model cannot dispatch' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-2019",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-28T18:15:56.182787+00:00",
+    "finished_at": "2026-07-28T18:44:59.059527+00:00",
+    "duration_seconds": 1742.87674
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2019",
+    "branch": "feat/issue-2019",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 8.715011500000001,
+        "duration_s": 862.68,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/process_group.py",
+          "src/theforge/runners/cli.py",
+          "src/theforge/runners/runner_codex.py",
+          "src/theforge/runners/schema_utils.py",
+          "src/theforge/sprint/runner.py",
+          "tests/contract/test_codex_cli_contract.py",
+          "tests/fake_bin/npx",
+          "tests/test_config_auto_api_fallback.py",
+          "tests/test_process_group.py",
+          "tests/test_runner_api_local.py",
+          "tests/test_runner_codex.py",
+          "tests/test_sprint_lifecycle.py"
+        ],
+        "files_changed_count": 12,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": null,
+        "duration_s": 186.76
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 94,
+      "profile_avg_iterations": 1.8936,
+      "profile_avg_cost_usd": 9.6249,
+      "profile_raw_dev_max": 2.8404,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 24.0622,
+      "review_history_sample_size": 15,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 94 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-28T18:26:40.561188+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 8.715011500000001,
+    "review_usd": null,
+    "dev_invocations": 1,
+    "review_invocations": 3,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 8.715011500000001,
+        "duration_seconds": 862.6814537500031,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.008164000000000001
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 8.706847500000002
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": null,
+        "duration_seconds": 62.20705070835538,
+        "success": true,
+        "exit_code": 0,
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": null,
+        "duration_seconds": 62.20705070835538,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.2481105999999997,
+        "duration_seconds": 62.20705070835538,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.043429999999999996
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.2046805999999997
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed by direct inspection: runner_codex.build_argv invokes codex exec without --json, _usage_from_text only matches a bare total (never a real split), and sprint/runner.py's _UNTRACKED_COST_CLIS treats codex as inherently cost-blind, exactly as diagnosed \u2014 this is real unfinished cross-module work, not already fixed.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "12 operator-visible surfaces enumerated in acceptance criteria: --json, 231/run-d5e69156e8b2.log, already has a, already models, and returns, appends the pass to, asserts the current untracked-cost warning and guards, currently takes a flat",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "cli",
+      "concurrency",
+      "backend"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.30576130000000007,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "cfa0371565be",
+    "cache_snapshot": {
+      "worktree_head": "e4fe6a2dc5b423897de83e5c4655e8ad8b0853b1",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "e4fe6a2dc5b423897de83e5c4655e8ad8b0853b1",
+      "story_content_hash": "7634ee73c9a3055d88164fac66d63c3757fee885687bf71a4c29c3e05a2038cb"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "e4fe6a2dc5b423897de83e5c4655e8ad8b0853b1",
+      "current_worktree_head": "e4fe6a2dc5b423897de83e5c4655e8ad8b0853b1",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "e4fe6a2dc5b423897de83e5c4655e8ad8b0853b1",
+      "current_evaluation_base_branch_head": "e4fe6a2dc5b423897de83e5c4655e8ad8b0853b1",
+      "cached_story_content_hash": "7634ee73c9a3055d88164fac66d63c3757fee885687bf71a4c29c3e05a2038cb",
+      "current_story_content_hash": "7634ee73c9a3055d88164fac66d63c3757fee885687bf71a4c29c3e05a2038cb",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.30576130000000007,
+        "duration_s": 37.86,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.70 \u2265 threshold 0.60 over 94 admissible runs \u2014 pre-promotion held) (profile success_rate=0.70 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2019/iter_1.yaml",
+      "handoff": {
+        "summary": "Made Codex CLI usage measurable end to end. build_argv/build_resume_argv now pass --json so codex emits JSONL thread events; a new _usage_from_events parser sums turn.completed.usage into _CodexUsage and prices it via _price_codex_usage, with cached input discounted to 10% of the input rate through a new backward-compatible cached_input_tokens kwarg on _estimate_cost (PRICING_TABLE's 2-tuple shape and all existing call sites untouched, per plan-review P1). reasoning_output_tokens and cache_write_input_tokens are recorded on ModelUsage but not re-billed, since both are subsets of output_tokens/input_tokens respectively. Killed-run recovery is opt-in and Codex-scoped: run_in_process_group now attaches properly decoded partial stdout to TimeoutExpired via a bounded re-drain after the group kill (unbounded would reintroduce #1959), and _handle_exception gained an optional partial_cost_fn that only the Codex runner passes, so Claude's _reconstruct_partial_cost streaming and Gemini's path are unchanged. The empty--o-file fallback now reconstructs agent text from item.completed agent_message events instead of dumping raw JSONL into handoff/review parsing, and surfaces stdout-only error events so the CLI-to-API quota fallback classifier still sees rate-limit strings. The flat-rate _usage_from_text line-scan is skipped when stdout is an event stream so it cannot re-charge cached input at full rate. codex dropped from _UNTRACKED_COST_CLIS (gemini retained) as warning-text hygiene only.",
+        "commits": [
+          {
+            "sha": "5f1bb35",
+            "message": "fix(runners): measure Codex CLI spend via `codex exec --json`"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Codex CLI is invoked in a mode that captures machine-readable token usage",
+            "status": "MET",
+            "notes": "--json added to both build_argv and build_resume_argv; asserted in tests/test_runner_codex.py::TestCodexJsonInvocationMode (fresh + resume) and in the contract test, which now parametrizes resume so a resume-path flag rejection surfaces there."
+          },
+          {
+            "criterion": "Measured cost accounts for discounted/cached token classes",
+            "status": "MET",
+            "notes": "_estimate_cost gained cached_input_tokens/cached_input_rate_mult keyword-only params (default 0 preserves prior behaviour for every existing caller). Cached input billed at 10% of input rate; count clamped to input_tokens so an impossible report cannot go negative and understate. Covered in test_runner_api_local.py and TestCodexCachedTokenPricing."
+          },
+          {
+            "criterion": "A cost-blind transport does not deadlock a sprint with ample remaining budget",
+            "status": "MET",
+            "notes": "Measured cost now flows from the runner, so codex passes no longer populate unmeasured_spend. test_multi_story_codex_sprint_dispatches_all_stories_with_measured_total pins the regression (3 stories dispatch, non-unknown total). Per plan-review P1 I did NOT attempt result-based gating in the config-warning path; _UNTRACKED_COST_CLIS change is warning-text only."
+          },
+          {
+            "criterion": "Usage is recovered from a killed run before declaring cost-unknown",
+            "status": "MET",
+            "notes": "Verified with a real fake-CLI subprocess (fake_bin/npx json_partial_hang emits a turn.completed then hangs past the timeout): the run returns failure_code=timeout WITH measured cost and input_tokens=12892. grandchild_hang (no usage emitted) still returns cost_usd=None and model_usage=(), so cost-unknown remains correct where it is correct."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Plan Step 3 said to extend PRICING_TABLE model entries. I used keyword-only params on _estimate_cost instead, per the plan reviewer's P1: the table is typed dict[tuple[str,str], tuple[float,float]] and unpacked two-wide at runner_claude.py:175, with positional assertions in tests/test_runner_api_local.py. This keeps api.py and adapters/{openai,google,anthropic}.py untouched.",
+          "Plan Step 4 said to edit _run_with_heartbeat. Partial capture actually belongs in process_group.run_in_process_group (that is where communicate() discards it); _run_with_heartbeat is unchanged. _handle_exception took an opt-in callback rather than unconditional behaviour, per the plan reviewer's P1 about the shared Claude/Gemini path.",
+          "Beyond plan scope but required for correctness: added _error_text_from_events. Under --json a failure can be carried entirely as a stdout error event, and the empty--o fallback would otherwise strand it, silently disabling the CLI-to-API quota fallback that pattern-matches result.output.",
+          "Updated tests/test_config_auto_api_fallback.py::test_sprint_warning_mentions_tracked_api_fallback, not listed in the story's Test impact section. It used cli: codex as the subject for the API-fallback warning text, which codex no longer reaches. Switched to gemini-cli/gemini-2.5-pro (still genuinely untracked) so the assertion keeps testing the fallback-warning mechanism, and added a companion test asserting codex produces no untracked warning."
+        ],
+        "deferred_items": [
+          "UNVERIFIED SEMANTIC: whether turn.completed.usage is per-turn or cumulative. codex is not installed in this worktree so I could not probe a real multi-turn run. I sum across events (documented in _usage_from_events, matching the Claude runner's per-message convention); sum and last-event are identical for single-turn codex exec, so this only diverges on a multi-turn run, where cumulative semantics would double-count. Confirm on the first hdp dogfood run; the fix is one function.",
+          "UNVERIFIED: --json acceptance on `codex exec resume` against the real binary. resume already rejects --sandbox, so this is a live risk. The contract test parametrizes resume, but it needs THEFORGE_RUN_CLI_CONTRACT=1 plus an installed codex.",
+          "7 pre-existing test failures in my sandbox (test_sprint_lock x5, test_sprint_reexec_collision, test_cut_rc_isolation) are Operation-not-permitted on mktemp and POSIX semaphores \u2014 environmental, on code paths untouched by this change. Expected to pass in the coordinator's gate."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The implementation satisfies the Codex CLI cost-measurement path, with targeted tests passing locally. | [google-gemini-3.5-flash] Successfully enabled machine-readable token usage and cost tracking for Codex CLI runs, resolving multi-story sprint deadlocks. | [claude-sonnet] Codex CLI now invoked with --json, usage parsed from turn.completed events, cached tokens discounted, killed-run partial usage salvaged; verified the fix flows through the existing cost_usd-is-None -> total_cost_measured -> unmeasured_spend pipeline without needing budget/audit changes.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Codex CLI is invoked in a mode that captures machine-readable token usage",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_codex.py:83-97 adds --json to fresh codex exec, and src/theforge/runners/runner_codex.py:138-155 adds --json to resume; tests/test_runner_codex.py:197-229 asserts fresh/resume argv and -o preservation, while tests/contract/test_codex_cli_contract.py:124-156 asserts both constructed paths remain in JSON event mode.; src/theforge/runners/runner_codex.py:87 and src/theforge/runners/runner_codex.py:143 add --json to fresh and resume paths. Verified in tests/test_runner_codex.py:189 (TestCodexJsonInvocationMode) and tests/contract/test_codex_cli_contract.py:146 (test_codex_invoked_in_json_event_mode).; src/theforge/runners/runner_codex.py build_argv (line ~76) and build_resume_argv (line ~137) both add \"--json\". Covered by tests/test_runner_codex.py::TestCodexJsonInvocationMode (fresh + resume) and tests/contract/test_codex_cli_contract.py::test_codex_invoked_in_json_event_mode."
+        },
+        {
+          "criterion": "Measured cost accounts for discounted/cached token classes",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_codex.py:282-325 parses cached, cache-write, output, and reasoning token fields from turn.completed usage events, and src/theforge/runners/runner_codex.py:500-530 prices cached input while recording cache and reasoning fields on ModelUsage; src/theforge/runners/schema_utils.py:140-178 discounts cached input with clamping. tests/test_runner_codex.py:290-321 covers cached-input pricing and non-rebilling of reasoning tokens, and tests/test_runner_api_local.py:689-714 covers shared estimator behavior.; src/theforge/runners/schema_utils.py:140 (_estimate_cost) accepts cached_input_tokens and discounts them. Verified in tests/test_runner_api_local.py:689 (test_estimate_cost_discounts_cached_input_tokens) and tests/test_runner_codex.py:290 (TestCodexCachedTokenPricing).; schema_utils.py _estimate_cost now takes cached_input_tokens (clamped, discounted to 10% of input rate) at line ~166-176; runner_codex._price_codex_usage passes usage.cached_input_tokens through. Verified against TestCodexCachedTokenPricing and test_estimate_cost_discounts_cached_input_tokens, confirmed math manually against the $9088/$12892 cached split from the real probe in the spec."
+        },
+        {
+          "criterion": "A cost-blind transport does not deadlock a sprint with ample remaining budget",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/runner_codex.py:693-699 feeds parsed Codex usage into AgentResult cost/model_usage, and src/theforge/sprint/runner.py:104-110 removes codex from the config-time untracked CLI warning set while retaining runtime unmeasured-spend checks at src/theforge/sprint/runner.py:4200-4207. tests/test_runner_codex.py:493-511 proves Codex JSON events now produce measured cost, and tests/test_sprint_lifecycle.py:298-322 exercises the multi-story sprint case with measured totals and no skipped stories.; src/theforge/sprint/runner.py:110 removes codex from _UNTRACKED_COST_CLIS. Verified in tests/test_sprint_lifecycle.py:298 (test_multi_story_codex_sprint_dispatches_all_stories_with_measured_total).; Traced the mechanism end-to-end: sprint/runner.py:4204 appends to unmeasured_spend only when result.state.total_cost_measured is None, and coordinator/state.py:891 total_cost_measured is poisoned only when a phase's AgentResult.cost_usd is None. Since _extract_codex_cost now returns a real cost_usd for measured runs, this flows through unmodified infrastructure. test_multi_story_codex_sprint_dispatches_all_stories_with_measured_total pins the regression with 3 stories all dispatching. PRICING_TABLE already has entries for gpt-5.4 and gpt-5.4-mini (the models in the reported bug), so this is not merely theoretical."
+        },
+        {
+          "criterion": "Usage is recovered from a killed run before declaring cost-unknown",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/process_group.py:103-111 kills timed-out process groups and attaches partial output, src/theforge/process_group.py:125-151 bounds the post-kill drain, and src/theforge/runners/cli.py:99-132 lets Codex opt into partial-cost extraction on TimeoutExpired. src/theforge/runners/runner_codex.py:533-563 prices partial turn.completed usage and src/theforge/runners/runner_codex.py:631-644 wires it into the Codex runner. tests/test_process_group.py:241-271 covers decoded bounded partial stdout, tests/fake_bin/npx:108-115 emits usage then hangs, and tests/test_runner_codex.py:536-563 verifies timeout runs recover usage when present and remain cost-unknown when no usage was emitted.; src/theforge/process_group.py:104 salvages partial stdout on TimeoutExpired. src/theforge/runners/runner_codex.py:639 passes partial_cost_fn to _handle_exception. Verified in tests/test_process_group.py:241 (test_timeout_preserves_partial_stdout_as_text) and tests/test_runner_codex.py:536 (test_killed_run_recovers_partial_usage_before_cost_unknown).; process_group.py _attach_partial_output re-drains proc.communicate() after group-kill, which is the documented CPython pattern for recovering partial output after a TimeoutExpired (bounded by KILL_GRACE_SECONDS so it cannot reintroduce #1959). runner_codex._partial_codex_cost prices the salvaged partial stdout. test_killed_run_recovers_partial_usage_before_cost_unknown and test_killed_run_without_usage_stays_cost_unknown in test_runner_codex.py exercise both branches with real fake-CLI subprocesses per repo convention."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] Step 5's rationale is wrong about the deadlock mechanism. unmeasured_spend is appended from measured-cost-is-None checks (sprint/runner.py:2970 for intake, :4199 for stories), not from _UNTRACKED_COST_CLIS; that frozenset at :104 is consumed only by the pre-sprint warning builder at :1285. Removing codex from it does not by itself unblock dispatch \u2014 Steps 1\u20132 do. The stated alternative ('gate that classification on an actually unmeasured Codex result') is not implementable at that call site, which runs over config profiles before any run exists.\n  Suggestion: Treat Step 5 as warning-text hygiene only: drop codex from _UNTRACKED_COST_CLIS (keeping gemini) and rely on Steps 1\u20132 for the budget fix. Do not attempt result-based gating in the config-warning path.\n- [P1-impl] [claude-opus] Step 1 keeps -o for agent text but _run_codex falls back to proc.stdout when the -o file is empty (runner_codex.py, 'if not output_text: output_text = proc.stdout ...'). Under --json that fallback becomes raw JSONL, so a run whose last-message file is empty would feed event JSON into _try_parse_handoff and downstream review parsing.\n  Suggestion: In the fallback path, reconstruct agent text from the JSONL events (e.g. the final agent/assistant message event) rather than dumping raw stdout.\n- [P1-impl] [claude-opus] Step 3 changes PRICING_TABLE entry shape, which is annotated dict[tuple[str, str], tuple[float, float]] and unpacked two-wide at runner_claude.py:175 (in_rate, out_rate = PRICING_TABLE[('anthropic', key)]). Existing positional _estimate_cost assertions live in tests/test_runner_api_local.py:681-696.\n  Suggestion: Prefer a separate cached-rate lookup or a keyword-only cached_input_tokens/rate parameter that leaves the 2-tuple contract and existing call sites (api.py, adapters/{openai,google,anthropic}.py) untouched.\n- [P1-impl] [claude-opus] Step 4 edits _run_with_heartbeat/_handle_exception in runners/cli.py, which are shared by the Claude and Gemini runners; incremental capture there changes behavior for all three transports.\n  Suggestion: Keep the partial-capture path opt-in (e.g. an optional stdout-sink callback the Codex runner passes) so Claude's existing _reconstruct_partial_cost streaming and Gemini's path are unchanged.\n- [P2] [claude-opus] codex exec resume is known to reject flags accepted on the fresh path (build_resume_argv already works around --sandbox this way); --json acceptance on resume is unverified.\n  Suggestion: Have Step 7's contract test parametrize the resume shape as well as fresh, so a resume-path flag rejection surfaces there rather than at dogfood time.\n- [P1-impl] [openai-gpt-5.4] Step 3 touches src/theforge/runners/schema_utils.py::_estimate_cost, which is called outside the listed files by runners/adapters/{openai,google,anthropic}.py and runners/api.py. The plan is still sound, but implementation must keep _estimate_cost backward-compatible or update those callers and their tests if PRICING_TABLE entry shape changes.\n  Suggestion: Implement cached/cache-write pricing with optional kwargs or another backward-compatible extension point, or explicitly include the adapter and API callers in scope if tuple/signature changes are required.",
+    "cost_usd": null,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.823782
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 98.02,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 295.49,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.4",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 97.26,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 5's rationale is wrong about the deadlock mechanism. unmeasured_spend is appended from measured-cost-is-None checks (sprint/runner.py:2970 for intake, :4199 for stories), not from _UNTRACKED_COST_CLIS; that frozenset at :104 is consumed only by the pre-sprint warning builder at :1285. Removing codex from it does not by itself unblock dispatch \u2014 Steps 1\u20132 do. The stated alternative ('gate that classification on an actually unmeasured Codex result') is not implementable at that call site, which runs over config profiles before any run exists.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 1 keeps -o for agent text but _run_codex falls back to proc.stdout when the -o file is empty (runner_codex.py, 'if not output_text: output_text = proc.stdout ...'). Under --json that fallback becomes raw JSONL, so a run whose last-message file is empty would feed event JSON into _try_parse_handoff and downstream review parsing.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 3 changes PRICING_TABLE entry shape, which is annotated dict[tuple[str, str], tuple[float, float]] and unpacked two-wide at runner_claude.py:175 (in_rate, out_rate = PRICING_TABLE[('anthropic', key)]). Existing positional _estimate_cost assertions live in tests/test_runner_api_local.py:681-696.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 edits _run_with_heartbeat/_handle_exception in runners/cli.py, which are shared by the Claude and Gemini runners; incremental capture there changes behavior for all three transports.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "codex exec resume is known to reject flags accepted on the fresh path (build_resume_argv already works around --sandbox this way); --json acceptance on resume is unverified.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 3 touches src/theforge/runners/schema_utils.py::_estimate_cost, which is called outside the listed files by runners/adapters/{openai,google,anthropic}.py and runners/api.py. The plan is still sound, but implementation must keep _estimate_cost backward-compatible or update those callers and their tests if PRICING_TABLE entry shape changes.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2020",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2019",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2020",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2020",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-28T18:44:59.059527+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "WARN",
+    "cost_usd": 0.14896800000000002,
+    "duration_s": 25.568781375186518,
+    "findings": [
+      {
+        "category": "requirement",
+        "description": "Expected behavior requires accounting for discounted/cached token classes and recovering partial usage from killed runs, but the Fix-success criterion only requires a non-unknown sprint total with per-story cost present \u2014 it does not test cached-token pricing correctness or killed-run partial recovery, so the story could be accepted while leaving two requirements from Expected behavior unmet.",
+        "split_suggestion": null
+      },
+      {
+        "category": "scope",
+        "description": "The story bundles three distinct efforts of different sizes: (1) switching Codex CLI invocation to a JSON-emitting mode and wiring already-emitted usage into cost/audit totals, (2) correcting per-token pricing for cached/discounted input and reasoning-output token classes (a pricing-model change to _estimate_cost/PRICING_TABLE), and (3) capturing partial usage from killed runs, which the story itself notes requires switching runner_codex from a CompletedProcess read to incremental/streaming reads \u2014 'a second, larger change' architecturally different from the Claude runner's approach. The Scope notes section explicitly flags both (2) and (3) as open design questions requiring separate confirmation via real runs, distinguishing them from the core fix.",
+        "split_suggestion": {
+          "stories": [
+            {
+              "name": "Invoke Codex CLI in JSON mode and wire live usage into cost/budget totals",
+              "acs": [
+                "A multi-story sprint whose stories run on a Codex-CLI-backed model dispatches all stories (no budget-unverifiable skip) and reports a non-unknown sprint total, with per-story cost present in the audit, for runs that complete normally."
+              ]
+            },
+            {
+              "name": "Correct pricing for discounted/cached Codex token classes",
+              "acs": [
+                "Codex cost calculation charges cached input tokens at their discounted rate rather than full input rate, verified against a real multi-turn run's reported token split.",
+                "The relationship between reasoning_output_tokens and output_tokens (subset vs. additive) is confirmed against a real run and priced correctly."
+              ]
+            },
+            {
+              "name": "Recover partial usage from killed Codex runs",
+              "acs": [
+                "When a Codex CLI run is killed before completion, forge recovers whatever turn.completed usage was emitted incrementally before declaring cost-unknown, matching the partial-cost reconstruction already available for the Claude runner."
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 5,
+            "completed": 5,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8511,
+              "weighted": 0.7003,
+              "runs": 94,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.7003
+            },
+            "domain": {
+              "domains": [
+                "cli",
+                "concurrency",
+                "backend"
+              ],
+              "raw": 0.8333,
+              "weighted": 0.8,
+              "runs": 36,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.8,
+              "by_domain": {
+                "cli": {
+                  "runs": 11,
+                  "raw": 0.8182,
+                  "weighted": 0.8182,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 4,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 21,
+                  "raw": 0.8095,
+                  "weighted": 0.8,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "cli",
+                "concurrency",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "cli",
+          "concurrency",
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "cli",
+            "concurrency",
+            "backend"
+          ],
+          "raw": 0.8333,
+          "weighted": 0.8,
+          "runs": 36,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.8,
+          "by_domain": {
+            "cli": {
+              "runs": 11,
+              "raw": 0.8182,
+              "weighted": 0.8182,
+              "tainted_runs": 0
+            },
+            "concurrency": {
+              "runs": 4,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 21,
+              "raw": 0.8095,
+              "weighted": 0.8,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8511,
+        "weighted_success_rate": 0.7003,
+        "sample_size": 94,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.7003,
+          "threshold": 0.6,
+          "sample_size": 94,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+cli+concurrency",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend",
+          "cli",
+          "concurrency"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.70 \u2265 threshold 0.60 over 94 admissible runs \u2014 pre-promotion held) (profile success_rate=0.70 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 46,
+            "completed": 39,
+            "raw": 0.8478,
+            "weighted": 0.836,
+            "rate": 0.836,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 27,
+            "completed": 23,
+            "raw": 0.8519,
+            "weighted": 0.8443,
+            "rate": 0.8443,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 57,
+            "completed": 57,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 46,
+            "completed": 39,
+            "raw": 0.8478,
+            "weighted": 0.836,
+            "rate": 0.836,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 27,
+            "completed": 23,
+            "raw": 0.8519,
+            "weighted": 0.8443,
+            "rate": 0.8443,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.305761,
+      "duration_s": 37.86,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": null,
+      "duration_s": 35.88,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Make Codex CLI usage measurable by running `codex exec` in JSON event mode, parsing `turn.completed.usage` events into existing runner cost metadata, and removing Codex from the sprint untracked-cost path once measured. Keep killed-run recovery scoped to Codex stdout/event capture so partial usage emitted before termination is preserved before falling back to cost-unknown.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Invoke Codex CLI in machine-readable JSON mode for fresh and resumed runs.",
+            "files": [
+              "src/theforge/runners/runner_codex.py"
+            ],
+            "action": "modify",
+            "details": "Add `--json` to the `codex exec` argv built by `build_argv` and `build_resume_argv`, while preserving the existing `-o` last-message file behavior for agent text. Ensure downstream parsing treats stdout as JSONL/event output and does not expect the `-o` file to contain usage JSON."
+          },
+          {
+            "id": 2,
+            "description": "Parse Codex JSON event usage and normalize it into measured runner cost metadata.",
+            "files": [
+              "src/theforge/runners/runner_codex.py"
+            ],
+            "action": "modify",
+            "details": "Update `_extract_codex_cost`, `_usage_from_json`, and related helpers to scan Codex JSONL stdout for `turn.completed` events with `usage`, prefer the last completed usage total for completed runs, and populate `ModelUsage` with input, output, cached input, cache write, and reasoning/thinking tokens where present. Keep `_usage_from_text` as a non-priced fallback for legacy bare-total summaries, still returning cost-unknown when no billable split is recoverable.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Price cached and reasoning token classes without overstating measured spend.",
+            "files": [
+              "src/theforge/runners/schema_utils.py"
+            ],
+            "action": "modify",
+            "details": "Extend the existing `_estimate_cost` path and `PRICING_TABLE` model entries used for `gpt-5.4` and `gpt-5.4-mini` so cached input tokens and cache-write tokens can be priced separately from uncached input. Confirm in tests whether Codex `reasoning_output_tokens` is already included in `output_tokens`; map it to the existing thinking-token pricing path only if additive pricing is correct."
+          },
+          {
+            "id": 4,
+            "description": "Preserve partial Codex usage from killed runs before declaring cost unknown.",
+            "files": [
+              "src/theforge/runners/cli.py",
+              "src/theforge/runners/runner_codex.py"
+            ],
+            "action": "modify",
+            "details": "Adjust the Codex runner path through `_run_with_heartbeat` and `_handle_exception` so stdout captured before timeout or process kill is retained and passed back to `_extract_codex_cost`. If valid completed-turn usage exists in partial JSONL output, record measured partial cost; if no usage event was emitted, continue returning `cost_usd=None` and raw metadata indicating cost-unknown."
+          },
+          {
+            "id": 5,
+            "description": "Stop treating Codex CLI as inherently untracked once JSON usage is available.",
+            "files": [
+              "src/theforge/sprint/runner.py"
+            ],
+            "action": "modify",
+            "details": "Remove `codex` from `_UNTRACKED_COST_CLIS` or gate that classification on an actually unmeasured Codex result, so measured Codex passes contribute to sprint budget totals instead of populating `unmeasured_spend` and tripping fail-closed budget evaluation."
+          },
+          {
+            "id": 6,
+            "description": "Update fake CLI coverage for Codex JSONL output and budget behavior.",
+            "files": [
+              "tests/fake_bin/npx",
+              "tests/test_runner_codex.py",
+              "tests/test_sprint_lifecycle.py"
+            ],
+            "action": "modify",
+            "details": "Extend the fake Codex path to emit JSONL `turn.completed` usage when `--json` is passed. Update runner tests to cover JSON usage extraction, cached-token fields, legacy cost-unknown fallback, and partial-output recovery. Replace the lifecycle assertion that Codex emits the untracked-cost warning with a multi-story Codex sprint assertion that all eligible stories dispatch and measured per-story costs reach the audit."
+          },
+          {
+            "id": 7,
+            "description": "Lock the real Codex CLI contract around invocation mode and usage event shape.",
+            "files": [
+              "tests/contract/test_codex_cli_contract.py"
+            ],
+            "action": "modify",
+            "details": "Update the contract test that substitutes the real `codex` binary to assert Forge invokes `codex exec --json` and that the parser accepts the observed `turn.completed.usage` fields without depending on human-readable summary text. Keep the contract test opt-in or fake-substituted per the repository invariant against real provider CLI calls in default gates.",
+            "depends_on": [
+              1,
+              2
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "When a CLI-backed agent transport can report machine-readable token usage, forge should invoke it in a mode that captures that usage.",
+            "steps": [
+              1,
+              2,
+              7
+            ]
+          },
+          {
+            "criterion": "The resulting measured cost should contribute to audit and budget totals, accounting for discounted token classes where the transport distinguishes them.",
+            "steps": [
+              2,
+              3,
+              5,
+              6
+            ]
+          },
+          {
+            "criterion": "A transport that is only cost-blind because of how forge chose to invoke it should not be treated as inherently unmeasurable, and should not be able to deadlock a sprint that has ample remaining budget.",
+            "steps": [
+              1,
+              2,
+              5,
+              6
+            ]
+          },
+          {
+            "criterion": "Where usage genuinely cannot be recovered \u2014 a run killed before any usage is emitted \u2014 recording cost-unknown remains correct, but forge should first recover whatever usage the run did emit before declaring the total unmeasurable.",
+            "steps": [
+              4,
+              6
+            ]
+          },
+          {
+            "criterion": "A multi-story sprint whose stories run on a Codex-CLI-backed model dispatches all stories and reports a non-unknown sprint total, with per-story cost present in the audit.",
+            "steps": [
+              5,
+              6
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "Codex `reasoning_output_tokens` may be either a subset of `output_tokens` or an additive billed class.",
+            "mitigation": "Use contract/fake tests to lock the observed semantics before wiring it into `_estimate_cost`; avoid double-charging until confirmed."
+          },
+          {
+            "description": "Changing `_run_with_heartbeat` could affect non-Codex CLI runners if partial stdout handling is made too broad.",
+            "mitigation": "Keep the new partial-usage recovery path data-compatible with existing callers and add runner-focused tests using fake subprocess fixtures rather than subprocess mocks."
+          },
+          {
+            "description": "Cached-token pricing data may be incomplete for some configured models.",
+            "mitigation": "Apply discounted tiers only where pricing entries define them; preserve cost-unknown or explicit fallback behavior rather than silently pricing unknown token classes at the wrong rate."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": null,
+      "duration_s": 569.72,
+      "iterations": 4,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.823782
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 8.715012,
+      "duration_s": 862.68,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 39.59,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": null,
+      "duration_s": 186.62,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 1.248111,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": null,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": null,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 1732.35,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "a59bcaaf41ca",
+  "sprint_name": "issues-2019"
+}

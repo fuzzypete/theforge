@@ -101,17 +101,54 @@ def run_in_process_group(
     group_killed = True
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Kill the group first (bounded — see below), then salvage whatever the
+        # child had already written so the caller can still account for work it
+        # paid for. subprocess.run does this; not doing it discarded a timed-out
+        # agent's partial output, including any token usage it had reported.
+        group_killed = terminate_process_group(proc)
+        _attach_partial_output(proc, exc)
+        raise
     except BaseException:
-        # Covers TimeoutExpired and every other unwind identically: kill the
-        # group, then wait for it *bounded*. An unbounded wait here blocks for
-        # the child's full natural lifetime whenever the group kill did not land
-        # (#1959), turning an enforced timeout into no timeout at all.
+        # Every other unwind: kill the group, then wait for it *bounded*. An
+        # unbounded wait here blocks for the child's full natural lifetime
+        # whenever the group kill did not land (#1959), turning an enforced
+        # timeout into no timeout at all.
         group_killed = terminate_process_group(proc)
         raise
     finally:
         if pgid is not None:
             release_group_record(pgid, group_killed=group_killed)
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+def _attach_partial_output(
+    proc: subprocess.Popen[Any],
+    exc: subprocess.TimeoutExpired,
+    *,
+    drain_seconds: float = KILL_GRACE_SECONDS,
+) -> None:
+    """Populate ``exc.stdout``/``exc.stderr`` with the killed child's partial output.
+
+    ``Popen.communicate`` does attach partial reads to the ``TimeoutExpired`` it
+    raises, but joins them as bytes even in text mode, so the value is unusable
+    for a ``text=True`` caller. Re-draining after the group kill gives properly
+    decoded text, the same way ``subprocess.run`` does it.
+
+    Bounded on purpose: if the group kill did not land, a survivor still holding
+    the write end would block this drain for the child's full natural lifetime —
+    exactly the failure #1959 exists to prevent. A drain that times out leaves the
+    exception as-is; partial accounting is a best-effort bonus, never a new way to
+    hang teardown.
+    """
+    try:
+        out, err = proc.communicate(timeout=drain_seconds)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return
+    if out is not None:
+        exc.stdout = out
+    if err is not None:
+        exc.stderr = err
 
 
 def release_group_record(pgid: int, *, group_killed: bool) -> None:

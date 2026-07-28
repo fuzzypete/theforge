@@ -98,9 +98,13 @@ Until #1928 lands:
 ## 4. Cutting a release candidate
 
 ```bash
-RC_NUM=n scripts/cut-rc.sh X.Y.Z
+scripts/cut-rc.sh X.Y.Z        # RC number computed from origin's vX.Y.Zrc* tags
+scripts/cut-rc.sh X.Y.Z n      # explicit override
 ```
 
+- With no `RC_NUM` argument, cuts one past the highest `vX.Y.ZrcN` tag on
+  origin (`rc0` if there are none), and prints which number it picked and why.
+  No `git tag --list` lookup needed before a repeat cut.
 - Reads the current version on the release branch, **overwrites** it to
   `X.Y.Zrcn`, runs the gate, commits, tags, pushes, and configures branch
   protection so auto-merge works. A stale version on the branch is therefore

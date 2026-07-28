@@ -101,7 +101,13 @@ from .story_state import (
     landing_failure_outcome,
 )
 
-_UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
+# CLI transports whose spend forge cannot measure at all, warned about up front.
+# `codex` left this set in #2019: `codex exec --json` reports a real token split
+# per turn, so codex runs now carry measured cost like the claude transport.
+# Actual per-run measurement failures are still caught downstream by the
+# cost-is-None checks that feed `unmeasured_spend` — this set is only the
+# pre-sprint warning, evaluated over config profiles before any run exists.
+_UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"gemini"})
 _STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
 _STORY_RUN_AUDIT_COMMIT_CMD = (
     f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
