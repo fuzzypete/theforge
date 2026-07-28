@@ -210,6 +210,19 @@ pollutes history and has already caused avoidable merge conflicts in this repo.
 
 Source: `feedback_no_force_add.md`
 
+### Release and CI tooling lives in `scripts/`, not in the package
+
+The "no files outside `src/`, `tests/`, `docs/`" convention carves out `scripts/`
+for tooling that operates *on* the repository rather than shipping with it:
+`cut-rc.sh`, `promote-rc.sh`, `release.sh`, `derive_changelog.py`,
+`apply-branch-protection.sh`, `forward_port_guard.py`. The test is who calls it —
+a Makefile target or a GitHub workflow, never `import theforge`. Such helpers
+must still be unit-tested from `tests/` (see `tests/test_derive_changelog.py`,
+`tests/test_apply_branch_protection.py`, `tests/test_forward_port_guard.py`),
+because the release path breaks in exactly the places nothing exercises. Anything
+importable by the package belongs under `src/`, and scratch files still belong
+nowhere.
+
 ### Do not clean up worktrees or branches blindly
 
 Before deleting a worktree or branch, verify that it has no unique work beyond
