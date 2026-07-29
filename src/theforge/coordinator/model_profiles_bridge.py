@@ -188,8 +188,10 @@ def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[
 def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: bool) -> RunOutcome:
     """Pure: assemble a :class:`RunOutcome` from coordinator state."""
     complexity = state.preflight_complexity or "medium"
-    # ``dev_trace_count`` is the only monotonic dev-iteration counter (never reset
-    # on cycle boundaries) so it captures total dev attempts across the run.
+    # ``dev_trace_count`` is monotonic (never reset on cycle boundaries) so it
+    # captures total dev attempts across the run. ``budget.total_count`` is the
+    # other such counter — both are incremented together at the single dev call
+    # site (engine.py) and track the same quantity.
     dev_iterations = max(int(state.dev_trace_count or 0), 1)
     # Observed wall-clock of the dev phase (sum of per-call durations). None when
     # nothing was recorded so learning never treats "unknown" as a $0-style zero.
