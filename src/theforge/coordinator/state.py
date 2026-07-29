@@ -169,7 +169,8 @@ class FailedTestExtraction:
     ``format_recognized`` is True. When it is False the extractor could not
     parse the gate's output at all (an unrecognized toolchain), so the empty
     list is a *silent absence*, not a genuine one. ``source`` records which
-    reader produced the result: ``"pytest"`` (built-in grammar),
+    reader produced the result: ``"builtin"`` (built-in pytest-style grammar),
+    ``"xcodebuild"`` (Xcode's ``Failing tests:`` block),
     ``"custom_pattern"`` (project-configured ``failed_test_pattern``), or
     ``"unrecognized"`` (nothing applied).
     """

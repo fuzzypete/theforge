@@ -49,6 +49,7 @@ from theforge.task import (
     parse_plan_output,
 )
 
+from . import live_state as _live_state
 from .agent_failure import is_infrastructure_abort
 from .cancellation import StoryCancelled
 from .log_tee import (  # noqa: E402
@@ -146,7 +147,15 @@ def _run_log_context(
     state: CoordinatorState,
     task_start: float,
 ) -> Generator[None, None, None]:
-    """Set up per-run log tee and SIGTERM handler; tear down on exit."""
+    """Set up per-run log tee, live-state registration, and SIGTERM handler.
+
+    The live-state registration is what lets the sprint scheduler write a real
+    audit for a story whose worker never returns (worker timeout): without it
+    the accumulated dev/gate history is unreachable from outside this thread
+    (#2013). It is bound to the same scope as the log tee because they have the
+    same lifetime — everything the run records is in flight between them.
+    """
+    _live_state.register_live_state(task.slug, state)
     _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     _prev_sigterm = None
     if _tee is not None:
@@ -165,6 +174,7 @@ def _run_log_context(
     try:
         yield
     finally:
+        _live_state.release_live_state(task.slug, state)
         _end_run_log_tee(_tee)
         if _prev_sigterm is not None:
             try:
