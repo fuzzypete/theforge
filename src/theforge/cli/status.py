@@ -1125,7 +1125,9 @@ def register_parsers(subparsers: object) -> None:
         default=False,
         help=(
             "List open issues carrying the `ready` label — the set eligible for "
-            "the next sprint. Combine with --milestone to scope to one milestone."
+            "the next sprint. Each entry is checked against the sprint shape "
+            "gate; entries the gate would refuse are marked BLOCKED with their "
+            "verdict. Combine with --milestone to scope to one milestone."
         ),
     )
     status_parser.add_argument(
