@@ -15,6 +15,7 @@ from .agent_failure import NO_JUDGMENT
 from .audit_render import build_agent_entries, build_reviews
 from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
+from .iteration_usage import dev_usage
 from .landing_record import build_landing_record
 from .state import CoordinatorResult, CoordinatorState
 from .trust_status import derive_trust_status
@@ -429,16 +430,10 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 
 
 def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig) -> dict:
-    dev_used = len(state.dev_iteration_telemetry)
-    dev_max = (
-        state.adaptive_dev_max
-        if state.adaptive_dev_max
-        else (
-            state.dev_iteration_telemetry[0].max_iterations
-            if state.dev_iteration_telemetry
-            else config.retry.max_dev_iterations
-        )
-    )
+    # Per-cycle used against the per-cycle max: dev_max is a per-cycle budget
+    # limit, so counting every dev iteration the story ever ran reported
+    # used > max for any story spanning more than one review cycle (#1985).
+    dev_used, dev_max = dev_usage(state, default_max=config.retry.max_dev_iterations)
     # Budget view: a review cycle VALIDATE bought for a gate or convention
     # finding was really spent, so exhaustion must not report zero (#1981).
     review_used = state.review_cycles_spent

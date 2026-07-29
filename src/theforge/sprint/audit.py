@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..advisory_conventions import noteworthy_advisory_entries
+from ..coordinator.iteration_usage import dev_usage as _dev_usage
 from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
 from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
@@ -554,17 +555,8 @@ def _write_sprint_audit(
                     cycle_entry["p2_count"] = sum(1 for f in r.findings if f.severity == "P2")
                 reviews_summary.append(cycle_entry)
 
-            dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+            dev_used, dev_max = _dev_usage(res.state)
             review_used, review_max, review_exhausted = _review_usage(res.state)
-            dev_max = (
-                getattr(
-                    getattr(res.state, "dev_iteration_telemetry", [None])[0],
-                    "max_iterations",
-                    None,
-                )
-                if getattr(res.state, "dev_iteration_telemetry", [])
-                else None
-            )
             # Tag the source of an ALREADY_DONE outcome so audit / postmortem
             # consumers can distinguish a preflight short-circuit verdict from
             # the resume-skip-merged classification without parsing strings.
@@ -701,15 +693,8 @@ def _write_sprint_audit(
 
     usage_distribution = []
     for spec_str, res in result.results:
-        dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+        dev_used, dev_max = _dev_usage(res.state)
         review_used, review_max, review_exhausted = _review_usage(res.state)
-        dev_max = (
-            getattr(
-                getattr(res.state, "dev_iteration_telemetry", [None])[0], "max_iterations", None
-            )
-            if getattr(res.state, "dev_iteration_telemetry", [])
-            else None
-        )
         usage_distribution.append(
             {
                 "spec": spec_str,
@@ -877,17 +862,8 @@ def _write_sprint_summary(
                 last_verdict = res.state.review_results[-1].verdict
             elif res.success:
                 last_verdict = "APPROVE"
-            dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+            dev_used, dev_max = _dev_usage(res.state)
             review_used, review_max, review_exhausted = _review_usage(res.state)
-            dev_max = (
-                getattr(
-                    getattr(res.state, "dev_iteration_telemetry", [None])[0],
-                    "max_iterations",
-                    None,
-                )
-                if getattr(res.state, "dev_iteration_telemetry", [])
-                else None
-            )
             _dev_results_list = list(getattr(res.state, "dev_results", []) or [])
             _dev_model: str | None = None
             if _dev_results_list:
@@ -1046,15 +1022,8 @@ def _write_sprint_summary(
 
     usage_distribution = []
     for spec_str, res in result.results:
-        dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+        dev_used, dev_max = _dev_usage(res.state)
         review_used, review_max, review_exhausted = _review_usage(res.state)
-        dev_max = (
-            getattr(
-                getattr(res.state, "dev_iteration_telemetry", [None])[0], "max_iterations", None
-            )
-            if getattr(res.state, "dev_iteration_telemetry", [])
-            else None
-        )
         usage_distribution.append(
             {
                 "spec": spec_str,
