@@ -1687,7 +1687,11 @@ def _run_review_phase(
                     message=(
                         f"Task '{task.name}' completed. "
                         f"Review approved after {state.review_cycle} cycle(s), "
-                        f"{state.dev_iteration} dev iteration(s). "
+                        # budget.total_count, not state.dev_iteration: the latter
+                        # aliases the per-cycle counter, which reset_cycle() zeroes
+                        # whenever a new review cycle opens, so a multi-cycle story
+                        # would report only its final cycle's dev calls (#1983).
+                        f"{state.budget.total_count} dev iteration(s). "
                     ),
                     run_id=run_id,
                 ),
