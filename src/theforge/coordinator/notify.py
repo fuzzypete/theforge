@@ -301,7 +301,10 @@ def _escalate_gate_interactive(
     if gate_result:
         _cu._log(f"  Gate:     {gate_result}")
     _cu._log(f"  Cost:     {_cu._fmt_cost_total(state.total_cost_measured, state.total_cost)}")
-    _cu._log(f"  Dev iter: {state.dev_iteration}  Review cycles: {state.review_cycle}")
+    # Both counts are story-wide: the operator is deciding whether this story has
+    # had enough work, so the per-cycle state.dev_iteration would understate it
+    # next to the cumulative review_cycle (#1983).
+    _cu._log(f"  Dev iter: {state.budget.total_count}  Review cycles: {state.review_cycle}")
     _cu._log("")
     _cu._log("  Choose:")
     _cu._log("    [a] Approve  — treat as APPROVE, create PR / merge")
