@@ -388,7 +388,9 @@ def _create_pr(
         f"- **Verdict:** APPROVE ({p1_count} P1, {p2_count} P2)\n"
         f"- **Reviewers:** {reviewer_names}\n"
         f"- **Cost:** {_fmt_cost_total(state.total_cost_measured, state.total_cost)}\n"
-        f"- **Dev iterations:** {state.dev_iteration}\n"
+        # Story-wide total: state.dev_iteration is the per-cycle counter and
+        # resets on every new review cycle (#1983).
+        f"- **Dev iterations:** {state.budget.total_count}\n"
         f"- **Tests:** N/A\n\n"
         f"## Findings\n\n"
         f"{findings_md}\n\n"
