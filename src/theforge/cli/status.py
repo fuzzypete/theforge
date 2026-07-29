@@ -843,10 +843,13 @@ def _cleanup_stopped_run(
 ) -> None:
     from theforge import detach as _detach
     from theforge import process_group as _process_group
+    from theforge.sprint.audit import finalize_interrupted_story_audit
     from theforge.sprint.lock import cleanup_story_locks
     from theforge.sprint.state_writer import terminalize_state_file
+    from theforge.sprint.status_reader import read_live_sprint_name
 
     lock_slugs = _stopped_run_lock_slugs(run_id, project_root, slug)
+    sprint_name = read_live_sprint_name(run_id, project_root)
     _detach.remove_pid(run_id, project_root)
     _detach.write_run_ended(run_id, project_root, "stopped", force=True)
     # The stopped process died holding whatever phase it was in, so nothing else
@@ -859,6 +862,16 @@ def _cleanup_stopped_run(
             f"[forge] Marked {len(stranded)} in-flight story/stories stopped: "
             f"{', '.join(stranded)}"
         )
+    # Finalize each stopped story's own audit from what the sprint process
+    # flushed while it ran. Only audits still marked in-flight are touched, so a
+    # story that finished on its own keeps the real audit it wrote.
+    if sprint_name:
+        for stranded_slug in stranded:
+            audit_path = finalize_interrupted_story_audit(
+                project_root, sprint_name, stranded_slug, reason="stopped"
+            )
+            if audit_path is not None:
+                print(f"[forge] Finalized in-flight story audit: {audit_path}")
     cleanup_story_locks(lock_slugs, project_root, pid=pid)
     # The stopped sprint's own teardown may not have reached its agent groups
     # (SIGKILL path); reap any now-orphaned groups.

@@ -60,6 +60,7 @@ from .audit import (
     _write_sprint_summary,
     _write_story_audit,
     persist_accumulated_story_state,
+    write_live_story_audit,
 )
 from .auth_gate import enforce_sprint_auth_readiness
 from .budget import evaluate_budget
@@ -1824,6 +1825,7 @@ def _make_worker_phase_fn(
     outer_fn: "Callable[[dict], None] | None",
     plan_done: "dict[str, str] | None" = None,
     state_writer: "SprintStateWriter | None" = None,
+    audit_flush: "Callable[[str], None] | None" = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper for worker live state.
 
@@ -1836,11 +1838,18 @@ def _make_worker_phase_fn(
     When *state_writer* is provided, live-facing fields are also written to the
     sprint state file so ``forge sprint-status`` reflects both the current phase
     and the latest per-story cost.
+
+    When *audit_flush* is provided it is called once per phase *change* with the
+    new phase, so the story's audit.yaml on disk keeps pace with the run. That
+    file is the only record an outside process (``forge stop``) can finalize —
+    it cannot see this one's memory (#2013). Flushing on phase changes only
+    keeps the cost proportional to real progress rather than to update chatter.
     """
 
     def _update(updates: dict) -> None:
         phase = updates.get("phase", "")
         with phase_lock:
+            phase_changed = bool(phase) and worker_phases.get(slug) != phase
             if phase:
                 worker_phases[slug] = phase
             if state_writer is not None:
@@ -1871,8 +1880,40 @@ def _make_worker_phase_fn(
                     plan_done[slug] = ws
             if outer_fn is not None:
                 outer_fn(updates)
+        # Outside the lock: the flush serializes the whole coordinator state and
+        # writes a file, and no other worker's live-state update should queue
+        # behind that.
+        if phase_changed and audit_flush is not None:
+            audit_flush(phase)
 
     return _update
+
+
+def _make_audit_flush_fn(
+    config: ForgeConfig,
+    task: "TaskStory",
+    sprint_name: str,
+    *,
+    sprint_id: str | None = None,
+) -> "Callable[[str], None]":
+    """Return a callback that rewrites *task*'s audit.yaml from its live state.
+
+    The story's own worker thread runs this, so it reads the engine's live
+    ``CoordinatorState`` straight out of the in-process registry. What it writes
+    is the handoff to processes that have no such access: ``forge stop`` runs
+    elsewhere, after this process is gone, and can only finalize an audit that is
+    already on disk (#2013).
+    """
+
+    def _flush(_phase: str) -> None:
+        from ..coordinator.live_state import snapshot_live_state  # noqa: PLC0415
+
+        state = snapshot_live_state(task.slug)
+        if state is None:
+            return
+        write_live_story_audit(config, task, state, sprint_id=sprint_id, sprint_name=sprint_name)
+
+    return _flush
 
 
 def _terminal_story_model(result: CoordinatorResult) -> str | None:
@@ -3904,6 +3945,9 @@ def run_sprint(
                     state_update_fn,
                     plan_done=plan_done if use_plan_gates else None,
                     state_writer=_state_writer,
+                    audit_flush=_make_audit_flush_fn(
+                        config, task, resolved.name, sprint_id=_sprint_id
+                    ),
                 )
                 stop_evt = threading.Event()
                 stop_events[task.slug] = stop_evt

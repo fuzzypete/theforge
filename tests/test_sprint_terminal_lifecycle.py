@@ -15,6 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +31,7 @@ from theforge.coordinator.live_state import (
     snapshot_live_state,
 )
 from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.process_group import reap_orphan_agents
 from theforge.sprint.state_writer import (
     SPRINT_PHASE_STOPPED,
     SprintStateWriter,
@@ -493,3 +498,237 @@ def test_timed_out_sprint_writes_terminal_state_before_teardown(tmp_path: Path) 
     assert story["status"] == "failed"
     assert story["detail"]["gate_status"] == "timeout"
     assert story["detail"]["gate_status"] != "running"
+
+
+# ── The reaper really kills an orphaned gate tree ──────────────────────
+
+
+def _pid_is_gone(pid: int) -> bool:
+    """True once *pid* is neither alive nor a zombie this process must reap.
+
+    ``os.kill(pid, 0)`` succeeds against a zombie, so a killed direct child
+    reads as alive until its exit status is collected. Reaping it here is what
+    makes the check mean "the process is gone" rather than "it has not been
+    waited on yet".
+    """
+    try:
+        reaped, _status = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return True
+    except (ChildProcessError, OSError):
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _wait_until_gone(pids: list[int], timeout: float = 5.0) -> list[int]:
+    """Poll until every pid in *pids* is gone; return whichever survived."""
+    deadline = time.monotonic() + timeout
+    remaining = list(pids)
+    while remaining and time.monotonic() < deadline:
+        remaining = [pid for pid in remaining if not _pid_is_gone(pid)]
+        if remaining:
+            time.sleep(0.05)
+    return remaining
+
+
+def _dead_pid() -> int:
+    """Return a pid that has certainly exited and been reaped."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=30)
+    return proc.pid
+
+
+def test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The production symptom: an xcodebuild tree outliving the sprint that ran it.
+
+    Runs the real registration path (``_run_shell_detailed`` spawning into its own
+    session), neuters only the group kill so the tree genuinely survives teardown
+    — the sandbox-refused-killpg case — then marks the owner sprint dead and lets
+    ``reap_orphan_agents`` do what ``forge stop`` calls it to do. Both the gate
+    shell and its grandchild must actually die (#2013).
+    """
+    monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+    # A refused group kill: teardown reaches nothing, exactly the state that
+    # leaves a live tree behind for the reaper to find.
+    monkeypatch.setattr(coord_util, "_kill_process_group", lambda proc: False)
+
+    cmd = (
+        f'{sys.executable} -u -c "import subprocess, sys, time; '
+        f"child = subprocess.Popen([{sys.executable!r}, '-c', 'import time; time.sleep(120)']); "
+        'print(child.pid, flush=True); time.sleep(120)"'
+    )
+    ok, output, _exit_code, timed_out = coord_util._run_shell_detailed(cmd, tmp_path, timeout=2)
+
+    assert ok is False and timed_out is True
+    grandchild_pid = int(
+        next(line for line in output.splitlines() if line.strip().isdigit()).strip()
+    )
+
+    sidecars = list((tmp_path / ".forge" / "runs" / "agents").glob("*.json"))
+    assert len(sidecars) == 1, "the surviving group must still be registered"
+    record = json.loads(sidecars[0].read_text(encoding="utf-8"))
+    gate_pid = record["pgid"]
+
+    try:
+        assert not _pid_is_gone(grandchild_pid), "grandchild should still be running"
+
+        # The owner sprint is gone — the state `forge stop` leaves behind.
+        record["owner_pid"] = _dead_pid()
+        sidecars[0].write_text(json.dumps(record), encoding="utf-8")
+
+        reaped = reap_orphan_agents(tmp_path)
+
+        assert reaped == 1
+        assert _wait_until_gone([gate_pid, grandchild_pid]) == [], (
+            "reap_orphan_agents left gate descendants alive — the exact #2013 symptom"
+        )
+        assert list((tmp_path / ".forge" / "runs" / "agents").glob("*.json")) == []
+    finally:
+        for pid in (gate_pid, grandchild_pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                pass
+
+
+# ── A stopped story's audit keeps the history it accumulated ───────────
+
+
+def _live_story_state(tmp_path: Path, slug: str, sprint_name: str) -> CoordinatorState:
+    state = CoordinatorState(run_id="stopdbeef777")
+    state.phase = Phase.VALIDATE
+    state.started_at = "2026-07-28T00:00:00+00:00"
+    state.sprint_name = sprint_name
+    state.gate_decisions.extend(["FAIL", "FAIL"])
+    state.workspace_path = tmp_path / slug
+    state.log_dir = tmp_path / ".forge" / "logs" / sprint_name / slug
+    return state
+
+
+def test_live_story_audit_is_flushed_while_the_story_runs(tmp_path: Path) -> None:
+    from tests.test_sprint_resume import _make_config
+    from theforge.sprint.audit import write_live_story_audit
+    from theforge.task import TaskStory
+
+    sprint_name = "issues-50,230"
+    config = _make_config(tmp_path)
+    task = TaskStory(name="Issue #50", slug="issue-50", story_text="do the thing")
+    state = _live_story_state(tmp_path, "issue-50", sprint_name)
+
+    path = write_live_story_audit(config, task, state, sprint_name=sprint_name)
+
+    assert path is not None and path.exists()
+    audit = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert audit["in_flight"] is True
+    assert audit["run_id"] == "stopdbeef777"
+    assert audit["iterations"]["gate_decisions"] == ["FAIL", "FAIL"]
+    # The flush is a live observation, not a verdict: no substrate record and no
+    # ESCALATE marker are written for a story that has not finished.
+    assert not (tmp_path / ".forge" / "audits").exists()
+
+
+def test_phase_change_flushes_the_story_audit_once_per_phase(tmp_path: Path) -> None:
+    """Flush cost tracks real progress, not live-update chatter."""
+    import threading
+
+    from theforge.sprint import runner as sprint_runner
+
+    flushed: list[str] = []
+    update = sprint_runner._make_worker_phase_fn(
+        "issue-50",
+        {},
+        threading.Lock(),
+        None,
+        audit_flush=flushed.append,
+    )
+
+    update({"phase": "DEV"})
+    update({"phase": "DEV", "cost_usd": 0.2})
+    update({"cost_usd": 0.4})
+    update({"phase": "VALIDATE"})
+
+    assert flushed == ["DEV", "VALIDATE"]
+
+
+def test_stop_finalizes_the_in_flight_audit_without_losing_history(tmp_path: Path) -> None:
+    """AC (d) for the operator-stop path, end to end.
+
+    The sprint process flushes the story's audit as it runs; ``forge stop`` — a
+    different process, which cannot see that run's memory — finalizes the file it
+    left behind. The accumulated run_id/gate history must survive that handoff.
+    """
+    from tests.test_sprint_resume import _make_config
+    from theforge.cli import status as cli_status
+    from theforge.sprint.audit import write_live_story_audit
+    from theforge.task import TaskStory
+
+    sprint_name = "issues-50,230"
+    config = _make_config(tmp_path)
+    task = TaskStory(name="Issue #50", slug="issue-50", story_text="do the thing")
+    audit_path = write_live_story_audit(
+        config, task, _live_story_state(tmp_path, "issue-50", sprint_name), sprint_name=sprint_name
+    )
+    assert audit_path is not None
+
+    writer = SprintStateWriter("run1", tmp_path, sprint_name)
+    writer.init([{"slug": "issue-50", "path": "Issue #50", "status": "running"}])
+    writer.update("issue-50", phase="VALIDATE", detail={"gate_status": "running"})
+    writer.set_phase("running")
+
+    with (
+        patch("theforge.process_group.reap_orphan_agents", return_value=0),
+        patch("theforge.sprint.lock.cleanup_story_locks", side_effect=lambda *a, **k: None),
+    ):
+        cli_status._cleanup_stopped_run("run1", tmp_path, "issue-50", pid=424242)
+
+    audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+    assert audit["in_flight"] is False
+    assert audit["interrupted_by"] == "stopped"
+    assert audit["outcome"]["success"] is False
+    assert audit["outcome"]["error_type"] == "OperatorStopped"
+    assert "VALIDATE" in audit["outcome"]["message"]
+    assert audit["timing"]["finished_at"]
+    # The point of the whole exercise: the history is still there.
+    assert audit["run_id"] == "stopdbeef777"
+    assert audit["iterations"]["gate_decisions"] == ["FAIL", "FAIL"]
+
+
+def test_stop_does_not_overwrite_a_finished_story_audit(tmp_path: Path) -> None:
+    """A completed story wrote the real audit; stop must not guess over it."""
+    from theforge.cli import status as cli_status
+    from theforge.sprint.audit import finalize_interrupted_story_audit
+
+    sprint_name = "issues-50,230"
+    audit_path = tmp_path / ".forge" / "logs" / sprint_name / "issue-230" / "audit.yaml"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    final_audit = {
+        "run_id": "finished9999",
+        "outcome": {"success": True, "final_phase": "DONE", "message": "approved"},
+    }
+    audit_path.write_text(yaml.dump(final_audit), encoding="utf-8")
+
+    assert finalize_interrupted_story_audit(tmp_path, sprint_name, "issue-230") is None
+    assert yaml.safe_load(audit_path.read_text(encoding="utf-8")) == final_audit
+
+    # ...and the same holds through the stop path itself.
+    writer = SprintStateWriter("run1", tmp_path, sprint_name)
+    writer.init([{"slug": "issue-230", "path": "Issue #230", "status": "done"}])
+    with (
+        patch("theforge.process_group.reap_orphan_agents", return_value=0),
+        patch("theforge.sprint.lock.cleanup_story_locks", side_effect=lambda *a, **k: None),
+    ):
+        cli_status._cleanup_stopped_run("run1", tmp_path, "issue-230", pid=424242)
+
+    assert yaml.safe_load(audit_path.read_text(encoding="utf-8")) == final_audit
