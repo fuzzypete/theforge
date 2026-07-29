@@ -1,0 +1,2965 @@
+{
+  "schema_version": 12,
+  "run_id": "dc070b9d88ab",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "The dev agent cannot execute the project's declared toolchain, so it iterates blind against the gate",
+    "slug": "issue-2050",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nA dev agent working on a project whose verification requires the host Apple\ntoolchain cannot execute that toolchain, and so cannot run the builds or tests\nthat will judge its work. It edits, submits, and learns the outcome only from the\ncoordinator's gate.\n\nIn adopter run `0ea58a758f52` (story `issue-230`) this produced six dev\niterations and $46.40 of dev spend against six consecutive gate failures on Swift\ncompile errors, every iteration derived from gate traces rather than from running\nthe code.\n\nRun `5096bd4a46e3` (story `issue-248`) records why, in the dev's own handoff:\n\n> this agent runs inside an outer macOS sandbox, and SwiftPM compiles package\n> manifests via `sandbox-exec`, so nested sandboxing fails with\n> `sandbox_apply: Operation not permitted`\n\nThe same handoff confirms the failure persists with the agent sandbox both\nenabled and disabled, with `-disableAutomaticPackageResolution\n-onlyUsePackageVersionsFromResolvedFile -skipPackageUpdates`, and against\nalready-resolved derived data with all five package checkouts present. Apple's\nown documented workaround for the nesting collision,\n`defaults write com.apple.dt.Xcode IDEPackageSupportDisableManifestSandbox`, is\nitself denied with `Could not write domain com.apple.dt.Xcode`.\n\n## Expected behavior\n\nA dev agent must be able to execute the commands a project declares as its\nverification. An agent that cannot run what will judge it can only guess, and\nevery iteration it spends is an unverified proposal rather than a tested change \u2014\nwhich is the failure mode the iteration budget exists to bound, not to fund. Where\na host isolation mechanism is structurally incompatible with a project's declared\ntoolchain, that incompatibility should be resolvable by the project rather than\nabsorbed as permanent blindness in the dev loop, and it should never be left to\nsurface as iteration exhaustion.\n\n## Diagnosis\n\n- **Observed symptom:** dev iterates against a toolchain it cannot invoke,\n  accruing cost per iteration with no execution feedback, until the iteration\n  pool is exhausted.\n\n- **Evidence:** forge confines agents with `sandbox-exec` on macOS\n  (`src/theforge/config/auth.py:34`, `src/theforge/runners/runner_gemini.py:132`,\n  `src/theforge/coordinator/dev_phase.py:736`). SwiftPM invokes `sandbox-exec` to\n  compile package manifests, and macOS refuses to apply a sandbox inside a\n  sandbox. The `xcode` preset already grants the four relevant write roots\n  (`~/Library/Developer`, `~/Library/Caches/org.swift.swiftpm`,\n  `~/Library/org.swift.swiftpm`, `~/Library/Caches/com.apple.dt.Xcode`) and the\n  `com.apple.CoreSimulator.CoreSimulatorService` mach service, so the denial is\n  not an allowlist gap. `~/Library/Preferences` is not granted, which is why the\n  documented Xcode workaround is denied as well.\n\n- **Ruled out:** not network egress \u2014 package resolution failed against fully\n  cached, already-resolved checkouts. Not a missing write root or mach service \u2014\n  the relevant grants are present and the failure occurs in sandbox application\n  itself. Not a toolchain flag or configuration problem \u2014 the dev exercised the\n  documented flags and the documented escape hatch, and recorded both outcomes.\n\n- **Confirmed cause:** the collision is in the isolation mechanism rather than in\n  its allowlist. A toolchain that itself invokes `sandbox-exec` cannot run inside\n  a `sandbox-exec` confinement, and no grant expressible in the preset model\n  changes that.\n\n- **Affected code path:** the dev-phase sandbox wrapper\n  (`coordinator/dev_phase.py`), sandbox availability resolution\n  (`config/auth.py`), and the preset model (`config/sandbox_capabilities`).\n\n- **Fix-success criterion:** for a project declaring an Apple toolchain, a dev\n  iteration completes a real app-target build and test within the run, while\n  activity outside the project's declared toolchain commands remains confined.\n\n## Notes\n\n**Settled by [ADR-0007](docs/adr/0007-dev-phase-verification-capability.md) (Accepted 2026-07-29).** The decision: the project\ndefines unconfined commands TheForge can run, and the coordinator gives the agent\naccess to request that these be run on its behalf. The agent's granted capability is\nthe request, never the execution \u2014 seatbelt confinement is a property of the process\ntree (`runners/sandbox.py:549`), so no allowlist can un-confine a child. The declared\nunit is a whole named command, not a binary, so argv stays out of agent control.\nImplement against that decision; the design is no longer open here.\n\nRetained for context \u2014 the considerations the ADR weighed: the coordinator already executes\nproject-authored shell outside the agent sandbox when it runs `gate_command`, so\nelevating declared toolchain commands would not introduce a new class of exposure,\nthough it would change how often that exposure occurs. Any such elevation has to\naccount for the fact that build systems execute repository files the dev agent can\nedit \u2014 `Package.swift`, `project.pbxproj` run-script phases, and the `Makefile`\nitself \u2014 so trust in a toolchain binary does not transfer to an invocation whose\ninputs the agent authored. Network egress is separable from this and was not\nrequired in the observed runs.\n\nRelates to #2038, which records the same ceiling from the capability-model side.\n\n",
+    "github_issue": 2050,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'The dev agent cannot execute the project's declared toolchain, so it iterates blind against the gate' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2050",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-29T17:34:04.662910+00:00",
+    "finished_at": "2026-07-29T18:16:03.765509+00:00",
+    "duration_seconds": 2519.102599
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2050",
+    "branch": "feat/issue-2050",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 10.059158500000002,
+        "duration_s": 886.74,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/config/__init__.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/audit_substrate.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/dev_verification.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/task/dev_prompts.py",
+          "src/theforge/task/fix_prompts.py",
+          "tests/fixtures/audit_record_schema_v15.json",
+          "tests/test_cli_audit_per_run.py",
+          "tests/test_coord_dev_verification_seam.py",
+          "tests/test_dev_verification_broker.py",
+          "tests/test_generate_audit_log.py"
+        ],
+        "files_changed_count": 16,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 8.781574,
+        "duration_s": 430.88,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/dev_verification.py",
+          "src/theforge/coordinator/util.py",
+          "src/theforge/task/__init__.py",
+          "src/theforge/task/dev_prompts.py",
+          "tests/test_coord_dev_verification_seam.py",
+          "tests/test_dev_verification_broker.py"
+        ],
+        "files_changed_count": 8,
+        "tests_fixed_count": 1,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 3,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 2,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 2.584296,
+        "duration_s": 131.91
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 4.456059,
+        "duration_s": 157.2
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 9,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 9,
+      "base_review": 5,
+      "profile_history_runs": 96,
+      "profile_avg_iterations": 1.8854,
+      "profile_avg_cost_usd": 9.736482,
+      "profile_raw_dev_max": 2.8281,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 24.3412,
+      "review_history_sample_size": 10,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 96 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-29T17:47:48.409519+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-29T18:05:27.837432+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 40.63812715,
+    "dev_usd": 18.8407325,
+    "review_usd": 7.0403541,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 10.059158500000002,
+        "duration_seconds": 886.7402870832011,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006757
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 10.052401500000002
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 8.781574,
+        "duration_seconds": 430.8815389589872,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 8.781574
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.6181749999999999,
+        "duration_seconds": 43.91758020835308,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.6181749999999999
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.8197530000000001,
+        "duration_seconds": 43.91758020835308,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.8197530000000001
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.1463675000000002,
+        "duration_seconds": 43.91758020835308,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.050433
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.0959345000000003
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.808607,
+        "duration_seconds": 33.528767944701634,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.808607
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 2.274123,
+        "duration_seconds": 33.528767944701634,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.274123
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.3733285999999998,
+        "duration_seconds": 33.528767944701634,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.3733285999999998
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "ADR-0007 settles the design (coordinator-mediated verification requests) but no implementation exists yet; this requires a new forge.yaml schema for declared unconfined commands, a coordinator-side request/execution path outside the sandbox, and dev-phase/agent protocol changes to request and consume results.",
+    "complexity": "large",
+    "complexity_score": 9,
+    "implementation_complexity_score": 9,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 9",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "config",
+      "security",
+      "concurrency"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.2547948,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "e3b250abd165",
+    "cache_snapshot": {
+      "worktree_head": "c9ec55c6679061ffa0cfe90e0e13361a572b2509",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "c9ec55c6679061ffa0cfe90e0e13361a572b2509",
+      "story_content_hash": "923a000bf0e00bd08382cfc10b1d786261912b2817174e233d4dbde73786ce8a"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "c9ec55c6679061ffa0cfe90e0e13361a572b2509",
+      "current_worktree_head": "c9ec55c6679061ffa0cfe90e0e13361a572b2509",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "c9ec55c6679061ffa0cfe90e0e13361a572b2509",
+      "current_evaluation_base_branch_head": "c9ec55c6679061ffa0cfe90e0e13361a572b2509",
+      "cached_story_content_hash": "923a000bf0e00bd08382cfc10b1d786261912b2817174e233d4dbde73786ce8a",
+      "current_story_content_hash": "923a000bf0e00bd08382cfc10b1d786261912b2817174e233d4dbde73786ce8a",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.2547948,
+        "duration_s": 33.65,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 9,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 9 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.74 \u2265 threshold 0.60 over 96 admissible runs \u2014 pre-promotion held) (profile success_rate=0.74 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 9,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/task",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/task",
+          "lines": 15
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/task",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/task",
+          "lines": 15
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/task",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/task",
+          "lines": 15
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2050/iter_1.yaml",
+      "handoff": {
+        "summary": "Implemented ADR-0007's coordinator-mediated dev verification capability. Projects declare whole named commands under validation.dev_verification_commands in forge.yaml; a new coordinator-owned broker (coordinator/dev_verification.py) watches a per-iteration request directory in the worktree while the dev agent runs, accepts only declared names, executes the configured command through the same unsandboxed shell primitive the gate uses, and writes an atomic response artifact carrying exit code, timeout flag, output tail, and a trace path. The broker is constructed before prompt routing, started before the run_agent retry loop, and stopped in a finally, so its lifetime spans the whole iteration and the fail-closed per-iteration request budget (which counts refusals too) does not reset across transport retries. Dev and fix prompts gained a shared verification section listing declared names and the write-request/poll-response protocol, via keyword-only params defaulting off so cli/shared.py needed no change. Every request is recorded per dev iteration and at run level in the audit record, which required an audit schema bump to v15 with a reader-side migration helper. Load-time validation rejects empty/traversing names, empty commands, unknown fields, and non-positive limits. Declaring nothing keeps existing behavior exactly: no channel directory, no prompt section, no change to dev sandbox resolution.",
+        "commits": [
+          {
+            "sha": "465012c",
+            "message": "feat(coordinator): coordinator-mediated dev verification capability (#2050)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "For a project declaring an Apple toolchain, a dev iteration completes a real app-target build and test within the run, while activity outside the project's declared toolchain commands remains confined.",
+            "status": "PARTIAL",
+            "notes": "The mechanism is complete and seam-tested: a dev agent that cannot execute the toolchain requests a declared command by name, the coordinator runs it outside the sandbox, and the result flows back into the same iteration (tests/test_coord_dev_verification_seam.py). The confinement half is proven directly \u2014 a seam test asserts state.sandboxed, dev_containment, and dev_sandbox_capabilities are byte-identical to a run without the capability, so nothing outside the declared commands was un-confined. Marked PARTIAL rather than MET only because the end-to-end claim names a real Apple toolchain: that is provable only in an adopter run on macOS with Xcode installed, which this repository's gate cannot exercise. No code path is missing for it."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "Option B from ADR-0007 (transparent PATH-shim interception) is explicitly a later ergonomic layer over this mediated path, not part of this increment.",
+          "17 pre-existing test failures in test_cut_rc_isolation.py / test_sprint_lock.py / test_sprint_reexec_collision.py fail under this agent's sandbox with 'Operation not permitted' (multiprocessing semaphores, mktemp in /var/folders). Untouched by this change; expected to pass in the coordinator's unsandboxed gate run."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2050/iter_1.yaml",
+      "handoff": {
+        "summary": "Fixed both P1 review findings from cycle 1. (1) TIMEOUT_RESUME is the only DEV route without a prompt builder, so a resumed agent was never told about the fresh per-iteration verification channel the coordinator had opened; the rendered verification section is now appended to the resume prompt from a single shared _verification_channel dict that the prompt builders also consume, so the two routes cannot describe different channels. (2) DevVerificationBroker.stop() joined for a fixed 30s and returned without ever terminating the in-flight subprocess, letting an unconfined build outlive the iteration and race the coordinator's authoritative gate while its record vanished from the audit trail; shutdown is now bounded and terminal \u2014 a grace period, then a process-group kill via the coordinator's existing _kill_process_group helper, with the real outcome recorded as cancelled: true (distinct from timed_out and from an ordinary non-zero exit, since a kill is not a verdict on the code), plus a synthetic backfilled record if the serving thread never lands one. Cancellation required a handle on the live process, so util._run_shell_detailed gained a keyword-only on_process_start observation hook defaulting to None with no behavior change for existing callers. Also fixed an adjacent defect the work exposed: the shutdown drain poll used to execute a request that arrived as the iteration ended, starting a long unconfined build with nobody left to read it; it now refuses with iteration_ended and still audits the request. Six new tests cover exactly the gaps the reviewers named.",
+        "commits": [
+          {
+            "sha": "d5d4f6a",
+            "message": "fix(coordinator): address review findings (iter 1)"
+          },
+          {
+            "sha": "465012c",
+            "message": "feat(coordinator): coordinator-mediated dev verification capability (#2050)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "For a project declaring an Apple toolchain, a dev iteration completes a real app-target build and test within the run, while activity outside the project's declared toolchain commands remains confined.",
+            "status": "PARTIAL",
+            "notes": "The mechanism is complete and seam-tested, and now covers every DEV route: normal, fix/P2-cleanup, and timeout-resume iterations all carry the request channel. The confinement half is proven directly \u2014 a seam test asserts state.sandboxed, dev_containment, and dev_sandbox_capabilities are identical to a run without the capability, so nothing outside the declared commands was un-confined. This iteration additionally guarantees no declared command outlives the iteration that requested it, which matters for the AC's second clause: an unconfined build still running during the coordinator's gate would make the gate measure a tree the build was mutating. Still PARTIAL only because the end-to-end claim names a real Apple toolchain, provable only in an adopter run on macOS with Xcode \u2014 this repository's gate cannot exercise it. No code path is missing."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "Option B from ADR-0007 (transparent PATH-shim interception) remains an explicitly later ergonomic layer over this mediated path, not part of this increment.",
+          "17 pre-existing failures in test_cut_rc_isolation.py / test_sprint_lock.py / test_sprint_reexec_collision.py fail under this agent's sandbox with 'Operation not permitted' (mkstemp in /var/folders, multiprocessing semaphores). Untouched by this change, same count as before it; expected to pass in the coordinator's unsandboxed gate run."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "8e075e588b2d04d3",
+        "ad30b1b821ee5b01"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The mediated verification path is implemented for the normal DEV prompt, but it misses timeout-resume DEV iterations and can lose in-flight unconfined command results. | [google-gemini-3.5-flash] The coordinator-mediated dev verification capability is beautifully implemented, fully compliant with ADR-0007, and thoroughly tested. | [claude-sonnet] Coordinator-mediated verification broker is well-designed and audited for the fast path, but stop() never kills an in-flight declared command, so a build can outlive the dev iteration and race the authoritative gate while its outcome silently drops from the audit trail.",
+      "sanitization_audit": null,
+      "p1_count": 3,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/dev_phase.py",
+          "line": 874,
+          "description": "When a timed-out DEV attempt resumes on a project with declared verification commands, the coordinator creates a fresh per-iteration broker but sends only the timeout continuation text, so the agent is not told the current request and response paths or the declared command names.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/dev_verification.py",
+          "line": 165,
+          "description": "If the agent exits while a requested verification command is still running, broker shutdown waits only thirty seconds, then the DEV phase snapshots the records before the command has produced a response or audit entry.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/dev_verification.py",
+          "line": 165,
+          "description": "DevVerificationBroker.stop() sets a stop event and joins its serving thread for a fixed 30 seconds, then returns unconditionally, without ever terminating the subprocess a declared command may still be running.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "For a project declaring an Apple toolchain, a dev iteration completes a real app-target build and test within the run, while activity outside the project's declared toolchain commands remains confined.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/dev_phase.py:833-858 constructs the broker and passes channel metadata into normal dev and fix prompt builders at lines 883-904, 911-931, 946-972, and 993-1019; src/theforge/coordinator/dev_verification.py:282-324 executes declared command names through _run_shell_detailed and writes response artifacts; tests/test_coord_dev_verification_seam.py:133-252 covers the normal prompt, accepted/refused requests, unchanged sandbox state, and audit recording. Missing: src/theforge/coordinator/dev_phase.py:874-881 omits the verification section for TIMEOUT_RESUME prompts, and src/theforge/coordinator/dev_verification.py:165-175 can return from stop before an in-flight command has produced the result that should flow back into the same iteration.; The broker is implemented in src/theforge/coordinator/dev_verification.py and integrated into the dev phase in src/theforge/coordinator/dev_phase.py. Seam-level integration tests in tests/test_coord_dev_verification_seam.py verify that a dev agent can request a declared command by name, the coordinator executes it outside the sandbox, and the result flows back into the iteration, while the agent's process tree remains sandboxed. Unit tests in tests/test_dev_verification_broker.py cover the broker's request/response protocol, fail-closed budget, and config validation.; tests/test_coord_dev_verification_seam.py and tests/test_dev_verification_broker.py demonstrate the request/response protocol, refusal of undeclared names, the fail-closed budget, and that state.sandboxed/dev_containment/dev_sandbox_capabilities are unchanged by the capability \u2014 covering the confinement half convincingly. The build/test-completion half cannot be proven in this repository without a real Apple toolchain, which the dev's own handoff acknowledges. Additionally, no test covers the stop()-timeout race described above, so the \"auditable by construction\" property this criterion depends on is not fully verified even within what this repo's tests can reach."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 2,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Cycle-1 timeout-resume and broker-shutdown P1s are fixed, targeted tests pass, and I found no blocking regressions in the latest iteration. | [google-gemini-3.5-flash] The implementation is exceptionally robust, fully resolving all prior P1 findings with comprehensive test coverage and zero regressions.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "For a project declaring an Apple toolchain, a dev iteration completes a real app-target build and test within the run, while activity outside the project's declared toolchain commands remains confined.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/load.py:607 validates declared whole commands and src/theforge/config/load.py:806 wires them into ValidationConfig; src/theforge/coordinator/dev_phase.py:839 opens a per-iteration broker and src/theforge/coordinator/dev_phase.py:887 appends the current channel on TIMEOUT_RESUME; src/theforge/coordinator/dev_phase.py:1099 starts the broker around the agent and src/theforge/coordinator/dev_phase.py:1158 stops it and snapshots records; src/theforge/coordinator/dev_verification.py:376 refuses undeclared names, src/theforge/coordinator/dev_verification.py:388 refuses shutdown-arrival requests, src/theforge/coordinator/dev_verification.py:418 runs only the configured command through coordinator shell execution, and src/theforge/coordinator/dev_verification.py:191 plus src/theforge/coordinator/dev_verification.py:224 terminate and audit an in-flight command at iteration end. Tests cover the specific failure modes: tests/test_coord_dev_verification_seam.py:136 proves the declared xcodebuild command is run by the coordinator and returned to the dev iteration; tests/test_coord_dev_verification_seam.py:193 proves sandbox state is unchanged; tests/test_coord_dev_verification_seam.py:225 proves run-level and iteration audit visibility; tests/test_coord_dev_verification_seam.py:254 covers timeout-resume channel propagation; tests/test_coord_dev_verification_seam.py:298 and tests/test_dev_verification_broker.py:263 cover killing and auditing a command still running at handoff. I also ran pytest tests/test_dev_verification_broker.py tests/test_coord_dev_verification_seam.py -q and pytest tests/test_generate_audit_log.py tests/test_cli_audit_per_run.py -q; both passed.; The coordinator-mediated verification channel is implemented in src/theforge/coordinator/dev_verification.py and integrated into the DEV loop in src/theforge/coordinator/dev_phase.py. Confinement is verified in tests/test_coord_dev_verification_seam.py (test_dev_sandbox_state_is_unchanged_by_the_capability) where the agent's sandbox state remains identical to a run without the capability, while the declared commands are executed outside the sandbox on the agent's behalf."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] Step 2/Step 4 define the request/response artifact protocol but not how the agent blocks between writing a request and reading the response. The broker only observes the request directory while run_agent is in flight, so a dev agent that writes a request and immediately continues will read a missing or stale response.\n  Suggestion: Have the broker write the response atomically (temp file + rename) under a request-derived name, and have the prompt instruct the agent to poll for that exact path with a bounded sleep loop; treat a missing response after the configured timeout as a failed request rather than silence.\n- [P1-impl] [claude-opus] Step 3 places broker start/stop around run_agent, but dev_phase.py:1035-1060 calls run_agent inside a transport-retry while True: loop. A broker started once per iteration must tolerate multiple run_agent attempts, and per-iteration request limits need a defined reset point across retries.\n  Suggestion: Scope broker lifetime to the whole iteration (outside the retry loop) with the finally-stop, and state explicitly whether the request budget resets on a transport retry.\n- [P2] [claude-opus] Step 4 modifies build_dev_prompt/build_fix_prompt, but the plan lists only dev_phase.py call sites (dev_phase.py:844, 871, 905, 951). There is a fourth caller at src/theforge/cli/shared.py:368 that is not mentioned.\n  Suggestion: Keep the new prompt parameters keyword-only with an off-by-default value (as the existing signature style already does) so cli/shared.py:368 needs no change; note this explicitly so the dev agent does not make the parameter required.\n- [P2] [claude-opus] Step 1 names src/theforge/config/schema.py's test (tests/test_config_schema.py) but not where strict validation actually lives. config/schema.py holds v0.8 model-list config dataclasses, not forge.yaml key validation; the validation-section parsing and stale/unknown-key rejection are in config/load.py around lines 669-680 alongside the existing _validate_gate_timeout-style helpers.\n  Suggestion: Add the new load-time validators next to the existing validation.* helpers in load.py (load.py:520-600) and extend the stale-key guard at load.py:669-678 rather than touching config/schema.py.",
+    "cost_usd": 13.35781,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 3.917363
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 5.071253
+      },
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.518762
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 3.660507
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4",
+        "verdict": "APPROVE",
+        "cost_usd": 0.189926
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 63.24,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 282.43,
+        "latency_per_p1_s": null,
+        "parse_error_count": 1
+      },
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.4",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 89.65,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 2/Step 4 define the request/response artifact protocol but not how the agent blocks between writing a request and reading the response. The broker only observes the request directory while run_agent is in flight, so a dev agent that writes a request and immediately continues will read a missing or stale response.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 3 places broker start/stop around run_agent, but dev_phase.py:1035-1060 calls run_agent inside a transport-retry while True: loop. A broker started once per iteration must tolerate multiple run_agent attempts, and per-iteration request limits need a defined reset point across retries.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 modifies build_dev_prompt/build_fix_prompt, but the plan lists only dev_phase.py call sites (dev_phase.py:844, 871, 905, 951). There is a fourth caller at src/theforge/cli/shared.py:368 that is not mentioned.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 1 names src/theforge/config/schema.py's test (tests/test_config_schema.py) but not where strict validation actually lives. config/schema.py holds v0.8 model-list config dataclasses, not forge.yaml key validation; the validation-section parsing and stale/unknown-key rejection are in config/load.py around lines 669-680 alongside the existing _validate_gate_timeout-style helpers.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 2,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      }
+    ],
+    "reviewer_failures": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "failure_kind": "parse",
+        "retry_count": 2,
+        "retryable": false,
+        "produced_model_output": true,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [
+      {
+        "check": "file_validity",
+        "message": "Step 3: file 'tests/test_coord_dev_phase_verification.py' referenced with action='modify' does not exist in workspace"
+      },
+      {
+        "check": "file_validity",
+        "message": "Step 6: file 'tests/test_coord_dev_phase_verification.py' referenced with action='modify' does not exist in workspace"
+      }
+    ],
+    "finding_count": 2
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2068",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2050",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2068",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2068",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-29T18:16:03.765509+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "PASS",
+    "cost_usd": 0.13104599999999997,
+    "duration_s": 16.997915625106543,
+    "findings": []
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1195 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1521 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 835 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1016 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2364 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1662 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1645 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1914 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1167 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1028 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1192 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1118 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1421 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 720 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1252 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 4964 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1028 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1271 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1107 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1115 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1246 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1746 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "8e075e588b2d04d3",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "line": 874,
+      "severity": "P1",
+      "description": "When a timed-out DEV attempt resumes on a project with declared verification commands, the coordinator creates a fresh per-iteration broker but sends only the timeout continuation text, so the agent is not told the current request and response paths or the declared command names.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "ad30b1b821ee5b01",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/dev_verification.py",
+      "line": 165,
+      "severity": "P1",
+      "description": "If the agent exits while a requested verification command is still running, broker shutdown waits only thirty seconds, then the DEV phase snapshots the records before the command has produced a response or audit entry.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 9,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 9,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8542,
+              "weighted": 0.7374,
+              "runs": 96,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.7374
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "config",
+                "security",
+                "concurrency"
+              ],
+              "raw": 0.9149,
+              "weighted": 1.0,
+              "runs": 47,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 1.0,
+              "by_domain": {
+                "backend": {
+                  "runs": 29,
+                  "raw": 0.8621,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 7,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "security": {
+                  "runs": 4,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 7,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "config",
+                "security",
+                "concurrency"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "security": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "config",
+          "security",
+          "concurrency"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "config",
+            "security",
+            "concurrency"
+          ],
+          "raw": 0.9149,
+          "weighted": 1.0,
+          "runs": 47,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 1.0,
+          "by_domain": {
+            "backend": {
+              "runs": 29,
+              "raw": 0.8621,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "config": {
+              "runs": 7,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "security": {
+              "runs": 4,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "concurrency": {
+              "runs": 7,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8542,
+        "weighted_success_rate": 0.7374,
+        "sample_size": 96,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.7374,
+          "threshold": 0.6,
+          "sample_size": 96,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+concurrency+config+security",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend",
+          "concurrency",
+          "config",
+          "security"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 9 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.74 \u2265 threshold 0.60 over 96 admissible runs \u2014 pre-promotion held) (profile success_rate=0.74 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 56,
+            "completed": 49,
+            "raw": 0.875,
+            "weighted": 0.8753,
+            "rate": 0.8753,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 30,
+            "completed": 26,
+            "raw": 0.8667,
+            "weighted": 0.8629,
+            "rate": 0.8629,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 69,
+            "completed": 69,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 56,
+            "completed": 49,
+            "raw": 0.875,
+            "weighted": 0.8753,
+            "rate": 0.8753,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 30,
+            "completed": 26,
+            "raw": 0.8667,
+            "weighted": 0.8629,
+            "rate": 0.8629,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.254795,
+      "duration_s": 33.65,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 1.01339,
+      "duration_s": 135.04,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Implement ADR-0007 as a coordinator-side verification broker: projects declare whole named verification commands in forge.yaml, and dev agents request those names through a file-backed request channel while their normal process tree remains sandboxed. Keep execution, policy limits, output capture, and audit ownership in coordinator code rather than runner policy.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Add typed configuration for project-declared dev verification commands.",
+            "files": [
+              "src/theforge/config/types.py",
+              "src/theforge/config/load.py",
+              "tests/test_config_load.py",
+              "tests/test_config_schema.py"
+            ],
+            "action": "modify",
+            "details": "Extend ValidationConfig with a strict mapping of named dev verification commands. Each entry should be a whole shell command plus bounded timeout/output settings; reject unknown fields, empty names, empty commands, non-positive limits, and malformed structures at load time. Do not alter gate_command semantics or sandbox capability presets."
+          },
+          {
+            "id": 2,
+            "description": "Create the coordinator-owned verification request executor.",
+            "files": [
+              "src/theforge/coordinator/dev_verification.py",
+              "tests/test_dev_verification.py"
+            ],
+            "action": "create",
+            "details": "Add a small broker that watches a per-iteration request directory under the worktree, accepts only declared command names, runs the configured command through the existing coordinator shell helper outside the dev sandbox, writes a response artifact with exit code, timeout status, output tail, and trace path, and enforces per-iteration request limits fail-closed. The agent controls only the declared name, never argv or shell text.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Wire the broker into DEV iteration lifecycle.",
+            "files": [
+              "src/theforge/coordinator/dev_phase.py",
+              "src/theforge/coordinator/state.py",
+              "tests/test_coord_dev_phase_verification.py"
+            ],
+            "action": "modify",
+            "details": "Start the verification broker immediately before run_agent and stop it in a finally block after the agent returns. Pass the request directory and declared command names into prompt construction only when commands are configured. Preserve the existing dev sandbox resolution and runner invocation so ordinary agent activity remains confined.",
+            "depends_on": [
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Teach dev and fix prompts how to request declared verification.",
+            "files": [
+              "src/theforge/task/dev_prompts.py",
+              "src/theforge/task/fix_prompts.py",
+              "tests/test_dev_prompts.py",
+              "tests/test_task_dev.py"
+            ],
+            "action": "modify",
+            "details": "Add a concise section listing available verification command names and the request/response file protocol. Instruct agents to request these commands by name for sandbox-incompatible toolchain feedback, to read the response artifact, and not to invent argv or run the full gate directly. Keep existing gate delegation language intact.",
+            "depends_on": [
+              3
+            ]
+          },
+          {
+            "id": 5,
+            "description": "Expose verification requests in audit output.",
+            "files": [
+              "src/theforge/coordinator/audit.py",
+              "src/theforge/coordinator/audit_substrate.py",
+              "tests/test_generate_audit_log.py",
+              "tests/test_audit_schema_guard.py"
+            ],
+            "action": "modify",
+            "details": "Record each request with iteration, command name, accepted/refused status, exit code, timeout flag, output truncation, and trace path. Avoid logging secret values beyond what command output already emits through existing gate-style tail handling.",
+            "depends_on": [
+              3
+            ]
+          },
+          {
+            "id": 6,
+            "description": "Add a seam-level integration test proving the dev loop can consume coordinator-run verification.",
+            "files": [
+              "tests/test_coord_dev_phase_verification.py"
+            ],
+            "action": "modify",
+            "details": "Use the existing fake runner style to simulate a dev agent writing a verification request file and reading the response before handoff. Assert the declared command ran outside the agent path, unknown command names are refused, request limits are enforced, the normal dev sandbox state is unchanged, and audit telemetry contains the real request/result.",
+            "depends_on": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "A dev agent must be able to execute the commands a project declares as its verification.",
+            "steps": [
+              1,
+              2,
+              3,
+              4,
+              6
+            ]
+          },
+          {
+            "criterion": "For a project declaring an Apple toolchain, a dev iteration completes a real app-target build and test within the run, while activity outside the project's declared toolchain commands remains confined.",
+            "steps": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The exact request-channel shape was left out of scope by the ADR.",
+            "mitigation": "Use a minimal file-backed protocol because it works for CLI and API agents without provider-specific tool plumbing, and keep the protocol documented only in the dev prompt and broker tests."
+          },
+          {
+            "description": "Coordinator-run commands execute repository-authored files that the dev agent can edit.",
+            "mitigation": "Match the accepted gate exposure: only project-declared whole commands run, argv stays out of agent control, request count is bounded, and every invocation is audited."
+          },
+          {
+            "description": "Long-running Apple builds can outlive or hang the dev iteration.",
+            "mitigation": "Use command-level timeouts and existing process-group cleanup through the coordinator shell helper; always stop the broker in dev_phase finally handling."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": 13.35781,
+      "duration_s": 659.44,
+      "iterations": 5,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 3.917363
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 5.071253
+        },
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.518762
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 3.660507
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4",
+          "verdict": "APPROVE",
+          "cost_usd": 0.189926
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 18.840733,
+      "duration_s": 1317.62,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 78.0,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 7.040354,
+      "duration_s": 232.34,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 1.426782,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 3.093876,
+          "verdict": "APPROVE"
+        },
+        "claude-sonnet": {
+          "cost": 2.519696,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 40.638127,
+    "duration_s": 2456.09,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "1b9976a8b4c7",
+  "sprint_name": "issues-2050"
+}

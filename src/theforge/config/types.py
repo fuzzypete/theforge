@@ -332,6 +332,28 @@ class ApiFallbackConfig:
 
 
 @dataclass(frozen=True)
+class DevVerificationCommand:
+    """One project-declared verification command the dev agent may request by name.
+
+    ADR-0007: a project whose inner-loop toolchain the host sandbox cannot host
+    (SwiftPM invoking ``sandbox-exec`` inside a ``sandbox-exec`` confinement, say)
+    declares whole named commands here. The dev agent never gains unconfined
+    execution — it requests a *name*, and the coordinator runs the command
+    outside the sandbox on its behalf.
+
+    The declared unit is deliberately a **whole command**, not a binary: fixing
+    argv in project configuration is what keeps an agent-authored build input
+    (``Package.swift``, a run-script phase) from being reachable through an
+    arbitrary invocation the agent composes.
+    """
+
+    name: str  # the token the agent requests, e.g. "verify-watch"
+    command: str  # the whole shell command run in the worktree, outside the sandbox
+    timeout: int = 600  # seconds; hard wall-clock cap for one run
+    output_tail_chars: int = 4000  # chars of output returned to the agent
+
+
+@dataclass(frozen=True)
 class ValidationConfig:
     """How to validate agent output.
 
@@ -379,6 +401,25 @@ class ValidationConfig:
     # regardless of parallelism.
     gate_cpu_cores: int | None = None  # operator hint for gate CPU demand; None => host_cores
     gate_timeout_scale: str = "adaptive"  # "adaptive" | "fixed"
+    # ── Dev-phase verification capability (ADR-0007 / issue #2050) ────────────
+    # Named commands the coordinator will run outside the dev sandbox when the
+    # dev agent requests them by name. Empty (the default) means the capability
+    # is not offered at all: no request channel is created and the dev prompt
+    # says nothing about it. Declared as a tuple so ValidationConfig stays a
+    # frozen, hashable value; look entries up with ``dev_verification_command``.
+    dev_verification_commands: tuple[DevVerificationCommand, ...] = ()
+    # Fail-closed per-iteration budget. Every request the broker handles counts,
+    # accepted or refused, so a loop of malformed requests cannot buy unbounded
+    # coordinator execution. Does not reset across dev transport retries — the
+    # budget belongs to the iteration, not to one run_agent attempt.
+    dev_verification_max_requests: int = 10
+
+    def dev_verification_command(self, name: str) -> DevVerificationCommand | None:
+        """Return the declared verification command named ``name``, else None."""
+        for entry in self.dev_verification_commands:
+            if entry.name == name:
+                return entry
+        return None
 
 
 @dataclass(frozen=True)
