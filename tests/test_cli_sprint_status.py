@@ -1487,3 +1487,41 @@ def test_ensure_titles_leaves_transient_failure_uncached(monkeypatch, tmp_path: 
     _ensure_titles([_Entry("Issue #10")], tmp_path, cache)
     # Transient failure leaves the number uncached so a later frame can retry.
     assert cache == {}
+
+
+def test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live(tmp_path: Path) -> None:
+    """A terminal persisted phase outranks a lingering PID file (#2013).
+
+    The runner writes the terminal sprint_phase before its own wrap-up, so the
+    process can still exist while the sprint is over. Reporting "[live] phase:
+    failed" next to nothing but failed stories is the contradiction operators hit.
+    """
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "wrapup-run.pid").write_text("99999\nwrapup-sprint\n")
+
+    state_path = _make_state_file(
+        tmp_path,
+        "wrapup-run",
+        "wrapup-sprint",
+        [
+            {
+                "slug": "issue-50",
+                "path": "Issue #50",
+                "status": "failed",
+                "outcome": "failed",
+                "phase": "ESCALATE",
+                "cost_usd": 0.5,
+                "detail": {"gate_status": "incomplete"},
+            }
+        ],
+    )
+    data = yaml.safe_load(state_path.read_text())
+    data["sprint_phase"] = "failed"
+    state_path.write_text(yaml.dump(data))
+
+    code, output = _run_sprint_status(tmp_path, "wrapup-run")
+
+    assert code == 0
+    assert "[live]" not in output
+    assert "[failed]" in output

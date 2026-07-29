@@ -112,6 +112,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     if title_cache is None:
         title_cache = {}
 
+    from theforge.sprint.state_writer import is_terminal_sprint_phase
     from theforge.sprint.status_reader import (
         find_live_state_path,
         find_sprint_summary,
@@ -228,7 +229,14 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             cost_measured_usd = _measured_sum
 
     # ── Header ───────────────────────────────────────────────────────────
-    if is_live:
+    # A PID file is evidence a process exists, not evidence the sprint is still
+    # advancing: the runner writes the terminal sprint_phase before its own
+    # (possibly slow) wrap-up, and until it exits the header would otherwise
+    # read "[live] phase: failed" alongside nothing but terminal stories
+    # (#2013). The persisted terminal phase is the stronger claim — report it.
+    if is_live and is_terminal_sprint_phase(sprint_phase):
+        state_label = str(sprint_phase)
+    elif is_live:
         state_label = "live"
     elif unexpected_end:
         state_label = "crashed"

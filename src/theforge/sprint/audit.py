@@ -78,7 +78,7 @@ def persist_accumulated_story_state(
 
 if TYPE_CHECKING:
     from ..config import ForgeConfig
-    from ..coordinator.state import CoordinatorResult
+    from ..coordinator.state import CoordinatorResult, CoordinatorState
     from ..task import TaskStory
 
 
@@ -1274,3 +1274,148 @@ def _write_story_audit(
                 yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
         except Exception:
             pass  # best-effort
+
+
+# ── In-flight story audits ────────────────────────────────────────────
+#
+# A story's audit.yaml is normally written once, from the CoordinatorResult its
+# worker returns. A story that never returns one — killed by ``forge stop``,
+# which runs in a *different* process and cannot see the worker's in-memory
+# state — therefore had no audit at all, or a stale one from a prior generation:
+# the dev iterations and gate decisions the run log shows really happened were
+# unrecoverable after the fact (#2013).
+#
+# So the sprint process flushes the story's audit as it goes, marked
+# ``in_flight: true``, and the stop path stamps that same file terminal. The
+# marker is what keeps the two apart: only an in-flight audit may be finalized
+# by an outside process, so a completed story's real audit is never overwritten.
+
+AUDIT_IN_FLIGHT_KEY = "in_flight"
+
+
+def _story_audit_path(project_root: Path, sprint_name: str, slug: str) -> Path:
+    return project_root / ".forge" / "logs" / sprint_name / slug / "audit.yaml"
+
+
+def _dump_audit_atomically(path: Path, audit_data: dict) -> None:
+    """Write an audit mapping so a reader never sees a half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+        tmp_path.replace(path)
+    except OSError:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def write_live_story_audit(
+    config: "ForgeConfig",
+    task: "TaskStory",
+    state: "CoordinatorState",
+    *,
+    sprint_id: str | None = None,
+    sprint_name: str | None = None,
+) -> Path | None:
+    """Flush a still-running story's audit to its log dir; return the path written.
+
+    Deliberately narrower than :func:`_write_story_audit`: it writes only the
+    per-story ``audit.yaml``, never the substrate record or the ESCALATE marker.
+    Those describe a finished story, and this one is not finished — the whole
+    point is that it may never be.
+
+    Best-effort: returns ``None`` on any failure rather than disturbing the run
+    it is only observing.
+    """
+    from ..coordinator import audit as coordinator_audit  # noqa: PLC0415
+    from ..coordinator.state import CoordinatorResult  # noqa: PLC0415
+
+    try:
+        in_flight_result = CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=f"story in flight (phase {state.phase.name})",
+        )
+        audit_data = coordinator_audit.generate_audit_log(config, task, in_flight_result)
+        audit_data[AUDIT_IN_FLIGHT_KEY] = True
+        if sprint_id is not None:
+            audit_data["sprint_id"] = sprint_id
+        resolved_sprint_name = sprint_name or state.sprint_name
+        if resolved_sprint_name:
+            audit_data["sprint_name"] = resolved_sprint_name
+        log_dir = state.log_dir
+        if log_dir is None:
+            if not resolved_sprint_name:
+                return None
+            log_dir = _story_audit_path(
+                config.project_root, resolved_sprint_name, task.slug
+            ).parent
+        path = log_dir / "audit.yaml"
+        _dump_audit_atomically(path, audit_data)
+        return path
+    except Exception:  # noqa: BLE001 — an observer must never break the run
+        return None
+
+
+def finalize_interrupted_story_audit(
+    project_root: Path,
+    sprint_name: str,
+    slug: str,
+    *,
+    reason: str = "stopped",
+) -> Path | None:
+    """Stamp an in-flight story audit terminal; return the path, or None if skipped.
+
+    Called by ``forge stop`` after the owning sprint process is gone. Only
+    touches an audit still marked ``in_flight`` — a story that finished on its
+    own already wrote its real audit, and overwriting that with an
+    outside-the-run guess would destroy the record it exists to be.
+
+    The accumulated history (run_id, dev_loop, gate_decisions, phases) is left
+    exactly as the sprint process flushed it; only the outcome and end timing
+    are rewritten, so what the operator reads is what actually happened up to
+    the stop.
+    """
+    path = _story_audit_path(project_root, sprint_name, slug)
+    try:
+        with open(path, encoding="utf-8") as f:
+            audit_data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(audit_data, dict) or not audit_data.get(AUDIT_IN_FLIGHT_KEY):
+        return None
+
+    ended_at = datetime.datetime.now(datetime.timezone.utc)
+    audit_data[AUDIT_IN_FLIGHT_KEY] = False
+    audit_data["interrupted_by"] = reason
+
+    outcome = audit_data.get("outcome")
+    if not isinstance(outcome, dict):
+        outcome = {}
+        audit_data["outcome"] = outcome
+    reached_phase = outcome.get("final_phase") or "UNKNOWN"
+    outcome["success"] = False
+    outcome["error_type"] = "OperatorStopped"
+    outcome["message"] = f"Run {reason} by operator while the story was in {reached_phase}"
+
+    timing = audit_data.get("timing")
+    if isinstance(timing, dict):
+        timing["finished_at"] = ended_at.isoformat()
+        started_raw = timing.get("started_at")
+        if isinstance(started_raw, str) and started_raw:
+            try:
+                started = datetime.datetime.fromisoformat(started_raw)
+                timing["duration_seconds"] = (ended_at - started).total_seconds()
+            except ValueError:
+                pass
+
+    try:
+        _dump_audit_atomically(path, audit_data)
+    except OSError:
+        return None
+    return path
