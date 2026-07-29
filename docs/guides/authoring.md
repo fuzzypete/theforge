@@ -507,11 +507,21 @@ issue is what normal sprint selection considers. To see the current eligible set
 use `forge status --ready` (scope it with `--milestone`):
 
 ```
-$ forge status --ready --milestone v0.10.0
-Ready for next sprint in v0.10.0 (2 issues):
-  #1487  bug   ready  status --watch blank during preflight
-  #1512  bug   ready  cut-rc.sh shim wrapper regression
+$ forge status --ready --milestone v0.13.0
+Ready for next sprint in v0.13.0 (2 issues, 1 blocked by shape gate):
+  #1487  bug  ready                    status --watch blank during preflight
+  #1512  bug  BLOCKED:needs_diagnosis  cut-rc.sh shim wrapper regression
+
+1 issue carries the `ready` label but would be refused at sprint entry:
+  #1512  needs_diagnosis: Bug has no Diagnosis section — not fix-ready. …
+Run `forge shape <n>` for the full verdict, then `forge groom <n>` / `forge diagnose <n>` before sprint selection.
 ```
+
+The `ready` label is applied by hand, so the listing does not take it at face
+value: every entry is run through the same shape gate that guards sprint entry,
+and one the gate would refuse is marked `BLOCKED:<verdict>` rather than
+presented as eligible. Groom or diagnose those before selecting a sprint —
+otherwise the sprint discovers the problem after budget is committed.
 
 ### Live sprint injection is out of scope
 

@@ -10,6 +10,10 @@ unreachable ``gh`` calls: an issue whose labels/body cannot be fetched is
 left runnable (the pre-existing sources.py fetch will surface any real
 error). We do not want the shape gate itself to be a new source of silent
 drops.
+
+The admissibility decision itself lives in ``theforge.admissibility`` so that
+operator-facing surfaces which advertise sprint-eligible work (``forge status
+--ready``) render the same verdict this gate enforces (#2027).
 """
 
 from __future__ import annotations
@@ -22,27 +26,48 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from ..shape_check import Shape, ShapeResult, ShapeVerdict, check
-from ..shape_check.parsing import extract_ac_section, extract_bullets
-from ..shape_check.types import VERDICT_DESCRIPTIONS, Severity
+from ..admissibility import (
+    NEEDS_GROOMING_LABEL,
+    OPERATOR_ACTION_CODE,
+    OPERATOR_ACTION_CONFLICT_LABELS,
+    OPERATOR_ACTION_LABEL,
+    OPERATOR_ACTION_LABEL_CONFLICT_CODE,
+    OPERATOR_ACTION_MISSING_AC_CODE,
+    classify_admissibility,
+    has_acceptance_criteria,
+    resolve_classifier,
+)
+from ..shape_check import ShapeVerdict
 from .reopen_context import analyze_reopen_contract, format_reopen_stale_detail
 
 _log = logging.getLogger(__name__)
 
 VerdictEmitter = Callable[[dict], None]
 
-NEEDS_GROOMING_LABEL = "needs-grooming"
 REOPENED_STALE_CONTRACT_CODE = "reopened_stale_contract"
 
-# operator-action: deliberate non-dispatch type. The label declares an issue
-# whose deliverable is human action no dev agent can perform. The gate refuses
-# to dispatch these issues to dev cycles — distinct from "wrong shape" skips.
-OPERATOR_ACTION_LABEL = "operator-action"
-OPERATOR_ACTION_CODE = "operator_action"
-OPERATOR_ACTION_LABEL_CONFLICT_CODE = "operator_action_label_conflict"
-OPERATOR_ACTION_MISSING_AC_CODE = "operator_action_missing_ac"
-# operator-action is mutually exclusive with the runnable type labels.
-OPERATOR_ACTION_CONFLICT_LABELS = frozenset({"bug", "enhancement", "epic", "task"})
+# Aliases for helpers that moved to ``admissibility``: the gate stays the
+# import site callers already know.
+_has_acceptance_criteria = has_acceptance_criteria
+_resolve_classifier = resolve_classifier
+
+__all__ = [
+    "NEEDS_GROOMING_LABEL",
+    "OPERATOR_ACTION_CODE",
+    "OPERATOR_ACTION_CONFLICT_LABELS",
+    "OPERATOR_ACTION_LABEL",
+    "OPERATOR_ACTION_LABEL_CONFLICT_CODE",
+    "OPERATOR_ACTION_MISSING_AC_CODE",
+    "REOPENED_STALE_CONTRACT_CODE",
+    "ShapeGateResult",
+    "SkippedIssue",
+    "VerdictEmitter",
+    "apply_shape_gate",
+    "format_advisory_warning",
+    "format_operator_action_notice",
+    "format_skipped_warning",
+    "skipped_issue_state_fields",
+]
 
 # Bot comments from #806b embed machine-readable reason codes on a single
 # line so local re-runs can match the Action's verdict exactly. Accept either
@@ -88,58 +113,6 @@ class ShapeGateResult:
     # operator work". Issues with ``operator-action`` plus a label conflict
     # or no AC section land in ``skipped`` instead.
     operator_action: list[SkippedIssue] = field(default_factory=list)
-
-
-def _has_acceptance_criteria(body: str) -> bool:
-    """Return True if the body has a non-empty ``## Acceptance criteria`` section."""
-    section = extract_ac_section(body)
-    if not section:
-        return False
-    return bool(extract_bullets(section))
-
-
-def _classify_operator_action(
-    number: int,
-    title: str,
-    body: str,
-    labels: list[str],
-) -> SkippedIssue:
-    """Return the SkippedIssue describing how an ``operator-action`` issue is handled.
-
-    Caller decides whether to surface this in the deliberate-non-dispatch list
-    or in the wrong-shape skipped list based on the returned ``reason_codes``.
-    """
-    label_set = {str(lbl).strip().lower() for lbl in labels}
-    conflicts = sorted(label_set & OPERATOR_ACTION_CONFLICT_LABELS)
-    if conflicts:
-        return SkippedIssue(
-            issue_number=number,
-            reason_codes=(OPERATOR_ACTION_LABEL_CONFLICT_CODE,),
-            source="label",
-            title=title,
-            detail=(
-                f"'{OPERATOR_ACTION_LABEL}' conflicts with type label(s) "
-                f"{conflicts!r}; pick exactly one issue type."
-            ),
-        )
-    if not _has_acceptance_criteria(body):
-        return SkippedIssue(
-            issue_number=number,
-            reason_codes=(OPERATOR_ACTION_MISSING_AC_CODE,),
-            source="label",
-            title=title,
-            detail=(
-                f"'{OPERATOR_ACTION_LABEL}' issues require an "
-                "'## Acceptance criteria' section describing the operator deliverable."
-            ),
-        )
-    return SkippedIssue(
-        issue_number=number,
-        reason_codes=(OPERATOR_ACTION_CODE,),
-        source="label",
-        title=title,
-        detail="not sprintable; operator deliverable",
-    )
 
 
 def skipped_issue_state_fields(skipped: object) -> tuple[str, dict]:
@@ -324,56 +297,6 @@ def _fetch_bot_reason_codes(number: int, project_root: Path | None) -> list[str]
     return []
 
 
-def _blocking_codes(result: ShapeResult) -> list[str]:
-    return [r.code for r in result.reasons if r.severity is Severity.BLOCKING]
-
-
-def _skip_detail(
-    result: ShapeResult,
-    fallback: str,
-    *,
-    include_advisory_when_no_blocking: bool = False,
-) -> str:
-    blocking_details = [
-        reason.detail.strip()
-        for reason in result.reasons
-        if reason.severity is Severity.BLOCKING and reason.detail.strip()
-    ]
-    if blocking_details:
-        return "; ".join(blocking_details)
-
-    if include_advisory_when_no_blocking:
-        reason_details = [
-            reason.detail.strip() for reason in result.reasons if reason.detail.strip()
-        ]
-        if reason_details:
-            return "; ".join(reason_details)
-
-    return fallback
-
-
-_VALID_CLASSIFIER_MODES = frozenset({"heuristic", "off", "llm"})
-
-
-def _resolve_classifier(classifier_mode: str, llm_caller=None) -> str:
-    """Return the classifier mode to actually use at sprint time.
-
-    Honors the configured ``shape_check.classifier`` value when supported.
-    Falls back to ``heuristic`` when:
-
-    - The mode is unknown (defensive — misconfiguration shouldn't block sprints).
-    - The mode is ``llm`` but no ``llm_caller`` is available to refine fuzzy
-      reasons. (The ``classifier.classify`` function already silently falls
-      back in this case; resolving explicitly keeps the sprint gate honest
-      about what it actually ran.)
-    """
-    if classifier_mode not in _VALID_CLASSIFIER_MODES:
-        return "heuristic"
-    if classifier_mode == "llm" and llm_caller is None:
-        return "heuristic"
-    return classifier_mode
-
-
 def _noop_emit_verdict(_event: dict) -> None:
     return None
 
@@ -414,7 +337,6 @@ def apply_shape_gate(
     just-remediated issue on the post-re-exec gate pass.
     """
     remediated = frozenset(intake_remediated_numbers or ())
-    effective_mode = _resolve_classifier(classifier_mode, llm_caller=llm_caller)
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
     advisories: list[SkippedIssue] = []
@@ -453,58 +375,60 @@ def apply_shape_gate(
         title = detail["title"] or title_short
         body = detail["body"]
 
-        # operator-action: short-circuit ahead of the regular shape check.
-        # An operator-action issue is not malformed; it is correctly identified
-        # as work no dev agent can perform. Running the standard shape check on
-        # it would flag it for missing_type (since operator-action is mutually
+        # The admissibility decision (operator-action short-circuit, the live
+        # shape_check run, the needs-grooming label, and the verdict/shape
+        # branches) is shared with the ready-queue surface so both agree on
+        # what may enter a sprint.
+        adm = classify_admissibility(
+            title,
+            body,
+            labels,
+            classifier_mode=classifier_mode,
+            llm_caller=llm_caller,
+            trust_local_over_grooming_label=number in remediated,
+        )
+
+        # operator-action: refused ahead of the regular shape check. An
+        # operator-action issue is not malformed; it is correctly identified as
+        # work no dev agent can perform. Running the standard shape check on it
+        # would flag it for missing_type (since operator-action is mutually
         # exclusive with bug/enhancement/epic/task), conflating two distinct
         # operator signals. Refuse here with a label-source skip and stop.
-        label_set_lc = {str(lbl).strip().lower() for lbl in labels}
-        if OPERATOR_ACTION_LABEL in label_set_lc:
+        if adm.operator_action_label:
             operator_action_label_numbers.add(number)
-            entry = _classify_operator_action(number, title_short, body, labels)
-            if OPERATOR_ACTION_CODE in entry.reason_codes:
+            entry = SkippedIssue(
+                issue_number=number,
+                reason_codes=adm.reason_codes,
+                source=adm.source,
+                title=title_short,
+                detail=adm.detail,
+            )
+            if adm.deliberate_non_dispatch:
                 operator_action.append(entry)
             else:
                 skipped.append(entry)
             continue
 
         reopen_state = analyze_reopen_contract(detail, detail.get("timeline") or [])
-        local = check(
-            title,
-            body,
-            labels,
-            classifier_mode=effective_mode,
-            llm_caller=llm_caller,
-        )
 
-        if NEEDS_GROOMING_LABEL in labels and number not in remediated:
-            codes = _blocking_codes(local) or ["needs_grooming_label"]
-            verdict = (
-                local.verdict
-                if local.verdict is not ShapeVerdict.RUNNABLE
-                else ShapeVerdict.NEEDS_OPERATOR_ACTION
-            )
+        if not adm.admissible and adm.source == "label":
             skipped.append(
                 SkippedIssue(
                     issue_number=number,
-                    reason_codes=tuple(codes),
+                    reason_codes=adm.reason_codes,
                     source="label",
                     title=title_short,
-                    detail=_skip_detail(
-                        local,
-                        fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
-                    ),
-                    verdict=verdict.value,
-                    verdict_description=VERDICT_DESCRIPTIONS[verdict],
+                    detail=adm.detail,
+                    verdict=adm.verdict,
+                    verdict_description=adm.verdict_description,
                 )
             )
             _safe_emit(
                 {
                     "issue_id": str(number),
-                    "verdict": verdict.value,
+                    "verdict": adm.verdict,
                     "source": "label",
-                    "reason_codes": list(codes),
+                    "reason_codes": list(adm.reason_codes),
                 }
             )
             continue
@@ -531,65 +455,28 @@ def apply_shape_gate(
                 )
             )
 
-        # diagnosis_cause_unknown is admissible (Shape.RUNNABLE) but not
-        # implementation-runnable per ADR-0001 — surface it via skipped so
-        # only the runnable verdict proceeds to dev. The verdict is the
-        # routing signal here; map_shape's binary view is intentionally not.
-        if local.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
-            codes = [r.code for r in local.reasons] or ["diagnosis_cause_unknown"]
+        # Refusals from the live check: a non-RUNNABLE shape, or the
+        # diagnosis_cause_unknown verdict, which is admissible as a *shape*
+        # (Shape.RUNNABLE) but not implementation-runnable per ADR-0001. The
+        # verdict is the routing signal; map_shape's binary view is not.
+        if not adm.admissible:
             skipped.append(
                 SkippedIssue(
                     issue_number=number,
-                    reason_codes=tuple(codes),
+                    reason_codes=adm.reason_codes,
                     source="local_check",
                     title=title_short,
-                    detail=_skip_detail(
-                        local,
-                        fallback="bug investigation-ready; confirmed cause not yet identified",
-                        include_advisory_when_no_blocking=True,
-                    ),
-                    verdict=ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
-                    verdict_description=VERDICT_DESCRIPTIONS[ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN],
+                    detail=adm.detail,
+                    verdict=adm.verdict,
+                    verdict_description=adm.verdict_description,
                 )
             )
             _safe_emit(
                 {
                     "issue_id": str(number),
-                    "verdict": ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
+                    "verdict": adm.verdict,
                     "source": "local_check",
-                    "reason_codes": list(codes),
-                }
-            )
-            continue
-
-        if local.shape is not Shape.RUNNABLE:
-            codes = _blocking_codes(local) or [r.code for r in local.reasons]
-            verdict = (
-                local.verdict
-                if local.verdict is not ShapeVerdict.RUNNABLE
-                else ShapeVerdict.NEEDS_OPERATOR_ACTION
-            )
-            skipped.append(
-                SkippedIssue(
-                    issue_number=number,
-                    reason_codes=tuple(codes),
-                    source="local_check",
-                    title=title_short,
-                    detail=_skip_detail(
-                        local,
-                        fallback=f"local shape check: {local.suggested_action.value}",
-                        include_advisory_when_no_blocking=True,
-                    ),
-                    verdict=verdict.value,
-                    verdict_description=VERDICT_DESCRIPTIONS[verdict],
-                )
-            )
-            _safe_emit(
-                {
-                    "issue_id": str(number),
-                    "verdict": verdict.value,
-                    "source": "local_check",
-                    "reason_codes": list(codes),
+                    "reason_codes": list(adm.reason_codes),
                 }
             )
             continue
