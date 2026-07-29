@@ -227,6 +227,13 @@ class DevIterationTelemetry:
     model_used: str | None = None
     transport_retry_count: int = 0
     transport_retry_events: list[dict[str, Any]] = field(default_factory=list)
+    # Project-declared verification commands the coordinator ran outside the dev
+    # sandbox at this iteration's request (ADR-0007 / #2050). Empty when the
+    # project declares none, or when the agent asked for nothing. Each entry
+    # carries the requested name, whether it was accepted, and the outcome — so
+    # an iteration that "iterated blind" is distinguishable from one that
+    # actually executed the toolchain.
+    verification_requests: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -400,6 +407,16 @@ class CoordinatorState:
     dev_session_id: str | None = None
     pending_dev_transport_retry_count: int = 0
     pending_dev_transport_retry_events: list[dict[str, Any]] = field(default_factory=list)
+    # Verification requests served during the DEV iteration currently in flight,
+    # awaiting the telemetry record that closes it out (ADR-0007 / #2050). Set by
+    # the dev phase when the broker stops; consumed and cleared by
+    # ``record_dev_iteration_telemetry``.
+    pending_dev_verification_requests: list[dict[str, Any]] = field(default_factory=list)
+    # Every verification request served this run, in order. Kept alongside the
+    # per-iteration telemetry because some dev exit paths (max-iterations retry
+    # without a handoff, for one) return before telemetry is recorded, and an
+    # unconfined coordinator execution must never be invisible in the audit trail.
+    dev_verification_requests: list[dict[str, Any]] = field(default_factory=list)
     plan_session_id: str | None = None
     plan_review_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name

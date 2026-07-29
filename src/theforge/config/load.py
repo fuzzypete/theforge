@@ -55,6 +55,7 @@ from .types import (
     ApiFallbackConfig,
     ContextConfig,
     DevConfig,
+    DevVerificationCommand,
     DiagnoseConfig,
     FindingClassifierConfig,
     ForgeConfig,
@@ -597,6 +598,104 @@ def _validated_gate_timeout_scale(raw: Any) -> str:
     return raw
 
 
+# A verification command name is the only token the dev agent controls, and it
+# is used to build a filesystem path in the request channel. Constrain it to a
+# flat, traversal-free token at load time so nothing downstream has to.
+_DEV_VERIFICATION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _validated_dev_verification_commands(raw: Any) -> tuple[DevVerificationCommand, ...]:
+    """Validate ``validation.dev_verification_commands`` (ADR-0007).
+
+    These commands run **outside** the dev sandbox, so the declaration is an
+    integrity boundary: every field is checked here and a malformed entry is a
+    load-time error rather than a runtime surprise on a command that is already
+    executing unconfined. Accepts either the short spelling::
+
+        dev_verification_commands:
+          verify-watch: xcodebuild -scheme Watch test
+
+    or the full mapping form with bounded limits::
+
+        dev_verification_commands:
+          verify-watch:
+            command: xcodebuild -scheme Watch test
+            timeout: 900
+            output_tail_chars: 8000
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "forge.yaml validation.dev_verification_commands must be a mapping of "
+            f"name -> command, got {type(raw).__name__}."
+        )
+    entries: list[DevVerificationCommand] = []
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not _DEV_VERIFICATION_NAME_RE.match(name):
+            raise ValueError(
+                "forge.yaml validation.dev_verification_commands has an invalid command "
+                f"name {name!r}: names must be 1-64 characters of letters, digits, "
+                "'.', '_' or '-' and start with a letter or digit."
+            )
+        defaults = DevVerificationCommand(name=name, command="")
+        if isinstance(spec, str):
+            spec = {"command": spec}
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"forge.yaml validation.dev_verification_commands.{name} must be a command "
+                f"string or a mapping, got {type(spec).__name__}."
+            )
+        unknown = sorted(set(spec) - {"command", "timeout", "output_tail_chars"})
+        if unknown:
+            raise ValueError(
+                f"forge.yaml validation.dev_verification_commands.{name} has unknown "
+                f"field(s) {unknown}: allowed fields are command, timeout, "
+                "output_tail_chars."
+            )
+        command = spec.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(
+                f"forge.yaml validation.dev_verification_commands.{name}.command must be a "
+                f"non-empty shell command string, got {command!r}."
+            )
+        limits: dict[str, int] = {}
+        for field_name, default in (
+            ("timeout", defaults.timeout),
+            ("output_tail_chars", defaults.output_tail_chars),
+        ):
+            value = spec.get(field_name, default)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"forge.yaml validation.dev_verification_commands.{name}.{field_name} "
+                    f"must be a positive integer, got {value!r}."
+                )
+            limits[field_name] = value
+        entries.append(DevVerificationCommand(name=name, command=command.strip(), **limits))
+    return tuple(entries)
+
+
+def _validated_dev_verification_max_requests(raw: Any) -> int:
+    """Validate ``validation.dev_verification_max_requests`` (ADR-0007).
+
+    The per-iteration request budget is what keeps a mediated verification
+    channel from degenerating into a per-token gate run, so a non-positive or
+    non-integer value is refused rather than silently treated as "unbounded".
+    """
+    if raw is None:
+        return DEFAULT_VALIDATION.dev_verification_max_requests
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            "forge.yaml validation.dev_verification_max_requests must be an integer "
+            f"request count, got {raw!r} ({type(raw).__name__})."
+        )
+    if raw <= 0:
+        raise ValueError(
+            f"forge.yaml validation.dev_verification_max_requests must be positive, got {raw!r}."
+        )
+    return raw
+
+
 def _resolve_project_root(config_path: Path) -> Path:
     """Resolve the project root for a given forge.yaml path.
 
@@ -703,6 +802,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         gate_timeout_scale=_validated_gate_timeout_scale(val_data.get("gate_timeout_scale")),
         default_test_target=str(
             val_data.get("default_test_target", DEFAULT_VALIDATION.default_test_target)
+        ),
+        dev_verification_commands=_validated_dev_verification_commands(
+            val_data.get("dev_verification_commands")
+        ),
+        dev_verification_max_requests=_validated_dev_verification_max_requests(
+            val_data.get("dev_verification_max_requests")
         ),
     )
 
