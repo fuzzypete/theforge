@@ -501,6 +501,11 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "model_used": item.model_used,
             "transport_retry_count": item.transport_retry_count,
             "transport_retry_events": item.transport_retry_events,
+            # Declared verification commands the coordinator ran outside the dev
+            # sandbox at this iteration's request (ADR-0007 / #2050). Every
+            # unconfined execution the run performed on the agent's behalf is
+            # named here with its outcome and a trace path to the full output.
+            "verification_requests": item.verification_requests,
         }
         for item in state.dev_iteration_telemetry
     ]
@@ -671,6 +676,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "sandbox_capabilities": (
                 state.dev_sandbox_capabilities or resolve_capabilities(None).audit_payload()
             ),
+            # Run-level roll-up of every project-declared verification command the
+            # coordinator executed outside the sandbox on the dev agent's behalf
+            # (ADR-0007 / #2050). Kept at run level as well as per iteration
+            # because some dev exit paths return before iteration telemetry is
+            # recorded, and an unconfined execution must never go unrecorded.
+            "dev_verification_requests": list(state.dev_verification_requests),
         },
         "iterations": {
             "dev_attempts_total": len(state.dev_results),

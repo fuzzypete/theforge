@@ -4,6 +4,7 @@ from textwrap import dedent
 from theforge.coordinator.state import CycleHistory
 
 from .conventions import render_conventions_block
+from .dev_prompts import render_verification_section
 from .story import TaskStory
 
 
@@ -145,6 +146,12 @@ def build_fix_prompt(
     conventions: list[str] | None = None,
     advisory_p2_only: bool = False,
     p2_policy: str = "in_scope",
+    # Coordinator-mediated verification channel (ADR-0007 / #2050). Off by
+    # default so callers that do not offer the capability need no change.
+    verification_commands: tuple[tuple[str, str], ...] = (),
+    verification_request_dir: str | None = None,
+    verification_response_dir: str | None = None,
+    verification_max_requests: int = 0,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -265,6 +272,13 @@ def build_fix_prompt(
     _conventions_block = render_conventions_block(conventions)
     if _conventions_block:
         context_sections += _conventions_block
+
+    context_sections += render_verification_section(
+        commands=verification_commands,
+        request_dir=verification_request_dir,
+        response_dir=verification_response_dir,
+        max_requests=verification_max_requests,
+    )
 
     if surviving_families:
         traj_lines: list[str] = []

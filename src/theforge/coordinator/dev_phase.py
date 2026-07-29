@@ -21,7 +21,13 @@ from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import append_convention_retry_findings
 from theforge.schemas import dev_handoff_claims_unproven_completion
 from theforge.sessions import save_sessions
-from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
+from theforge.task import (
+    ContextAssembler,
+    TaskStory,
+    build_dev_prompt,
+    build_fix_prompt,
+    render_verification_section,
+)
 from theforge.traces import write_trace
 
 from .agent_failure import (
@@ -35,6 +41,7 @@ from .commit_guard import (
     _has_commits_ahead_of_base,
     _worktree_has_changes,
 )
+from .dev_verification import DevVerificationBroker
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
@@ -576,10 +583,12 @@ def record_dev_iteration_telemetry(
             model_used=dev_result.model_used,
             transport_retry_count=state.pending_dev_transport_retry_count,
             transport_retry_events=list(state.pending_dev_transport_retry_events),
+            verification_requests=list(state.pending_dev_verification_requests),
         )
     )
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
+    state.pending_dev_verification_requests = []
 
 
 def _still_open_p1s_for_dev_prompt(state: CoordinatorState) -> list:
@@ -720,6 +729,7 @@ def _run_dev_phase(
     _ensure_runners()
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
+    state.pending_dev_verification_requests = []
     # Probe sandbox availability once per run (lru_cache-backed — cheap on repeat calls).
     # `sandboxed` is the mechanical-containment bool; `dev_containment` records the
     # richer mode so audit/status distinguishes a wrapped run from a prompt-only one.
@@ -817,6 +827,48 @@ def _run_dev_phase(
     )
     _test_cmd = config.validation.test_command or _gate_cmd
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
+    # ── Dev-phase verification capability (ADR-0007 / #2050) ──────────────
+    # A project whose inner-loop toolchain the host sandbox structurally cannot
+    # host declares whole named commands in forge.yaml. The broker is built here
+    # — before prompt routing, because the prompt must name the request channel —
+    # started immediately before the agent runs, and stopped in a finally after
+    # it returns. Its lifetime spans the whole iteration *including* transport
+    # retries, so the per-iteration request budget does not reset when run_agent
+    # is re-attempted. With nothing declared no broker exists, no channel
+    # directory is created, and the prompt says nothing about the capability.
+    _verification_broker: DevVerificationBroker | None = None
+    if config.validation.dev_verification_commands:
+        _verification_broker = DevVerificationBroker(
+            workspace_path=workspace_path,
+            commands=config.validation.dev_verification_commands,
+            iteration=state.dev_iteration,
+            max_requests=config.validation.dev_verification_max_requests,
+            expected_python=config.workspace.python_interpreter,
+        )
+        _log(
+            f"  dev verification commands: {', '.join(_verification_broker.command_names)} "
+            f"(max {_verification_broker.max_requests} requests this iteration)"
+        )
+    # One description of the channel, in the renderer's own vocabulary. The
+    # prompt builders take it under ``verification_``-prefixed names; the
+    # timeout-resume route (which has no builder) renders the section directly
+    # from the same dict, so the two routes cannot describe different channels.
+    _verification_channel: dict = (
+        {
+            "commands": tuple(
+                (entry.name, entry.command)
+                for entry in config.validation.dev_verification_commands
+            ),
+            "request_dir": str(_verification_broker.request_dir),
+            "response_dir": str(_verification_broker.response_dir),
+            "max_requests": _verification_broker.max_requests,
+        }
+        if _verification_broker is not None
+        else {}
+    )
+    _verification_prompt_kwargs: dict = {
+        f"verification_{key}": value for key, value in _verification_channel.items()
+    }
     # Gate execution is coordinator-owned on EVERY iteration (#1944 / #823). The
     # dev agent is never the gate authority: VALIDATE runs the authoritative gate
     # unsandboxed (on every successful handoff before REVIEW/MERGE), or records a
@@ -837,6 +889,14 @@ def _run_dev_phase(
                 state.human_feedback
                 or "You were cut off by a timeout. Continue from where you left off."
             )
+            # A timeout resume is the one route that does not go through a prompt
+            # builder, so the verification section has to be appended here. It is
+            # not optional: the channel is per-iteration, so the paths the agent
+            # was given before the timeout are stale, and a resumed agent left
+            # with only the continuation text would poll a directory the
+            # coordinator is no longer serving — indistinguishable, from inside
+            # the agent, from the capability not existing at all.
+            prompt += render_verification_section(**_verification_channel)
             state.dev_prompt_injected_finding_ids.append([])
             state.retry_reason = None
             state.human_feedback = None
@@ -862,6 +922,7 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 advisory_p2_only=True,
                 p2_policy=config.dev.p2_policy,
+                **_verification_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
@@ -888,6 +949,7 @@ def _run_dev_phase(
                 surviving_families=state.surviving_families or None,
                 conventions=config.conventions_soft,
                 p2_policy=config.dev.p2_policy,
+                **_verification_prompt_kwargs,
             )
             injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
             injected_finding_ids.extend(
@@ -928,6 +990,7 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 assembled_context=dev_context,
                 p2_policy=config.dev.p2_policy,
+                **_verification_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
@@ -974,6 +1037,7 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 assembled_context=dev_context,
                 p2_policy=config.dev.p2_policy,
+                **_verification_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None  # consumed
@@ -1032,62 +1096,78 @@ def _run_dev_phase(
     _dev_retry_events: list[dict] = []
     _max_transport_retries = max(0, config.retry.max_dev_transport_retries)
 
-    while True:
-        _attempt_start = time.monotonic()
-        dev_result = run_agent(
-            prompt=prompt,
-            profile=_dev_profile,
-            working_dir=workspace_path,
-            session_id=_current_session_id,
-            secrets=config.secrets,
-            stop_event=stop_event,
-        )
-        _attempt_elapsed = time.monotonic() - _attempt_start
-        _runner_failure = None
-        if not dev_result.success and not dev_result.startup_failure:
-            _runner_failure = classify_runner_subprocess_failure(
-                dev_result.output, dev_result.exit_code
+    if _verification_broker is not None:
+        _verification_broker.start()
+    try:
+        while True:
+            _attempt_start = time.monotonic()
+            dev_result = run_agent(
+                prompt=prompt,
+                profile=_dev_profile,
+                working_dir=workspace_path,
+                session_id=_current_session_id,
+                secrets=config.secrets,
+                stop_event=stop_event,
             )
-            if _runner_failure is not None:
-                dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
+            _attempt_elapsed = time.monotonic() - _attempt_start
+            _runner_failure = None
+            if not dev_result.success and not dev_result.startup_failure:
+                _runner_failure = classify_runner_subprocess_failure(
+                    dev_result.output, dev_result.exit_code
+                )
+                if _runner_failure is not None:
+                    dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
 
-        if len(_dev_retry_events) < _max_transport_retries and _is_transient_dev_failure(
-            dev_result, _runner_failure
-        ):
-            retry_count = len(_dev_retry_events) + 1
-            _failure_summary = _summarize_dev_transport_failure(dev_result)
+            if len(_dev_retry_events) < _max_transport_retries and _is_transient_dev_failure(
+                dev_result, _runner_failure
+            ):
+                retry_count = len(_dev_retry_events) + 1
+                _failure_summary = _summarize_dev_transport_failure(dev_result)
+                _dev_results_this_iteration.append(dev_result)
+                _dev_durations_this_iteration.append(_attempt_elapsed)
+                _dev_retry_events.append(
+                    {
+                        "iteration": state.dev_iteration,
+                        "retry": retry_count,
+                        "error": _failure_summary,
+                    }
+                )
+                _log(
+                    f"  ↻ DEV   transient transport failure "
+                    f"(retry {retry_count}/{_max_transport_retries})"
+                )
+                if state.log_dir is not None:
+                    write_trace(
+                        state.log_dir
+                        / (
+                            f"dev-iter-{state.dev_iteration}-{config.dev_profile.name}"
+                            f"-retry{retry_count}.log"
+                        ),
+                        dev_result.output or "",
+                    )
+                _current_session_id = dev_result.session_id if _dev_profile.mode == "cli" else None
+                _backoff_s = _dev_transport_retry_backoff_seconds(retry_count)
+                _log_verbose(f"  DEV retry backoff: {_backoff_s}s")
+                time.sleep(_backoff_s)
+                continue
+
             _dev_results_this_iteration.append(dev_result)
             _dev_durations_this_iteration.append(_attempt_elapsed)
-            _dev_retry_events.append(
-                {
-                    "iteration": state.dev_iteration,
-                    "retry": retry_count,
-                    "error": _failure_summary,
-                }
-            )
-            _log(
-                f"  ↻ DEV   transient transport failure "
-                f"(retry {retry_count}/{_max_transport_retries})"
-            )
-            if state.log_dir is not None:
-                write_trace(
-                    state.log_dir
-                    / (
-                        f"dev-iter-{state.dev_iteration}-{config.dev_profile.name}"
-                        f"-retry{retry_count}.log"
-                    ),
-                    dev_result.output or "",
-                )
-            _current_session_id = dev_result.session_id if _dev_profile.mode == "cli" else None
-            _backoff_s = _dev_transport_retry_backoff_seconds(retry_count)
-            _log_verbose(f"  DEV retry backoff: {_backoff_s}s")
-            time.sleep(_backoff_s)
-            continue
-
-        _dev_results_this_iteration.append(dev_result)
-        _dev_durations_this_iteration.append(_attempt_elapsed)
-        _dev_elapsed = time.monotonic() - _dev_total_start
-        break
+            _dev_elapsed = time.monotonic() - _dev_total_start
+            break
+    finally:
+        if _verification_broker is not None:
+            _verification_broker.stop()
+            _served = _verification_broker.records()
+            state.pending_dev_verification_requests = _served
+            state.dev_verification_requests.extend(_served)
+            if _served and logger:
+                for _req in _served:
+                    logger._safe_emit(
+                        "dev_verification_request",
+                        phase="DEV",
+                        **_req,
+                    )
 
     state.pending_dev_transport_retry_count = len(_dev_retry_events)
     state.pending_dev_transport_retry_events = list(_dev_retry_events)

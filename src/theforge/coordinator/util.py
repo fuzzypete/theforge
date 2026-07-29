@@ -13,7 +13,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from theforge.log_level import LogLevel
@@ -363,6 +363,8 @@ def _run_shell_detailed(
     timeout: int = 120,
     env: dict[str, str] | None = None,
     expected_python: str | None = None,
+    *,
+    on_process_start: Callable[[subprocess.Popen[str]], None] | None = None,
 ) -> tuple[bool, str, int | None, bool]:
     """Run a shell command. Returns (success, combined output, exit_code, timed_out).
 
@@ -373,6 +375,16 @@ def _run_shell_detailed(
     a worktree virtualenv is only put on PATH if it was built from that
     interpreter. Ignored when ``env`` is supplied, since the caller then owns
     the environment.
+
+    ``on_process_start``, when given, is called with the live ``Popen`` as soon
+    as it exists, so a caller that must be able to *cancel* this command from
+    another thread has a handle on the process group. This function blocks until
+    the command finishes, so without such a handle a long-running command can
+    only be waited out — which is how a declared dev verification command could
+    outlive the iteration that asked for it (#2050). Purely an observation hook:
+    it never affects the command, and an exception from it is deliberately not
+    swallowed, since a caller that cannot record the handle it asked for would
+    otherwise silently lose its ability to cancel.
     """
     try:
         proc = subprocess.Popen(
@@ -391,6 +403,8 @@ def _run_shell_detailed(
         )
     except Exception as e:
         return False, f"ERROR: {e}", None, False
+    if on_process_start is not None:
+        on_process_start(proc)
     # Record the group with the orphan reaper. ``start_new_session=True`` above
     # puts this command — a gate invocation, and everything it spawns — in its
     # own session, which is exactly why a signal to the sprint's own process

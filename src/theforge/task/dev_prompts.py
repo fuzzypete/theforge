@@ -60,6 +60,73 @@ def _review_findings_instruction(p2_policy: str) -> str:
     )
 
 
+def render_verification_section(
+    *,
+    commands: tuple[tuple[str, str], ...] = (),
+    request_dir: str | None = None,
+    response_dir: str | None = None,
+    max_requests: int = 0,
+) -> str:
+    """Render the coordinator-mediated verification section (ADR-0007 / #2050).
+
+    Returns the empty string unless the project declared verification commands
+    *and* the coordinator opened a request channel, so a project that declares
+    nothing sees no mention of the capability at all.
+
+    The agent is told only *names*: it never composes argv and never runs these
+    commands itself, because they run outside its sandbox where a build system
+    would execute repository files the agent can edit. The polling protocol is
+    spelled out because the coordinator answers asynchronously — an agent that
+    writes a request and reads immediately would see no response file.
+    """
+    if not commands or not request_dir or not response_dir:
+        return ""
+    command_lines = "\n".join(
+        f"            - `{name}` — runs: `{command}`" for name, command in commands
+    )
+    return dedent(f"""\
+
+        ## Project Verification Commands
+
+        This project declares verification commands that cannot run inside your
+        sandbox — the host isolation your process tree inherits is structurally
+        incompatible with the toolchain (a build system that sandboxes its own
+        subprocesses cannot nest inside yours). The coordinator runs them for you,
+        outside the sandbox, when you ask for them **by name**.
+
+        Available commands:
+        {command_lines.strip()}
+
+        You request a name. You cannot change a command's arguments, and running
+        these tools yourself will fail — ask instead.
+
+        **How to request one:**
+
+        1. Write your request to `{request_dir}/<request-id>.json`, containing exactly:
+           `{{"command": "<name>"}}`
+           Choose your own `<request-id>` (letters, digits, `.`, `_`, `-`; unique
+           per request). Write it atomically — write a `.tmp` file first, then
+           `mv` it into place — so the coordinator never reads a half-written file.
+        2. Poll for `{response_dir}/<request-id>.json`. It appears only when the
+           command has finished, which may take several minutes. Sleep a few
+           seconds between checks; do not busy-wait.
+        3. Read the response JSON:
+           - `accepted` — false means the request was refused; `refusal_reason`
+             says why (unknown command name, malformed request, budget exhausted).
+           - `exit_code`, `timed_out` — the real result of the command.
+           - `output_tail` — the tail of its output.
+           - `trace_path` — the full output, relative to this worktree.
+
+        **Limits:** at most {max_requests} request(s) this iteration, counting
+        refused ones. If no response file has appeared well after the command
+        would have finished, treat the request as failed and move on rather than
+        waiting indefinitely.
+
+        This is for your own feedback loop. It does not replace the gate, which
+        the coordinator still runs authoritatively after you complete.
+    """)
+
+
 def build_dev_prompt(
     task: TaskStory,
     *,
@@ -83,6 +150,12 @@ def build_dev_prompt(
     conventions: list[str] | None = None,
     assembled_context: ContextPack | None = None,
     p2_policy: str = "in_scope",
+    # Coordinator-mediated verification channel (ADR-0007 / #2050). Off by
+    # default so callers that do not offer the capability need no change.
+    verification_commands: tuple[tuple[str, str], ...] = (),
+    verification_request_dir: str | None = None,
+    verification_response_dir: str | None = None,
+    verification_max_requests: int = 0,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -264,6 +337,13 @@ def build_dev_prompt(
     else:
         test_section = ""
 
+    verification_section = render_verification_section(
+        commands=verification_commands,
+        request_dir=verification_request_dir,
+        response_dir=verification_response_dir,
+        max_requests=verification_max_requests,
+    )
+
     if gate_skipped:
         gate_section = dedent("""\
             Gate is disabled for this spec. Skip the gate command.
@@ -346,8 +426,8 @@ def build_dev_prompt(
 
         {story_content}
         {feedback_section}{preflight_section}{context_section}{policy_section}{test_section}{
-        render_conventions_block(conventions)
-    }
+        verification_section
+    }{render_conventions_block(conventions)}
         {webfetch_section}
         ## Workflow
 
