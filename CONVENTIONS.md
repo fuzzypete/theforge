@@ -131,7 +131,10 @@ sprint's selected work.
 
 There is no `forge queue` command — the `ready` label is the queue-for-next-sprint
 convention, and it carries no ordering or priority semantics. Use
-`forge status --ready [--milestone …]` to see the eligible set. Live injection of
+`forge status --ready [--milestone …]` to see the eligible set; it checks each
+entry against the sprint shape gate and marks `BLOCKED:<verdict>` any issue the
+gate would refuse, so the listing cannot disagree with sprint entry about
+admissibility. Live injection of
 new work into an in-flight sprint is deliberately out of scope; it belongs to the
 v0.12+ autonomy roadmap. See ADR-0001 and `docs/guides/authoring.md`
 (Mid-sprint workflow).

@@ -330,11 +330,22 @@ a new command: there is **no `forge queue`**, and this listing adds no ordering
 or priority semantics. It is simply the current eligible set, recomputed from
 GitHub on each invocation.
 
+`ready` is a human-applied label and nothing enforces that it is applied only
+after `capture → shape → diagnose → groom`. So each entry is also run through
+the same shape gate that guards sprint entry: an issue the gate would refuse is
+marked `BLOCKED:<verdict>` instead of `ready`, and its refusal is spelled out
+below the listing. Selecting only the `ready`-marked entries cannot produce a
+story the sprint refuses.
+
 ```
-$ forge status --ready --milestone v0.10.0
-Ready for next sprint in v0.10.0 (2 issues):
-  #1487  bug   ready  status --watch blank during preflight
-  #1512  bug   ready  cut-rc.sh shim wrapper regression
+$ forge status --ready --milestone v0.13.0
+Ready for next sprint in v0.13.0 (2 issues, 1 blocked by shape gate):
+  #1487  bug  ready                    status --watch blank during preflight
+  #1512  bug  BLOCKED:needs_diagnosis  cut-rc.sh shim wrapper regression
+
+1 issue carries the `ready` label but would be refused at sprint entry:
+  #1512  needs_diagnosis: Bug has no Diagnosis section — not fix-ready. …
+Run `forge shape <n>` for the full verdict, then `forge groom <n>` / `forge diagnose <n>` before sprint selection.
 ```
 
 ---

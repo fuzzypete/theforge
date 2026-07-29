@@ -4,6 +4,9 @@ Covers type-label projection, stable rendering, milestone scoping passed through
 to the gh listing, and the ``forge status --ready [--milestone]`` CLI surface.
 The queue carries no ordering/priority semantics — it is simply the set of open,
 ``ready``-labeled issues, so tests assert eligibility surfacing, not ranking.
+
+Also covers the shape-gate agreement property (#2027): an issue the sprint gate
+would refuse must not be presented as sprint-ready by this listing.
 """
 
 from __future__ import annotations
@@ -27,12 +30,45 @@ from theforge.ready_queue import (
     format_ready_queue,
 )
 
+# An enhancement body the shape gate admits: type label, acceptance criteria,
+# and a concrete example.
+_RUNNABLE_BODY = """## What
 
-def _issue(number: int, title: str, labels: list[str]) -> dict:
+Add a CLI flag.
+
+## Why
+
+Users need a way to bypass the gate.
+
+## Example
+
+    $ forge sprint --force
+    [forge] 2 issue(s) flagged by shape gate
+
+## Acceptance Criteria
+
+- `forge sprint --force` runs every issue regardless of shape check
+- warnings still list every skipped issue's reason codes
+"""
+
+# A bug filing with no `## Diagnosis` section — the exact shape the gate refuses
+# with a BLOCKING `needs_diagnosis` reason (#1983-#1987 in the story).
+_UNDIAGNOSED_BUG_BODY = """## Observed behavior
+
+`forge status --ready` lists issues the gate refuses.
+
+## Expected behavior
+
+The listing agrees with the gate.
+"""
+
+
+def _issue(number: int, title: str, labels: list[str], body: str = _RUNNABLE_BODY) -> dict:
     return {
         "number": number,
         "title": title,
         "labels": [{"name": name} for name in labels],
+        "body": body,
     }
 
 
@@ -40,9 +76,11 @@ def _issue(number: int, title: str, labels: list[str]) -> dict:
 
 
 def test_build_projects_type_label_from_issue_labels(tmp_path: Path) -> None:
-    issues = [_issue(1512, "cut-rc.sh shim regression", ["ready", "bug"])]
+    issues = [_issue(1512, "cut-rc.sh shim regression", ["ready", "enhancement"])]
     entries = build_ready_queue(tmp_path, fetch_issues=lambda: issues)
-    assert entries == [ReadyEntry(1512, "cut-rc.sh shim regression", "bug")]
+    assert [(e.issue_number, e.title, e.type_label) for e in entries] == [
+        (1512, "cut-rc.sh shim regression", "enhancement")
+    ]
 
 
 def test_build_falls_back_to_dash_when_no_type_label(tmp_path: Path) -> None:
@@ -71,6 +109,77 @@ def test_build_prefers_first_known_type_when_multiple(tmp_path: Path) -> None:
     assert entries[0].type_label == "bug"
 
 
+# ── shape-gate agreement (#2027) ───────────────────────────────────────────
+
+
+def test_build_marks_admissible_issue_ready(tmp_path: Path) -> None:
+    issues = [_issue(1512, "add a flag", ["ready", "enhancement"])]
+    entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
+    assert entry.admissible is True
+    assert entry.verdict == "runnable"
+
+
+def test_build_marks_undiagnosed_bug_not_admissible(tmp_path: Path) -> None:
+    issues = [_issue(1983, "counter is wrong", ["ready", "bug"], _UNDIAGNOSED_BUG_BODY)]
+    entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
+    assert entry.admissible is False
+    assert entry.verdict == "needs_diagnosis"
+    assert entry.detail
+
+
+def test_build_marks_needs_grooming_labeled_issue_not_admissible(tmp_path: Path) -> None:
+    issues = [_issue(1900, "well shaped but flagged", ["ready", "enhancement", "needs-grooming"])]
+    entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
+    assert entry.admissible is False
+
+
+def test_build_marks_operator_action_issue_not_admissible(tmp_path: Path) -> None:
+    # The gate deliberately never dispatches operator-action issues, so the
+    # ready listing must not advertise them as sprint-eligible either.
+    issues = [_issue(1901, "rotate the token", ["ready", "operator-action"])]
+    entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
+    assert entry.admissible is False
+
+
+def test_build_agrees_with_shape_gate_on_the_same_issues(tmp_path: Path) -> None:
+    """Seam test: the queue's verdict matches what apply_shape_gate decides.
+
+    This is the property the bug violated — two surfaces answering "may this
+    issue enter a sprint?" from different data.
+    """
+    from theforge.sprint.shape_gate import apply_shape_gate
+
+    issues = [
+        _issue(1983, "counter is wrong", ["ready", "bug"], _UNDIAGNOSED_BUG_BODY),
+        _issue(1512, "add a flag", ["ready", "enhancement"]),
+        _issue(1901, "rotate the token", ["ready", "operator-action"]),
+    ]
+    by_number = {issue["number"]: issue for issue in issues}
+
+    def _fetch_detail(number: int, _project_root):  # noqa: ANN001
+        issue = by_number[number]
+        return {
+            "title": issue["title"],
+            "body": issue["body"],
+            "labels": [lbl["name"] for lbl in issue["labels"]],
+        }
+
+    gate = apply_shape_gate(
+        [{"number": i["number"], "title": i["title"]} for i in issues],
+        tmp_path,
+        fetch_detail=_fetch_detail,
+    )
+    gate_runnable = {int(item["number"]) for item in gate.runnable}
+
+    queue_admissible = {
+        entry.issue_number
+        for entry in build_ready_queue(tmp_path, fetch_issues=lambda: issues)
+        if entry.admissible
+    }
+
+    assert queue_admissible == gate_runnable == {1512}
+
+
 # ── gh listing wiring: milestone scoping ───────────────────────────────────
 
 
@@ -93,6 +202,9 @@ def test_gh_listing_passes_milestone_flag(tmp_path: Path) -> None:
     assert "--label" in captured_cmd and "ready" in captured_cmd
     assert "--milestone" in captured_cmd
     assert "v0.10.0" in captured_cmd
+    # The body is required to evaluate the shape gate's verdict (#2027).
+    json_fields = captured_cmd[captured_cmd.index("--json") + 1].split(",")
+    assert "body" in json_fields
 
 
 def test_gh_listing_omits_milestone_when_none(tmp_path: Path) -> None:
@@ -155,6 +267,57 @@ def test_format_lists_ready_entries_with_stable_columns() -> None:
 def test_format_single_issue_uses_singular_noun() -> None:
     rendered = format_ready_queue([ReadyEntry(1512, "one", "bug")])
     assert "(1 issue):" in rendered
+
+
+def test_format_shows_blocking_verdict_instead_of_ready_marker() -> None:
+    entries = [
+        ReadyEntry(1487, "admissible", "enhancement"),
+        ReadyEntry(
+            1983,
+            "counter is wrong",
+            "bug",
+            admissible=False,
+            verdict="needs_diagnosis",
+            detail="Bug has no Diagnosis section",
+        ),
+    ]
+    rendered = format_ready_queue(entries, milestone="v0.13.0")
+
+    assert "1 blocked by shape gate" in rendered
+    assert "BLOCKED:needs_diagnosis" in rendered
+    # The blocked row must not be presented with the ready marker.
+    blocked_row = next(line for line in rendered.splitlines() if "#1983" in line)
+    assert "  ready  " not in blocked_row
+    assert "would be refused at sprint entry" in rendered
+    assert "Bug has no Diagnosis section" in rendered
+    assert "forge groom" in rendered
+
+
+def test_format_bounds_long_refusal_detail_to_one_line() -> None:
+    # Shape-check details embed full remediation text; unabridged they bury the
+    # listing. The row stays one line and points at the full verdict.
+    entries = [
+        ReadyEntry(
+            1983,
+            "counter is wrong",
+            "bug",
+            admissible=False,
+            verdict="needs_diagnosis",
+            detail="Bug has no Diagnosis section.\n" + ("remediation prose " * 40),
+        )
+    ]
+    rendered = format_ready_queue(entries)
+    detail_row = next(line for line in rendered.splitlines() if "needs_diagnosis:" in line)
+
+    assert len(detail_row) < 200
+    assert detail_row.endswith("…")
+    assert "forge shape <n>" in rendered
+
+
+def test_format_omits_blocked_section_when_all_admissible() -> None:
+    rendered = format_ready_queue([ReadyEntry(1487, "fine", "enhancement")])
+    assert "blocked by shape gate" not in rendered
+    assert "would be refused at sprint entry" not in rendered
 
 
 # ── CLI: forge status --ready ──────────────────────────────────────────────

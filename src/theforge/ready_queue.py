@@ -9,6 +9,16 @@ next sprint — optionally scoped to a milestone.
 No queue *ordering* or *priority* semantics are added: the list is simply the
 current set of open, ``ready``-labeled issues, recomputed from GitHub on each
 call so it always reflects live label/milestone state.
+
+The ``ready`` label is a human-applied marker and nothing enforces that it is
+applied only after ``capture → shape → diagnose → groom``. A queue whose
+entries the sprint gate would refuse is worse than no queue: it moves the
+discovery of inadmissibility from planning time to sprint time, after budget
+is committed. So each entry is also run through the shared
+``admissibility.classify_admissibility`` — the same decision
+``sprint.shape_gate`` enforces at sprint entry — and entries the gate would
+refuse are rendered with their blocking verdict rather than as ``ready``
+(#2027).
 """
 
 from __future__ import annotations
@@ -19,13 +29,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .admissibility import classify_admissibility
+
 READY_LABEL = "ready"
 
 _GH_TIMEOUT_SECONDS = 30
 
 # Dev-runnable and operator work-object type labels, in the order we prefer to
-# report them when an issue carries more than one. This is display-only — it
-# does not gate eligibility (the ``ready`` label alone does that).
+# report them when an issue carries more than one. This is display-only — the
+# ``ready`` label decides membership in this listing, and
+# ``classify_admissibility`` decides whether a member is actually admissible.
 _TYPE_LABELS = (
     "bug",
     "enhancement",
@@ -38,11 +51,19 @@ _TYPE_LABELS = (
 
 @dataclass(frozen=True)
 class ReadyEntry:
-    """An open, ``ready``-labeled issue eligible for the next sprint."""
+    """An open, ``ready``-labeled issue and the sprint gate's verdict on it.
+
+    ``admissible`` is the shape gate's answer, not the label's: an entry with
+    ``admissible=False`` carries the ``ready`` label but would be refused at
+    sprint entry, and ``verdict``/``detail`` say why.
+    """
 
     issue_number: int
     title: str
     type_label: str
+    admissible: bool = True
+    verdict: str = ""
+    detail: str = ""
 
 
 def _issue_type_label(labels: list[str]) -> str:
@@ -59,7 +80,11 @@ def _issue_type_label(labels: list[str]) -> str:
 
 
 def _gh_list_ready_issues(project_root: Path, milestone: str | None) -> list[dict]:
-    """Return open ``ready``-labeled issues (number/title/labels) via the gh CLI.
+    """Return open ``ready``-labeled issues (number/title/labels/body) via the gh CLI.
+
+    The body is fetched in the same listing call — without it the shape gate's
+    admissibility decision cannot be evaluated from the data the queue holds,
+    which is exactly how the listing and sprint entry came to disagree (#2027).
 
     When ``milestone`` is given, the listing is scoped to that GitHub milestone.
     Best-effort: returns an empty list on any gh failure so the status surface
@@ -76,7 +101,7 @@ def _gh_list_ready_issues(project_root: Path, milestone: str | None) -> list[dic
         "--limit",
         "200",
         "--json",
-        "number,title,labels",
+        "number,title,labels,body",
     ]
     if milestone:
         cmd.extend(["--milestone", milestone])
@@ -125,7 +150,12 @@ def build_ready_queue(
     milestone: str | None = None,
     fetch_issues: Callable[[], list[dict]] | None = None,
 ) -> list[ReadyEntry]:
-    """Return the ``ready``-labeled, sprint-eligible issue set.
+    """Return the ``ready``-labeled issue set with each entry's gate verdict.
+
+    Every entry is classified with ``classify_admissibility`` — the same
+    decision ``sprint.shape_gate`` applies at sprint entry — so an entry the
+    gate would refuse carries ``admissible=False`` and its blocking verdict
+    rather than being presented as sprint-ready.
 
     ``milestone`` optionally scopes the listing to one GitHub milestone.
     ``fetch_issues`` is an injection seam for testing; it defaults to the
@@ -137,36 +167,94 @@ def build_ready_queue(
     issues = fetch_issues()
     entries: list[ReadyEntry] = []
     for issue in issues:
+        labels = _label_names(issue)
+        title = str(issue.get("title", "") or "")
+        # No llm_caller here: a status listing must not spend agent budget, and
+        # the gate's own _resolve_classifier falls back to the heuristic
+        # classifier without a caller, so both sides evaluate identically.
+        verdict = classify_admissibility(title, str(issue.get("body", "") or ""), labels)
         entries.append(
             ReadyEntry(
                 issue_number=int(issue["number"]),
-                title=str(issue.get("title", "") or ""),
-                type_label=_issue_type_label(_label_names(issue)),
+                title=title,
+                type_label=_issue_type_label(labels),
+                admissible=verdict.admissible,
+                verdict=verdict.verdict,
+                detail=verdict.detail,
             )
         )
     entries.sort(key=lambda entry: entry.issue_number)
     return entries
 
 
+_DETAIL_WIDTH = 160
+
+
+def _entry_marker(entry: ReadyEntry) -> str:
+    """Return the status-column token for an entry: ``ready`` or the refusal."""
+    if entry.admissible:
+        return "ready"
+    return f"BLOCKED:{entry.verdict}" if entry.verdict else "BLOCKED"
+
+
+def _short_detail(detail: str) -> str:
+    """Return a one-line, bounded form of a gate refusal detail.
+
+    Shape-check details embed full remediation instructions and can run to
+    several hundred characters; unabridged they bury the listing they annotate.
+    ``forge shape <n>`` prints the full text.
+    """
+    collapsed = " ".join(detail.split())
+    if len(collapsed) <= _DETAIL_WIDTH:
+        return collapsed
+    return collapsed[: _DETAIL_WIDTH - 1].rstrip() + "…"
+
+
 def format_ready_queue(entries: list[ReadyEntry], *, milestone: str | None = None) -> str:
     """Render the ready-label queue as human- and tooling-parseable text.
 
-    Column order is stable (issue ref, type, ``ready`` marker, title) so adjacent
-    tooling can consume it without breaking on cosmetic changes::
+    Column order is stable (issue ref, type, status marker, title) so adjacent
+    tooling can consume it without breaking on cosmetic changes. The status
+    column carries the sprint gate's verdict, so a ``ready``-labeled issue the
+    gate would refuse is never presented as admissible::
 
-        Ready for next sprint (2 issues):
-          #1487  bug          ready  status --watch blank during preflight
-          #1512  bug          ready  cut-rc.sh shim wrapper regression
+        Ready for next sprint (2 issues, 1 blocked by shape gate):
+          #1487  bug  ready                    status --watch blank during preflight
+          #1512  bug  BLOCKED:needs_diagnosis  cut-rc.sh shim wrapper regression
+
+        1 issue carries the `ready` label but would be refused at sprint entry:
+          #1512  needs_diagnosis: Bug has no Diagnosis section — not fix-ready. …
+        Run `forge shape <n>` for the full verdict, then `forge groom <n>` / …
     """
     scope = f" in {milestone}" if milestone else ""
     if not entries:
         return f"Ready for next sprint{scope}: none."
 
+    blocked = [entry for entry in entries if not entry.admissible]
     noun = "issue" if len(entries) == 1 else "issues"
-    lines = [f"Ready for next sprint{scope} ({len(entries)} {noun}):"]
+    counts = f"{len(entries)} {noun}"
+    if blocked:
+        counts += f", {len(blocked)} blocked by shape gate"
+
+    lines = [f"Ready for next sprint{scope} ({counts}):"]
     type_width = max((len(entry.type_label) for entry in entries), default=0)
+    marker_width = max((len(_entry_marker(entry)) for entry in entries), default=0)
     for entry in entries:
         lines.append(
-            f"  #{entry.issue_number}  {entry.type_label.ljust(type_width)}  ready  {entry.title}"
+            f"  #{entry.issue_number}  {entry.type_label.ljust(type_width)}  "
+            f"{_entry_marker(entry).ljust(marker_width)}  {entry.title}"
         )
+
+    if blocked:
+        subject = "1 issue carries" if len(blocked) == 1 else f"{len(blocked)} issues carry"
+        lines.append("")
+        lines.append(f"{subject} the `{READY_LABEL}` label but would be refused at sprint entry:")
+        for entry in blocked:
+            detail = f": {_short_detail(entry.detail)}" if entry.detail else ""
+            lines.append(f"  #{entry.issue_number}  {entry.verdict or 'blocked'}{detail}")
+        lines.append(
+            "Run `forge shape <n>` for the full verdict, then `forge groom <n>` / "
+            "`forge diagnose <n>` before sprint selection."
+        )
+
     return "\n".join(lines)
