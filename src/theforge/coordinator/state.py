@@ -230,6 +230,47 @@ class DevIterationTelemetry:
 
 
 @dataclass(frozen=True)
+class GateLabel:
+    """Operator-facing identity of one gate invocation.
+
+    The resolved gate command is identical for the sprint baseline gate, each
+    story's reuse gate during resume triage, and each story's validation gate,
+    so the command string alone cannot tell an operator which of them a log
+    line belongs to (#2014). Callers attach the purpose and target they already
+    hold at the call site; nothing here affects gate execution or its result.
+
+    ``target`` is the branch under gate, or a marker naming a non-branch target
+    such as ``"merge base"`` for the baseline gate.
+    """
+
+    purpose: str
+    slug: str | None = None
+    target: str | None = None
+    commit: str | None = None
+    worktree_path: str | None = None
+
+    def describe(self) -> str:
+        """Render as a log phrase: ``reuse gate for issue-50 on feat/issue-50 abc1234``."""
+        parts = [self.purpose]
+        if self.slug:
+            parts.append(f"for {self.slug}")
+        location = self.target or self.worktree_path
+        if location:
+            parts.append(f"on {location}")
+        if self.commit:
+            parts.append(short_sha(self.commit))
+        return " ".join(parts)
+
+
+def short_sha(commit: str, length: int = 8) -> str:
+    """Abbreviate a full hex SHA; any other ref (branch name, tag) is returned as-is."""
+    text = commit.strip()
+    if len(text) > length and all(c in "0123456789abcdefABCDEF" for c in text):
+        return text[:length]
+    return text
+
+
+@dataclass(frozen=True)
 class GateDebugTelemetry:
     """Diagnostic command telemetry captured when the validation gate times out.
 

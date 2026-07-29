@@ -157,7 +157,7 @@ def test_reexec_excludes_merged_story_from_preflight_and_dag_dispatch(
         slug="feature-b",
     )
 
-    def triage_side_effect(spec_path, config, project_root, *, task=None):
+    def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
         return merged_triage if "feature-a" in spec_path else full_triage
 
     fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
@@ -225,7 +225,7 @@ def test_reexec_reconcile_prior_done_drop_ends_succeeded_and_preserves_cost(
         ],
     )
 
-    def triage_side_effect(spec_path, config, project_root, *, task=None):
+    def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
         return StoryTriage(
             story_path=spec_path,
             action="full",
@@ -303,7 +303,7 @@ def test_reexec_reconcile_prior_done_satisfies_dependent_story(
         ],
     )
 
-    def triage_side_effect(spec_path, config, project_root, *, task=None):
+    def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
         return StoryTriage(
             story_path=spec_path,
             action="full",
@@ -352,7 +352,7 @@ def test_reexec_stranded_drop_does_not_rerun_and_keeps_distinct_reason(
     config = _make_config(tmp_path)
     _set_sprint_id(tmp_path)
 
-    def triage_side_effect(spec_path, config, project_root, *, task=None):
+    def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
         return StoryTriage(
             story_path=spec_path,
             action="full",
