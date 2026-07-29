@@ -1018,3 +1018,38 @@ class TestRedactionContract:
             conn.close()
         assert row is not None
         assert "rebuild-secret-abc12345" not in row[0]
+
+
+def test_migrate_v12_to_v13_backfills_gate_runs_as_unrecorded() -> None:
+    """A pre-v13 record has no honest gate-execution count, so it reads as unknown.
+
+    ``len(gate_decisions)`` is precisely the wrong number ``gate_runs`` exists to
+    replace (it drops timeouts and counts skipped gates), so the migration must
+    not infer a count from it (#1984).
+    """
+    record = {
+        "schema_version": 12,
+        "iterations": {"gate_decisions": ["PASS", "FAIL"], "dev_iterations": 2},
+    }
+
+    migrated = sub._migrate_v12_to_v13(record)
+
+    assert migrated["iterations"]["gate_runs"] is None
+    assert migrated["iterations"]["gate_decisions"] == ["PASS", "FAIL"]
+    assert record["iterations"] == {"gate_decisions": ["PASS", "FAIL"], "dev_iterations": 2}
+
+
+def test_migrate_v12_to_v13_leaves_an_existing_gate_runs_alone() -> None:
+    """Migration never overwrites a count the writer already recorded."""
+    record = {"schema_version": 12, "iterations": {"gate_runs": 4}}
+
+    assert sub._migrate_v12_to_v13(record)["iterations"]["gate_runs"] == 4
+
+
+def test_migrate_record_chains_up_to_v13() -> None:
+    """The registry reaches the current version, so v12 records load migrated."""
+    record = {"schema_version": 12, "iterations": {"gate_decisions": []}}
+
+    migrated = sub._migrate_record(record, from_version=12)
+
+    assert migrated["iterations"]["gate_runs"] is None

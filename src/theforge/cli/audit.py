@@ -147,6 +147,7 @@ def cmd_audit(args: object) -> int:
     print(f"    Dev iterations (productive): {dev_productive}")
     print(f"    Dev attempts (total):        {dev_total}")
     print(f"    Review cycles:               {review_cycles}")
+    print(f"    Gate runs (executed):        {iterations.get('gate_runs', '?')}")
     print(f"    Gate decisions: {iterations.get('gate_decisions', [])}")
 
     # Cost summary

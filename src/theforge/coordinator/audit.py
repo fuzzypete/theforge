@@ -676,6 +676,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "review_cycles_opened_by_validate": state.validate_opened_review_cycles,
             "dev_iterations": len(state.dev_results),
             "gate_decisions": state.gate_decisions,
+            # Executions of the gate command, including ones that timed out or
+            # errored and excluding runs where gate_override skipped the gate.
+            # Differs from len(gate_decisions) by design (#1984).
+            "gate_runs": state.gate_runs,
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "gate_debug": _serialize_gate_debug_metrics(state),
             "gate_diagnostic": _serialize_gate_diagnostic_metrics(state),

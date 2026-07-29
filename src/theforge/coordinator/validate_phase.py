@@ -36,6 +36,7 @@ from .review_context import (
     _latest_forge_handoff_path,
     _parse_dev_handoff,
 )
+from .run_setup import save_trajectory_state
 from .state import (
     CoordinatorResult,
     CoordinatorState,
@@ -194,15 +195,37 @@ def _gate_output_digest(digest: list[str]) -> str | None:
 def _gate_attempts(state: CoordinatorState) -> int:
     """Return the number of gate executions actually performed for this story.
 
-    ``state.gate_decisions`` gains exactly one entry per VALIDATE run that
-    reached a decision and is never reset, so its length counts gate runs.
-    ``state.dev_iteration`` is the per-cycle dev counter: it also advances on
-    iterations that never reached the gate (transport retries, max-iteration
-    resumes), and it resets when a review cycle opens. Reporting it as an
-    attempt count made a single un-retried gate failure read as exhaustion
-    (#1981), so terminal messages count gate runs instead.
+    ``state.gate_runs`` is incremented once per gate command invocation —
+    including invocations that timed out or errored, and excluding runs where
+    ``gate_override`` skipped the gate entirely — and it is restored from the
+    resume sidecar, so it counts the story's gate executions across resumes.
+    ``state.gate_decisions`` cannot serve this role: it is appended only on the
+    path that produced a decision, so timeouts and errors are missing from it,
+    and the skip path appends a synthetic ``PASS`` for a gate that never ran
+    (#1984). ``state.dev_iteration`` is the per-cycle dev counter: it also
+    advances on iterations that never reached the gate (transport retries,
+    max-iteration resumes), and it resets when a review cycle opens. Reporting
+    it as an attempt count made a single un-retried gate failure read as
+    exhaustion (#1981), so terminal messages count gate runs instead.
     """
-    return len(state.gate_decisions)
+    return state.gate_runs
+
+
+def _record_gate_run(state: CoordinatorState, workspace_path: Path) -> None:
+    """Count one gate execution and persist the count for ``--resume``.
+
+    Called immediately after the gate command returns, before any routing, so
+    the run is counted whether it produced a decision, timed out, or errored.
+    Persisting here (rather than only at review-cycle classification) is what
+    lets a story that escalates straight out of VALIDATE carry its full count
+    into the next resumed run (#1984). A sidecar write failure must not fail
+    the run: the count degrades, the story does not.
+    """
+    state.gate_runs += 1
+    try:
+        save_trajectory_state(workspace_path, state)
+    except Exception as exc:  # noqa: BLE001
+        _log_verbose(f"Could not persist gate-run count: {exc}")
 
 
 def _new_review_cycle_available(state: CoordinatorState, config: ForgeConfig) -> bool:
@@ -643,6 +666,10 @@ def _run_validate_phase(
                 output_digest=_gate_digest,
             )
         )
+        # The gate command ran. Count it here — before decision/error routing —
+        # so timeouts and errors, which return without ever appending to
+        # gate_decisions, are still counted as the executions they were (#1984).
+        _record_gate_run(state, workspace_path)
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)

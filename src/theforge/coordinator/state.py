@@ -381,6 +381,14 @@ class CoordinatorState:
     review_results: list[ReviewResult] = field(default_factory=list)
     review_cycle_metadata: list[ReviewCycleMetadata] = field(default_factory=list)
     gate_decisions: list[str] = field(default_factory=list)
+    # Count of gate *executions* for this story: incremented once per gate
+    # command invocation, including invocations that ended in a timeout or an
+    # error, and never incremented when ``gate_override`` skipped the gate.
+    # ``gate_decisions`` cannot serve as that count — it only gains an entry
+    # when a decision came back (so timeouts are missing) and it gains a
+    # synthetic "PASS" on the skip path (so non-runs are counted) (#1984).
+    # Persisted to the resume sidecar so escalation counts survive --resume.
+    gate_runs: int = 0
     last_review_findings: str | None = None
     cycle_history: list[CycleHistory] = field(default_factory=list)
     cycle_history_total: int = 0  # monotonically increasing count of all appended entries
