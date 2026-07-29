@@ -123,3 +123,60 @@ def test_struct_empty_output_is_unrecognized():
     result = extract_failed_tests("")
     assert result.tests == []
     assert result.format_recognized is False
+
+
+# ── xcodebuild "Failing tests:" block (#2013) ──────────────────────────
+
+
+def test_struct_xcode_failing_tests_block_dotted_form():
+    """Swift-style identifiers in a Failing tests: block drive a focused retry."""
+    xcode_output = (
+        "Testing failed:\n"
+        "    Failing tests:\n"
+        "        - ForgeUITests.LoginTests.testInvalidPassword()\n"
+        "        - ForgeUITests.LoginTests.testLockout()\n"
+        "    2 tests failed\n"
+        "** TEST FAILED **\n"
+    )
+    result = extract_failed_tests(xcode_output)
+    assert result.tests == [
+        "ForgeUITests.LoginTests.testInvalidPassword",
+        "ForgeUITests.LoginTests.testLockout",
+    ]
+    assert result.format_recognized is True
+    assert result.source == "xcodebuild"
+
+
+def test_struct_xcode_failing_tests_block_bracket_form():
+    """Objective-C -[Class method] entries normalize to Class.method."""
+    xcode_output = "Failing tests:\n    -[LoginTests testInvalidPassword]\n** TEST FAILED **\n"
+    result = extract_failed_tests(xcode_output)
+    assert result.tests == ["LoginTests.testInvalidPassword"]
+    assert result.source == "xcodebuild"
+
+
+def test_struct_xcode_block_stops_at_the_first_non_entry_line():
+    """Trailing summary lines must not be mistaken for test identifiers."""
+    xcode_output = (
+        "Failing tests:\n"
+        "    - AppTests.FooTests.testBar()\n"
+        "    1 test failed\n"
+        "    - not-a-test-line-after-the-block\n"
+    )
+    result = extract_failed_tests(xcode_output)
+    assert result.tests == ["AppTests.FooTests.testBar"]
+
+
+def test_struct_xcode_block_deduplicates_repeated_entries():
+    xcode_output = (
+        "Failing tests:\n    - AppTests.FooTests.testBar()\n    - AppTests.FooTests.testBar()\n"
+    )
+    assert extract_failed_tests(xcode_output).tests == ["AppTests.FooTests.testBar"]
+
+
+def test_struct_custom_pattern_still_wins_over_the_xcode_reader():
+    """A project that declared its own grammar keeps owning extraction."""
+    xcode_output = "Failing tests:\n    - AppTests.FooTests.testBar()\n"
+    result = extract_failed_tests(xcode_output, failed_test_pattern=r"FAILED (?P<test>\S+)")
+    assert result.tests == []
+    assert result.source == "custom_pattern"

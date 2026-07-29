@@ -330,6 +330,46 @@ def _extract_builtin_failed_tests(gate_output_tail: str) -> list[str]:
     return failed
 
 
+# Xcode's test runner prints a "Failing tests:" block listing one test per
+# following indented line, in one of two identifier spellings:
+#   - MyAppTests.LoginTests.testInvalidPassword()
+#   -[LoginTests testInvalidPassword]
+# Neither carries any of the built-in grammar's markers, so an Xcode gate used
+# to report "format not recognized" and retry the whole unfocused test target
+# every cycle (#2013).
+_XCODE_FAILING_HEADER_RE = re.compile(r"^\s*Failing tests:\s*$", re.IGNORECASE)
+_XCODE_DOTTED_TEST_RE = re.compile(r"^-\s+([A-Za-z_][\w.]*\.[A-Za-z_]\w*)\s*(?:\(\))?\s*$")
+_XCODE_BRACKET_TEST_RE = re.compile(r"^-\[([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\]\s*$")
+
+
+def _extract_xcode_failed_tests(gate_output_tail: str) -> list[str]:
+    """Parse failing-test identifiers from an xcodebuild ``Failing tests:`` block."""
+    failed: list[str] = []
+    in_block = False
+    for raw_line in gate_output_tail.splitlines():
+        line = raw_line.strip()
+        if _XCODE_FAILING_HEADER_RE.match(raw_line):
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        if not line:
+            # A blank line inside the block is separator noise, not its end.
+            continue
+        if not line.startswith("-"):
+            in_block = False
+            continue
+        bracket = _XCODE_BRACKET_TEST_RE.match(line)
+        if bracket is not None:
+            candidate = f"{bracket.group(1)}.{bracket.group(2)}"
+        else:
+            dotted = _XCODE_DOTTED_TEST_RE.match(line)
+            candidate = dotted.group(1) if dotted is not None else ""
+        if candidate and candidate not in failed:
+            failed.append(candidate)
+    return failed
+
+
 def _output_matches_builtin_grammar(gate_output_tail: str) -> bool:
     """Return whether gate output carries the built-in test runner's summary grammar.
 
@@ -398,8 +438,15 @@ def extract_failed_tests(
     tests = _extract_builtin_failed_tests(gate_output_tail)
     if tests:
         return FailedTestExtraction(tests=tests, format_recognized=True, source="builtin")
+    xcode_tests = _extract_xcode_failed_tests(gate_output_tail)
+    if xcode_tests:
+        return FailedTestExtraction(tests=xcode_tests, format_recognized=True, source="xcodebuild")
     if _output_matches_builtin_grammar(gate_output_tail):
         return FailedTestExtraction(tests=[], format_recognized=True, source="builtin")
+    # Deliberately no "Xcode ran but named nothing" branch: an Xcode gate that
+    # fails without a ``Failing tests:`` block (a build break, a lint step) gives
+    # no evidence about which tests failed, so claiming a recognized format would
+    # turn that silence into a false "no failing tests".
     return FailedTestExtraction(tests=[], format_recognized=False, source="unrecognized")
 
 

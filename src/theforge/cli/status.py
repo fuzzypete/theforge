@@ -638,25 +638,60 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
         print("\nPending decisions: (none)")
 
 
-def _find_story_log_path(project_root: Path, slug: str, sprint_name: str | None) -> Path | None:
-    """Locate the most recent per-story run log for ``slug``.
+# Per-story log artifacts in preference order. ``run-*.log`` is the whole-story
+# tee written by standalone runs; a sprint story's directory instead accumulates
+# ``dev-iter-<n>-<model>.log`` per dev iteration, and — when no iteration ran —
+# only the YAML artifacts. Globbing for ``run-*.log`` alone made every slug the
+# ``--story`` enumerator lists structurally untailable inside a sprint (#2013).
+_STORY_LOG_PATTERNS: tuple[str, ...] = (
+    "run-*.log",
+    "dev-iter-*.log",
+    "*.log",
+    "audit.yaml",
+    "preflight.yaml",
+)
 
-    Prefers the nested sprint layout ``.forge/logs/<sprint_name>/<slug>/run-*.log``.
+
+def _newest_story_artifact(story_dir: Path) -> Path | None:
+    """Return the most useful readable artifact in a per-story log directory.
+
+    Preference is by kind first, recency second: an iteration log says more about
+    what the story was doing than the audit YAML does, so a stale ``dev-iter``
+    log still beats a freshly written ``audit.yaml``.
+    """
+    for pattern in _STORY_LOG_PATTERNS:
+        matches = [p for p in story_dir.glob(pattern) if p.is_file()]
+        if matches:
+            return max(matches, key=lambda p: p.stat().st_mtime)
+    return None
+
+
+def _find_story_log_path(project_root: Path, slug: str, sprint_name: str | None) -> Path | None:
+    """Locate the most recent readable per-story log artifact for ``slug``.
+
+    Prefers the nested sprint layout ``.forge/logs/<sprint_name>/<slug>/``.
     Falls back to any log directory named ``<slug>`` so standalone runs and
-    unknown sprint names still resolve. Returns the newest matching file, or
-    ``None`` if the story has no run log yet.
+    unknown sprint names still resolve. Returns ``None`` only when the story has
+    no readable artifact at all.
     """
     logs_dir = project_root / ".forge" / "logs"
     if not logs_dir.exists():
         return None
 
-    candidates: list[Path] = []
     if sprint_name:
         story_dir = logs_dir / sprint_name / slug
         if story_dir.is_dir():
-            candidates = list(story_dir.glob("run-*.log"))
-    if not candidates:
-        candidates = [p for p in logs_dir.rglob("run-*.log") if p.parent.name == slug]
+            found = _newest_story_artifact(story_dir)
+            if found is not None:
+                return found
+
+    candidates: list[Path] = []
+    for story_dir in logs_dir.rglob(slug):
+        if not story_dir.is_dir():
+            continue
+        found = _newest_story_artifact(story_dir)
+        if found is not None:
+            candidates.append(found)
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
@@ -808,11 +843,35 @@ def _cleanup_stopped_run(
 ) -> None:
     from theforge import detach as _detach
     from theforge import process_group as _process_group
+    from theforge.sprint.audit import finalize_interrupted_story_audit
     from theforge.sprint.lock import cleanup_story_locks
+    from theforge.sprint.state_writer import terminalize_state_file
+    from theforge.sprint.status_reader import read_live_sprint_name
 
     lock_slugs = _stopped_run_lock_slugs(run_id, project_root, slug)
+    sprint_name = read_live_sprint_name(run_id, project_root)
     _detach.remove_pid(run_id, project_root)
     _detach.write_run_ended(run_id, project_root, "stopped", force=True)
+    # The stopped process died holding whatever phase it was in, so nothing else
+    # will ever write the terminal transition — the surviving .state file would
+    # keep reporting a running sprint with running stories after stop reported
+    # success (#2013). Already-terminal stories keep their recorded outcome.
+    stranded = terminalize_state_file(run_id, project_root)
+    if stranded:
+        print(
+            f"[forge] Marked {len(stranded)} in-flight story/stories stopped: "
+            f"{', '.join(stranded)}"
+        )
+    # Finalize each stopped story's own audit from what the sprint process
+    # flushed while it ran. Only audits still marked in-flight are touched, so a
+    # story that finished on its own keeps the real audit it wrote.
+    if sprint_name:
+        for stranded_slug in stranded:
+            audit_path = finalize_interrupted_story_audit(
+                project_root, sprint_name, stranded_slug, reason="stopped"
+            )
+            if audit_path is not None:
+                print(f"[forge] Finalized in-flight story audit: {audit_path}")
     cleanup_story_locks(lock_slugs, project_root, pid=pid)
     # The stopped sprint's own teardown may not have reached its agent groups
     # (SIGKILL path); reap any now-orphaned groups.
