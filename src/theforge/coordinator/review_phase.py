@@ -676,7 +676,9 @@ def _handle_interactive_review_decision(
             _approve_msg = (
                 f"Task '{task.name}' completed. "
                 f"Human approved after {state.review_cycle} cycle(s), "
-                f"{state.dev_iteration} dev iteration(s). "
+                # budget.total_count, not state.dev_iteration — see the
+                # automatic-approve message below for why (#1983).
+                f"{state.budget.total_count} dev iteration(s). "
             )
         return (
             _ReviewOutcome.DONE,

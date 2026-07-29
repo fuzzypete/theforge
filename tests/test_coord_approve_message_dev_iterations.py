@@ -80,8 +80,11 @@ def _pool_returning(review: ReviewResult):
     return lambda *_a, **_kw: ([], [], review, [review], [("review", review)])
 
 
-def test_approve_message_reports_dev_iterations_across_all_cycles(tmp_path: Path) -> None:
-    """2 dev calls in cycle 1 + 1 in cycle 2 → the message must say 3, not 1."""
+def _drive_two_cycles_to_approve(tmp_path: Path, *, interactive: bool):
+    """REQUEST_CHANGES (2 dev calls) → RETRY_DEV → APPROVE (1 dev call) → DONE.
+
+    Returns ``(state, result)`` from the approving cycle.
+    """
     _init_repo_with_dev_commit(tmp_path)
 
     config = _make_config(tmp_path)
@@ -106,7 +109,7 @@ def test_approve_message_reports_dev_iterations_across_all_cycles(tmp_path: Path
             tmp_path,
             "forge/test-task",
             task_start=0.0,
-            interactive=False,
+            interactive=interactive,
             auto_merge=False,
             notify=False,
             logger=None,
@@ -134,7 +137,7 @@ def test_approve_message_reports_dev_iterations_across_all_cycles(tmp_path: Path
             tmp_path,
             "forge/test-task",
             task_start=0.0,
-            interactive=False,
+            interactive=interactive,
             auto_merge=False,
             notify=False,
             logger=None,
@@ -142,10 +145,32 @@ def test_approve_message_reports_dev_iterations_across_all_cycles(tmp_path: Path
 
     assert outcome is _ReviewOutcome.DONE
     assert result is not None and result.success is True
-    assert state.phase is Phase.DONE
 
-    # The per-cycle counter is 1 here; the story took 3 dev iterations. The
-    # message — which becomes the run's audit outcome.message — must report 3.
+    # The per-cycle counter is 1 here; the story took 3 dev iterations.
     assert state.dev_iteration == 1
     assert state.budget.total_count == 3
+    return state, result
+
+
+def test_approve_message_reports_dev_iterations_across_all_cycles(tmp_path: Path) -> None:
+    """2 dev calls in cycle 1 + 1 in cycle 2 → the message must say 3, not 1."""
+    state, result = _drive_two_cycles_to_approve(tmp_path, interactive=False)
+
+    assert state.phase is Phase.DONE
+    # This message becomes the run's audit outcome.message.
     assert "Review approved after 2 cycle(s), 3 dev iteration(s)." in result.message
+
+
+def test_interactive_approve_message_reports_dev_iterations_across_all_cycles(
+    tmp_path: Path,
+) -> None:
+    """The human-review approve message has the same contract as the automatic one."""
+    with patch(
+        "theforge.coordinator.review_phase._human_review",
+        return_value=("approve", None),
+    ):
+        state, result = _drive_two_cycles_to_approve(tmp_path, interactive=True)
+
+    assert state.phase is Phase.DONE
+    assert state.human_review_decision == "approve"
+    assert "Human approved after 2 cycle(s), 3 dev iteration(s)." in result.message
