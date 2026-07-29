@@ -284,6 +284,7 @@ def build_post_run_payload(
         "duration_seconds": round(duration_seconds, 1),
         "findings": findings,
         "gate_decisions": list(state.gate_decisions),
+        "gate_runs": state.gate_runs,
         "review_pool": review_pool,
         "review_pool_failed": review_pool_failed,
         "pr_number": pr_number,

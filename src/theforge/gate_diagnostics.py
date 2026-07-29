@@ -118,12 +118,13 @@ def run_gate_diagnostic_pass(
 
     tail_chars = val.gate_output_tail_chars
     output_tail = output[-tail_chars:]
-    write_trace(
-        workspace_path / ".forge/traces" / f"{iter_num}-gate-diagnostic.txt",
-        output,
-    )
+    # One expression names the trace file and the field that points at it, so the
+    # entry can never quote a path it did not write (#1986).
+    trace_rel = f".forge/traces/{iter_num}-gate-diagnostic.txt"
+    write_trace(workspace_path / trace_rel, output)
     return GateDiagnosticTelemetry(
-        iteration=iter_num,
+        trace_index=iter_num,
+        trace_path=trace_rel,
         command=diagnostic_cmd,
         ran=True,
         budget_s=budget,

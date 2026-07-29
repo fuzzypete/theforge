@@ -129,8 +129,8 @@ def _deserialize_review_result(data: object) -> object | None:
 def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None:
     """Persist trajectory fields to <workspace_path>/.forge/trajectory.yaml.
 
-    Called after each review cycle classification so the trajectory survives
-    a ``forge run --resume``.
+    Called after each review cycle classification, and after each gate
+    execution in VALIDATE, so the trajectory survives a ``forge run --resume``.
 
     Design note: trajectory data is stored in a dedicated sidecar file rather
     than in ``.forge/sessions.json`` (via ``save_sessions()``).  ``save_sessions()``
@@ -151,6 +151,10 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         ],
         "surviving_families": state.surviving_families,
         "escalate_kind": state.escalate_kind,
+        # Gate-execution count, so the "N gate run(s)" an escalation reports
+        # covers the story's whole history rather than restarting at the most
+        # recent --resume (#1984).
+        "gate_runs": state.gate_runs,
         "hygiene_escalation_dev_commit_sha": state.hygiene_escalation_dev_commit_sha,
         "hygiene_escalation_prior_approve_count": state.hygiene_escalation_prior_approve_count,
         "hygiene_escalation_total_count": state.hygiene_escalation_total_count,
@@ -196,6 +200,8 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         ]
     if "surviving_families" in data and isinstance(data["surviving_families"], list):
         state.surviving_families = data["surviving_families"]
+    if isinstance(data.get("gate_runs"), int) and not isinstance(data.get("gate_runs"), bool):
+        state.gate_runs = max(0, int(data["gate_runs"]))
     if data.get("escalate_kind") in ("hygiene", "content", "decompose"):
         state.escalate_kind = data["escalate_kind"]
     if isinstance(data.get("hygiene_escalation_dev_commit_sha"), str):

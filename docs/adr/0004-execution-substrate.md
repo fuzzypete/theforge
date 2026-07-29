@@ -99,6 +99,14 @@ Grounds: hard gate 3 unmet (write path), hard gate 2 unresolved (operator budget
 
 Strategic footnote: the live run's wrong-but-flawlessly-executed result is direct evidence for the wedge thesis — better commodity execution makes the coordinator/review/gate layer more valuable, not less. Replacing runners does not replace TheForge.
 
+### Field evidence, 2026-07-28 — limits of the incumbent's isolation model
+
+Adopter `hdp` (Swift/iOS/watchOS) exercised the seatbelt path against a real Apple toolchain and hit its ceiling. With `sandbox.capability_profile: xcode` selected and applied (logged on every dev invocation), `xcodebuild` was denied CoreSimulator, SwiftPM package resolution, and a power assertion. Dev could not build the app target; review correctly refused to approve code that was never exercised; the story burned three iterations and $10.03 and was recorded as `review_rejected`. Run `70462a5b72a0`, story #248; filed as #2038.
+
+Two facts this establishes for §3's "Sandbox/network isolation" row. First, the seatbelt model's grants are a hand-maintained allowlist with **no network-egress concept at all** — `SandboxCapabilityPreset` carries only write roots and mach services — so a toolchain needing package resolution cannot be accommodated by configuration. Second, projects cannot extend a preset (`SandboxConfig` exposes only `capability_profile`), so an adopter whose toolchain falls outside the shipped set has no path short of a code change here.
+
+This is **not** a re-entry condition for gh-aw, and should not be read as one. The toolchains that provoke it are macOS-only; gh-aw's container stack (squid + api-proxy + iptables) could not host them either, and containerizing this class of work means macOS virtualization, not containers. It is evidence that the *incumbent* isolation model has a known ceiling — relevant when weighing maintenance cost in §8, and a reason to treat "keep CLI runners primary" as carrying its own unbudgeted work rather than as the free option.
+
 ## Appendix A — Evidence log (2026-07-16, spike host `fuzzypete/theforge-ghaw-spike`)
 
 | Run | Engine/model | Outcome | Fact established |

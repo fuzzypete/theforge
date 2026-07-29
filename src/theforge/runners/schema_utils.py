@@ -67,8 +67,14 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("openai", "gpt-5.4-mini"): (0.25, 2.00),
     ("openai", "gpt-5.4"): (1.25, 10.00),
     ("openai", "gpt-5.4-pro"): (15.00, 120.00),
+    # Mirrors the input/output_cost_per_mtok declared for this model in
+    # forge.yaml. Routing already reads those config values; accounting reads
+    # this table, so a model priced in one and absent from the other routes
+    # fine and then records cost-unknown, which fails the budget check closed.
+    ("openai", "gpt-5.5"): (5.00, 30.00),
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
+    ("google", "gemini-3.5-flash"): (1.50, 9.00),  # mirrors forge.yaml overlay
     ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
     ("google", "gemini-3.1-pro-preview-customtools"): (2.00, 12.00),
     ("google", "gemini-2.5-pro"): (1.25, 10.00),  # ≤200k tokens

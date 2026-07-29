@@ -15,6 +15,7 @@ from .agent_failure import NO_JUDGMENT
 from .audit_render import build_agent_entries, build_reviews
 from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
+from .iteration_usage import dev_usage
 from .landing_record import build_landing_record
 from .state import CoordinatorResult, CoordinatorState
 from .trust_status import derive_trust_status
@@ -429,16 +430,10 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 
 
 def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig) -> dict:
-    dev_used = len(state.dev_iteration_telemetry)
-    dev_max = (
-        state.adaptive_dev_max
-        if state.adaptive_dev_max
-        else (
-            state.dev_iteration_telemetry[0].max_iterations
-            if state.dev_iteration_telemetry
-            else config.retry.max_dev_iterations
-        )
-    )
+    # Per-cycle used against the per-cycle max: dev_max is a per-cycle budget
+    # limit, so counting every dev iteration the story ever ran reported
+    # used > max for any story spanning more than one review cycle (#1985).
+    dev_used, dev_max = dev_usage(state, default_max=config.retry.max_dev_iterations)
     # Budget view: a review cycle VALIDATE bought for a gate or convention
     # finding was really spent, so exhaustion must not report zero (#1981).
     review_used = state.review_cycles_spent
@@ -512,9 +507,18 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
 
 
 def _serialize_gate_debug_metrics(state: CoordinatorState) -> list[dict]:
+    """Serialize the post-timeout gate debug command runs.
+
+    ``trace_index`` (not ``iteration``) is the monotonic counter that names this
+    entry's trace file, and ``trace_path`` is that file — so the artifact an
+    escalation quotes resolves to the entry it is attached to. ``iteration`` in
+    ``iterations.dev_loop`` is a different, per-review-cycle counter; giving both
+    the same name made the two disagree from the second cycle on (#1986).
+    """
     return [
         {
-            "iteration": item.iteration,
+            "trace_index": item.trace_index,
+            "trace_path": item.trace_path,
             "command": item.command,
             "ran": item.ran,
             "timeout_s": item.timeout_s,
@@ -527,10 +531,15 @@ def _serialize_gate_debug_metrics(state: CoordinatorState) -> list[dict]:
 
 
 def _serialize_gate_diagnostic_metrics(state: CoordinatorState) -> list[dict]:
-    """Serialize the gate-timeout diagnostic re-run passes (issue #1217)."""
+    """Serialize the gate-timeout diagnostic re-run passes (issue #1217).
+
+    ``trace_index``/``trace_path`` carry the same contract as in
+    :func:`_serialize_gate_debug_metrics` (#1986).
+    """
     return [
         {
-            "iteration": item.iteration,
+            "trace_index": item.trace_index,
+            "trace_path": item.trace_path,
             "command": item.command,
             "ran": item.ran,
             "budget_s": item.budget_s,
@@ -676,6 +685,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "review_cycles_opened_by_validate": state.validate_opened_review_cycles,
             "dev_iterations": len(state.dev_results),
             "gate_decisions": state.gate_decisions,
+            # Executions of the gate command, including ones that timed out or
+            # errored and excluding runs where gate_override skipped the gate.
+            # Differs from len(gate_decisions) by design (#1984).
+            "gate_runs": state.gate_runs,
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "gate_debug": _serialize_gate_debug_metrics(state),
             "gate_diagnostic": _serialize_gate_diagnostic_metrics(state),
