@@ -8,6 +8,8 @@ what may run outside the dev sandbox at all.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -250,6 +252,123 @@ class TestRequestBudget:
         assert _response(broker, "r1")["refusal_reason"] == "request_limit_exceeded"
 
 
+class TestShutdownWithCommandInFlight:
+    """A declared command must never outlive the dev iteration that asked for it.
+
+    An unconfined build still writing to the worktree would race the
+    coordinator's own authoritative gate, and a request that simply vanishes
+    leaves no audit record of an unconfined execution the coordinator started.
+    """
+
+    def test_in_flight_command_is_killed_and_recorded(self, tmp_path):
+        broker = _broker(tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+        killed: list[object] = []
+
+        def slow_command(cmd, cwd, **kwargs):
+            """Stand in for a long build: blocks until its 'process group' is killed."""
+            proc = object()
+            on_start = kwargs.get("on_process_start")
+            assert on_start is not None, "broker must publish a cancellable handle"
+            on_start(proc)
+            started.set()
+            # Real work would be blocked in Popen.communicate() here; it returns
+            # only once the kill lands, which is what release stands in for.
+            assert release.wait(10), "command was never terminated"
+            return (False, "partial build output", -9, False)
+
+        def fake_kill(proc):
+            killed.append(proc)
+            release.set()
+            return True
+
+        with (
+            patch_gate_shell(side_effect=slow_command),
+            patch("theforge.coordinator.util._kill_process_group", side_effect=fake_kill),
+        ):
+            broker.start()
+            _request(broker, "r1", {"command": "verify-watch"})
+            assert started.wait(10), "command never started"
+            # The agent has returned while the build is still running.
+            broker.stop(timeout=0.2)
+
+        assert killed, "stop() must terminate the in-flight command's process group"
+        (record,) = broker.records()
+        assert record["command_name"] == "verify-watch"
+        assert record["cancelled"] is True
+        # A kill's exit code is an artifact of the kill, not a verdict on the code.
+        assert record["refusal_reason"] == "cancelled_at_iteration_end"
+        response = _response(broker, "r1")
+        assert response["cancelled"] is True
+        assert response["success"] is False
+
+    def test_a_command_that_finishes_inside_the_grace_is_not_cancelled(self, tmp_path):
+        broker = _broker(tmp_path)
+
+        with (
+            patch_gate_shell(return_value=(True, "ok", 0, False)),
+            patch("theforge.coordinator.util._kill_process_group") as mock_kill,
+        ):
+            broker.start()
+            _request(broker, "r1", {"command": "verify-watch"})
+            for _ in range(200):
+                if broker.records():
+                    break
+                time.sleep(0.01)
+            broker.stop(timeout=5)
+
+        assert mock_kill.call_count == 0
+        (record,) = broker.records()
+        assert record["cancelled"] is False
+        assert record["exit_code"] == 0
+
+    def test_a_request_arriving_during_shutdown_is_refused_not_started(self, tmp_path):
+        """Shutdown must not launch a minutes-long build no one is left to read."""
+        broker = _broker(tmp_path)
+        broker._stop_event.set()
+        _request(broker, "r1", {"command": "verify-watch"})
+
+        with patch_gate_shell() as mock_shell:
+            broker.poll_once()
+
+        assert mock_shell.call_count == 0
+        response = _response(broker, "r1")
+        assert response["accepted"] is False
+        assert response["refusal_reason"] == "iteration_ended"
+        # Refused, but still audited: the request is never simply absent.
+        assert broker.records()[0]["refusal_reason"] == "iteration_ended"
+
+    def test_a_cancelled_command_the_thread_never_records_is_backfilled(self, tmp_path):
+        """Last-resort guarantee: the audit trail names every started command."""
+        broker = _broker(tmp_path)
+        started = threading.Event()
+
+        def wedged_command(cmd, cwd, **kwargs):
+            kwargs["on_process_start"](object())
+            started.set()
+            time.sleep(30)  # never observed; the thread is abandoned
+            return (False, "", None, False)
+
+        with (
+            patch_gate_shell(side_effect=wedged_command),
+            patch("theforge.coordinator.util._kill_process_group", return_value=True),
+        ):
+            broker.start()
+            _request(broker, "r1", {"command": "verify-watch"})
+            assert started.wait(10), "command never started"
+            import theforge.coordinator.dev_verification as dv
+
+            with patch.object(dv, "_CANCEL_JOIN_SECONDS", 0.2):
+                broker.stop(timeout=0.2)
+
+        (record,) = broker.records()
+        assert record["request_id"] == "r1"
+        assert record["cancelled"] is True
+        assert record["exit_code"] is None
+        assert record["refusal_reason"] == "cancelled_at_iteration_end"
+
+
 class TestAuditRecords:
     def test_records_carry_the_outcome_without_duplicating_output(self, tmp_path):
         broker = _broker(tmp_path, max_requests=2)
@@ -273,6 +392,7 @@ class TestAuditRecords:
             "duration_s": records["good"]["duration_s"],
             "output_truncated": True,
             "trace_path": ".forge/traces/verify-iter1-good.txt",
+            "cancelled": False,
         }
         assert records["bad"]["accepted"] is False
         assert records["bad"]["refusal_reason"] == "unknown_command"

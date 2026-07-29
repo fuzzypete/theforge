@@ -590,6 +590,11 @@ What makes this bounded:
 - **The budget is fail-closed and per-iteration.** Every request counts, accepted
   or refused, so a loop of malformed requests cannot buy unbounded execution.
   It does not reset when a transient transport failure re-attempts the agent.
+- **No command outlives the iteration that asked for it.** If the agent returns
+  while a declared command is still running, it gets a short grace period to
+  finish and is then killed — an unconfined build still writing to the worktree
+  would otherwise race the coordinator's own authoritative gate. The kill is
+  recorded as `cancelled: true`, which reads differently from a real failure.
 - **Malformed declarations fail at config load** — an empty name, a
   path-traversing name, a missing command, an unknown field, or a non-positive
   limit is a config error, not a runtime surprise on something already running

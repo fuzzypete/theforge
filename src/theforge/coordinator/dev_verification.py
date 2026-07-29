@@ -55,6 +55,16 @@ _POLL_INTERVAL_S = 0.25
 # this many polls before treating the file as genuinely malformed. Agents are
 # told to write atomically (tmp + rename); this is the belt to that suspenders.
 _MALFORMED_RETRY_POLLS = 12
+# Shutdown budget. When the agent returns, a declared command may still be
+# running. It gets this long to finish on its own — a build seconds from done
+# yields a real record worth keeping — and is then killed outright. It must not
+# survive the iteration: an unconfined build racing the coordinator's own
+# authoritative gate in the same worktree is exactly what the gate result would
+# then be measuring.
+_SHUTDOWN_GRACE_SECONDS = 30.0
+# After the kill, how long to wait for the serving thread to finish recording
+# the terminated command's outcome.
+_CANCEL_JOIN_SECONDS = 15.0
 
 # Sentinel: the request file could not be parsed *yet* and should be retried on
 # a later poll rather than refused. Distinct from ``None`` (genuinely malformed).
@@ -78,6 +88,12 @@ class VerificationRequestRecord:
     duration_s: float = 0.0
     output_truncated: bool = False
     trace_path: str | None = None
+    # True when the coordinator killed this command because the dev iteration
+    # ended while it was still running. Distinct from ``timed_out`` (the command
+    # exceeded its own declared budget) and from a plain non-zero exit: a
+    # cancelled command proves nothing about the code, and a reader that cannot
+    # tell the two apart would read a kill as a real verification failure.
+    cancelled: bool = False
 
     def audit_payload(self) -> dict:
         """Return the JSON-safe dict recorded in dev-iteration telemetry.
@@ -98,6 +114,7 @@ class VerificationRequestRecord:
             "duration_s": round(self.duration_s, 2),
             "output_truncated": self.output_truncated,
             "trace_path": self.trace_path,
+            "cancelled": self.cancelled,
         }
 
 
@@ -123,6 +140,15 @@ class DevVerificationBroker:
     _malformed_polls: dict[str, int] = field(default_factory=dict, init=False)
     _stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
+    # The command currently executing, if any, guarded by ``_active_lock``:
+    # ``(request_id, command, Popen | None)``. ``stop`` reads this from the
+    # coordinator thread to kill a command that outlived the iteration, and
+    # ``_execute`` reads ``_cancelled`` afterwards to record the kill honestly.
+    _active: tuple[str, DevVerificationCommand, object | None] | None = field(
+        default=None, init=False
+    )
+    _active_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _cancelled_ids: set[str] = field(default_factory=set, init=False)
 
     def __post_init__(self) -> None:
         self.request_dir.mkdir(parents=True, exist_ok=True)
@@ -162,17 +188,92 @@ class DevVerificationBroker:
         )
         self._thread.start()
 
-    def stop(self, timeout: float = 30.0) -> None:
-        """Stop serving and join the thread.
+    def stop(self, timeout: float | None = None) -> None:
+        """Stop serving, and guarantee no declared command outlives the iteration.
 
-        A declared command may still be executing when the agent exits; the join
-        timeout bounds how long the coordinator waits for it rather than
-        blocking the run indefinitely on a build the agent no longer needs.
+        ``timeout`` defaults to ``_SHUTDOWN_GRACE_SECONDS``, resolved at call
+        time rather than bound as a default argument so the budget stays a single
+        module-level knob.
+
+        The agent can exit while a command it asked for is still running. Waiting
+        that command out is not an option — a declared command's budget is
+        minutes, and an unconfined build still writing to the worktree would race
+        the coordinator's own authoritative gate, which then measures a tree the
+        build was still mutating. Dropping it silently is worse: the request
+        would leave no audit record at all, which is precisely the invisibility
+        this capability exists to remove.
+
+        So shutdown is bounded and terminal. The in-flight command gets
+        ``timeout`` seconds to finish naturally; past that its process group is
+        killed and the serving thread records the real outcome of the kill. If
+        even that does not land, a synthetic cancelled record is written here so
+        the request is never absent from the trail.
         """
         self._stop_event.set()
         thread, self._thread = self._thread, None
-        if thread is not None:
-            thread.join(timeout=timeout)
+        if thread is None:
+            return
+        thread.join(timeout=_SHUTDOWN_GRACE_SECONDS if timeout is None else timeout)
+        if not thread.is_alive():
+            return
+        cancelled = self._cancel_active()
+        thread.join(timeout=_CANCEL_JOIN_SECONDS)
+        if cancelled is not None:
+            self._backfill_cancelled_record(cancelled)
+
+    def _cancel_active(self) -> tuple[str, DevVerificationCommand] | None:
+        """Kill the in-flight declared command's process group, if any.
+
+        Returns the ``(request_id, command)`` that was cancelled so the caller
+        can confirm it was recorded. Reuses the coordinator's own group-kill
+        helper — the same one the gate uses on timeout — so grandchildren of the
+        build (compiler jobs, simulators) go with it rather than being orphaned.
+        """
+        with self._active_lock:
+            active = self._active
+            if active is None:
+                return None
+            request_id, declared, proc = active
+            self._cancelled_ids.add(request_id)
+        _cu._log(
+            f"  ⚠ DEV   verification {declared.name!r} (request {request_id}) was still "
+            "running when the dev iteration ended — terminating it"
+        )
+        if proc is not None:
+            try:
+                _cu._kill_process_group(proc)
+            except Exception as exc:  # noqa: BLE001  # teardown must not raise into DEV
+                _cu._log(f"  ⚠ DEV   could not terminate verification {declared.name!r}: {exc}")
+        return request_id, declared
+
+    def _backfill_cancelled_record(self, cancelled: tuple[str, DevVerificationCommand]) -> None:
+        """Record a cancelled command the serving thread never got to record.
+
+        The kill normally unblocks ``_execute``, which writes the real terminal
+        record. This covers the case where it did not: the audit trail must name
+        every unconfined execution the coordinator started, including one whose
+        ending it could not observe.
+        """
+        request_id, declared = cancelled
+        if any(record.request_id == request_id for record in self._records):
+            return
+        self._record(
+            VerificationRequestRecord(
+                iteration=self.iteration,
+                request_id=request_id,
+                command_name=declared.name,
+                accepted=True,
+                refusal_reason="cancelled_at_iteration_end",
+                cancelled=True,
+            ),
+            body={
+                "success": False,
+                "detail": (
+                    "the dev iteration ended while this command was still running; "
+                    "it was terminated and its outcome is unknown"
+                ),
+            },
+        )
 
     # ── Serving ──────────────────────────────────────────────────────────
     def _serve(self) -> None:
@@ -183,11 +284,18 @@ class DevVerificationBroker:
                 _cu._log(f"  ⚠ DEV   verification broker error: {exc}")
             self._stop_event.wait(_POLL_INTERVAL_S)
         # Drain whatever landed in the last poll interval so a request written
-        # just before the agent exited still gets an answer on disk.
+        # just before the agent exited still gets an answer on disk and an audit
+        # record — but refuse rather than execute. Starting a minutes-long
+        # unconfined build as the iteration ends is the very thing shutdown
+        # exists to prevent, and no one is left to read the result.
         try:
             self.poll_once()
         except Exception as exc:  # noqa: BLE001
             _cu._log(f"  ⚠ DEV   verification broker error: {exc}")
+
+    @property
+    def _shutting_down(self) -> bool:
+        return self._stop_event.is_set()
 
     def poll_once(self) -> None:
         """Handle every unseen request file currently in the request directory."""
@@ -277,6 +385,17 @@ class DevVerificationBroker:
                 ),
             )
             return
+        if self._shutting_down:
+            self._refuse(
+                request_id,
+                name,
+                "iteration_ended",
+                detail=(
+                    "the dev iteration ended before this request was served; the command "
+                    "was not started"
+                ),
+            )
+            return
         self._execute(request_id, declared)
 
     def _execute(self, request_id: str, declared: DevVerificationCommand) -> None:
@@ -285,12 +404,28 @@ class DevVerificationBroker:
             f"command {declared.name!r} outside the sandbox"
         )
         started = time.monotonic()
-        ok, output, exit_code, timed_out = _cu._run_shell_detailed(
-            declared.command,
-            self.workspace_path,
-            timeout=declared.timeout,
-            expected_python=self.expected_python,
-        )
+
+        def _publish(proc: object) -> None:
+            # Publish the live process the moment it exists so ``stop`` can kill
+            # its group. Registered *before* the run rather than after, because
+            # the whole point is to reach a command that has not finished.
+            with self._active_lock:
+                self._active = (request_id, declared, proc)
+
+        with self._active_lock:
+            self._active = (request_id, declared, None)
+        try:
+            ok, output, exit_code, timed_out = _cu._run_shell_detailed(
+                declared.command,
+                self.workspace_path,
+                timeout=declared.timeout,
+                expected_python=self.expected_python,
+                on_process_start=_publish,
+            )
+        finally:
+            with self._active_lock:
+                self._active = None
+                cancelled = request_id in self._cancelled_ids
         duration = time.monotonic() - started
         output = output or ""
         tail = output[-declared.output_tail_chars :]
@@ -305,16 +440,21 @@ class DevVerificationBroker:
             request_id=request_id,
             command_name=declared.name,
             accepted=True,
+            # A cancelled command's non-zero exit is an artifact of the kill, not
+            # a verdict on the code, so it is labelled as such rather than left
+            # to read as an ordinary verification failure.
+            refusal_reason="cancelled_at_iteration_end" if cancelled else None,
             exit_code=exit_code,
             timed_out=timed_out,
             duration_s=duration,
             output_truncated=len(output) > len(tail),
             trace_path=trace_path,
+            cancelled=cancelled,
         )
         self._record(
             record,
             body={
-                "success": bool(ok) and not timed_out,
+                "success": bool(ok) and not timed_out and not cancelled,
                 # The whole command as declared in forge.yaml, echoed so the
                 # agent can read what actually ran. ``command`` stays the
                 # requested *name* — the only token the agent controls.
@@ -322,10 +462,16 @@ class DevVerificationBroker:
                 "output_tail": tail,
             },
         )
-        _cu._log(
-            f"  {'✓' if ok and not timed_out else '✗'} DEV   verification {declared.name!r} "
-            f"exit={exit_code} timed_out={timed_out} ({duration:.1f}s)"
-        )
+        if cancelled:
+            _cu._log(
+                f"  ⚠ DEV   verification {declared.name!r} terminated after "
+                f"{duration:.1f}s — the dev iteration ended while it was running"
+            )
+        else:
+            _cu._log(
+                f"  {'✓' if ok and not timed_out else '✗'} DEV   verification "
+                f"{declared.name!r} exit={exit_code} timed_out={timed_out} ({duration:.1f}s)"
+            )
 
     def _refuse(self, request_id: str, name: str | None, reason: str, *, detail: str) -> None:
         _cu._log(f"  ⚠ DEV   verification request {request_id} refused ({reason}): {detail}")
@@ -368,6 +514,7 @@ class DevVerificationBroker:
             "duration_s": round(record.duration_s, 2),
             "output_truncated": record.output_truncated,
             "trace_path": record.trace_path,
+            "cancelled": record.cancelled,
             **body,
         }
         final = self.response_dir / f"{record.request_id}.json"

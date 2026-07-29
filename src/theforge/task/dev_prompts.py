@@ -62,10 +62,10 @@ def _review_findings_instruction(p2_policy: str) -> str:
 
 def render_verification_section(
     *,
-    commands: tuple[tuple[str, str], ...],
-    request_dir: str | None,
-    response_dir: str | None,
-    max_requests: int,
+    commands: tuple[tuple[str, str], ...] = (),
+    request_dir: str | None = None,
+    response_dir: str | None = None,
+    max_requests: int = 0,
 ) -> str:
     """Render the coordinator-mediated verification section (ADR-0007 / #2050).
 

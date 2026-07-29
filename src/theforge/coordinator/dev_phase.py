@@ -21,7 +21,13 @@ from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import append_convention_retry_findings
 from theforge.schemas import dev_handoff_claims_unproven_completion
 from theforge.sessions import save_sessions
-from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
+from theforge.task import (
+    ContextAssembler,
+    TaskStory,
+    build_dev_prompt,
+    build_fix_prompt,
+    render_verification_section,
+)
 from theforge.traces import write_trace
 
 from .agent_failure import (
@@ -843,19 +849,26 @@ def _run_dev_phase(
             f"  dev verification commands: {', '.join(_verification_broker.command_names)} "
             f"(max {_verification_broker.max_requests} requests this iteration)"
         )
-    _verification_prompt_kwargs: dict = (
+    # One description of the channel, in the renderer's own vocabulary. The
+    # prompt builders take it under ``verification_``-prefixed names; the
+    # timeout-resume route (which has no builder) renders the section directly
+    # from the same dict, so the two routes cannot describe different channels.
+    _verification_channel: dict = (
         {
-            "verification_commands": tuple(
+            "commands": tuple(
                 (entry.name, entry.command)
                 for entry in config.validation.dev_verification_commands
             ),
-            "verification_request_dir": str(_verification_broker.request_dir),
-            "verification_response_dir": str(_verification_broker.response_dir),
-            "verification_max_requests": _verification_broker.max_requests,
+            "request_dir": str(_verification_broker.request_dir),
+            "response_dir": str(_verification_broker.response_dir),
+            "max_requests": _verification_broker.max_requests,
         }
         if _verification_broker is not None
         else {}
     )
+    _verification_prompt_kwargs: dict = {
+        f"verification_{key}": value for key, value in _verification_channel.items()
+    }
     # Gate execution is coordinator-owned on EVERY iteration (#1944 / #823). The
     # dev agent is never the gate authority: VALIDATE runs the authoritative gate
     # unsandboxed (on every successful handoff before REVIEW/MERGE), or records a
@@ -876,6 +889,14 @@ def _run_dev_phase(
                 state.human_feedback
                 or "You were cut off by a timeout. Continue from where you left off."
             )
+            # A timeout resume is the one route that does not go through a prompt
+            # builder, so the verification section has to be appended here. It is
+            # not optional: the channel is per-iteration, so the paths the agent
+            # was given before the timeout are stale, and a resumed agent left
+            # with only the continuation text would poll a directory the
+            # coordinator is no longer serving — indistinguishable, from inside
+            # the agent, from the capability not existing at all.
+            prompt += render_verification_section(**_verification_channel)
             state.dev_prompt_injected_finding_ids.append([])
             state.retry_reason = None
             state.human_feedback = None

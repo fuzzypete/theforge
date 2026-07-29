@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -249,6 +250,108 @@ class TestDevLoopConsumesCoordinatorVerification:
         dev_loop = audit["iterations"]["dev_loop"]
         assert dev_loop, "expected dev iteration telemetry"
         assert dev_loop[0]["verification_requests"] == run_level
+
+    def test_timeout_resume_iteration_is_given_the_current_channel(self, tmp_path):
+        """The one DEV route with no prompt builder must still carry the protocol.
+
+        The channel is per-iteration, so the paths a timed-out agent was given
+        before the kill are stale. A resume that carries only the continuation
+        text leaves the agent polling a directory nobody serves — from inside the
+        agent, indistinguishable from the capability not existing (#2050 review).
+        """
+        from theforge.coordinator.dev_phase import _run_dev_phase
+        from theforge.coordinator.state import CoordinatorState, RetryReason
+
+        config = _config_with_verification(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        state = CoordinatorState()
+        state.dev_iteration = 2  # a resume is never the first iteration
+        state.retry_reason = RetryReason.TIMEOUT_RESUME
+        state.human_feedback = "TIMEOUT after 900s. Continue from where you left off."
+        prompts: list[str] = []
+
+        def run_agent(*, prompt, **kwargs):
+            prompts.append(prompt)
+            return _make_agent_result()
+
+        with (
+            patch_gate_shell(side_effect=_shell_with_verification(workspace, [])),
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=run_agent),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+        ):
+            _run_dev_phase(
+                state, config, task, "# t\n", workspace, "feat/x", notify=False, logger=None
+            )
+
+        (prompt,) = prompts
+        # The continuation text survives...
+        assert "Continue from where you left off." in prompt
+        # ...and the agent is told where this iteration's channel actually is.
+        assert "## Project Verification Commands" in prompt
+        assert "verify-watch" in prompt
+        assert "/.forge/verify/iter-2/requests" in prompt
+        assert "/.forge/verify/iter-2/responses" in prompt
+
+    def test_a_command_still_running_at_handoff_is_killed_and_audited(self, tmp_path):
+        """No declared command outlives the iteration, and none vanishes from audit."""
+        from theforge.coordinator.dev_phase import _run_dev_phase
+        from theforge.coordinator.state import CoordinatorState
+
+        config = _config_with_verification(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+        state.dev_iteration = 1
+
+        started = threading.Event()
+        release = threading.Event()
+        killed: list[object] = []
+        gate = _gate_side_effect(workspace, "PASS")
+
+        def shell(cmd, cwd, **kwargs):
+            if cmd != VERIFY_WATCH.command:
+                return gate(cmd, cwd, **kwargs)
+            kwargs["on_process_start"](object())
+            started.set()
+            assert release.wait(10), "the command was never terminated"
+            return (False, "partial output", -9, False)
+
+        def run_agent(*, prompt, **kwargs):
+            """An agent that requests a build, then exits without waiting for it."""
+            request_dir = Path(_extract_dir(prompt, "requests"))
+            tmp = request_dir / "r1.json.tmp"
+            tmp.write_text(json.dumps({"command": "verify-watch"}), encoding="utf-8")
+            tmp.rename(request_dir / "r1.json")
+            assert started.wait(10), "the command never started"
+            return _make_agent_result()
+
+        def fake_kill(proc):
+            killed.append(proc)
+            release.set()
+            return True
+
+        with (
+            patch_gate_shell(side_effect=shell),
+            patch("theforge.coordinator.util._kill_process_group", side_effect=fake_kill),
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=run_agent),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+            patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 0.2),
+        ):
+            _run_dev_phase(
+                state, config, task, "# t\n", workspace, "feat/x", notify=False, logger=None
+            )
+
+        assert killed, "the in-flight command must not outlive the dev iteration"
+        # The record reaches the DEV snapshot despite the agent already being gone.
+        (record,) = state.dev_verification_requests
+        assert record["command_name"] == "verify-watch"
+        assert record["cancelled"] is True
+        assert record["refusal_reason"] == "cancelled_at_iteration_end"
+        assert state.pending_dev_verification_requests == state.dev_verification_requests
 
     def test_project_declaring_nothing_sees_no_channel_and_no_prompt_section(self, tmp_path):
         config = _make_config(tmp_path)
