@@ -255,6 +255,15 @@ def _elapsed_seconds_from_bounds(started_at: object, finished_at: object) -> flo
     return elapsed if elapsed >= 0 else None
 
 
+def elapsed_seconds_since(started_at: object) -> float | None:
+    """Seconds elapsed from a persisted UTC timestamp to now; None if unparsable."""
+    started_at_dt = _parse_status_timestamp(started_at)
+    if started_at_dt is None:
+        return None
+    elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at_dt).total_seconds()
+    return elapsed if elapsed >= 0 else None
+
+
 def _elapsed_seconds_from_live_story(story: dict) -> float | None:
     """Compute elapsed time for a live state entry when timestamps are available."""
     started_at_dt = _parse_status_timestamp(story.get("started_at"))
@@ -267,8 +276,7 @@ def _elapsed_seconds_from_live_story(story: dict) -> float | None:
         return elapsed if elapsed >= 0 else None
 
     if story.get("status") == "running":
-        elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at_dt).total_seconds()
-        return elapsed if elapsed >= 0 else None
+        return elapsed_seconds_since(story.get("started_at"))
 
     return None
 
@@ -622,6 +630,22 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
             detail_data.get("review_p2"),
         )
         return stage, detail or "reviewing plan", complexity
+
+    if phase_val == "REUSE_GATE":
+        # Resume triage gating an existing worktree. Naming the branch and
+        # commit under gate is the whole point of the phase: it tells the
+        # operator which stranded worktree the long-running gate belongs to.
+        target = _nonempty_str(detail_data.get("gate_branch")) or _nonempty_str(
+            detail_data.get("gate_worktree")
+        )
+        commit = _nonempty_str(detail_data.get("gate_commit"))
+        if target and commit:
+            gate_detail = f"validating {target} @ {commit}"
+        elif target:
+            gate_detail = f"validating {target}"
+        else:
+            gate_detail = "validating existing worktree"
+        return _nonempty_str(detail_data.get("gate_purpose")) or "", gate_detail, complexity
 
     if phase_val == "WORKSPACE":
         return (

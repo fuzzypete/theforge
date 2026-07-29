@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.coordinator.state import GateDebugTelemetry
+from theforge.coordinator.state import GateDebugTelemetry, GateLabel
 from theforge.task import TaskStory
 from theforge.traces import write_trace
 
@@ -74,6 +74,7 @@ def run_gate_full(
     iter_num: int | None = None,
     *,
     output_digest: list[str] | None = None,
+    label: GateLabel | None = None,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
 
@@ -92,6 +93,12 @@ def run_gate_full(
     returning a record — would churn all of them to carry one scalar that only
     one caller reads. A caller-supplied list keeps it explicit and per-call, so
     parallel story workers cannot share it.
+
+    ``label``, when given, names the gate's purpose and target in the "Running
+    gate" log line so semantically different gates that resolve to the same
+    command (baseline vs. per-story reuse vs. validation) are distinguishable
+    in the sprint log (#2014). It is display-only: it never reaches the shell
+    command, the timeout, or the decision.
     """
     has_override = (
         task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
@@ -106,7 +113,8 @@ def run_gate_full(
         gate_cmd = gate_cmd.replace("{test_target}", test_target)
         gate_cmd = gate_cmd.replace("{slug}", slug)
 
-    _cu._log_verbose(f"Running gate: {gate_cmd}")
+    gate_identity = label.describe() if label is not None else "gate"
+    _cu._log_verbose(f"Running {gate_identity}: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
     ok, output, exit_code, timed_out = _cu._run_shell_detailed(
         gate_cmd,
@@ -221,10 +229,14 @@ def _run_gate_debug_command(
 
 
 def _run_gate(
-    config: ForgeConfig, workspace_path: Path, task: TaskStory | None = None
+    config: ForgeConfig,
+    workspace_path: Path,
+    task: TaskStory | None = None,
+    *,
+    label: GateLabel | None = None,
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command. Returns (decision, error, output_tail)."""
     decision, error, output_tail, _resolved_cmd, _exit_code = run_gate_full(
-        config, workspace_path, task
+        config, workspace_path, task, label=label
     )
     return decision, error, output_tail

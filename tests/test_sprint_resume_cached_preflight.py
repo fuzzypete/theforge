@@ -68,7 +68,7 @@ class TestSprintResumeCachedPreflight:
         )
         dev_cached.run_id = "run-dev"
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             if "feature-a" in spec_path:
                 return review_triage
             return dev_triage
@@ -152,7 +152,7 @@ class TestSprintResumeCachedPreflight:
         dev_result.state.preflight_cached_original_verdict = "ALREADY_DONE"
         dev_result.state.preflight_cached_from_run_id = "run-dev"
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             if "feature-a" in spec_path:
                 return review_triage
             return dev_triage

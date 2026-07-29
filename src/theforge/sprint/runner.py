@@ -36,7 +36,7 @@ from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
-from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from ..coordinator.state import CoordinatorResult, CoordinatorState, GateLabel, Phase
 from ..coordinator.util import (
     _fmt_cost_total,
     _fmt_duration,
@@ -72,6 +72,7 @@ from .collision import (
     run_batch_preflight,
 )
 from .dag import (
+    REUSE_GATE_PHASE,
     StoryDAG,
     StoryTriage,
     _triage_spec,
@@ -99,6 +100,8 @@ from .state_writer import (
     SPRINT_PHASE_FAILED,
     SPRINT_PHASE_STOPPED,
     SprintStateWriter,
+    update_state_phase,
+    update_state_story,
 )
 from .story_state import (
     GATE_STATUS_INCOMPLETE,
@@ -965,6 +968,71 @@ def _project_root_is_git_checkout(project_root: Path) -> bool:
     return git_dir_check.returncode == 0
 
 
+#: ``GateLabel.purpose`` for the pre-sprint merge-base gate.
+BASELINE_GATE_PURPOSE = "baseline gate"
+
+#: Top-level ``sprint_phase`` values for the pre-story window. Both gates below
+#: can run for many minutes; without their own phases the whole window reports
+#: as ``starting`` with every story ``waiting`` (#2014).
+SPRINT_PHASE_STARTING = "starting"
+SPRINT_PHASE_BASELINE_GATE = "baseline-gate"
+SPRINT_PHASE_TRIAGE = "triage"
+
+
+def _publish_reuse_gate_start(run_id: str | None, project_root: Path, label: GateLabel) -> None:
+    """Show a story as actively gated while resume triage validates its worktree.
+
+    Triage runs before ``SprintStateWriter`` exists, so this writes the bootstrap
+    state file directly. The story is not dispatched yet, but it is not waiting
+    either: a real gate subprocess is running against its worktree, and that —
+    with the branch, commit, and start time — is what the operator needs to see
+    instead of ``waiting`` for the gate's whole duration (#2014).
+
+    No-op without a ``run_id`` (headless invocations have no live state file).
+    """
+    if not run_id or not label.slug:
+        return
+    update_state_story(
+        run_id,
+        project_root,
+        label.slug,
+        status="running",
+        phase=REUSE_GATE_PHASE,
+        started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        detail_updates={
+            "gate_purpose": label.purpose,
+            "gate_branch": label.target,
+            "gate_commit": label.commit,
+            "gate_worktree": label.worktree_path,
+        },
+    )
+
+
+def _publish_reuse_gate_end(run_id: str | None, project_root: Path, label: GateLabel) -> None:
+    """Return the story to waiting once its reuse gate is done.
+
+    The triage verdict is applied by the normal dispatch path later; leaving the
+    story at ``running`` here would keep claiming in-flight work — with a
+    growing elapsed time — for the rest of the startup window.
+    """
+    if not run_id or not label.slug:
+        return
+    update_state_story(
+        run_id,
+        project_root,
+        label.slug,
+        status="waiting",
+        phase=None,
+        started_at=None,
+        detail_updates={
+            "gate_purpose": None,
+            "gate_branch": None,
+            "gate_commit": None,
+            "gate_worktree": None,
+        },
+    )
+
+
 def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
     """Run the configured gate on the sprint merge base before any agent work starts."""
 
@@ -1114,7 +1182,14 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
                 }
 
         decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
-            config, baseline_worktree
+            config,
+            baseline_worktree,
+            label=GateLabel(
+                purpose=BASELINE_GATE_PURPOSE,
+                target="merge base",
+                commit=merge_base_ref,
+                worktree_path=str(baseline_worktree),
+            ),
         )
         duration = time.monotonic() - started_monotonic
         finished_at = datetime.datetime.now(datetime.timezone.utc)
@@ -2596,6 +2671,23 @@ def run_sprint(
     if not no_pull and _project_root_is_git_checkout(config.project_root):
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 
+    def _publish_sprint_phase(
+        phase: str,
+        *,
+        detail: str | None = None,
+        started_at: str | None = None,
+    ) -> None:
+        """Record the sprint-level phase in the live state file, when there is one.
+
+        Headless invocations pass no ``run_id`` and have no state file; those
+        callers simply produce no live phase.
+        """
+        if not run_id:
+            return
+        update_state_phase(
+            run_id, config.project_root, phase, detail=detail, started_at=started_at
+        )
+
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     _continuation_reason = _continuation_evidence(
         reexec=reexec,
@@ -2610,7 +2702,20 @@ def run_sprint(
             live_stories=sorted(_live_story_slugs),
         )
     else:
-        baseline_gate = _run_baseline_gate(config, resolved)
+        # The baseline gate is the sprint's first potentially many-minute step.
+        # Publishing it as its own phase (with the moment it began) is what lets
+        # `forge status` distinguish a slow gate from a stuck sprint; the phase
+        # is cleared the moment the gate returns so the elapsed time on screen
+        # is never that of finished work (#2014).
+        _publish_sprint_phase(
+            SPRINT_PHASE_BASELINE_GATE,
+            detail=f"merge base of {config.workspace.base_branch}",
+            started_at=baseline_started_at.isoformat(),
+        )
+        try:
+            baseline_gate = _run_baseline_gate(config, resolved)
+        finally:
+            _publish_sprint_phase(SPRINT_PHASE_STARTING)
     resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
     if not bool(baseline_gate.get("passed", False)):
@@ -2837,6 +2942,7 @@ def run_sprint(
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
+        _publish_sprint_phase(SPRINT_PHASE_TRIAGE)
         for slug, (task, _src, canonical_ref) in slug_to_context.items():
             if slug in _inflight_slugs:
                 # Triage reads the worktree to decide the re-entry point, and
@@ -2845,7 +2951,18 @@ def run_sprint(
                 # dispatch, after the inherited agent has stopped.
                 _log(f"  {slug:<20} DEFERRED (agent still running; triage after it finishes)")
                 continue
-            triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
+            triage = _triage_spec(
+                canonical_ref,
+                config,
+                config.project_root,
+                task=task,
+                on_gate_start=lambda label: _publish_reuse_gate_start(
+                    run_id, config.project_root, label
+                ),
+                on_gate_end=lambda label: _publish_reuse_gate_end(
+                    run_id, config.project_root, label
+                ),
+            )
             triages[canonical_ref] = triage
             _log(
                 f"  {triage.slug:<20} {triage.action.upper().replace('_', ' ')} ({triage.reason})"
