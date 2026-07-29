@@ -779,7 +779,7 @@ class TestParallelDependencyGating:
         # story-b: clean review re-entry once actually dispatched.
         result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
 
-        def _fake_triage(story_path, cfg, project_root, *, task=None):  # noqa: ANN001
+        def _fake_triage(story_path, cfg, project_root, *, task=None, **_progress):  # noqa: ANN001
             slug = task.slug
             return StoryTriage(
                 story_path=story_path,

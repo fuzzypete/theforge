@@ -324,7 +324,7 @@ class TestResumeReloadsIntakeCost:
             slug="feature-b",
         )
 
-        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+        def _mock_triage(canonical_ref, cfg, project_root, task=None, **_progress):
             slug = task.slug if task else Path(canonical_ref).stem
             return skip_triage if slug == "feature-a" else full_triage
 

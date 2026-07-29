@@ -405,16 +405,7 @@ def write_bootstrap_state(
         "max_parallel": max_parallel,
         "stories": stories,
     }
-    tmp_path = state_path.with_name(state_path.name + ".tmp")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        tmp_path.replace(state_path)
-    except OSError:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
+    _write_state_data(state_path, data)
     return state_path
 
 
@@ -462,7 +453,12 @@ def terminalize_state_file(
 
     data["sprint_phase"] = sprint_phase
     data["stories"] = story_state.as_dict()
+    _write_state_data(state_path, data)
+    return stranded
 
+
+def _write_state_data(state_path: Path, data: dict) -> None:
+    """Atomically replace a state file's contents. Best-effort; never raises."""
     tmp_path = state_path.with_name(state_path.name + ".tmp")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -473,36 +469,85 @@ def terminalize_state_file(
             tmp_path.unlink()
         except OSError:
             pass
-    return stranded
 
 
-def update_state_phase(run_id: str, project_root: Path, sprint_phase: str) -> None:
+def update_state_phase(
+    run_id: str,
+    project_root: Path,
+    sprint_phase: str,
+    *,
+    detail: str | None = None,
+    started_at: str | None = None,
+) -> None:
     """Update the ``sprint_phase`` field of an existing state file in place.
 
     No-op when the state file is absent (e.g. headless invocations without a
     bootstrap write). Called from the runner at phase boundaries that fire
     before SprintStateWriter is constructed.
+
+    ``detail`` and ``started_at`` describe a phase the sprint is *inside* right
+    now — the target of a long pre-story gate and when it began — so the status
+    header can report elapsed time instead of an unchanging phase name (#2014).
+    They are always rewritten, including to ``None``: leaving a finished gate's
+    detail behind would report stale work as active.
     """
     state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
     if not state_path.exists():
         return
-    try:
-        with open(state_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
+    data = _load_existing_state(state_path)
+    if data is None:
         return
-    if not isinstance(data, dict):
-        return
-    if data.get("sprint_phase") == sprint_phase:
+    if (
+        data.get("sprint_phase") == sprint_phase
+        and data.get("sprint_phase_detail") == detail
+        and data.get("sprint_phase_started_at") == started_at
+    ):
         return
     data["sprint_phase"] = sprint_phase
-    tmp_path = state_path.with_name(state_path.name + ".tmp")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        tmp_path.replace(state_path)
-    except OSError:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
+    data["sprint_phase_detail"] = detail
+    data["sprint_phase_started_at"] = started_at
+    _write_state_data(state_path, data)
+
+
+def update_state_story(run_id: str, project_root: Path, slug: str, **fields: object) -> None:
+    """Update one story row of an existing state file in place.
+
+    The pre-story triage loop runs before ``SprintStateWriter`` exists, so the
+    only live record of its progress is the bootstrap state file written at
+    daemonize time. Without this, a story being gated for reuse reads
+    ``waiting`` / no phase for the entire gate (#2014).
+
+    ``detail_updates`` merges into the row's ``detail`` dict; every other field
+    is assigned. Values of ``None`` are written as ``None`` so a completed phase
+    can be cleared. No-op when the file, or a row for ``slug``, is absent — a
+    progress write must never fail the sprint.
+    """
+    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
+    if not state_path.exists():
+        return
+    data = _load_existing_state(state_path)
+    if data is None:
+        return
+    stories = data.get("stories")
+    if not isinstance(stories, list):
+        return
+    detail_updates = fields.pop("detail_updates", None)
+    for story in stories:
+        if not isinstance(story, dict) or story.get("slug") != slug:
+            continue
+        if "status" in fields:
+            # The live file carries both the legacy status and the canonical
+            # outcome; a reader picking either one must see the same thing.
+            fields.setdefault("outcome", fields["status"])
+        story.update(fields)
+        if isinstance(detail_updates, dict):
+            existing_detail = story.get("detail")
+            merged = dict(existing_detail) if isinstance(existing_detail, dict) else {}
+            for key, value in detail_updates.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
+            story["detail"] = merged
+        _write_state_data(state_path, data)
+        return

@@ -1,0 +1,2668 @@
+{
+  "schema_version": 12,
+  "run_id": "9bf3a54703f3",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "Sprint timeout/stop leaves failed run live with orphaned gate subprocesses and contradictory state",
+    "slug": "issue-2013",
+    "story_path": null,
+    "story_text": "A parallel sprint involving two iOS/native stories became very slow and eventually failed both stories, but Forge left the run in confusing and partially-live state. The operator saw both stories failed while `forge status --watch` still rendered the sprint as live/running. Stopping the run reported success, but validator subprocesses continued running as orphans. The run artifacts then disagreed about whether the story was failed, validating, escalating, or still running, and the story log command could list story slugs it could not actually tail.\n\nExpected behavior: when a sprint story fails, escalates, times out, or is stopped, Forge should move the sprint and story state to a consistent terminal state, preserve the story history gathered so far, make the listed logs readable, and terminate the full worker/gate subprocess tree so no validator process continues after Forge reports the run stopped.\n\n## Diagnosis\n\n**Baseline:** `10fdbd8ae9d06ab628dc15da924fa691c0bcaefd` captured at `2026-07-28T21:55:39.274045+00:00`\n\n**Inspected files:**\n\n- `src/theforge/sprint/runner.py` \u2014 `sha256:6c1ce1978f51ba06c009814c932d7da5791cf35a714de09574e8f0a9536c9d24`\n- `src/theforge/sprint/state_writer.py` \u2014 `sha256:9dcdd8b6c803ac6e815117bcf398fdac61d4ec4d7e8bf9dd47c51e163da3c580`\n- `src/theforge/daemon.py` \u2014 `sha256:b81cc60b0a256715559e8091cc071b7b49d17598bd51d06deb6cef3fe27c4cb7`\n- `src/theforge/process_group.py` \u2014 `sha256:9acd8350be216221722a23c3d4d582006b51aead7d125105050828ff7f1872a7`\n- `src/theforge/coordinator/util.py` \u2014 `sha256:2bafe565cab1f05301e616cbd397708df22f5ed3fc04e7c476db615e1b38f4f2`\n- `src/theforge/coordinator/gate.py` \u2014 `sha256:aba9097b35d79ec38e6eefa7f478cb68ce6fc242a93bcfa17e03c008568827d8`\n- `src/theforge/coordinator/validate_phase.py` \u2014 `sha256:d5b1ac22614b5e7f5db248b839e2e29a027dfe2613e4a8ce3de98f88b7a465e0`\n- `src/theforge/coordinator/dev_phase.py` \u2014 `sha256:579467085d942ad110ac06d14e302b650a9c5cf18c85ca7870365b9f8cad06c6`\n- `src/theforge/coordinator/log_tee.py` \u2014 `sha256:728843a52524ba2e69e9a3e5e9898001669833c17398f5be252b7ebeecb31ed8`\n- `src/theforge/cli/status.py` \u2014 `sha256:be525e1627d073085a02e31f8a2833aba7db30a8f4f3bf0724f86fa6fc13f366`\n- `src/theforge/cli/sprint_status.py` \u2014 `sha256:323b3aef37b76b0fb6e523dbb901f70d26c0dc75daf21be240fa513dd189ce8a`\n\n### Observed symptom\n\nAfter a parallel sprint's stories fail/escalate/time out, Forge leaves the run in a\nconfusing and partially-inconsistent state: `forge status` keeps rendering the sprint\nas live/running with stale phase labels even though every story is terminal; `forge\nstop` reports success while the gate subprocess tree (e.g. xcodebuild) is still\nrunning as an orphan; the on-disk `.state` file mixes terminal story `status` with a\nnon-terminal `sprint_phase`/`phase`/`detail.gate_status`; the per-story timeout audit\nis nearly empty (`run_id: null`, no dev/gate history) even though the sprint log shows\nreal dev/gate activity; and `forge logs --story <slug>` lists slugs it then fails to\ntail. Separately, Xcode gate output is not parsed for failing tests, so retries keep\nre-running the full unfocused gate.\n\n### Reproduction / evidence\n\nEvidence is from run 7a22517c5509 (TheForge 0.13.0rc9) plus static inspection of the\ncurrent sprint/coordinator/CLI code, which reproduces every symptom structurally:\n- `.forge/runs/7a22517c5509.state` (as pasted in the issue) has top-level\n  `sprint_phase: running` together with story #50 `status: failed`,\n  `phase: ESCALATE`, `last_phase: VALIDATE`, `detail.gate_status: running`.\n- `.forge/logs/issues-50,230/run-7a22517c5509.log` shows `TIMEOUT issue-50 (worker\n  unresponsive after 3600s \u2014 marking as failed)` fired while a gate subprocess\n  (`make forge-gate TEST_TARGET=.` \u2192 `xcodebuild test`) was still running; `ps`\n  afterward shows that `xcodebuild` tree still alive as an orphan of PID 1.\n- `.forge/logs/issues-50,230/issue-50/audit.yaml` has `run_id: null` and\n  `gate_decisions: []`/`dev_loop: []` despite the run log showing multiple dev\n  iterations, handoffs and gate retries for issue-50.\n- `forge logs 7a22517c5509 --story issue-50` fails with \"No log found for story\" even\n  though `.forge/logs/issues-50,230/issue-50/` contains\n  `dev-iter-1/2/3-openai-gpt-5.4.log`, `audit.yaml`, `preflight.yaml`.\n- The gate repeatedly logged `\u26a0 VALIDATE gate output format not recognized` against\n  Xcode's `Failing tests:` block.\n\n### Hypotheses tested\n\n- **[confirmed]** Sprint/story terminal state is never written back to the on-disk state file (sprint_phase and per-story detail fields stay at their last non-terminal value), so status render and logs enumeration read stale fields.\n  - Evidence: src/theforge/sprint/state_writer.py's SprintStateWriter.set_phase() is the only way sprint_phase changes, and grepping runner.py shows exactly one call site \u2014 `_state_writer.set_phase(\"running\")` at runner.py:3471 \u2014 with no matching call to set it to a terminal value (done/failed/stopped) anywhere in the file. The timeout path (runner.py ~4066-4081) builds a synthetic CoordinatorState/Result but never updates the story's `detail.gate_status`, so a story whose gate was mid-run when the 3600s worker timeout fired keeps `gate_status: running` forever, exactly as seen in the pasted `.state` file for issue-50. cli/sprint_status.py:125 derives `is_live` from PID-file presence and just surfaces the raw `sprint_phase` string, so nothing downstream reconciles it against the now-terminal per-story statuses.\n- **[confirmed]** `forge stop` (cli/status.py cmd_stop) signals only the recorded top-level sprint PID; gate subprocesses launched via `_run_shell_detailed` (coordinator/util.py) are spawned with `start_new_session=True` into their own session/process group specifically so a signal to the parent's group does not reach them, and \u2014 unlike agent CLI subprocesses \u2014 they are never registered with the process_group.py sidecar registry, so `reap_orphan_agents()` (called from `_cleanup_stopped_run`) has no record to reap them by.\n  - Evidence: coordinator/util.py:_run_shell_detailed only kills the process group it spawned when its own `communicate(timeout=...)` raises `TimeoutExpired` inside that same thread/call (util.py:391-401) or on a BaseException unwind in that thread (util.py:402-404); a SIGTERM/SIGKILL delivered to the top-level sprint PID does not run that cleanup because the gate child lives in a separate session. Compare with process_group.py's `run_in_process_group`, which explicitly registers a sidecar (`register_agent_group`) precisely so `reap_orphan_agents` can find and `killpg` groups whose owner died abruptly \u2014 `_run_shell_detailed`'s gate subprocess never calls that registration function, so `cmd_stop`'s call to `_process_group.reap_orphan_agents(project_root)` (status.py:819) cannot reach it. This matches the `ps` evidence of a live `xcodebuild` tree after `forge stop` reported success. Also, the sprint-level worker-timeout path (runner.py:4046-4050) only sets a `threading.Event` and calls `Future.cancel()` (a documented no-op for an already-running thread, per the comment at runner.py:4044-4046) \u2014 that event is never threaded into `_run_shell_detailed`/`run_gate_full`, so a story timing out at the sprint layer does not interrupt or kill the gate subprocess either; it is only the `forge stop` codepath that ultimately fails to reach it.\n- **[confirmed]** The per-story timeout audit is built from a fresh, mostly-empty CoordinatorState/CoordinatorResult rather than the coordinator engine's accumulated dev/gate iteration telemetry for that story, so the audit written on timeout loses history the sprint log shows really happened.\n  - Evidence: runner.py's timeout branch (~4056-4081) calls `_snapshot_last_known()`, which (runner.py:1894-1930) only recovers `last_phase`/`last_model`/`last_cost`/ `last_started_at` from the sprint-level `SprintStateWriter`'s story entry \u2014 it has no access to, and does not populate, dev_loop/gate_decisions iteration telemetry. The `_timeout_state`/`_timeout_result` built right after it (runner.py:4066-4081) is a brand-new `CoordinatorState`/`CoordinatorResult` with no iteration data threaded in, which is what `_write_story_audit` then serializes \u2014 producing the observed `run_id: null`, `dev_loop: []`, `gate_decisions: []` despite real dev/gate activity already having happened for issue-50.\n- **[confirmed]** `forge logs --story <slug>` resolves the tail path with a filename glob (`run-*.log`) that per-story log directories never actually contain, so every slug the enumerator lists is unreachable by design, not by a transient bug.\n  - Evidence: cli/status.py:_find_story_log_path globs `story_dir.glob(\"run-*.log\")` (status.py:657) inside `.forge/logs/<sprint_name>/<slug>/`. But `_make_story_log_dir` (coordinator/log_tee.py:36-56) only creates that directory as a destination for per-story artifacts named things like `dev-iter-<n>-<model>.log`, `audit.yaml`, `preflight.yaml` \u2014 never a `run-*.log` file; the only file matching that pattern is the sprint-wide `.forge/logs/<sprint_name>/run-<run_id>.log`. This matches the issue's directory listing for issue-50 (dev-iter-1/2/3 logs, audit.yaml, preflight.yaml, no `run-*.log`) and explains why every slug `--story` (no arg) lists then fails to tail with `--story <slug>`.\n- **[confirmed]** The built-in failing-test extraction grammar only recognizes the pytest-style `FAILED `/`ERROR `/`::` summary format and explicitly does not parse xcodebuild's `Failing tests:` block, so Xcode gates never get a focused retry list.\n  - Evidence: coordinator/dev_phase.py:_extract_builtin_failed_tests (313-330) only matches lines starting with `FAILED `/`ERROR ` or containing `::` plus `failed`/`error`. `_output_matches_builtin_grammar` (333-348)'s own docstring says it is \"deliberately narrow: an xcodebuild/make style gate ('Testing failed:', '** TEST FAILED **', ...) carries none of these markers\" \u2014 so `extract_failed_tests` returns `format_recognized=False` for Xcode output, matching the observed \"gate output format not recognized\" warning and the repeated full, unfocused `TEST_TARGET=.` retries.\n\n### Confirmed cause\n\nFive related but distinct gaps in sprint failure/timeout/stop lifecycle handling,\nall inside the scope this issue names:\n1. Sprint/story terminal transitions are never written back to the state file:\n   `SprintStateWriter.set_phase()` is called once with \"running\"\n   (sprint/runner.py:3471) and never again with a terminal value, and the timeout\n   path never updates a story's `detail.gate_status` off \"running\" \u2014 so `status`\n   keeps rendering stale live/running/gate-status text after every story is\n   terminal, and the `.state` file itself is internally contradictory.\n2. Gate subprocesses spawned by `_run_shell_detailed`\n   (coordinator/util.py) run in their own OS session (`start_new_session=True`) and\n   are never registered with the `process_group.py` orphan-reaper sidecar registry\n   the way agent CLI subprocesses are \u2014 so neither a `SIGTERM`/`SIGKILL` to the\n   top-level sprint PID (`forge stop`) nor the sprint-level worker-timeout\n   cancellation (`stop_evt`/`Future.cancel()`, which is a documented no-op on an\n   already-running thread) ever reaches or reaps them, leaving them running as\n   orphans after Forge reports the run stopped.\n3. The synthetic `CoordinatorState`/`CoordinatorResult` built on sprint-level worker\n   timeout (sprint/runner.py ~4056-4081) only carries `_snapshot_last_known`'s four\n   scalar fields and drops all dev/gate iteration telemetry the coordinator engine\n   had already accumulated for that story, so the audit `_write_story_audit` writes\n   on timeout is nearly empty (`run_id: null`, no `dev_loop`/`gate_decisions`) even\n   though real history exists.\n4. `forge logs --story <slug>` resolves the tail path with a `run-*.log` glob\n   (cli/status.py:_find_story_log_path) against a per-story log directory that only\n   ever contains `dev-iter-*.log`/`audit.yaml`/`preflight.yaml` \u2014 the `run-*.log`\n   file only exists at the sprint level \u2014 so every slug the `--story` enumerator\n   lists is structurally unreachable via `--story <slug>`.\n5. The built-in failing-test extraction grammar (coordinator/dev_phase.py) is\n   deliberately narrow to a pytest-style summary format and does not recognize\n   xcodebuild's `Failing tests:` block, so Xcode/make-toolchain gates never populate\n   a focused retry test list and keep re-running the full unfocused gate.\n\n### Affected code path\n\n- src/theforge/sprint/state_writer.py (SprintStateWriter.set_phase, _write_locked)\n- src/theforge/sprint/runner.py (~3471 single set_phase(\"running\") call; ~4046-4081\n  worker-timeout branch: stop_evt/Future.cancel(), _snapshot_last_known,\n  _timeout_state/_timeout_result construction)\n- src/theforge/coordinator/util.py (_run_shell_detailed, _kill_process_group)\n- src/theforge/process_group.py (register_agent_group / reap_orphan_agents \u2014 the\n  registry gate subprocesses are never added to)\n- src/theforge/cli/status.py (cmd_stop/_cleanup_stopped_run; _find_story_log_path;\n  _list_sprint_stories)\n- src/theforge/coordinator/dev_phase.py (_extract_builtin_failed_tests,\n  _output_matches_builtin_grammar, extract_failed_tests)\n\n### Fix-success criterion\n\nFor a sprint story that times out, fails, escalates, or is stopped mid-VALIDATE:\n(a) the run's `.state` file shows a consistent terminal `sprint_phase` and per-story\n`phase`/`status`/`detail.gate_status` with no field implying the story is still\nrunning; (b) `forge status` renders the run and that story in a matching terminal\nstate, not \"[live] phase: running\" alongside a failed story; (c) after `forge stop`\nreports the run stopped, no gate/validator descendant process (e.g. xcodebuild)\nremains alive in `ps`; (d) the story's audit.yaml written on timeout/stop preserves\nthe dev/gate iteration history the run log shows actually happened, not an empty\n`dev_loop`/`gate_decisions` with `run_id: null`; (e) every slug printed by\n`forge logs <run> --story` successfully opens via\n`forge logs <run> --story <slug>`; and (f) gate output containing an xcodebuild\n`Failing tests:` block populates the extracted failing-test list so retries run\nfocused rather than the full gate.\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- The sprint main scheduling loop's exit condition after all stories reach a terminal outcome was not confirmed or ruled out within budget \u2014 it's possible the top-level process itself lingers beyond state-file staleness alone; worth a focused follow-up trace of the loop's termination condition in sprint/runner.py.\n\n### Notes\n\nThis issue bundles five mechanically distinct code paths under one operator-observed\nincident; I verified each independently against current HEAD rather than assuming\nthe issue's own grouping was accurate. All five premises are still present at HEAD\n(none has been fixed by an intervening commit). I did not verify whether the\ntop-level sprint *process* itself (not just the state file) fails to exit after both\nstories go terminal \u2014 the 77-minute \"elapsed\" while `phase: running` was displayed\ncould be either the state-file staleness above or a separate main-loop exit-condition\nbug; I did not find code evidence for the latter within budget, so I'm not including\nit as a confirmed cause. A downstream dev/groom pass should treat items 1-5 above as\nindependently fixable and independently testable, since they touch different modules\nand have different regression tests.\n## Ruled-out / clarified hypotheses\n\nThis was not merely an operator misunderstanding of a slow sprint. The process table proved a gate subprocess tree was alive after Forge reported the run stopped.\n\nThis was also not just the status watch being stale. The `.state` file itself had contradictory fields: top-level `sprint_phase: running`, #50 `status: failed`, #50 `phase: ESCALATE`, #50 `last_phase: VALIDATE`, and #50 `detail.gate_status: running`.\n\nThe orphaned `xcodebuild` did not explain all earlier slowness by itself. The broader slowdown came from repeated unfocused full iOS gates, parallel native validation, and later unreaped subprocesses after timeout/stop.\n\n## Affected behavior\n\nThis affects sprint runner lifecycle, timeout handling, stop semantics, status rendering, audit finalization, story log lookup, and Xcode gate-output parsing.\n\n## Fix-success observable\n\nA sprint worker that is running validation should be cancellable and timeout-safe. If the worker times out or the run is stopped, all descendant gate subprocesses should be terminated, the run should become terminal, `status` should render consistent terminal story state, the story audit should include all attempts observed before timeout, and `logs --story <slug>` should successfully open every slug listed by `logs --story`. Xcode output containing a `Failing tests:` block should populate failed tests so retries can focus rather than repeatedly running the full gate.\n",
+    "github_issue": 2013,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Sprint timeout/stop leaves failed run live with orphaned gate subprocesses and contradictory state' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2013",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-29T05:58:12.792394+00:00",
+    "finished_at": "2026-07-29T06:37:18.644787+00:00",
+    "duration_seconds": 2345.852393
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2013",
+    "branch": "feat/issue-2013",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    }
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 12.968322499999994,
+        "duration_s": 1132.95,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/cli/sprint_status.py",
+          "src/theforge/cli/status.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/live_state.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/coordinator/util.py",
+          "src/theforge/sprint/runner.py",
+          "src/theforge/sprint/state_writer.py",
+          "src/theforge/sprint/story_state.py",
+          "tests/test_cli_sprint_status.py",
+          "tests/test_coord_dev_phase_extract_failed_tests.py",
+          "tests/test_sprint_terminal_lifecycle.py"
+        ],
+        "files_changed_count": 13,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 8.278332999999998,
+        "duration_s": 499.61,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/cli/status.py",
+          "src/theforge/sprint/audit.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_sprint_terminal_lifecycle.py"
+        ],
+        "files_changed_count": 4,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 2,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 2,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 4.764551,
+        "duration_s": 341.16
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 5.82131,
+        "duration_s": 207.88
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 95,
+      "profile_avg_iterations": 1.8842,
+      "profile_avg_cost_usd": 9.615322,
+      "profile_raw_dev_max": 2.8263,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 24.0383,
+      "review_history_sample_size": 15,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 95 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-29T05:58:14.142161+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-07-29T06:23:28.789869+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 32.07669959999999,
+    "dev_usd": 21.246655499999992,
+    "review_usd": 10.5858612,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 12.968322499999994,
+        "duration_seconds": 1132.9463897920214,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.010756
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 12.957566499999993
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 8.278332999999998,
+        "duration_seconds": 499.61149166710675,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 8.278332999999998
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 1.514803,
+        "duration_seconds": 113.64864390265818,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.514803
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.2431085,
+        "duration_seconds": 113.64864390265818,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.2431085
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 2.0066395999999997,
+        "duration_seconds": 113.64864390265818,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.047561
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.9590785999999996
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 1.299414,
+        "duration_seconds": 69.18030356926222,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.299414
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 2.4361785,
+        "duration_seconds": 69.18030356926222,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.4361785
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 2.0857176,
+        "duration_seconds": 69.18030356926222,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.0857176
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Five distinct confirmed gaps (state-file terminal transitions, orphaned gate subprocess reaping across process groups, lost audit telemetry on timeout, unreachable per-story log path glob, missing xcodebuild grammar) span sprint/runner, coordinator, and CLI modules and require coordinated multi-module fixes.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "13 operator-visible surfaces enumerated in acceptance criteria: --story, --watch, 230/issue-50/audit.yaml, 230/run-7a22517c5509.log, audit.yaml, dev-iter-1/2/3-openai-gpt-5.4.log, forge logs 7a22517c5509 --story issue-50, forge status",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "cli",
+      "concurrency",
+      "parsing",
+      "backend"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.2441829,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "be33b42f5927",
+    "cache_snapshot": {
+      "worktree_head": "f26c820dac8a47f85fafc080a61d707f08350c92",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "f26c820dac8a47f85fafc080a61d707f08350c92",
+      "story_content_hash": "ef1b5831cdd7ce1cb62e11f07083095604a506f7e2d8be0de92fbccfd817a8f8"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "f26c820dac8a47f85fafc080a61d707f08350c92",
+      "current_worktree_head": "f26c820dac8a47f85fafc080a61d707f08350c92",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "f26c820dac8a47f85fafc080a61d707f08350c92",
+      "current_evaluation_base_branch_head": "f26c820dac8a47f85fafc080a61d707f08350c92",
+      "cached_story_content_hash": "ef1b5831cdd7ce1cb62e11f07083095604a506f7e2d8be0de92fbccfd817a8f8",
+      "current_story_content_hash": "ef1b5831cdd7ce1cb62e11f07083095604a506f7e2d8be0de92fbccfd817a8f8",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.2441829,
+        "duration_s": 35.35,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.72 \u2265 threshold 0.60 over 95 admissible runs \u2014 pre-promotion held) (profile success_rate=0.72 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2013/iter_1.yaml",
+      "handoff": {
+        "summary": "Fixed the sprint timeout/stop lifecycle incident as seven coordinated changes across five modules. (1) StoryStateEntry.as_dict now mechanically rewrites a terminal story's detail.gate_status away from 'running', and SprintStoryState.transition gained a detail_updates merge field so terminal exit paths can stamp one key without erasing prior phase detail. (2) SprintStateWriter gained terminalize_stories(); the runner calls it plus set_phase(done/failed/stopped) right after the work loop, before summary/audit finalization and before state removal, so the .state a crash or stop finds is already consistent. (3) A new module-level terminalize_state_file() rewrites a stopped run's surviving .state (sprint_phase=stopped, nonterminal stories -> FAILED/phase STOPPED/reason stopped/gate_status stopped); _cleanup_stopped_run calls it after the .ended marker and before locks/reaping. (4) _run_shell_detailed registers its spawned group (pgid == child pid under start_new_session) with process_group's reaper sidecar and unregisters only when the group is confirmed gone, so reap_orphan_agents can kill gate descendants after the owner sprint dies. (5) A new coordinator/live_state.py registry publishes the engine's live CoordinatorState per slug (bound to the run-log context's lifetime); the runner's timeout and worker-exception branches build their terminal state from a detached snapshot of it via a new _terminal_state_for helper, so the audit keeps run_id/dev_loop/gate_decisions. (6) _find_story_log_path resolves dev-iter-*.log and audit/preflight YAML, not only the run-*.log a sprint story directory never contains. (7) extract_failed_tests parses xcodebuild's 'Failing tests:' block in both dotted and -[Class method] forms with source='xcodebuild'. Plus: sprint-status reports a terminal persisted sprint_phase instead of [live] when a PID file lingers.",
+        "commits": [
+          {
+            "sha": "f185dd1",
+            "message": "fix(sprint): make timeout/stop leave one terminal, reapable, readable run state"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "(a) On timeout/fail/escalate/stop mid-VALIDATE, the run's .state shows a consistent terminal sprint_phase and per-story phase/status/detail.gate_status with no field implying the story is still running",
+            "status": "MET",
+            "notes": "Enforced at three layers: as_dict guard (cannot serialize terminal+running gate), runner terminalization before wrap-up, and terminalize_state_file on stop. Covered by test_timed_out_sprint_writes_terminal_state_before_teardown and the story_state/state_writer unit tests."
+          },
+          {
+            "criterion": "(b) forge status renders the run and story in a matching terminal state, not [live] phase: running alongside a failed story",
+            "status": "MET",
+            "notes": "display_sprint_status treats a terminal persisted sprint_phase as outranking a lingering PID file; test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live."
+          },
+          {
+            "criterion": "(c) After forge stop reports the run stopped, no gate/validator descendant remains alive",
+            "status": "MET",
+            "notes": "Gate groups now leave a reaper sidecar, which _cleanup_stopped_run's existing reap_orphan_agents consumes. Verified at the seam (sidecar written with the real pgid/sandbox_dir; kept when the group kill does not land), not against a live xcodebuild \u2014 that needs a real iOS gate."
+          },
+          {
+            "criterion": "(d) The story's audit.yaml written on timeout/stop preserves the dev/gate iteration history, not empty dev_loop/gate_decisions with run_id: null",
+            "status": "MET",
+            "notes": "_terminal_state_for prefers the engine's registered live state; end-to-end test asserts the written audit.yaml carries the real run_id and gate_decisions."
+          },
+          {
+            "criterion": "(e) Every slug printed by forge logs <run> --story opens via forge logs <run> --story <slug>",
+            "status": "MET",
+            "notes": "test_every_listed_slug_opens enumerates through read_live_status and resolves each slug through _find_story_log_path."
+          },
+          {
+            "criterion": "(f) Gate output containing an xcodebuild Failing tests: block populates the extracted failing-test list so retries run focused",
+            "status": "MET",
+            "notes": "Dotted and bracket forms, dedup, block termination, and custom-pattern precedence all covered. Output with only 'Testing failed:'/'** TEST FAILED **' and no Failing tests: block stays unrecognized \u2014 see story_deviations."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Did not broaden xcodebuild recognition to bare 'Testing failed:' / '** TEST FAILED **' markers. An existing test (test_struct_unrecognized_gate_format_is_not_recognized) pins that output as unrecognized, and reporting format_recognized=True with an empty list there would convert 'we cannot tell which tests failed' into a positive 'no tests failed'. Only the Failing tests: block yields a recognized xcodebuild result.",
+          "The runner's terminal write happens before _state_writer.remove(), so on a normal completion the terminal .state is transient by design (sprint-summary.yaml takes over). It is what a crash or a stop during wrap-up now finds."
+        ],
+        "deferred_items": [
+          "The unconfirmed 'main scheduling loop lingers after all stories are terminal' hypothesis is explicitly out of scope per the diagnosis and was not investigated.",
+          "AC (c) was verified at the process-group registration/reaping seam, not by observing a real xcodebuild tree die after forge stop; that needs a live iOS sprint."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2013/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 addressed both P1 findings. (1) forge stop now preserves a stopped story's audit history. Because the stop cleanup runs in a separate process from the sprint and cannot read its in-memory CoordinatorState, the history has to be durable before the stop: the sprint process flushes the story's audit.yaml on every phase change via a new sprint/audit.py::write_live_story_audit (marked in_flight: true, story-log file only \u2014 never the substrate record or the ESCALATE marker, since those describe a finished story), wired through _make_worker_phase_fn's new audit_flush callback built by _make_audit_flush_fn, which reads the live state from the in-process registry added in iteration 0. _cleanup_stopped_run then calls the new finalize_interrupted_story_audit for each stranded slug, stamping outcome.success False, error_type OperatorStopped, a message naming the phase reached, and real end timing/duration, while leaving run_id / dev_loop / gate_decisions exactly as flushed. The in_flight marker is the safety boundary: only an in-flight audit may be finalized from outside the run, so a story that completed normally keeps the real audit it wrote. Verified generate_audit_log and its builders are pure in-memory serialization (no subprocess, sqlite, or file IO), and the flush fires on phase changes only, so per-story cost tracks real progress rather than live-update chatter. (2) Added a real end-to-end reap regression: test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies runs the production _run_shell_detailed spawn/registration path with only the group kill neutered (the sandbox-refused-killpg case), so a real gate shell and a real grandchild survive teardown; it asserts the grandchild is alive, rewrites the sidecar's owner_pid to a genuinely dead pid, calls reap_orphan_agents, and asserts both processes are actually gone (reaping zombies first so the check means dead, not unwaited) and the sidecar is unlinked.",
+        "commits": [
+          {
+            "sha": "f185dd1",
+            "message": "fix(sprint): make timeout/stop leave one terminal, reapable, readable run state"
+          },
+          {
+            "sha": "cdb2a86",
+            "message": "fix(sprint): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "(a) On timeout/fail/escalate/stop mid-VALIDATE, the run's .state shows a consistent terminal sprint_phase and per-story phase/status/detail.gate_status with no field implying the story is still running",
+            "status": "MET",
+            "notes": "Three layers: the as_dict guard cannot serialize a terminal story with gate_status running; the runner terminalizes stranded stories and writes a terminal sprint_phase before wrap-up; terminalize_state_file does the same for a stopped run's surviving file."
+          },
+          {
+            "criterion": "(b) forge status renders the run and story in a matching terminal state, not [live] phase: running alongside a failed story",
+            "status": "MET",
+            "notes": "A terminal persisted sprint_phase outranks a lingering PID file in display_sprint_status; test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live."
+          },
+          {
+            "criterion": "(c) After forge stop reports the run stopped, no gate/validator descendant remains alive",
+            "status": "MET",
+            "notes": "Upgraded this iteration from seam-only to end-to-end: a real gate shell plus grandchild survive a refused teardown, and reap_orphan_agents (which _cleanup_stopped_run calls) is asserted to actually kill both once the owner pid is dead."
+          },
+          {
+            "criterion": "(d) The story's audit.yaml written on timeout/stop preserves the dev/gate iteration history, not empty dev_loop/gate_decisions with run_id: null",
+            "status": "MET",
+            "notes": "Timeout path: _terminal_state_for builds from the engine's live state (end-to-end test asserts the written audit's run_id and gate_decisions). Stop path, new this iteration: the in-flight flush plus finalize_interrupted_story_audit, asserted end-to-end through _cleanup_stopped_run in test_stop_finalizes_the_in_flight_audit_without_losing_history."
+          },
+          {
+            "criterion": "(e) Every slug printed by forge logs <run> --story opens via forge logs <run> --story <slug>",
+            "status": "MET",
+            "notes": "test_every_listed_slug_opens enumerates via read_live_status and resolves each slug through _find_story_log_path."
+          },
+          {
+            "criterion": "(f) Gate output containing an xcodebuild Failing tests: block populates the extracted failing-test list so retries run focused",
+            "status": "MET",
+            "notes": "Dotted and -[Class method] forms, dedup, block termination, and custom-pattern precedence covered. See story_deviations for the one case left unrecognized on purpose."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Xcode output carrying only 'Testing failed:' / '** TEST FAILED **' with no 'Failing tests:' block stays format_recognized=False. An existing test pins that, and reporting recognized-with-empty-list there would convert 'we cannot tell which tests failed' into a positive 'no tests failed'.",
+          "The runner's terminal .state write happens before _state_writer.remove(), so on a normal completion the terminal state is transient by design (sprint-summary.yaml takes over). It is what a crash or a stop during wrap-up now finds.",
+          "The stop-path audit is finalized from what the sprint flushed at the last phase boundary, not from the instant of the stop \u2014 telemetry produced after that boundary but before the kill is not recoverable by any out-of-process reader."
+        ],
+        "deferred_items": [
+          "The unconfirmed 'main scheduling loop lingers after all stories are terminal' hypothesis is explicitly out of scope per the diagnosis and was not investigated."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "e21a0fea8b808f1b",
+        "2d091ce6baa5fa2c"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The timeout/state/log/Xcode paths are mostly covered, but operator stop still does not write or preserve a terminal story audit from the in-flight coordinator state. | [google-gemini-3.5-flash] The implementation successfully resolves the sprint timeout/stop lifecycle issues with robust state terminalization, process group reaping, live state preservation, log path resolution, and Xcode gate output parsing. | [claude-sonnet] Solid fix for state-file consistency, audit history, and log lookup, but the fix for the core orphaned-subprocess symptom (AC c) is only verified at the registration seam, not against a real dead-owner reap.",
+      "sanitization_audit": null,
+      "p1_count": 2,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/cli/status.py",
+          "line": 856,
+          "description": "When forge stop cleans up a sprint story that was still mid-VALIDATE, it can mark the live state stopped and reap process groups without creating or updating that story's audit.yaml, so the stopped story's accumulated dev and gate history remains absent or stale.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P1",
+          "file": "tests/test_sprint_terminal_lifecycle.py",
+          "line": 181,
+          "description": "The two process-group tests (test_gate_subprocess_registers_its_process_group, test_gate_sidecar_is_kept_when_the_group_kill_is_refused) only check that a sidecar file is written or kept; no test ever marks the recorded owner_pid as dead and calls reap_orphan_agents to confirm a real spawned subprocess (or its descendants) is actually killed.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "(a) On timeout/fail/escalate/stop mid-VALIDATE, the run's .state shows a consistent terminal sprint_phase and per-story phase/status/detail.gate_status with no field implying the story is still running",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/story_state.py:242-270 prevents terminal story serialization with gate_status running; src/theforge/sprint/state_writer.py:159-191 and 421-476 terminalize stranded stories and stopped state files; src/theforge/sprint/runner.py:4119-4166 and 4507-4525 write timeout and sprint terminal phases. Covered by tests/test_sprint_terminal_lifecycle.py tests for terminal story serialization, terminalize_state_file, cleanup_stopped_run, and timed_out_sprint_writes_terminal_state_before_teardown.; src/theforge/sprint/story_state.py:262-270, src/theforge/sprint/runner.py:4497-4524, src/theforge/sprint/state_writer.py:159-191, src/theforge/sprint/state_writer.py:421-476, src/theforge/cli/status.py:847-859; covered by tests in tests/test_sprint_terminal_lifecycle.py: test_terminal_story_never_serializes_a_running_gate, test_nonterminal_story_keeps_its_running_gate, test_terminalize_stories_moves_only_stranded_rows, test_terminal_sprint_phase_is_written_to_disk, test_terminalize_state_file_marks_sprint_and_stories_stopped, test_cleanup_stopped_run_terminalizes_before_reaping, and test_timed_out_sprint_writes_terminal_state_before_teardown.; story_state.py StoryStateEntry.as_dict (lines 262-270) mechanically forces gate_status off \"running\" for terminal outcomes; runner.py's end-of-loop block (~4497-4523) calls _state_writer.terminalize_stories() then set_phase(done/failed/stopped); terminalize_state_file (state_writer.py ~421-475) does the same for a surviving .state on stop. Covered by test_terminal_story_never_serializes_a_running_gate, test_terminalize_stories_moves_only_stranded_rows, and the full test_timed_out_sprint_writes_terminal_state_before_teardown, which asserts sprint_phase == \"failed\" and story detail.gate_status == \"timeout\" (not \"running\") on the real run_sprint() code path."
+        },
+        {
+          "criterion": "(b) forge status renders the run and story in a matching terminal state, not [live] phase: running alongside a failed story",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_status.py:237-240 treats terminal persisted sprint_phase as stronger than a lingering PID file. Covered by tests/test_cli_sprint_status.py:test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live.; src/theforge/cli/sprint_status.py:237-240; covered by tests/test_cli_sprint_status.py:test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live.; cli/sprint_status.py:237-240 checks is_terminal_sprint_phase(sprint_phase) before falling back to \"live\". test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live reproduces the exact symptom (lingering PID file + sprint_phase: failed) and asserts \"[live]\" is absent and \"[failed]\" is present."
+        },
+        {
+          "criterion": "(c) After forge stop reports the run stopped, no gate/validator descendant remains alive",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/util.py:405-407 registers gate process groups, src/theforge/coordinator/util.py:423-439 keeps sidecars when teardown cannot prove the group is gone, and src/theforge/cli/status.py:863-865 reaps orphan groups during stop cleanup. Covered by tests/test_sprint_terminal_lifecycle.py gate process group registration, refused group kill sidecar retention, and cleanup_stopped_run ordering tests.; src/theforge/coordinator/util.py:394-407, src/theforge/coordinator/util.py:434-439; covered by tests/test_sprint_terminal_lifecycle.py:test_gate_subprocess_registers_its_process_group and test_gate_sidecar_is_kept_when_the_group_kill_is_refused.; coordinator/util.py:394-407 registers the gate's session pgid with process_group's sidecar registry, and _cleanup_stopped_run (status.py:856-865) calls terminalize_state_file then reap_orphan_agents after the owning pid is confirmed dead \u2014 the mechanism is structurally correct. But no test drives the full chain (real subprocess spawned -> owner marked dead -> reap_orphan_agents invoked -> subprocess confirmed killed). The two new process-group tests stop at \"sidecar was written/kept\"; test_cleanup_stopped_run_terminalizes_before_reaping mocks reap_orphan_agents entirely. The dev's own notes concede this: \"Verified at the seam ... not against a live xcodebuild \u2014 that needs a real iOS gate.\""
+        },
+        {
+          "criterion": "(d) The story's audit.yaml written on timeout/stop preserves the dev/gate iteration history, not empty dev_loop/gate_decisions with run_id: null",
+          "status": "PARTIAL",
+          "evidence": "Timeout is implemented through src/theforge/coordinator/engine.py:158-177 live-state registration and src/theforge/sprint/runner.py:1940-1983 plus 4119-4155 snapshot-backed audit writing, covered by tests/test_sprint_terminal_lifecycle.py:test_timeout_state_preserves_dev_and_gate_history and test_timed_out_sprint_writes_terminal_state_before_teardown. Stop is not implemented equivalently: src/theforge/cli/status.py:849-865 only terminalizes .state and reaps process groups, with no audit write or durable live-state snapshot.; src/theforge/coordinator/live_state.py, src/theforge/coordinator/engine.py:158, src/theforge/coordinator/engine.py:177, src/theforge/sprint/runner.py:1937-1982, src/theforge/sprint/runner.py:4119-4126, src/theforge/sprint/runner.py:4198-4205; covered by tests/test_sprint_terminal_lifecycle.py:test_snapshot_live_state_detaches_from_the_running_worker, test_release_live_state_ignores_a_superseded_object, test_timeout_state_preserves_dev_and_gate_history, test_timeout_state_falls_back_when_the_story_never_reached_the_engine, and test_timed_out_sprint_writes_terminal_state_before_teardown.; live_state.py's register/release/snapshot plus runner.py's _terminal_state_for (~1940-1985) prefer the engine's live CoordinatorState. End-to-end test_timed_out_sprint_writes_terminal_state_before_teardown asserts the written audit.yaml has run_id == \"livedbeef999\" and iterations.gate_decisions == [\"FAIL\", \"FAIL\"], directly matching the production symptom (run_id: null, empty dev_loop/gate_decisions)."
+        },
+        {
+          "criterion": "(e) Every slug printed by forge logs <run> --story opens via forge logs <run> --story <slug>",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/status.py:641-697 resolves run logs, dev-iter logs, and audit/preflight YAML artifacts from per-story directories. Covered by tests/test_sprint_terminal_lifecycle.py story_log_resolves_to_a_dev_iteration_log, story_log_falls_back_to_audit_yaml, story_log_prefers_run_log_when_present, story_log_resolves_without_a_known_sprint_name, and test_every_listed_slug_opens.; src/theforge/cli/status.py:641-698; covered by tests/test_sprint_terminal_lifecycle.py:test_story_log_resolves_to_a_dev_iteration_log, test_story_log_falls_back_to_audit_yaml, test_story_log_prefers_run_log_when_present, test_story_log_resolves_without_a_known_sprint_name, and test_every_listed_slug_opens.; cli/status.py's _find_story_log_path/_newest_story_artifact (lines 641-696) now resolve dev-iter-*.log/audit.yaml/preflight.yaml, not just run-*.log. test_every_listed_slug_opens enumerates via read_live_status and resolves each slug through _find_story_log_path, reproducing the exact dev-iter/audit.yaml-only directory layout from the issue."
+        },
+        {
+          "criterion": "(f) Gate output containing an xcodebuild Failing tests: block populates the extracted failing-test list so retries run focused",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/dev_phase.py:340-370 parses Xcode Failing tests blocks and src/theforge/coordinator/dev_phase.py:441-443 returns source xcodebuild with format_recognized true. Covered by tests/test_coord_dev_phase_extract_failed_tests.py Xcode dotted form, bracket form, block termination, deduplication, and custom-pattern precedence tests.; src/theforge/coordinator/dev_phase.py:333-370, src/theforge/coordinator/dev_phase.py:441-443; covered by tests/test_coord_dev_phase_extract_failed_tests.py:test_struct_xcode_failing_tests_block_dotted_form, test_struct_xcode_failing_tests_block_bracket_form, test_struct_xcode_block_stops_at_the_first_non_entry_line, test_struct_xcode_block_deduplicates_repeated_entries, and test_struct_custom_pattern_still_wins_over_the_xcode_reader.; dev_phase.py's _extract_xcode_failed_tests (lines 333-373) and its wiring into extract_failed_tests (441-443) handle dotted and -[Class method] forms. test_struct_xcode_failing_tests_block_dotted_form, test_struct_xcode_failing_tests_block_bracket_form, test_struct_xcode_block_stops_at_the_first_non_entry_line, and test_struct_custom_pattern_still_wins_over_the_xcode_reader cover the grammar and precedence directly against the issue's reported \"format not recognized\" symptom."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior P1s are resolved, the runtime call paths are wired, and the targeted regression suite passed with 47 tests. | [google-gemini-3.5-flash] The implementation successfully resolves all five gaps in sprint failure/timeout/stop lifecycle handling with robust, thread-safe, and thoroughly tested code. | [claude-sonnet] Both Cycle 1 P1 findings are resolved with real end-to-end tests: the stop path now flushes and finalizes a story's audit.yaml via write_live_story_audit/finalize_interrupted_story_audit, and the reaper's kill of a real orphaned gate subprocess tree (parent + grandchild) after a dead owner is now directly tested. No regressions found in the touched files (cli/status.py, sprint/audit.py, sprint/runner.py); all 6 acceptance criteria have concrete, symptom-matching test coverage.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "(a) On timeout/fail/escalate/stop mid-VALIDATE, the run's .state shows a consistent terminal sprint_phase and per-story phase/status/detail.gate_status with no field implying the story is still running",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/story_state.py:262 prevents terminal stories from serializing gate_status as running, src/theforge/sprint/runner.py:4163 and src/theforge/sprint/runner.py:4200 stamp timeout stories terminal with a timeout gate status, src/theforge/sprint/runner.py:4551 writes a terminal sprint_phase before wrap-up, and src/theforge/sprint/state_writer.py:421 terminalizes a stopped run's surviving state file; covered by tests/test_sprint_terminal_lifecycle.py:56, tests/test_sprint_terminal_lifecycle.py:126, and tests/test_sprint_terminal_lifecycle.py:429.; In src/theforge/sprint/story_state.py (lines 262-270), StoryStateEntry.as_dict() enforces that if gate_status is 'running' but the story is terminal, it is changed to 'incomplete'. In src/theforge/sprint/runner.py (lines 4544-4569), run_sprint terminalizes stories and sets the terminal sprint phase before wrap-up. In src/theforge/sprint/state_writer.py (lines 418-460), terminalize_state_file is called by _cleanup_stopped_run to terminalize the state file for a stopped run. Covered by test_terminal_story_never_serializes_a_running_gate, test_terminalize_stories_moves_only_stranded_rows, test_terminalize_state_file_marks_sprint_and_stories_stopped, test_cleanup_stopped_run_terminalizes_before_reaping, and test_timed_out_sprint_writes_terminal_state_before_teardown in tests/test_sprint_terminal_lifecycle.py.; story_state.py StoryStateEntry.as_dict (lines 262-270) forces gate_status off \"running\" for terminal outcomes; runner.py's end-of-loop block (~4541-4567) calls terminalize_stories() then set_phase(done/failed/stopped); terminalize_state_file (state_writer.py ~421-475) does the same for a surviving .state on stop. test_timed_out_sprint_writes_terminal_state_before_teardown exercises the real run_sprint() path and asserts sprint_phase == \"failed\" and detail.gate_status == \"timeout\" (not \"running\")."
+        },
+        {
+          "criterion": "(b) forge status renders the run and story in a matching terminal state, not [live] phase: running alongside a failed story",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_status.py:237 makes a persisted terminal sprint_phase outrank a lingering PID file for display, and tests/test_cli_sprint_status.py:1492 verifies that a live PID with sprint_phase failed is rendered as failed rather than live.; In src/theforge/cli/sprint_status.py (lines 237-240), display_sprint_status checks is_live and is_terminal_sprint_phase(sprint_phase) and reports the terminal phase instead of 'live'. Covered by test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live in tests/test_cli_sprint_status.py.; cli/sprint_status.py:237-240 checks is_terminal_sprint_phase(sprint_phase) before falling back to \"live\". test_live_pid_with_terminal_sprint_phase_is_not_reported_as_live reproduces the exact symptom (lingering PID file + sprint_phase: failed) and asserts \"[live]\" is absent, \"[failed]\" present."
+        },
+        {
+          "criterion": "(c) After forge stop reports the run stopped, no gate/validator descendant remains alive",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/util.py:405 registers gate shell process groups, src/theforge/coordinator/util.py:438 keeps the sidecar when teardown did not reach the group, src/theforge/cli/status.py:878 invokes the orphan reaper during stopped-run cleanup, and src/theforge/process_group.py:373 kills orphaned sidecar groups; covered by tests/test_sprint_terminal_lifecycle.py:186, tests/test_sprint_terminal_lifecycle.py:213, and the real gate plus grandchild reaping test at tests/test_sprint_terminal_lifecycle.py:547.; In src/theforge/coordinator/util.py (lines 394-407), _run_shell_detailed registers the process group with register_agent_group. In src/theforge/cli/status.py (line 878), _cleanup_stopped_run calls _process_group.reap_orphan_agents(project_root). Covered by test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies in tests/test_sprint_terminal_lifecycle.py.; coordinator/util.py registers the gate's session pgid with the sidecar registry; cli/status.py's _cleanup_stopped_run calls terminalize_state_file then reap_orphan_agents after the owner pid is confirmed dead. This iteration adds test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies (tests/test_sprint_terminal_lifecycle.py), which runs the production _run_shell_detailed spawn path with only the group-kill neutered so a real gate shell and a real grandchild survive teardown, marks the sidecar's owner_pid genuinely dead, calls reap_orphan_agents, and asserts (via waitpid/kill(pid,0) polling) both processes are actually gone \u2014 directly reproducing the #2013 orphaned-xcodebuild symptom. This resolves the Cycle 1 P1 gap (seam-only coverage)."
+        },
+        {
+          "criterion": "(d) The story's audit.yaml written on timeout/stop preserves the dev/gate iteration history, not empty dev_loop/gate_decisions with run_id: null",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/engine.py:155 registers the live CoordinatorState, src/theforge/sprint/runner.py:2005 snapshots that live state for timeout results, src/theforge/sprint/runner.py:1892 builds the phase-change audit flush callback, src/theforge/sprint/audit.py:1316 writes in-flight story audits, and src/theforge/sprint/audit.py:1365 finalizes stopped in-flight audits without dropping accumulated history; covered by tests/test_sprint_terminal_lifecycle.py:271, tests/test_sprint_terminal_lifecycle.py:429, tests/test_sprint_terminal_lifecycle.py:620, and tests/test_sprint_terminal_lifecycle.py:665.; In src/theforge/sprint/runner.py (lines 1937-1975), _terminal_state_for retrieves the live CoordinatorState from the live_state registry. In src/theforge/sprint/audit.py (lines 1316-1362), write_live_story_audit flushes the live story audit on phase changes. In src/theforge/cli/status.py (lines 868-874), _cleanup_stopped_run calls finalize_interrupted_story_audit to finalize the in-flight audit. Covered by test_timeout_state_preserves_dev_and_gate_history, test_live_story_audit_is_flushed_while_the_story_runs, test_phase_change_flushes_the_story_audit_once_per_phase, test_stop_finalizes_the_in_flight_audit_without_losing_history, and test_stop_does_not_overwrite_a_finished_story_audit in tests/test_sprint_terminal_lifecycle.py.; Timeout path: live_state.py + runner.py's _terminal_state_for (~1978-2025) build from the engine's live CoordinatorState; test_timeout_state_preserves_dev_and_gate_history and the end-to-end test_timed_out_sprint_writes_terminal_state_before_teardown assert real run_id/gate_decisions survive. Stop path (this iteration): a new sprint/audit.py::write_live_story_audit flushes audit.yaml with in_flight: true on every phase change (wired via _make_audit_flush_fn/_make_worker_phase_fn's audit_flush param at runner.py:3948-3950), and cli/status.py's _cleanup_stopped_run calls finalize_interrupted_story_audit (audit.py) for each stranded slug. test_stop_finalizes_the_in_flight_audit_without_losing_history exercises this end-to-end through the real _cleanup_stopped_run and asserts run_id/gate_decisions survive while outcome/timing are stamped terminal; test_stop_does_not_overwrite_a_finished_story_audit confirms a completed story's real audit is untouched. This resolves the Cycle 1 P1 (missing/stale audit on stop)."
+        },
+        {
+          "criterion": "(e) Every slug printed by forge logs <run> --story opens via forge logs <run> --story <slug>",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/status.py:646 expands per-story lookup to run logs, dev-iter logs, generic logs, audit.yaml, and preflight.yaml, while src/theforge/cli/status.py:681 and src/theforge/cli/status.py:688 use the same resolver for sprint-specific and fallback story directories; covered by tests/test_sprint_terminal_lifecycle.py:352, tests/test_sprint_terminal_lifecycle.py:368, and tests/test_sprint_terminal_lifecycle.py:401.; In src/theforge/cli/status.py (lines 641-698), _find_story_log_path searches for dev-iter-*.log, *.log, audit.yaml, preflight.yaml in addition to run-*.log. Covered by test_story_log_resolves_to_a_dev_iteration_log, test_story_log_falls_back_to_audit_yaml, test_story_log_prefers_run_log_when_present, test_story_log_resolves_without_a_known_sprint_name, and test_every_listed_slug_opens in tests/test_sprint_terminal_lifecycle.py.; cli/status.py's _find_story_log_path/_newest_story_artifact resolve dev-iter-*.log/audit.yaml/preflight.yaml. test_every_listed_slug_opens enumerates via read_live_status and resolves each slug through _find_story_log_path, matching the issue's dev-iter/audit.yaml-only layout."
+        },
+        {
+          "criterion": "(f) Gate output containing an xcodebuild Failing tests: block populates the extracted failing-test list so retries run focused rather than the full gate",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/dev_phase.py:340 recognizes the xcodebuild Failing tests header, src/theforge/coordinator/dev_phase.py:345 extracts dotted and bracket-form test identifiers, and src/theforge/coordinator/dev_phase.py:441 returns the xcodebuild extraction as recognized; covered by tests/test_coord_dev_phase_extract_failed_tests.py:131 and tests/test_coord_dev_phase_extract_failed_tests.py:150."
+        },
+        {
+          "criterion": "(f) Gate output containing an xcodebuild Failing tests: block populates the extracted failing-test list so retries run focused",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/coordinator/dev_phase.py (lines 345-370), _extract_xcode_failed_tests parses the Failing tests: block. Covered by test_struct_xcode_failing_tests_block_dotted_form, test_struct_xcode_failing_tests_block_bracket_form, test_struct_xcode_block_stops_at_the_first_non_entry_line, test_struct_xcode_block_deduplicates_repeated_entries, and test_struct_custom_pattern_still_wins_over_the_xcode_reader in tests/test_coord_dev_phase_extract_failed_tests.py.; dev_phase.py's _extract_xcode_failed_tests and its wiring into extract_failed_tests handle dotted and -[Class method] forms. test_struct_xcode_failing_tests_block_dotted_form, test_struct_xcode_failing_tests_block_bracket_form, test_struct_xcode_block_stops_at_the_first_non_entry_line, and test_struct_custom_pattern_still_wins_over_the_xcode_reader cover the grammar and precedence against the issue's \"format not recognized\" symptom."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2040",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2013",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2040",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2040",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-29T06:37:18.644787+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1193 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1416 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 794 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1005 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2331 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1582 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1645 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1914 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1167 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2036 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 970 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1192 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1118 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1039 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1421 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 673 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1252 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 4847 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/shape_gate.py",
+      "detail": "src/theforge/sprint/shape_gate.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1004 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1271 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1107 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1115 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1246 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1746 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "e21a0fea8b808f1b",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/cli/status.py",
+      "line": 856,
+      "severity": "P1",
+      "description": "When forge stop cleans up a sprint story that was still mid-VALIDATE, it can mark the live state stopped and reap process groups without creating or updating that story's audit.yaml, so the stopped story's accumulated dev and gate history remains absent or stale.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "2d091ce6baa5fa2c",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "tests/test_sprint_terminal_lifecycle.py",
+      "line": 181,
+      "severity": "P1",
+      "description": "The two process-group tests (test_gate_subprocess_registers_its_process_group, test_gate_sidecar_is_kept_when_the_group_kill_is_refused) only check that a sidecar file is written or kept; no test ever marks the recorded owner_pid as dead and calls reap_orphan_agents to confirm a real spawned subprocess (or its descendants) is actually killed.",
+      "reporter": "claude-sonnet",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8526,
+              "weighted": 0.72,
+              "runs": 95,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.72
+            },
+            "domain": {
+              "domains": [
+                "cli",
+                "concurrency",
+                "parsing",
+                "backend"
+              ],
+              "raw": 0.8667,
+              "weighted": 0.9,
+              "runs": 45,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.9,
+              "by_domain": {
+                "cli": {
+                  "runs": 14,
+                  "raw": 0.8571,
+                  "weighted": 0.8571,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 5,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "parsing": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 26,
+                  "raw": 0.8462,
+                  "weighted": 0.9,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "cli",
+                "concurrency",
+                "parsing",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "parsing": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "cli",
+          "concurrency",
+          "parsing",
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "cli",
+            "concurrency",
+            "parsing",
+            "backend"
+          ],
+          "raw": 0.8667,
+          "weighted": 0.9,
+          "runs": 45,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.9,
+          "by_domain": {
+            "cli": {
+              "runs": 14,
+              "raw": 0.8571,
+              "weighted": 0.8571,
+              "tainted_runs": 0
+            },
+            "concurrency": {
+              "runs": 5,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "parsing": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 26,
+              "raw": 0.8462,
+              "weighted": 0.9,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8526,
+        "weighted_success_rate": 0.72,
+        "sample_size": 95,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.72,
+          "threshold": 0.6,
+          "sample_size": 95,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+cli+concurrency+parsing",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli",
+          "concurrency",
+          "parsing"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.72 \u2265 threshold 0.60 over 95 admissible runs \u2014 pre-promotion held) (profile success_rate=0.72 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 52,
+            "completed": 45,
+            "raw": 0.8654,
+            "weighted": 0.8615,
+            "rate": 0.8615,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 28,
+            "completed": 24,
+            "raw": 0.8571,
+            "weighted": 0.8509,
+            "rate": 0.8509,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 64,
+            "completed": 64,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 52,
+            "completed": 45,
+            "raw": 0.8654,
+            "weighted": 0.8615,
+            "rate": 0.8615,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 28,
+            "completed": 24,
+            "raw": 0.8571,
+            "weighted": 0.8509,
+            "rate": 0.8509,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.244183,
+      "duration_s": 35.35,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 21.246655,
+      "duration_s": 1632.56,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 150.16,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 10.585861,
+      "duration_s": 548.49,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 2.814217,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 3.679287,
+          "verdict": "APPROVE"
+        },
+        "claude-sonnet": {
+          "cost": 4.092357,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 32.0767,
+    "duration_s": 2366.56,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "08c77861d7d9",
+  "sprint_name": "issues-1984,1985,1986,1987,2013,2014,2027"
+}

@@ -5,15 +5,26 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import ForgeConfig
 from ..coordinator.audit import has_review_approve
 from ..coordinator.gate import _run_gate
+from ..coordinator.state import GateLabel
 from ..log_util import _log_line
 from ..task import TaskStory
 from .manifest import _build_task_from_story
+
+#: Story phase written to live sprint state while a story's reuse gate runs.
+#: Resume triage runs one gate per story before any story is dispatched; without
+#: a phase of its own that window reads as ``waiting`` for its whole (possibly
+#: many-minute) duration (#2014).
+REUSE_GATE_PHASE = "REUSE_GATE"
+
+#: ``GateLabel.purpose`` for the per-story resume-triage gate.
+REUSE_GATE_PURPOSE = "reuse gate"
 
 
 def _log(msg: str) -> None:
@@ -506,12 +517,27 @@ def resolve_satisfied_dependencies(
     return satisfied_slugs
 
 
+def _branch_tip_sha(commits_ahead: list[str] | None) -> str | None:
+    """Return the branch tip's abbreviated SHA from ``git log --oneline`` lines.
+
+    ``commits_ahead`` is newest-first, so its first entry starts with the tip's
+    abbreviated SHA. Reading it here costs nothing; asking git again for a value
+    already in hand would add a subprocess per story to the triage loop.
+    """
+    if not commits_ahead:
+        return None
+    head = commits_ahead[0].split(maxsplit=1)
+    return head[0] if head else None
+
+
 def _triage_spec(
     story_path: str,
     config: ForgeConfig,
     project_root: Path,
     *,
     task: TaskStory | None = None,
+    on_gate_start: Callable[[GateLabel], None] | None = None,
+    on_gate_end: Callable[[GateLabel], None] | None = None,
 ) -> StoryTriage:
     """Determine the optimal re-entry point for a story.
 
@@ -523,6 +549,12 @@ def _triage_spec(
       gate fails?               → dev
 
     When *task* is provided, skip building from disk (used for issue-backed stories).
+
+    ``on_gate_start`` / ``on_gate_end`` bracket the reuse gate — the only step
+    here that can run for minutes. They fire with the gate's ``GateLabel`` so the
+    caller can publish live progress for exactly that window, rather than for
+    the cheap git probes that surround it (#2014). Every other path returns
+    without calling either.
     """
     if task is None:
         full_path = (project_root / story_path).resolve()
@@ -652,7 +684,22 @@ def _triage_spec(
         )
 
     # 6. Gate pre-check to decide REVIEW vs DEV entry
-    gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
+    gate_label = GateLabel(
+        purpose=REUSE_GATE_PURPOSE,
+        slug=slug,
+        target=branch,
+        commit=_branch_tip_sha(commits_ahead),
+        worktree_path=str(worktree_path),
+    )
+    if on_gate_start is not None:
+        on_gate_start(gate_label)
+    try:
+        gate_decision, gate_err, _gate_output = _run_gate(
+            config, worktree_path, task=task, label=gate_label
+        )
+    finally:
+        if on_gate_end is not None:
+            on_gate_end(gate_label)
 
     if gate_err is None and gate_decision == "PASS":
         return StoryTriage(

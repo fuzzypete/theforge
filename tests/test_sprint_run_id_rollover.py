@@ -342,7 +342,7 @@ class TestRunIdRolloverReporting:
             slug="feature-b",
         )
 
-        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+        def _mock_triage(canonical_ref, cfg, project_root, task=None, **_progress):
             slug = task.slug if task else Path(canonical_ref).stem
             return skip_triage if slug == "feature-a" else full_triage
 
@@ -423,7 +423,7 @@ class TestRunIdRolloverReporting:
             slug="feature-b",
         )
 
-        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+        def _mock_triage(canonical_ref, cfg, project_root, task=None, **_progress):
             slug = task.slug if task else Path(canonical_ref).stem
             return skip_triage if slug == "feature-a" else full_triage
 
@@ -539,7 +539,7 @@ class TestRunIdRolloverReporting:
             slug="feature-b",
         )
 
-        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+        def _mock_triage(canonical_ref, cfg, project_root, task=None, **_progress):
             slug = task.slug if task else Path(canonical_ref).stem
             return skip_triage if slug == "feature-a" else full_triage
 
@@ -906,7 +906,7 @@ class TestRedirectChainResolution:
             slug="feature-b",
         )
 
-        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+        def _mock_triage(canonical_ref, cfg, project_root, task=None, **_progress):
             return full_triage
 
         captured: dict[str, object] = {}
@@ -985,7 +985,7 @@ class TestRedirectChainResolution:
             slug="feature-b",
         )
 
-        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+        def _mock_triage(canonical_ref, cfg, project_root, task=None, **_progress):
             slug = task.slug if task else Path(canonical_ref).stem
             return skip_triage if slug == "feature-a" else full_triage
 
