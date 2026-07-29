@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 14
+CURRENT_RECORD_SCHEMA_VERSION = 15
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -997,6 +997,38 @@ def _migrate_v13_to_v14(record: dict) -> dict:
     return {**record, "iterations": {**iterations, **migrated_blocks}}
 
 
+def _migrate_v14_to_v15(record: dict) -> dict:
+    """Add the dev verification request trail (ADR-0007 / issue #2050).
+
+    v15 records every project-declared verification command the coordinator ran
+    *outside* the dev sandbox on the agent's behalf: per iteration in
+    ``iterations.dev_loop[].verification_requests`` and as a run-level roll-up in
+    ``workspace.dev_verification_requests``.
+
+    A v14 record predates the capability entirely — no such command could have
+    run — so backfilling an empty list is a faithful statement rather than an
+    inference: nothing ran unconfined at the dev agent's request, because nothing
+    could. The stored record is never rewritten (ADR-0002 refusal-to-forget);
+    this is the reader-side lift applied on load.
+    """
+    migrated = dict(record)
+    workspace = migrated.get("workspace")
+    if isinstance(workspace, dict) and "dev_verification_requests" not in workspace:
+        migrated["workspace"] = {**workspace, "dev_verification_requests": []}
+    iterations = migrated.get("iterations")
+    if isinstance(iterations, dict) and isinstance(iterations.get("dev_loop"), list):
+        migrated["iterations"] = {
+            **iterations,
+            "dev_loop": [
+                entry
+                if not isinstance(entry, dict) or "verification_requests" in entry
+                else {**entry, "verification_requests": []}
+                for entry in iterations["dev_loop"]
+            ],
+        }
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1019,6 +1051,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     11: _migrate_v11_to_v12,
     12: _migrate_v12_to_v13,
     13: _migrate_v13_to_v14,
+    14: _migrate_v14_to_v15,
 }
 
 

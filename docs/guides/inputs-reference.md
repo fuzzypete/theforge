@@ -320,6 +320,10 @@ validation:
                                        # core uses its built-in pytest grammar and, if the output isn't pytest-shaped,
                                        # records visibly (log + audit) that extraction did not apply.
                                        # Example: 'Test Case .* (?P<test>\w+)\(\) failed'
+  dev_verification_commands: {}        # optional named commands the coordinator runs OUTSIDE the dev
+                                       # sandbox when the dev agent requests them by name. See
+                                       # "Dev verification commands" below. Default: none offered.
+  dev_verification_max_requests: 10    # fail-closed per-iteration request budget (counts refusals too)
 
 # ── Retry policy ───────────────────────────────────────────
 retry:
@@ -543,6 +547,62 @@ installed:
 python -c "from theforge.config.sandbox_capabilities import resolve_capabilities; \
 print(resolve_capabilities('xcode').audit_payload())"
 ```
+
+### Dev verification commands (`validation.dev_verification_commands`)
+
+A capability preset widens the sandbox; it cannot *remove* it. Some toolchains
+are structurally incompatible with being sandboxed at all — SwiftPM compiles
+package manifests by invoking `sandbox-exec` itself, and macOS refuses to apply
+a sandbox inside a sandbox, so the failure is in the isolation mechanism rather
+than in its allow-list. No preset fixes that. The dev agent could edit, submit,
+and learn the outcome only from the coordinator's gate — which is how one
+adopter story burned six iterations and $46 on six identical compile failures.
+
+Per [ADR-0007](../adr/0007-dev-phase-verification-capability.md): **the project
+declares whole named commands, and the agent's granted capability is the
+request, never the execution.**
+
+```yaml
+validation:
+  dev_verification_commands:
+    verify-watch: "xcodebuild -scheme Watch -destination 'platform=watchOS Simulator' test"
+    verify-app:
+      command: "xcodebuild -scheme App test"
+      timeout: 1200              # seconds; default 600
+      output_tail_chars: 8000    # returned to the agent; default 4000
+  dev_verification_max_requests: 4
+```
+
+The dev prompt then lists these names and the request protocol. The agent writes
+`{"command": "verify-watch"}` into a per-iteration request directory under the
+worktree and polls for the response artifact; the coordinator runs the command
+in the worktree, outside the sandbox — the same path `gate_command` already
+uses — and writes back the exit code, timeout flag, output tail, and a trace
+path to the full output.
+
+What makes this bounded:
+
+- **The declared unit is a whole command, not a binary.** The agent supplies
+  only a *name*. It never composes argv, so it cannot turn a trusted toolchain
+  binary into an arbitrary invocation over build inputs it authored.
+- **Unknown names are refused, not executed**, and refusals reach the agent as
+  an explicit `accepted: false` with a reason rather than as a broken toolchain.
+- **The budget is fail-closed and per-iteration.** Every request counts, accepted
+  or refused, so a loop of malformed requests cannot buy unbounded execution.
+  It does not reset when a transient transport failure re-attempts the agent.
+- **Malformed declarations fail at config load** — an empty name, a
+  path-traversing name, a missing command, an unknown field, or a non-positive
+  limit is a config error, not a runtime surprise on something already running
+  unconfined.
+- **Every invocation is audited.** Each request is recorded per dev iteration
+  (`iterations.dev_loop[].verification_requests`) and as a run-level roll-up
+  (`workspace.dev_verification_requests`) with its name, accepted/refused status,
+  exit code, timeout flag, and trace path.
+
+**Declaring nothing keeps today's behavior exactly**: no request channel is
+created, and the dev prompt does not mention the capability. This does not
+replace the gate — the coordinator still runs the authoritative gate after the
+agent completes.
 
 ---
 
