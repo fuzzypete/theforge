@@ -18,7 +18,12 @@ from pathlib import Path
 
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
-from theforge.process_group import KILL_GRACE_SECONDS, is_killable_pgid
+from theforge.process_group import (
+    KILL_GRACE_SECONDS,
+    is_killable_pgid,
+    register_agent_group,
+    unregister_agent_group,
+)
 from theforge.workspace_env import build_workspace_env
 
 # Stable reference captured at import time so test patches that replace the
@@ -235,8 +240,12 @@ def _wait_bounded(proc: subprocess.Popen[str]) -> bool:
     return True
 
 
-def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+def _kill_process_group(proc: subprocess.Popen[str]) -> bool:
     """Best-effort kill for a spawned shell process group, then a bounded wait.
+
+    Returns True only when the ``killpg`` reached the whole group. False means
+    the kill reached at most the direct child, so grandchildren may still be
+    running and the group's reaper sidecar must be kept.
 
     Only ``killpg`` a pgid that denotes a real group (``> 1``); a bogus ``<= 1``
     value would broadcast SIGKILL across the whole session (see
@@ -259,7 +268,7 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
             _log_line("[forge]", f"  ⚠ group kill of pgid={pgid} refused: {exc}")
         else:
             _wait_bounded(proc)
-            return
+            return True
     # Each wait is guarded by whether the signal before it was actually
     # delivered. Waiting on a refused signal is the #1959 mistake in miniature:
     # it buys nothing and costs the grace period every time.
@@ -269,7 +278,7 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
         pass
     else:
         if _wait_bounded(proc):
-            return
+            return False
     # SIGTERM is catchable, so a shell that ignores it survives — and a survivor
     # holds the output pipes open, which is the read this function's caller then
     # blocks on (#1959). Escalate to SIGKILL rather than leave that to chance;
@@ -277,8 +286,9 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
     try:
         proc.kill()
     except OSError:
-        return
+        return False
     _wait_bounded(proc)
+    return False
 
 
 # Longest we will wait to collect a timed-out command's partial output. Small:
@@ -381,9 +391,27 @@ def _run_shell_detailed(
         )
     except Exception as e:
         return False, f"ERROR: {e}", None, False
+    # Record the group with the orphan reaper. ``start_new_session=True`` above
+    # puts this command — a gate invocation, and everything it spawns — in its
+    # own session, which is exactly why a signal to the sprint's own process
+    # group never reaches it. When the sprint is killed (``forge stop``, SIGKILL)
+    # the cleanup below never runs, and without this sidecar there is no record
+    # left for ``reap_orphan_agents`` to kill the tree by: an xcodebuild survived
+    # a stop that reported success (#2013).
+    # ``start_new_session=True`` makes the child the leader of its own session
+    # and group, so its pgid *is* its pid — no ``getpgid`` round trip needed, and
+    # none possible once the child has already exited. The guard keeps a pid that
+    # cannot denote a real group out of the registry (#1793).
+    pgid: int | None = proc.pid if is_killable_pgid(proc.pid) else None
+    if pgid is not None:
+        register_agent_group(pgid, sandbox_dir=str(cwd))
     # False only while a drain thread still owns the streams, in which case that
     # thread closes them and this one must not touch them (see _drain_partial_output).
     owns_streams = True
+    # Normal completion implies the group went with the child; only a teardown
+    # that could not reach the group flips this, and then the sidecar is kept so
+    # a later reaper can still find the survivors.
+    group_gone = True
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()
@@ -392,7 +420,7 @@ def _run_shell_detailed(
         # Kill the whole process group before draining pipes so grandchildren
         # such as pytest-xdist workers cannot keep writing indefinitely after
         # the shell itself has timed out.
-        _kill_process_group(proc)
+        group_gone = bool(_kill_process_group(proc))
         partial_out, drained = _drain_partial_output(te, proc)
         owns_streams = drained
         header = f"TIMEOUT after {timeout}s: {cmd}"
@@ -400,9 +428,15 @@ def _run_shell_detailed(
             return False, f"{header}\n{partial_out}", None, True
         return False, header, None, True
     except BaseException:
-        _kill_process_group(proc)
+        group_gone = bool(_kill_process_group(proc))
         raise
     finally:
+        # Drop the record only once the whole group is known to be gone. A
+        # teardown that reached at most the direct child leaves grandchildren
+        # running, and the sidecar is the only handle a later reaper has on
+        # them — erasing it would strand them permanently (#2013).
+        if pgid is not None and group_gone:
+            unregister_agent_group(pgid)
         if owns_streams:
             for stream_name in ("stdout", "stderr"):
                 stream = getattr(proc, stream_name, None)

@@ -7,12 +7,31 @@ representation of story state owned by this module.
 
 from __future__ import annotations
 
+import datetime
 import threading
 from pathlib import Path
 
 import yaml
 
-from .story_state import SprintStoryState, StoryOutcome
+from .story_state import (
+    GATE_STATUS_INCOMPLETE,
+    GATE_STATUS_STOPPED,
+    SprintStoryState,
+    StoryOutcome,
+)
+
+# Terminal values for the state file's top-level ``sprint_phase``. Any other
+# value means the sprint is still advancing; these three mean it is not, no
+# matter what the owning process is doing (#2013).
+SPRINT_PHASE_DONE = "done"
+SPRINT_PHASE_FAILED = "failed"
+SPRINT_PHASE_STOPPED = "stopped"
+TERMINAL_SPRINT_PHASES = frozenset({SPRINT_PHASE_DONE, SPRINT_PHASE_FAILED, SPRINT_PHASE_STOPPED})
+
+
+def is_terminal_sprint_phase(phase: object) -> bool:
+    """True when ``phase`` is one of the terminal ``sprint_phase`` values."""
+    return isinstance(phase, str) and phase.strip().lower() in TERMINAL_SPRINT_PHASES
 
 
 class SprintStateWriter:
@@ -136,6 +155,40 @@ class SprintStateWriter:
         with self._lock:
             self._sprint_phase = phase
             self._write_locked()
+
+    def terminalize_stories(
+        self,
+        *,
+        outcome: StoryOutcome | str = StoryOutcome.FAILED,
+        phase: str | None = None,
+        reason: str | None = None,
+        gate_status: str = GATE_STATUS_INCOMPLETE,
+    ) -> list[str]:
+        """Move every still-nonterminal story to a terminal outcome; return their slugs.
+
+        The sprint is over by the time this runs, so a story left at
+        waiting/running/blocked is stranded, not live. Writing it terminal is
+        what keeps the on-disk state from claiming work is in flight after the
+        owning process has finished with it (#2013).
+        """
+        stranded: list[str] = []
+        with self._lock:
+            for entry in self.story_state.stories():
+                if entry.outcome.is_terminal:
+                    continue
+                fields: dict = {
+                    "detail_updates": {"gate_status": gate_status},
+                    "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                if phase is not None:
+                    fields["phase"] = phase
+                if reason is not None:
+                    fields["reason"] = reason
+                self.story_state.transition(entry.slug, outcome=outcome, **fields)
+                stranded.append(entry.slug)
+            if stranded:
+                self._write_locked()
+        return stranded
 
     def _inherit_existing_metadata(self) -> None:
         """Adopt sprint_phase/base_branch/budget/parallel from an existing file.
@@ -363,6 +416,64 @@ def write_bootstrap_state(
         except OSError:
             pass
     return state_path
+
+
+def terminalize_state_file(
+    run_id: str,
+    project_root: Path,
+    *,
+    sprint_phase: str = SPRINT_PHASE_STOPPED,
+    outcome: StoryOutcome | str = StoryOutcome.FAILED,
+    phase: str | None = "STOPPED",
+    reason: str | None = "stopped",
+    gate_status: str = GATE_STATUS_STOPPED,
+) -> list[str]:
+    """Rewrite a run's live ``.state`` so the sprint and every story read terminal.
+
+    Used by ``forge stop`` once the sprint process is gone: the process died
+    holding whatever phase it was in, so nothing else will ever write the
+    terminal transition, and the file is left claiming a running sprint with
+    running stories (#2013). Already-terminal stories keep their recorded
+    outcome and detail; only stranded ones are moved.
+
+    Returns the slugs that were moved. No-op (empty list) when the state file is
+    absent or unreadable — a stop must never fail over a missing state file.
+    """
+    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
+    data = _load_existing_state(state_path)
+    if data is None:
+        return []
+
+    story_state = SprintStoryState.from_dict(data.get("stories") or [])
+    stranded: list[str] = []
+    for entry in story_state.stories():
+        if entry.outcome.is_terminal:
+            continue
+        fields: dict = {
+            "detail_updates": {"gate_status": gate_status},
+            "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        if phase is not None:
+            fields["phase"] = phase
+        if reason is not None:
+            fields["reason"] = reason
+        story_state.transition(entry.slug, outcome=outcome, **fields)
+        stranded.append(entry.slug)
+
+    data["sprint_phase"] = sprint_phase
+    data["stories"] = story_state.as_dict()
+
+    tmp_path = state_path.with_name(state_path.name + ".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        tmp_path.replace(state_path)
+    except OSError:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+    return stranded
 
 
 def update_state_phase(run_id: str, project_root: Path, sprint_phase: str) -> None:

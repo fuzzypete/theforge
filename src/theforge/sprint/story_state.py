@@ -117,6 +117,15 @@ _TERMINAL_OUTCOMES = {
 }
 
 
+# ``detail.gate_status`` values the sprint layer writes. RUNNING is set when a
+# story enters VALIDATE; the rest are terminal readings recorded when the story
+# stops without the gate reporting a decision.
+GATE_STATUS_RUNNING = "running"
+GATE_STATUS_INCOMPLETE = "incomplete"
+GATE_STATUS_TIMEOUT = "timeout"
+GATE_STATUS_STOPPED = "stopped"
+
+
 _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.WAITING: "waiting",
     StoryOutcome.RUNNING: "running",
@@ -250,6 +259,15 @@ class StoryStateEntry:
             if not self.outcome.is_succeeded:
                 for _stale in ("review_verdict", "review_p1", "review_p2"):
                     merged_detail.pop(_stale, None)
+            # A terminal story cannot have a gate that is still running. The
+            # gate_status detail is written while VALIDATE is in flight and is
+            # never revisited when the story dies mid-gate (timeout, worker
+            # exception, operator stop), which is how a `.state` file ends up
+            # claiming `status: failed` and `gate_status: running` at once
+            # (#2013). Enforced here rather than at each transition site so no
+            # future exit path can serialize the contradiction.
+            if merged_detail.get("gate_status") == GATE_STATUS_RUNNING:
+                merged_detail["gate_status"] = GATE_STATUS_INCOMPLETE
         d: dict = {
             "slug": self.slug,
             "path": self.path,
@@ -414,6 +432,13 @@ class SprintStoryState:
                         entry.complexity_score = None
                 elif k == "detail" and isinstance(v, dict):
                     entry.detail = dict(v)
+                elif k == "detail_updates" and isinstance(v, dict):
+                    # Merge, don't replace: a terminal exit path knows one or two
+                    # detail keys (gate_status, say) and must not erase whatever
+                    # the phases before it recorded.
+                    merged = dict(entry.detail)
+                    merged.update(v)
+                    entry.detail = merged
                 elif k == "reason":
                     entry.reason = v  # type: ignore[assignment]
                 elif k == "depends_on" and isinstance(v, list):

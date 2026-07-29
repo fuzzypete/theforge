@@ -93,8 +93,15 @@ from .manifest import (
 )
 from .query import NormalizedDependencyPlan, normalize_dependency_plan
 from .sources import StorySource
-from .state_writer import SprintStateWriter
+from .state_writer import (
+    SPRINT_PHASE_DONE,
+    SPRINT_PHASE_FAILED,
+    SPRINT_PHASE_STOPPED,
+    SprintStateWriter,
+)
 from .story_state import (
+    GATE_STATUS_INCOMPLETE,
+    GATE_STATUS_TIMEOUT,
     SprintStoryState,
     StoryOutcome,
     coerce_outcome,
@@ -1928,6 +1935,52 @@ def _snapshot_last_known(
         except ValueError:
             snapshot["last_started_at"] = None
     return snapshot
+
+
+def _terminal_state_for(
+    slug: str,
+    *,
+    config: ForgeConfig,
+    sprint_name: str,
+    started_at: datetime.datetime,
+    error: str,
+    error_type: str,
+) -> CoordinatorState:
+    """Build the CoordinatorState for a story the scheduler had to terminate itself.
+
+    A worker that times out or raises never hands back its ``CoordinatorResult``,
+    so the scheduler has to synthesize one. Synthesizing it from scratch threw
+    away everything the engine had already accumulated — the audit for a story
+    with three dev iterations and two gate retries was written with
+    ``run_id: null``, an empty ``dev_loop`` and an empty ``gate_decisions``
+    (#2013). Prefer the engine's own live state for the slug, and fall back to a
+    bare state only when the story never reached the engine.
+
+    The returned state is always stamped ESCALATE with the scheduler's error, so
+    the telemetry is preserved without the audit misreporting how the story ended.
+    """
+    from ..coordinator.live_state import snapshot_live_state  # noqa: PLC0415
+
+    state = snapshot_live_state(slug)
+    if state is None:
+        state = CoordinatorState(
+            started_at=started_at.isoformat(),
+            workspace_path=(config.project_root / config.workspace.path_pattern.format(slug=slug)),
+            log_dir=_make_story_log_dir(config, slug, sprint_name),
+        )
+    else:
+        if not state.started_at:
+            state.started_at = started_at.isoformat()
+        if state.workspace_path is None:
+            state.workspace_path = config.project_root / config.workspace.path_pattern.format(
+                slug=slug
+            )
+        if state.log_dir is None:
+            state.log_dir = _make_story_log_dir(config, slug, sprint_name)
+    state.phase = Phase.ESCALATE
+    state.error = error
+    state.error_type = error_type
+    return state
 
 
 def _failing_required_pr_checks(pr_url: str, project_root: Path, base_branch: str) -> list[str]:
@@ -4063,13 +4116,11 @@ def run_sprint(
                     else:
                         story_started_at = timed_out_at
                     _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    _timeout_state = CoordinatorState(
-                        phase=Phase.ESCALATE,
-                        started_at=story_started_at.isoformat(),
-                        workspace_path=(
-                            config.project_root / config.workspace.path_pattern.format(slug=slug)
-                        ),
-                        log_dir=_make_story_log_dir(config, slug, resolved.name),
+                    _timeout_state = _terminal_state_for(
+                        slug,
+                        config=config,
+                        sprint_name=resolved.name,
+                        started_at=story_started_at,
                         error=(f"Worker timeout (>{story_worker_timeouts[slug]}s){_phase_label}"),
                         error_type="TimeoutError",
                     )
@@ -4107,6 +4158,11 @@ def run_sprint(
                         _timeout_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
+                        # The gate this story may have been sitting in never
+                        # reported a decision and never will; leaving the live
+                        # detail at gate_status=running is what made the state
+                        # file claim a running gate on a failed story (#2013).
+                        detail_updates={"gate_status": GATE_STATUS_TIMEOUT},
                     )
                     _persist_current_story_result(
                         slug,
@@ -4139,13 +4195,11 @@ def run_sprint(
                     else:
                         story_started_at = failed_at
                     _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    _exc_state = CoordinatorState(
-                        phase=Phase.ESCALATE,
-                        started_at=story_started_at.isoformat(),
-                        workspace_path=(
-                            config.project_root / config.workspace.path_pattern.format(slug=slug)
-                        ),
-                        log_dir=_make_story_log_dir(config, slug, resolved.name),
+                    _exc_state = _terminal_state_for(
+                        slug,
+                        config=config,
+                        sprint_name=resolved.name,
+                        started_at=story_started_at,
                         error=f"Worker exception{_phase_label}: {exc}",
                         error_type=type(exc).__name__,
                     )
@@ -4182,6 +4236,7 @@ def run_sprint(
                         _exc_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
+                        detail_updates={"gate_status": GATE_STATUS_INCOMPLETE},
                     )
                     _persist_current_story_result(
                         slug,
@@ -4441,6 +4496,33 @@ def run_sprint(
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
     duration = (finished_at - started_at).total_seconds()
+
+    # ── Terminalize live state ────────────────────────────────────────
+    # The work loop is over, so nothing in this sprint can still advance. Write
+    # that fact to the live .state file BEFORE summary/audit finalization: those
+    # steps can take a while (and can raise), and until the terminal transition
+    # lands, `forge status` keeps rendering a running sprint next to stories it
+    # already reports as failed (#2013). The file is removed further down on the
+    # normal path; this is what a crash or a stop in between now finds.
+    if _state_writer is not None:
+        _stranded = _state_writer.terminalize_stories(
+            outcome=StoryOutcome.FAILED,
+            reason=stopped_reason or "sprint ended before this story reached a verdict",
+        )
+        if _stranded:
+            _log(
+                "Terminalized "
+                f"{len(_stranded)} story/stories still non-terminal at sprint end: "
+                + ", ".join(_stranded)
+            )
+        _terminal_counts = _story_state.counts()
+        if stopped_reason is not None:
+            _terminal_sprint_phase = SPRINT_PHASE_STOPPED
+        elif _terminal_counts["failed"]:
+            _terminal_sprint_phase = SPRINT_PHASE_FAILED
+        else:
+            _terminal_sprint_phase = SPRINT_PHASE_DONE
+        _state_writer.set_phase(_terminal_sprint_phase)
 
     # Attribute intake remediation agent spend back to each story's canonical
     # cost_usd so per-story sums (used by sprint-summary.yaml) match the
