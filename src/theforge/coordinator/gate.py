@@ -204,12 +204,13 @@ def _run_gate_debug_command(
 
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]
-    write_trace(
-        workspace_path / ".forge/traces" / f"{iter_num}-gate-debug.txt",
-        output,
-    )
+    # One expression names the trace file and the field that points at it, so the
+    # entry can never quote a path it did not write (#1986).
+    trace_rel = f".forge/traces/{iter_num}-gate-debug.txt"
+    write_trace(workspace_path / trace_rel, output)
     return GateDebugTelemetry(
-        iteration=iter_num,
+        trace_index=iter_num,
+        trace_path=trace_rel,
         command=debug_cmd,
         ran=True,
         timeout_s=debug_timeout,

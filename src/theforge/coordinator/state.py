@@ -230,9 +230,20 @@ class DevIterationTelemetry:
 
 @dataclass(frozen=True)
 class GateDebugTelemetry:
-    """Diagnostic command telemetry captured when the validation gate times out."""
+    """Diagnostic command telemetry captured when the validation gate times out.
 
-    iteration: int
+    ``trace_index`` is the monotonic ``state.dev_trace_count`` value that also
+    names this entry's trace file — deliberately *not* called ``iteration``,
+    because ``DevIterationTelemetry.iteration`` is the per-review-cycle counter
+    that resets each cycle. One audit record carried both under the same name,
+    so a trace path quoted from an escalation no longer matched the dev entry it
+    belonged to once a second review cycle opened (#1986). ``trace_path`` is the
+    exact worktree-relative path written for this entry, so the correlation is
+    stated rather than reconstructed.
+    """
+
+    trace_index: int
+    trace_path: str
     command: str
     ran: bool
     timeout_s: int
@@ -249,9 +260,15 @@ class GateDiagnosticTelemetry:
     run after a gate timeout to surface the hanging test in isolation. Distinct
     from GateDebugTelemetry, which records the free-form user-configured
     gate_debug_command; this pass is the hardcoded pytest-specific instrumentation.
+
+    ``trace_index``/``trace_path`` carry the same meaning as on
+    :class:`GateDebugTelemetry`: the monotonic trace-file counter and the exact
+    path written for this entry, named distinctly from the per-cycle
+    ``iteration`` (#1986).
     """
 
-    iteration: int
+    trace_index: int
+    trace_path: str
     command: str
     ran: bool
     budget_s: int  # hard wall-clock cap for the whole pass
@@ -265,7 +282,15 @@ class GateDiagnosticTelemetry:
 
 @dataclass(frozen=True)
 class ReviewIterationTelemetry:
-    """Per-review-cycle telemetry captured for audit output."""
+    """Per-review-cycle telemetry captured for audit output.
+
+    ``iteration`` is the sequential number of this *recorded* reviewer cycle, so
+    it matches the ``cycle`` the rendered ``reviews[]`` list assigns to the same
+    cycle. It is deliberately not ``state.review_cycle``: VALIDATE can open a
+    review cycle (``RETRY_DEV_NEW_CYCLE``) which advances that counter without
+    appending a telemetry entry, which made two consecutive reviewer cycles
+    record as iteration 1 and 3 while rendering as cycle 1 and 2 (#1986).
+    """
 
     iteration: int
     max_iterations: int

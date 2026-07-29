@@ -394,7 +394,11 @@ def _record_review_iteration_telemetry(
     }
     state.review_iteration_telemetry.append(
         ReviewIterationTelemetry(
-            iteration=state.review_cycle,
+            # Sequential position of this recorded reviewer cycle, which is what
+            # build_reviews() numbers reviews[].cycle by. state.review_cycle is
+            # not usable here: VALIDATE opening a cycle advances it without
+            # appending an entry, so the two numberings drifted apart (#1986).
+            iteration=len(state.review_iteration_telemetry) + 1,
             max_iterations=max_iterations,
             cost_usd=review_cost,
             duration_s=review_elapsed,

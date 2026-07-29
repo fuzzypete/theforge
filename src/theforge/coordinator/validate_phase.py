@@ -720,8 +720,9 @@ def _run_validate_phase(
                 state.gate_debug_telemetry.append(debug_telemetry)
                 gate_err = (
                     f"{gate_err}. Gate debug command ran; see audit "
-                    f"iterations.gate_debug[-1] and trace "
-                    f".forge/traces/{state.dev_trace_count}-gate-debug.txt."
+                    f"iterations.gate_debug[-1] (trace_index "
+                    f"{debug_telemetry.trace_index}) and trace "
+                    f"{debug_telemetry.trace_path}."
                     f"\nGate debug output tail:\n{debug_telemetry.output_tail}"
                 )
         record_dev_iteration_telemetry(
@@ -769,7 +770,8 @@ def _run_validate_phase(
                 if logger:
                     logger._safe_emit(
                         "gate_diagnostic",
-                        iteration=diagnostic.iteration,
+                        trace_index=diagnostic.trace_index,
+                        trace_path=diagnostic.trace_path,
                         command=diagnostic.command,
                         exit_code=diagnostic.exit_code,
                         timed_out=diagnostic.timed_out,
