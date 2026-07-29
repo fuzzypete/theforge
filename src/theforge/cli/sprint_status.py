@@ -137,6 +137,8 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     cost_measured_usd: float | None = None
     duration_seconds: float | None = None
     sprint_phase: str | None = None
+    sprint_phase_detail: str | None = None
+    sprint_phase_started_at: str | None = None
     base_branch: str | None = None
     budget_usd: float | None = None
     max_parallel: int | None = None
@@ -148,6 +150,8 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             sprint_name = _read_sprint_name_from_state(state_path)
             meta = _read_sprint_meta_from_state(state_path)
             sprint_phase = meta.get("sprint_phase")
+            sprint_phase_detail = meta.get("sprint_phase_detail")
+            sprint_phase_started_at = meta.get("sprint_phase_started_at")
             base_branch = meta.get("base_branch")
             budget_usd = meta.get("budget_usd")
             max_parallel = meta.get("max_parallel")
@@ -249,7 +253,9 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
 
     header_parts: list[str] = [f"Sprint: {sprint_name}  run: {run_id}  [{state_label}]"]
     if sprint_phase:
-        header_parts.append(f"phase: {sprint_phase}")
+        header_parts.append(
+            _format_sprint_phase(sprint_phase, sprint_phase_detail, sprint_phase_started_at)
+        )
     if total_cost_usd is not None:
         header_parts.append(f"cost: ${total_cost_usd:.2f}")
     elif not cost_complete:
@@ -366,6 +372,10 @@ def _read_sprint_meta_from_state(state_path: object) -> dict:
     out: dict = {}
     if isinstance(data.get("sprint_phase"), str):
         out["sprint_phase"] = data["sprint_phase"]
+    if isinstance(data.get("sprint_phase_detail"), str):
+        out["sprint_phase_detail"] = data["sprint_phase_detail"]
+    if isinstance(data.get("sprint_phase_started_at"), str):
+        out["sprint_phase_started_at"] = data["sprint_phase_started_at"]
     if isinstance(data.get("base_branch"), str):
         out["base_branch"] = data["base_branch"]
     if isinstance(data.get("budget_usd"), (int, float)):
@@ -474,6 +484,30 @@ def _print_story_line(
             f"{detail_lines[index] if index < len(detail_lines) else ''}"
         )
         print(f"{prefix}{line}")
+
+
+def _format_sprint_phase(
+    sprint_phase: str,
+    detail: str | None,
+    started_at: str | None,
+) -> str:
+    """Render the header's phase cell, naming what a long phase is working on.
+
+    A phase name alone cannot distinguish a gate that has been running for
+    fifteen minutes from a sprint that is wedged, so a phase that publishes a
+    target and a start time gets both reported inline (#2014).
+    """
+    from theforge.sprint.status_reader import elapsed_seconds_since
+
+    parts = [part for part in (detail,) if part]
+    elapsed = elapsed_seconds_since(started_at)
+    if elapsed is not None:
+        # Sub-minute phases matter here in a way they do not for story rows: the
+        # first seconds of a gate are exactly when an operator is watching.
+        parts.append(f"{int(elapsed)}s" if elapsed < 60 else _format_story_elapsed(elapsed))
+    if not parts:
+        return f"phase: {sprint_phase}"
+    return f"phase: {sprint_phase} ({', '.join(parts)})"
 
 
 def _format_story_elapsed(elapsed_s: float | None) -> str:

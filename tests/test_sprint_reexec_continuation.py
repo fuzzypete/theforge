@@ -102,7 +102,7 @@ def _make_coordinator_result(cost: float = 1.0) -> CoordinatorResult:
     )
 
 
-def _triage_full(spec_path, config, project_root, *, task=None):
+def _triage_full(spec_path, config, project_root, *, task=None, **_progress):
     return StoryTriage(
         story_path=spec_path,
         action="full",

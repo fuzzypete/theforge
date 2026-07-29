@@ -759,7 +759,7 @@ class TestResumeSprintIntegration:
             worktree_path=None,
         )
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             if "feature-a" in spec_path:
                 return merged_triage
             return full_triage
@@ -986,7 +986,7 @@ class TestResumeSprintIntegration:
             slug="feature-b",
         )
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             return merged_triage if "feature-a" in spec_path else full_triage
 
         coord_result = _make_coordinator_result(success=True, cost=1.25, landing_status="landed")
@@ -1076,7 +1076,7 @@ class TestResumeSprintIntegration:
             slug="feature-b",
         )
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             return merged_triage if "feature-a" in spec_path else full_triage
 
         # Generation 2: re-exec of the same sprint picks up where gen 1 left off.
@@ -1309,7 +1309,7 @@ class TestResumeSprintIntegration:
             slug="feature-b",
         )
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             return merged_triage if "feature-a" in spec_path else full_triage
 
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
@@ -1445,7 +1445,7 @@ class TestSprintDependencies:
         )
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             if "spec-a" in spec_path:
                 return merged_triage
             return full_triage
@@ -1483,7 +1483,7 @@ class TestSprintDependencies:
         )
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
 
-        def triage_side_effect(spec_path, config, project_root, *, task=None):
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
             if "spec-a" in spec_path:
                 return approved_triage
             return full_triage
