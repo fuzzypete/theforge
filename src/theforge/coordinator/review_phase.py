@@ -394,7 +394,11 @@ def _record_review_iteration_telemetry(
     }
     state.review_iteration_telemetry.append(
         ReviewIterationTelemetry(
-            iteration=state.review_cycle,
+            # Sequential position of this recorded reviewer cycle, which is what
+            # build_reviews() numbers reviews[].cycle by. state.review_cycle is
+            # not usable here: VALIDATE opening a cycle advances it without
+            # appending an entry, so the two numberings drifted apart (#1986).
+            iteration=len(state.review_iteration_telemetry) + 1,
             max_iterations=max_iterations,
             cost_usd=review_cost,
             duration_s=review_elapsed,
@@ -1374,7 +1378,15 @@ def _run_review_phase(
             f" (AC-blocking: reviewer indicated matches_spec=false): {_ac_descs}"
         )
 
-    if state.review_cycle >= 2:
+    # Baseline-vs-no-baseline classification must key on how many real reviewer
+    # verdicts have actually been merged, not on state.review_cycle: engine.py's
+    # VALIDATE phase also advances review_cycle (for gate/convention findings,
+    # before any reviewer has run), so a story whose VALIDATE phase opened a
+    # cycle first would otherwise see its first-ever reviewer verdict wrongly
+    # classified against a nonexistent baseline. trajectory_cycle is incremented
+    # exactly once per merged verdict (below, after this branch), so its value
+    # here is the count of PRIOR verdicts already processed for this story.
+    if state.trajectory_cycle >= 1:
         # has_blocking_p1 / net_new_p1s inlined to avoid importing theforge.finding_classifier.
         # Logic is identical to the functions in finding_classifier.py.
         # gate_contradicted is intentionally excluded: these findings are mechanically
