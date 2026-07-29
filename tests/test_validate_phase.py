@@ -26,8 +26,50 @@ def test_gate_attempts_counts_gate_runs_not_dev_iterations() -> None:
     """The attempt count in terminal messages names gate runs performed (#1981)."""
     state = CoordinatorState(dev_iteration=3)
     assert _gate_attempts(state) == 0
-    state.gate_decisions.append("FAIL")
+    state.gate_runs += 1
     assert _gate_attempts(state) == 1
+
+
+def test_gate_attempts_ignores_gate_decisions() -> None:
+    """Decisions and executions are different counts and must not be conflated.
+
+    ``gate_decisions`` misses timeouts/errors and gains a synthetic entry when
+    the gate is skipped, so the operator-facing run count reads the execution
+    counter instead (#1984).
+    """
+    state = CoordinatorState()
+    state.gate_decisions.extend(["PASS", "FAIL"])
+    assert _gate_attempts(state) == 0
+    state.gate_runs = 5
+    assert _gate_attempts(state) == 5
+
+
+def test_record_gate_run_counts_and_persists(tmp_path: Path) -> None:
+    """Each execution bumps the counter and lands in the resume sidecar."""
+    from theforge.coordinator.run_setup import load_trajectory_state
+    from theforge.coordinator.validate_phase import _record_gate_run
+
+    state = CoordinatorState()
+    _record_gate_run(state, tmp_path)
+    _record_gate_run(state, tmp_path)
+    assert state.gate_runs == 2
+
+    restored = CoordinatorState()
+    load_trajectory_state(tmp_path, restored)
+    assert restored.gate_runs == 2
+
+
+def test_record_gate_run_survives_an_unwritable_sidecar(tmp_path: Path) -> None:
+    """A sidecar write failure degrades the count, it does not fail the run."""
+    from theforge.coordinator.validate_phase import _record_gate_run
+
+    state = CoordinatorState()
+    with patch(
+        "theforge.coordinator.validate_phase.save_trajectory_state",
+        side_effect=OSError("read-only filesystem"),
+    ):
+        _record_gate_run(state, tmp_path)
+    assert state.gate_runs == 1
 
 
 def test_blocking_finding_route_spends_dev_iterations_first(tmp_path: Path) -> None:
@@ -1508,3 +1550,164 @@ def test_run_validate_phase_retries_when_failures_differ(tmp_path: Path) -> None
 
     assert outcome is _ValidateOutcome.RETRY_DEV
     assert result is None
+
+
+def test_gate_error_run_is_counted_even_though_no_decision_lands(tmp_path: Path) -> None:
+    """A gate that errors ran; the count the operator reads must say so (#1984).
+
+    The error path escalates before ``gate_decisions`` is appended, so a count
+    derived from that list reported zero runs for a gate that executed.
+    """
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with patch(
+        "theforge.coordinator.validate_phase.run_gate_full",
+        return_value=(None, "gate crashed", "traceback tail", "pytest tests/", None),
+    ):
+        outcome, _result = _run_validate_phase(
+            state, config, task, tmp_path, notify=False, logger=None
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert state.gate_decisions == []  # no decision came back...
+    assert state.gate_runs == 1  # ...but the gate did run
+    assert _gate_attempts(state) == 1
+
+
+def test_gate_fail_escalation_counts_earlier_timeout_runs(tmp_path: Path) -> None:
+    """Timeouts that preceded the terminal failure are part of the reported count.
+
+    The #1984 shape: three timed-out gate runs then a FAIL reported "after 1
+    gate run(s)" for four executions.
+    """
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.budget.max_iterations = config.retry.max_dev_iterations  # exhausted
+    state.review_cycle = config.retry.max_review_cycles - 1  # last cycle in flight
+    state.dev_trace_count = 2
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+    state.gate_runs = 3  # three earlier runs that timed out
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("FAIL", None, "FAILED tests/test_alpha.py::test_two", "make gate", 1),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: pending",
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state, config, task, tmp_path, notify=False, logger=None
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert state.gate_runs == 4
+    assert "Gate returned FAIL after 4 gate run(s)" in state.error
+    # gate_decisions holds one entry for the one decision that came back, which
+    # is exactly why it cannot be the run count.
+    assert state.gate_decisions == ["FAIL"]
+
+
+def test_skipped_gate_is_not_counted_as_a_gate_run(tmp_path: Path) -> None:
+    """``gate_override: none`` runs no gate, so it contributes no gate run (#1984)."""
+    config = _make_config(tmp_path)
+    task = dataclasses.replace(_make_task(tmp_path), gate_override="none")
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with (
+        patch("theforge.coordinator.validate_phase.run_gate_full") as gate_full,
+        patch(
+            "theforge.coordinator.validate_phase._get_raw_dev_notes",
+            return_value="summary: done",
+        ),
+        patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+        patch("theforge.coordinator.validate_phase.subprocess.run"),
+    ):
+        outcome, _result = _run_validate_phase(
+            state, config, task, tmp_path, notify=False, logger=None
+        )
+
+    assert outcome is _ValidateOutcome.PASS
+    gate_full.assert_not_called()
+    # The synthetic PASS still records the decision the phase acted on...
+    assert state.gate_decisions == ["PASS"]
+    # ...but nothing executed, so the run count stays at zero.
+    assert state.gate_runs == 0
+    assert _gate_attempts(state) == 0
+
+
+def test_gate_run_count_survives_a_resume(tmp_path: Path) -> None:
+    """The count VALIDATE reports crosses ``forge run --resume`` (#1984).
+
+    Seam test for the VALIDATE → resume-restore boundary: the phase writes the
+    count to the resume sidecar, and the fresh ``CoordinatorState`` a resume
+    entry allocates picks it back up, so a story escalating after a resume does
+    not report a count that restarted mid-story.
+    """
+    from theforge.coordinator.run_setup import load_trajectory_state
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with patch(
+        "theforge.coordinator.validate_phase.run_gate_full",
+        return_value=(None, "gate timed out after 600s", "tail", "make gate", None),
+    ):
+        _run_validate_phase(state, config, task, tmp_path, notify=False, logger=None)
+
+    assert state.gate_runs == 1
+
+    # What a resume entry does: allocate a fresh state, then restore the sidecar.
+    resumed = CoordinatorState(dev_iteration=1)
+    assert resumed.gate_runs == 0
+    load_trajectory_state(tmp_path, resumed)
+    assert resumed.gate_runs == 1
+
+    resumed.budget.max_iterations = config.retry.max_dev_iterations
+    resumed.review_cycle = config.retry.max_review_cycles - 1
+    resumed.dev_results.append(_make_agent_result())
+    resumed.dev_durations.append(1.5)
+    resumed.last_dev_start_commit = "HEAD"
+    resumed.dev_iteration = 2
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase.run_gate_full",
+            return_value=("FAIL", None, "FAILED tests/test_alpha.py::test_two", "make gate", 1),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: pending",
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, _result = _run_validate_phase(
+            resumed, config, task, tmp_path, notify=False, logger=None
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    # Pre-resume run plus the post-resume run: the count did not restart at 1.
+    assert "Gate returned FAIL after 2 gate run(s)" in resumed.error

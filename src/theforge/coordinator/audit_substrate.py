@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 12
+CURRENT_RECORD_SCHEMA_VERSION = 13
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -931,6 +931,29 @@ def _migrate_v11_to_v12(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v12_to_v13(record: dict) -> dict:
+    """Record gate executions separately from gate decisions (issue #1984).
+
+    Through v12 the only gate counter was ``iterations.gate_decisions``, which
+    gains an entry only when the gate returned a decision (so timeouts and
+    errors are absent) and gains a synthetic ``PASS`` when ``gate_override``
+    skipped the gate (so non-runs are present). v13 adds ``iterations.gate_runs``:
+    the number of times the gate command actually executed.
+
+    A v12 record cannot be back-derived: neither the missing timeout runs nor
+    the skipped-gate entries were distinguishable in what was written, so
+    ``len(gate_decisions)`` is exactly the wrong number this field exists to
+    replace. Backfill ``None`` — "not recorded" — rather than inferring a count
+    the evidence does not support. The stored record is never rewritten
+    (ADR-0002 refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    migrated = dict(record)
+    block = migrated.get("iterations")
+    if isinstance(block, dict) and "gate_runs" not in block:
+        migrated["iterations"] = {**block, "gate_runs": None}
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -951,6 +974,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     9: _migrate_v9_to_v10,
     10: _migrate_v10_to_v11,
     11: _migrate_v11_to_v12,
+    12: _migrate_v12_to_v13,
 }
 
 
