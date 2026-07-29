@@ -74,12 +74,17 @@ jobs:
           RELEASE_REF: ${{ github.ref_name }}
         run: |
           set -o pipefail
-          # Author the merge commit as the forward-port App, not the Actions
-          # bot. This commit becomes the port PR's head, and the head's identity
-          # is the "actor of the pull request event" that main's workflow-approval
-          # policy checks. Runs attributed to github-actions[bot] land
-          # action_required and stall the armed auto-merge; runs attributed to
-          # forward-port[bot] have never required approval.
+          # Author the merge commit as the forward-port App rather than the
+          # Actions bot, so the port's history reads as the App's work.
+          #
+          # NOTE: this is cosmetic, not load-bearing. An earlier revision claimed
+          # the merge commit's identity is "the actor of the pull request event"
+          # that the workflow-approval policy checks. That is false and was
+          # measured so (#2047): held and unheld runs had head commits with
+          # identical forward-port[bot] author *and* committer. Run attribution
+          # follows the identity that **pushed** the branch — see the push step
+          # below, which must clear checkout's persisted Actions-token header for
+          # that to be the App.
           git config user.name "forward-port[bot]"
           git config user.email "304654100+forward-port[bot]@users.noreply.github.com"
           git fetch origin "$RELEASE_REF"
@@ -195,6 +200,21 @@ jobs:
         run: |
           branch="forward-port/${RELEASE_REF//\//-}"
           # Push the bot branch as the App identity.
+          #
+          # actions/checkout persists an Actions-token credential as
+          # http.https://github.com/.extraheader (persist-credentials defaults
+          # to true). git sends that Authorization header on every push to
+          # github.com and it takes precedence over the inline URL credential
+          # below, so without clearing it this push authenticates as
+          # github-actions[bot] regardless of the URL. The resulting
+          # `synchronize` run is then attributed to github-actions[bot] and held
+          # at action_required, stalling the armed auto-merge (#2047).
+          #
+          # Cleared here rather than via persist-credentials: false on the
+          # checkout, so the merge step above keeps authenticated access for its
+          # `git fetch origin "$RELEASE_REF"`. Nothing after this push needs git
+          # credentials — gh uses GH_TOKEN.
+          git config --unset-all 'http.https://github.com/.extraheader' || true
           git push --force \
             "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" \
             "HEAD:refs/heads/$branch"
