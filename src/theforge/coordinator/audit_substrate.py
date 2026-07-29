@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 13
+CURRENT_RECORD_SCHEMA_VERSION = 14
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -954,6 +954,49 @@ def _migrate_v12_to_v13(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v13_to_v14(record: dict) -> dict:
+    """Rename the gate telemetry ``iteration`` to ``trace_index`` (issue #1986).
+
+    Through v13 one record used the field name ``iteration`` for two different
+    counters: ``iterations.dev_loop[].iteration`` is per review cycle and resets,
+    while ``iterations.gate_debug[].iteration`` /
+    ``iterations.gate_diagnostic[].iteration`` is the monotonic counter that also
+    names ``.forge/traces/{n}-gate-*.txt``. From the second review cycle on the
+    two disagreed, so a trace path quoted in an escalation no longer matched the
+    dev entry it belonged to. v14 names the monotonic counter ``trace_index`` and
+    adds ``trace_path``, the exact file the entry's output was written to.
+
+    The old value *is* the trace counter, so renaming it in place is faithful
+    rather than inferred, and the trace path it named is reconstructible from it
+    by the same rule the writer used. The stored record is never rewritten
+    (ADR-0002 refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    iterations = record.get("iterations")
+    if not isinstance(iterations, dict):
+        return record
+    migrated_blocks: dict[str, list] = {}
+    for key, suffix in (("gate_debug", "gate-debug"), ("gate_diagnostic", "gate-diagnostic")):
+        entries = iterations.get(key)
+        if not isinstance(entries, list):
+            continue
+        lifted = []
+        for entry in entries:
+            if not isinstance(entry, dict) or "trace_index" in entry:
+                lifted.append(entry)
+                continue
+            new_entry = {k: v for k, v in entry.items() if k != "iteration"}
+            index = entry.get("iteration")
+            new_entry["trace_index"] = index
+            new_entry["trace_path"] = (
+                f".forge/traces/{index}-{suffix}.txt" if isinstance(index, int) else None
+            )
+            lifted.append(new_entry)
+        migrated_blocks[key] = lifted
+    if not migrated_blocks:
+        return record
+    return {**record, "iterations": {**iterations, **migrated_blocks}}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -975,6 +1018,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     10: _migrate_v10_to_v11,
     11: _migrate_v11_to_v12,
     12: _migrate_v12_to_v13,
+    13: _migrate_v13_to_v14,
 }
 
 

@@ -1046,10 +1046,56 @@ def test_migrate_v12_to_v13_leaves_an_existing_gate_runs_alone() -> None:
     assert sub._migrate_v12_to_v13(record)["iterations"]["gate_runs"] == 4
 
 
-def test_migrate_record_chains_up_to_v13() -> None:
+def test_migrate_v13_to_v14_renames_gate_iteration_to_trace_index() -> None:
+    """The gate telemetry counter was always the trace counter, so the rename is faithful.
+
+    A v13 record called it ``iteration`` — the same name ``dev_loop`` uses for a
+    counter that resets each review cycle. v14 names it ``trace_index`` and adds
+    the trace path it identifies (#1986).
+    """
+    record = {
+        "schema_version": 13,
+        "iterations": {
+            "gate_debug": [{"iteration": 3, "command": "make gate-debug", "ran": True}],
+            "gate_diagnostic": [{"iteration": 3, "command": "pytest -n 0", "ran": True}],
+        },
+    }
+
+    migrated = sub._migrate_v13_to_v14(record)
+
+    debug = migrated["iterations"]["gate_debug"][0]
+    assert "iteration" not in debug
+    assert debug["trace_index"] == 3
+    assert debug["trace_path"] == ".forge/traces/3-gate-debug.txt"
+    assert debug["command"] == "make gate-debug"
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["trace_index"] == 3
+    assert diagnostic["trace_path"] == ".forge/traces/3-gate-diagnostic.txt"
+    # Source record untouched (ADR-0002 refusal-to-forget).
+    assert record["iterations"]["gate_debug"][0]["iteration"] == 3
+
+
+def test_migrate_v13_to_v14_leaves_an_already_renamed_entry_alone() -> None:
+    """Migration never rewrites an entry the writer already emitted at v14."""
+    record = {
+        "schema_version": 13,
+        "iterations": {
+            "gate_debug": [{"trace_index": 7, "trace_path": ".forge/traces/7-gate-debug.txt"}]
+        },
+    }
+
+    entry = sub._migrate_v13_to_v14(record)["iterations"]["gate_debug"][0]
+    assert entry == {"trace_index": 7, "trace_path": ".forge/traces/7-gate-debug.txt"}
+
+
+def test_migrate_record_chains_up_to_v14() -> None:
     """The registry reaches the current version, so v12 records load migrated."""
-    record = {"schema_version": 12, "iterations": {"gate_decisions": []}}
+    record = {
+        "schema_version": 12,
+        "iterations": {"gate_decisions": [], "gate_debug": [{"iteration": 1}]},
+    }
 
     migrated = sub._migrate_record(record, from_version=12)
 
     assert migrated["iterations"]["gate_runs"] is None
+    assert migrated["iterations"]["gate_debug"][0]["trace_index"] == 1

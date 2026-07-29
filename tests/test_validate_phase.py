@@ -346,9 +346,13 @@ def test_run_validate_phase_runs_gate_debug_command_on_timeout(tmp_path: Path) -
     assert result.success is False
     assert "Gate debug command ran" in result.message
     assert "iterations.gate_debug[-1]" in result.message
+    # The path the escalation quotes is the one the entry records (#1986).
+    assert ".forge/traces/1-gate-debug.txt" in result.message
     assert "debug stderr" in result.message
     assert len(state.gate_debug_telemetry) == 1
     debug = state.gate_debug_telemetry[0]
+    assert debug.trace_index == 1
+    assert debug.trace_path == ".forge/traces/1-gate-debug.txt"
     assert debug.ran is True
     assert debug.exit_code == 5
     assert debug.timeout_s == 7

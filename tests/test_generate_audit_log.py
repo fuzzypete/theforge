@@ -725,7 +725,8 @@ class TestPhasesBlock:
         state.validate_durations.append(45.0)
         state.gate_debug_telemetry.append(
             GateDebugTelemetry(
-                iteration=1,
+                trace_index=1,
+                trace_path=".forge/traces/1-gate-debug.txt",
                 command="pytest -x -v -n 0",
                 ran=True,
                 timeout_s=45,
@@ -892,7 +893,7 @@ class TestKnowledgeCaptureLayer1:
         result = _make_coordinator_result(state)
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
 
-        assert log["schema_version"] == 13
+        assert log["schema_version"] == 14
 
     def test_run_id_from_state(self, tmp_path: Path) -> None:
         """run_id in audit record comes from state.run_id."""

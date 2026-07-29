@@ -507,9 +507,18 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
 
 
 def _serialize_gate_debug_metrics(state: CoordinatorState) -> list[dict]:
+    """Serialize the post-timeout gate debug command runs.
+
+    ``trace_index`` (not ``iteration``) is the monotonic counter that names this
+    entry's trace file, and ``trace_path`` is that file — so the artifact an
+    escalation quotes resolves to the entry it is attached to. ``iteration`` in
+    ``iterations.dev_loop`` is a different, per-review-cycle counter; giving both
+    the same name made the two disagree from the second cycle on (#1986).
+    """
     return [
         {
-            "iteration": item.iteration,
+            "trace_index": item.trace_index,
+            "trace_path": item.trace_path,
             "command": item.command,
             "ran": item.ran,
             "timeout_s": item.timeout_s,
@@ -522,10 +531,15 @@ def _serialize_gate_debug_metrics(state: CoordinatorState) -> list[dict]:
 
 
 def _serialize_gate_diagnostic_metrics(state: CoordinatorState) -> list[dict]:
-    """Serialize the gate-timeout diagnostic re-run passes (issue #1217)."""
+    """Serialize the gate-timeout diagnostic re-run passes (issue #1217).
+
+    ``trace_index``/``trace_path`` carry the same contract as in
+    :func:`_serialize_gate_debug_metrics` (#1986).
+    """
     return [
         {
-            "iteration": item.iteration,
+            "trace_index": item.trace_index,
+            "trace_path": item.trace_path,
             "command": item.command,
             "ran": item.ran,
             "budget_s": item.budget_s,

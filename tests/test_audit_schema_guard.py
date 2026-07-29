@@ -135,7 +135,8 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
     )
     state.gate_debug_telemetry.append(
         GateDebugTelemetry(
-            iteration=1,
+            trace_index=1,
+            trace_path=".forge/traces/1-gate-debug.txt",
             command="make gate-debug",
             ran=True,
             timeout_s=60,
@@ -146,7 +147,8 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
     )
     state.gate_diagnostic_telemetry.append(
         GateDiagnosticTelemetry(
-            iteration=1,
+            trace_index=1,
+            trace_path=".forge/traces/1-gate-diagnostic.txt",
             command="pytest -n 0",
             ran=True,
             budget_s=300,
