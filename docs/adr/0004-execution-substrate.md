@@ -5,7 +5,7 @@
 - **Deciders:** Peter Wickersham (project lead); spike executed by Claude, design review by Codex
 - **Affected milestones:** v0.11.0 (execution-substrate decision), v0.12.x (runner maintenance consequences)
 - **Related issues:** #1680 (spike), PR #1684 (spike implementation)
-- **Related ADRs:** ADR-0002 (audit substrate — capture and trust-boundary bar)
+- **Related ADRs:** ADR-0002 (audit substrate — capture and trust-boundary bar); ADR-0007 (dev-phase verification capability — owns the decision §9's field evidence forces)
 - **Related plan:** `docs/plans/restart-meta-plan-2026-07.md` Phase 3
 
 ---
@@ -103,7 +103,20 @@ Strategic footnote: the live run's wrong-but-flawlessly-executed result is direc
 
 Adopter `hdp` (Swift/iOS/watchOS) exercised the seatbelt path against a real Apple toolchain and hit its ceiling. With `sandbox.capability_profile: xcode` selected and applied (logged on every dev invocation), `xcodebuild` was denied CoreSimulator, SwiftPM package resolution, and a power assertion. Dev could not build the app target; review correctly refused to approve code that was never exercised; the story burned three iterations and $10.03 and was recorded as `review_rejected`. Run `70462a5b72a0`, story #248; filed as #2038.
 
-Two facts this establishes for §3's "Sandbox/network isolation" row. First, the seatbelt model's grants are a hand-maintained allowlist with **no network-egress concept at all** — `SandboxCapabilityPreset` carries only write roots and mach services — so a toolchain needing package resolution cannot be accommodated by configuration. Second, projects cannot extend a preset (`SandboxConfig` exposes only `capability_profile`), so an adopter whose toolchain falls outside the shipped set has no path short of a code change here.
+Two facts this establishes for §3's "Sandbox/network isolation" row. First, the ceiling is in the isolation *mechanism*, not in its allowlist: SwiftPM compiles package manifests by invoking `sandbox-exec`, and macOS refuses to apply a sandbox inside the `sandbox-exec` confinement forge already established (`sandbox_apply: Operation not permitted`). No preset content and no extension to the preset model changes that outcome. Second, projects cannot extend a preset (`SandboxConfig` exposes only `capability_profile`), so an adopter whose toolchain falls outside the shipped set has no path short of a code change here — a real and separate limitation, tracked in #2038.
+
+> **Correction (2026-07-29).** An earlier revision of this section attributed the
+> package-resolution failure to the seatbelt model having "no network-egress
+> concept at all". That is wrong. The dev agent's own handoff in run
+> `5096bd4a46e3` records the failure occurring against already-resolved derived
+> data with all five package checkouts present, and persisting under
+> `-disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+> -skipPackageUpdates`. Network was never reached. Whether the capability model
+> should gain a network-egress axis is unresolved and, on this evidence, is not
+> on the critical path for the observed failures. The nesting collision is
+> tracked in #2050 and the decision it forces is
+> [ADR-0007](0007-dev-phase-verification-capability.md). This section's
+> *verdict* (defer gh-aw) is unaffected.
 
 This is **not** a re-entry condition for gh-aw, and should not be read as one. The toolchains that provoke it are macOS-only; gh-aw's container stack (squid + api-proxy + iptables) could not host them either, and containerizing this class of work means macOS virtualization, not containers. It is evidence that the *incumbent* isolation model has a known ceiling — relevant when weighing maintenance cost in §8, and a reason to treat "keep CLI runners primary" as carrying its own unbudgeted work rather than as the free option.
 
