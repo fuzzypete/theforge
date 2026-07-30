@@ -80,9 +80,18 @@ of running.
 
 Whether a story lands locally is decided per story, not per config value. A
 **dependency parent carried by this sprint** is merged locally to unblock its
-child — in parallel mode the scheduler forces that merge after the parent
-returns — even under `on_approve: none` or `pr`, so those parents carry the
-precondition too.
+child, so those parents carry the precondition even under `on_approve: none` or
+`pr` — in sequential mode the parent is eager-merged, and in parallel mode the
+scheduler forces the merge after it returns. Two exceptions follow from how that
+resolution actually works, and both mean *no* refusal:
+
+- **`on_approve: merge-pr` in parallel mode.** The parent already has its own
+  landing, so the scheduler never rewrites it to a local merge; it lands through
+  its PR. Sequential mode still eager-merges it, so there the precondition
+  applies.
+- **`--auto-merge` in parallel mode.** The flag is dropped when
+  `max_parallel > 1`, so it cannot cause a local merge and the configured
+  landing path stands.
 
 Because of that, the sprint checks twice, and the log line names which pass
 refused:

@@ -401,7 +401,12 @@ def test_parallel_dependency_parent_dispatched_with_landing_obligation(tmp_path:
 
 
 def _dependency_sprint(
-    tmp_path: Path, *, on_approve: str, dep: str, in_manifest_parent: bool
+    tmp_path: Path,
+    *,
+    on_approve: str,
+    dep: str,
+    in_manifest_parent: bool,
+    max_parallel: int = 1,
 ) -> tuple[ForgeConfig, Path]:
     """A dirty-rooted sprint whose only dependency edge is `dep`."""
     from tests.test_sprint_resume import _make_config as _make_sprint_config
@@ -418,7 +423,8 @@ def _dependency_sprint(
 
     manifest = tmp_path / "sprint.yaml"
     manifest.write_text(
-        "name: Test Sprint\nbudget_usd: 10.0\nspecs:\n" + "".join(f"  - {s}\n" for s in specs),
+        f"name: Test Sprint\nbudget_usd: 10.0\nmax_parallel: {max_parallel}\nspecs:\n"
+        + "".join(f"  - {s}\n" for s in specs),
         encoding="utf-8",
     )
     return config, manifest
@@ -507,3 +513,153 @@ def test_satisfied_in_manifest_parent_imposes_no_landing_obligation(tmp_path: Pa
         # Reaching batch preflight proves neither pass refused.
         with pytest.raises(RuntimeError, match="stop after baseline"):
             run_sprint(config, manifest)
+
+
+def test_parallel_merge_pr_dependency_parent_imposes_no_landing_obligation(
+    tmp_path: Path,
+) -> None:
+    """A parallel merge-pr parent lands through its own PR, not the local checkout.
+
+    ``_finalize_approve`` gives a merge-pr story landing_status
+    "pending_integration" with action "merge-pr", so the scheduler's
+    pending_integration conversion — which only fires for a story that produced
+    no landing of its own — never rewrites it to a local merge. Nothing here
+    touches the project root, so a dirty one must not refuse the sprint
+    (#2048 review iteration 4).
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path, on_approve="merge-pr", dep="parent", in_manifest_parent=True, max_parallel=2
+    )
+
+    with ExitStack() as stack:
+        for cm in _entry_patches(set()):
+            stack.enter_context(cm)
+        # Reaching batch preflight proves neither pass refused.
+        with pytest.raises(RuntimeError, match="stop after baseline"):
+            run_sprint(config, manifest)
+
+
+def test_sequential_merge_pr_dependency_parent_still_imposes_a_landing_obligation(
+    tmp_path: Path,
+) -> None:
+    """Sequential mode eager-merges the parent, so merge-pr is not a blanket waiver.
+
+    ``effective_am`` is True for a dependency parent in sequential mode, which
+    forces effective on_approve to "merge" — a real local merge whatever the
+    configured landing path says.
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path, on_approve="merge-pr", dep="parent", in_manifest_parent=True, max_parallel=1
+    )
+
+    with ExitStack() as stack:
+        mocks = [stack.enter_context(cm) for cm in _entry_patches(set())]
+        with pytest.raises(RuntimeError, match="forge.yaml"):
+            run_sprint(config, manifest)
+
+    mocks[-1].assert_not_called()
+
+
+def test_parallel_pr_dependency_parent_still_imposes_a_landing_obligation(
+    tmp_path: Path,
+) -> None:
+    """The merge-pr carve-out must not swallow the parallel "pr" case.
+
+    A "pr" story leaves landing_status None, so the scheduler's conversion does
+    rewrite the parent to a local merge — the very path review iteration 1 found.
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path, on_approve="pr", dep="parent", in_manifest_parent=True, max_parallel=2
+    )
+
+    with ExitStack() as stack:
+        mocks = [stack.enter_context(cm) for cm in _entry_patches(set())]
+        with pytest.raises(RuntimeError, match="forge.yaml"):
+            run_sprint(config, manifest)
+
+    mocks[-1].assert_not_called()
+
+
+def test_parallel_merge_pr_parent_dispatched_without_landing_obligation(tmp_path: Path) -> None:
+    """The worker-side obligation carries the same merge-pr carve-out.
+
+    Mirror of test_parallel_dependency_parent_dispatched_with_landing_obligation:
+    same parallel dependency parent, but under merge-pr it does not land in the
+    project root, so the worker must not be told it does — otherwise a dirty
+    root would escalate a story that could have run.
+    """
+    from tests.test_sprint_resume import _make_config as _make_sprint_config
+    from tests.test_sprint_resume import _make_spec_file
+
+    config = _make_sprint_config(tmp_path)
+    config = replace(config, workspace=replace(config.workspace, on_approve="merge-pr"))
+
+    parent = _make_spec_file(tmp_path, "Parent", "parent")
+    child = _make_spec_file(tmp_path, "Child", "child", depends_on=["parent"])
+    manifest = tmp_path / "sprint.yaml"
+    manifest.write_text(
+        "name: Test Sprint\nbudget_usd: 10.0\nmax_parallel: 2\nspecs:\n"
+        f"  - {parent.name}\n  - {child.name}\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, dict] = {}
+
+    with (
+        patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.ThreadPoolExecutor", _capturing_executor(captured)),
+    ):
+        with pytest.raises(_StopDispatch):
+            run_sprint(config, manifest)
+
+    parent_kwargs = captured.get("parent")
+    assert parent_kwargs is not None, "dependency parent was never dispatched"
+    assert parent_kwargs["effective_auto_merge"] is False
+    assert parent_kwargs["lands_in_project_root"] is False, (
+        "merge-pr parent told it lands in the project root, which it does not"
+    )
+
+
+def test_auto_merge_refuses_in_sequential_mode(tmp_path: Path) -> None:
+    """--auto-merge reaches the worker in sequential mode and forces a local merge."""
+    config, manifest = _dependency_sprint(
+        tmp_path,
+        on_approve="pr",
+        dep="external-issue",
+        in_manifest_parent=False,
+        max_parallel=1,
+    )
+
+    with ExitStack() as stack:
+        mocks = [stack.enter_context(cm) for cm in _entry_patches({"external-issue"})]
+        with pytest.raises(RuntimeError, match="forge.yaml"):
+            run_sprint(config, manifest, auto_merge=True)
+
+    mocks[-1].assert_not_called()
+
+
+def test_auto_merge_in_parallel_mode_imposes_no_landing_obligation(tmp_path: Path) -> None:
+    """--auto-merge is dropped in parallel mode, so it cannot make a story land.
+
+    ``effective_am`` is hard-False when max_parallel > 1, so the flag never
+    reaches ``_finalize_approve`` and the configured "pr" landing stands. The
+    dirty root must not refuse a sprint whose merges will not happen.
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path,
+        on_approve="pr",
+        dep="external-issue",
+        in_manifest_parent=False,
+        max_parallel=2,
+    )
+
+    with ExitStack() as stack:
+        for cm in _entry_patches({"external-issue"}):
+            stack.enter_context(cm)
+        with pytest.raises(RuntimeError, match="stop after baseline"):
+            run_sprint(config, manifest, auto_merge=True)

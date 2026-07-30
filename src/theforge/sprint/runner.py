@@ -2563,6 +2563,31 @@ def run_sprint(
     # review iteration 2).
     in_manifest_dependency_parents = dependent_slugs & set(slug_to_context)
 
+    # Which landing paths in this sprint actually merge into the project-root
+    # checkout? Both flags mirror the effective-mode resolution the workers
+    # reach (``effective_am`` below → ``completion._finalize_approve``), because
+    # a landing precondition asserted for a merge that never happens refuses
+    # work forge could have done.
+    #
+    #   * ``on_approve: merge`` merges locally in either mode.
+    #   * ``--auto-merge`` forces ``"merge"`` only where the flag survives to
+    #     the worker. ``effective_am`` is hard-False in parallel mode, so the
+    #     flag is dropped there and nothing merges locally on its account.
+    #   * A dependency parent merges locally in sequential mode — ``effective_am``
+    #     forces ``"merge"`` for it whatever ``on_approve`` says — and in
+    #     parallel mode through the scheduler's ``pending_integration``
+    #     conversion. That conversion fires only for a story that produced no
+    #     landing of its own (``landing_status is None``), i.e. ``on_approve``
+    #     ``"pr"`` or ``"none"``. Under ``"merge-pr"`` the parent lands through
+    #     its own PR and never touches the project-root checkout — the same
+    #     carve-out the ``auto_enabled_dependency_merges`` warning makes below.
+    config_lands_in_project_root = config.workspace.on_approve == "merge" or (
+        auto_merge and max_parallel <= 1
+    )
+    dependency_parents_land_in_project_root = (
+        max_parallel <= 1 or config.workspace.on_approve != "merge-pr"
+    )
+
     # Stories of this sprint whose agent survived the re-exec. They stay in the
     # DAG and are dispatched like any other story, but through the deferred path
     # (``_run_inherited_story``): wait for the inherited agent, then resume from
@@ -2721,11 +2746,11 @@ def run_sprint(
     # Landing precondition, first pass: a dirty project root makes every local
     # merge refuse, and discovering that at landing means the story's full
     # dev+review spend is already sunk (#2048). Only the configuration-level
-    # signals are used here, because they are the only ones knowable this early
-    # and they are never wrong. The predicate deliberately differs from
-    # _sprint_lands_locally, which suppresses itself in parallel mode: parallel
-    # stories skip the *eager* merge but still land through the integration
-    # step, so on_approve == "merge" merges locally regardless of max_parallel.
+    # answer is used here, because it is the only one knowable this early. It
+    # deliberately differs from _sprint_lands_locally, which suppresses itself
+    # in parallel mode: parallel stories skip the *eager* merge but still land
+    # through the integration step, so on_approve == "merge" merges locally
+    # regardless of max_parallel.
     #
     # The dependency-derived obligation is NOT evaluated here. Whether an
     # in-manifest parent actually merges depends on the satisfied and
@@ -2735,7 +2760,7 @@ def run_sprint(
     # still ahead of every agent spend.
     _refuse_dirty_root_before_spend(
         config,
-        lands_in_project_root=(auto_merge or config.workspace.on_approve == "merge"),
+        lands_in_project_root=config_lands_in_project_root,
         stage="sprint-entry",
     )
 
@@ -3067,19 +3092,26 @@ def run_sprint(
 
     # Landing precondition, dependency-resolved pass. A dependency parent this
     # sprint carries is merged into the project-root checkout to unblock its
-    # child, whatever on_approve says — but only if it is actually dispatched.
-    # A parent already satisfied (closed dependency, branch merged into base) or
-    # triaged skip_merged on resume never runs and never merges, so it owes
-    # nothing and must not refuse a sprint that otherwise never lands here
-    # (#2048 review iteration 3). Both sets are known now and nothing has been
-    # spent yet: intake remediation, batch preflight, and story dispatch are all
-    # still ahead.
+    # child — but only when two things hold, and both are false often enough
+    # that asserting either one alone refuses work forge could have done:
+    #
+    #   1. The parent is actually dispatched. One already satisfied (closed
+    #      dependency, branch merged into base) or triaged skip_merged on resume
+    #      never runs and never merges (#2048 review iteration 3). Both sets are
+    #      known now, and nothing has been spent: intake remediation, batch
+    #      preflight, and story dispatch are all still ahead.
+    #   2. The sprint's landing path for parents is a local merge at all — see
+    #      dependency_parents_land_in_project_root. A parallel merge-pr sprint
+    #      lands its parent through that parent's own PR and never touches the
+    #      project-root checkout (#2048 review iteration 4).
     _dispatchable_dependency_parents = (
         in_manifest_dependency_parents - satisfied_slugs - skip_slugs
     )
     _refuse_dirty_root_before_spend(
         config,
-        lands_in_project_root=bool(_dispatchable_dependency_parents),
+        lands_in_project_root=(
+            bool(_dispatchable_dependency_parents) and dependency_parents_land_in_project_root
+        ),
         stage="dependency-resolved",
     )
 
@@ -4119,10 +4151,15 @@ def run_sprint(
                 # conversion below), so with on_approve "none" or "pr" the
                 # worker would otherwise see no landing obligation, run dev and
                 # review, and only then meet the dirty-root refusal (#2048).
+                # It also overstates it, hence the dependency_parents_ guard: a
+                # parallel merge-pr parent lands through its PR, not here.
                 _story_lands_in_root = (
                     effective_am
-                    or config.workspace.on_approve == "merge"
-                    or task.slug in in_manifest_dependency_parents
+                    or config_lands_in_project_root
+                    or (
+                        task.slug in in_manifest_dependency_parents
+                        and dependency_parents_land_in_project_root
+                    )
                 )
 
                 spec_str = slug_to_spec[task.slug]
