@@ -248,7 +248,15 @@ _NON_ASSERTION_CAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*unconfirmed\b", re.IGNORECASE),
     re.compile(r"^\s*unidentified\b", re.IGNORECASE),
     re.compile(r"^\s*investigation\s+(?:ongoing|in\s+progress)\b", re.IGNORECASE),
+    re.compile(r"^\s*investigating\b", re.IGNORECASE),
     re.compile(r"^\s*\?+\s*$"),
+    # Placeholder values a producer emits for an unfilled field. These are the
+    # shape `render_artifact_markdown` used to emit for an empty
+    # ``confirmed_cause`` (#2060) — a slot marker is never a cause claim.
+    re.compile(
+        r"^\s*_*\(?\s*(?:empty|none(?:\s+recorded)?|not\s+recorded|n/?a)\s*\)?_*\s*$",
+        re.IGNORECASE,
+    ),
 )
 
 # Status labels operators can apply to a bug to communicate fix-readiness intent.
@@ -257,6 +265,23 @@ RECOGNIZED_STATUS_LABELS: frozenset[str] = frozenset(
     {"status:triage", "status:investigating", "status:diagnosed"}
 )
 FIX_READY_STATUS_LABELS: frozenset[str] = frozenset({"status:diagnosed"})
+
+
+def _value_below_label(lines: list[str]) -> str:
+    """Return the value carried on the lines below a bare field label.
+
+    Used for the heading and label-only forms, where the value lives on a
+    following line rather than after a colon. The first non-blank line is the
+    value — unless it opens a sibling field (a new heading or a bullet), in
+    which case the field has no value at all.
+    """
+    for line in lines:
+        if not line.strip():
+            continue
+        if re.match(r"^\s*(?:#|[-*+]\s)", line):
+            return ""
+        return line.strip()
+    return ""
 
 
 def _extract_confirmed_cause_value(section: str) -> str | None:
@@ -269,13 +294,28 @@ def _extract_confirmed_cause_value(section: str) -> str | None:
         - Confirmed cause: not yet identified
         - Confirmed cause — pending investigation
 
-    Returns the trimmed text after the label up to the end of that logical
-    line, or ``None`` when no labelled occurrence exists. The match is
-    case-insensitive on the label only.
+    First-party producers — notably ``forge diagnose`` via
+    :func:`theforge.diagnose_types.render_artifact_markdown` — write the same
+    field as a heading with the value on a following line::
+
+        ### Confirmed cause
+
+        unknown
+
+    Both shapes must yield the same value: a value readable in one form and
+    invisible in the other let a diagnose-landed artifact with no confirmed
+    cause derive as implementation-ready (#2060).
+
+    Returns the trimmed value, ``""`` when the label carries no value, or
+    ``None`` when no labelled occurrence exists. The match is case-insensitive
+    on the label only.
     """
-    for line in section.splitlines():
-        # Strip leading whitespace, bullet markers, and opening bold markers.
-        cleaned = re.sub(r"^\s*(?:[-*+]\s+)?", "", line)
+    lines = section.splitlines()
+    for idx, line in enumerate(lines):
+        # Strip leading whitespace, heading markers, bullet markers, and
+        # opening bold markers.
+        cleaned = re.sub(r"^\s*#+\s*", "", line)
+        cleaned = re.sub(r"^\s*(?:[-*+]\s+)?", "", cleaned)
         cleaned = re.sub(r"^\*+\s*", "", cleaned)
         m = re.match(r"confirmed\s+cause\b", cleaned, re.IGNORECASE)
         if m is None:
@@ -285,7 +325,9 @@ def _extract_confirmed_cause_value(section: str) -> str | None:
         # whitespace separating the label from its value.
         rest = re.sub(r"^[\s*:.\-—]+", "", rest)
         value = re.sub(r"\*+\s*$", "", rest).strip()
-        return value
+        if value:
+            return value
+        return _value_below_label(lines[idx + 1 :])
     return None
 
 
@@ -304,9 +346,13 @@ def cause_assertion_state(body: str) -> str:
       specific cause claim (i.e. not non-assertion vocabulary).
     - ``"non_asserted"``: the field exists but its value is non-assertion
       vocabulary (``unknown``, ``not yet identified``, ``pending
-      investigation``, ``TBD``, etc.). Bug is investigation-ready.
+      investigation``, ``TBD``, etc.), a slot placeholder, or empty. Bug is
+      investigation-ready.
     - ``"missing"``: no confirmed-cause line present (or no Diagnosis
       section at all).
+
+    A field written but left empty is a non-assertion, not an assertion: the
+    record states no cause was found, and must never read as one (#2060).
     """
     section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
     if section is None:
@@ -314,7 +360,7 @@ def cause_assertion_state(body: str) -> str:
     value = _extract_confirmed_cause_value(section)
     if value is None:
         return "missing"
-    if _is_non_assertion_cause(value):
+    if not value or _is_non_assertion_cause(value):
         return "non_asserted"
     return "asserted"
 
@@ -382,6 +428,20 @@ def derive_fix_ready(
                         "identified'). Dev cycle's first job is cause discovery."
                     ],
                 )
+            if state == "missing":
+                # Completeness only saw the label token somewhere in the
+                # section; no field value could be read. An unreadable cause is
+                # not an asserted cause — refusing to promote it keeps the
+                # three-state invariant closed against producer drift (#2060).
+                return (
+                    True,
+                    True,
+                    [
+                        "bug is investigation-ready: the Diagnosis section's "
+                        "confirmed-cause field carries no readable value. Dev cycle's "
+                        "first job is cause discovery."
+                    ],
+                )
             return True, False, []
         if missing == ["missing Diagnosis section"]:
             return (
@@ -439,7 +499,8 @@ def check_missing_type(title: str, body: str, labels: Iterable[str]) -> Reason |
 
 # Phrases that explicitly mark a bug's confirmed cause as still open.
 # Narrow on purpose: an unrelated body line containing "tbd" elsewhere
-# must not flip a complete diagnosis into "cause unknown".
+# must not flip a complete diagnosis into "cause unknown". The separator class
+# admits newlines, so the heading form (label, blank line, value) matches too.
 _UNRESOLVED_CAUSE_RE = re.compile(
     r"confirmed\s+cause[^\w\n]*[:.\-\*\s]*"
     r"(?:not\s+yet\s+identified|unknown|tbd|investigating|n/?a)\b",
@@ -453,11 +514,18 @@ def _diagnosis_cause_unknown(body: str) -> bool:
     This is the admissible "investigation-ready" state: the bug is not
     malformed (it has been investigated), but it is not implementation-runnable
     because no cause has been confirmed.
+
+    A confirmed-cause field written but left without a value counts as open:
+    the vocabulary above cannot see an absence, and a producer that emits the
+    label with nothing under it is reporting no cause, not a cause (#2060).
     """
     section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
     if section is None:
         return False
-    return bool(_UNRESOLVED_CAUSE_RE.search(section))
+    if _UNRESOLVED_CAUSE_RE.search(section):
+        return True
+    value = _extract_confirmed_cause_value(section)
+    return value is not None and not value
 
 
 def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) -> Reason | None:
