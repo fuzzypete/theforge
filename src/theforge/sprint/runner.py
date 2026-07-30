@@ -2668,6 +2668,22 @@ def run_sprint(
     except Exception:
         pass
 
+    # Landing precondition, evaluated before a single agent is dispatched: a
+    # dirty project root makes every local merge refuse, and discovering that at
+    # landing means the story's full dev+review spend is already sunk (#2048).
+    # The predicate deliberately differs from _sprint_lands_locally, which
+    # suppresses itself in parallel mode: parallel stories skip the *eager*
+    # merge but still land through the integration step, so on_approve == "merge"
+    # merges locally regardless of max_parallel. Dependency parents merge locally
+    # in sequential mode even without --auto-merge, hence dependent_slugs.
+    if _project_root_is_git_checkout(config.project_root):
+        _landing_block = coordinator_workspace.landing_precondition_error(
+            config, auto_merge=(auto_merge or bool(dependent_slugs))
+        )
+        if _landing_block is not None:
+            _log(f"✗ SPRINT ABORT  {_landing_block}")
+            raise RuntimeError(_landing_block)
+
     if not no_pull and _project_root_is_git_checkout(config.project_root):
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
 

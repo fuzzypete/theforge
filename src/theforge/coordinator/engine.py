@@ -85,7 +85,12 @@ from .util import (
     _round_cost,
     live_complexity_fields,
 )
-from .workspace import _base_branch_lands_locally, _create_workspace, pull_base_branch
+from .workspace import (
+    _base_branch_lands_locally,
+    _create_workspace,
+    landing_precondition_error,
+    pull_base_branch,
+)
 from .workspace_scrub import _scrub_forge_history
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
@@ -880,6 +885,28 @@ def run_task(
         _log_phase(state.phase, task.slug)
         logger._safe_emit("phase_start", phase="WORKSPACE", iteration=0)
 
+        # Refuse before the workspace exists, not after review has been paid
+        # for: a dirty project root blocks this story's landing, and in a
+        # sprint this is the first point at which a root dirtied by the
+        # operator mid-run can be observed while the spend is still avoidable.
+        _landing_block = landing_precondition_error(config, auto_merge=auto_merge)
+        if _landing_block is not None:
+            state.phase = Phase.ESCALATE
+            state.error = _landing_block
+            _log(f"✗ ESCALATE   {_landing_block}")
+            logger._safe_emit("phase_end", phase="WORKSPACE", outcome="escalate")
+            logger._safe_emit("escalate", reason=_landing_block, phase="WORKSPACE")
+            logger._safe_emit(
+                "run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0
+            )
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=_landing_block,
+            )
+
         workspace_path, branch_name, err = _create_workspace(
             config,
             task,
@@ -1299,6 +1326,25 @@ def _run_resume_coordinator(
     if isinstance(setup, CoordinatorResult):
         return setup
     state, logger, branch_name, story_content, _task_start = setup
+
+    # Same landing precondition run_task enforces, at the resume entry point:
+    # a resumed story re-runs dev and/or review, so a dirty project root has to
+    # refuse here rather than after that spend (#2048).
+    _landing_block = landing_precondition_error(config, auto_merge=auto_merge)
+    if _landing_block is not None:
+        state.phase = Phase.ESCALATE
+        state.error = _landing_block
+        _log(f"✗ ESCALATE   {_landing_block}")
+        logger._safe_emit("escalate", reason=_landing_block, phase="INIT")
+        logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=_landing_block,
+        )
+
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
     state.sprint_name = sprint_name
 

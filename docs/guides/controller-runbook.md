@@ -58,6 +58,26 @@ story and per phase. Stories the breaker cancels are recorded **SKIPPED** and
 attributed to the credential, not FAILED — the sprint killed them, no model
 judged them, and they contribute nothing to adaptive memory.
 
+### Landing precondition — clean project root (issue #2048)
+
+Under a landing workflow (`workspace.on_approve: merge`, or `--auto-merge`), a
+sprint refuses at entry when the project root has uncommitted changes, naming
+the offending paths:
+
+```
+LANDING PRECONDITION: uncommitted changes in project root /path/to/repo:  M forge.yaml.
+```
+
+The condition is the same one `_merge_branch` enforces at landing — untracked
+files included — moved to the point where it costs nothing. Before this check,
+a modified `forge.yaml` in the root let a story run dev and review to approval
+and then fail with `MERGE_FAILED`, leaving reviewed work stranded on its feature
+branch after the full spend. Remedy: commit, stash, or revert the change in the
+project root, then re-run. Each story re-evaluates the condition at its own
+entry, so dirtying the root mid-sprint stops the *next* story rather than
+costing it. Workflows that never merge into the local checkout (`pr`,
+`merge-pr`, `none`) are unaffected.
+
 ## 2. Branch & forward-port model
 
 - Fixes land on the **base branch**. `forward-port.yml` then auto-carries every
