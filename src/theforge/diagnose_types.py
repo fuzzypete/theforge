@@ -237,6 +237,27 @@ class DiagnoseState:
     # Followable-log slug for this run (``diagnose-<issue>``). Set at run
     # registration so status/logs can resolve the per-run log file.
     run_slug: str = ""
+    # Sidecar holding the agent's COMPLETE output, written before the first parse
+    # attempt. The audit's ``raw_output_tail`` is a bounded display convenience;
+    # this is the recoverable copy of a paid-for investigation. Empty when there
+    # was no output to persist, or when the write failed (see raw_output_error).
+    raw_output_path: str = ""
+    raw_output_chars: int = 0
+    raw_output_sha256: str = ""
+    raw_output_error: str = ""
+    # Last-resort carrier for the complete output when no file location accepted
+    # the write: the audit record embeds it verbatim as ``agent.raw_output`` rather
+    # than degrading to the bounded tail. Empty whenever a file holds the content.
+    raw_output_inline: str = ""
+    # Every sidecar persisted by this run, in write order: the investigation's own
+    # output first, then one per reformat parse retry. A retry never overwrites an
+    # earlier emission — the original is the evidence separating an agent
+    # serialization defect from a parser defect.
+    raw_output_paths: list[str] = field(default_factory=list)
+    # One entry per reformat-only parse-retry invocation: attempt number, the
+    # parse error that triggered it, cost, duration, and whether it produced
+    # parseable YAML. Empty when the first parse succeeded.
+    parse_retries: list[dict] = field(default_factory=list)
 
     def transition(self, new_phase: DiagnosePhase, when: str) -> None:
         self.phase = new_phase
