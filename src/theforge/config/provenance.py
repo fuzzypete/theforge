@@ -41,6 +41,34 @@ from typing import Any
 #                separately as ``source_path``.
 _DIGEST_EXCLUDED_FIELDS = frozenset({"secrets", "provenance", "project_root"})
 
+# Dotted paths (``[]`` for a list element) whose *value* is a delivery endpoint
+# that doubles as a bearer credential — an ntfy topic URL is the whole secret to
+# anyone who holds it. Excluding the top-level ``secrets`` dict is not enough:
+# ``_parse_notifications`` resolves ``NTFY_URL`` from ``.forge/.env`` *or* the
+# process environment straight into these typed fields, so a digest over them
+# both fingerprints the secret and makes a rotated URL look like a different
+# configuration.
+#
+# Redacted, not dropped: presence still participates in the digest (see
+# ``_REDACTED``), so enabling or disabling a backend remains a configuration
+# change while rotating its URL does not.
+_REDACTED_VALUE_PATHS = frozenset(
+    {
+        "notifications.ntfy.url",
+        "notifications.backends[].url",
+    }
+)
+
+# Placeholder substituted for a redacted value. A constant, so the digest records
+# "this field was set" without recording what it was set to.
+_REDACTED = "<redacted>"
+
+# Secret values shorter than this are not substring-matched against other config
+# values: a two-character secret would redact half the configuration and destroy
+# the digest's ability to distinguish anything. Exact matches are still redacted
+# at any length.
+_MIN_SUBSTRING_SECRET_LEN = 8
+
 
 @dataclass(frozen=True)
 class ConfigProvenance:
@@ -62,36 +90,95 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def canonical_payload(value: Any) -> Any:
+def _secret_values(config: Any) -> frozenset[str]:
+    """Return the loaded secret values, for scrubbing wherever they landed.
+
+    A path allow-list only covers the leaks somebody enumerated. Every secret
+    the loader resolved is known here, so any config value carrying one is
+    redacted no matter which field it reached — the digest must not be a function
+    of a secret, wherever it ended up.
+    """
+    secrets = getattr(config, "secrets", None)
+    if not isinstance(secrets, dict):
+        return frozenset()
+    return frozenset(value for value in secrets.values() if isinstance(value, str) and value)
+
+
+def _carries_secret(text: str, secret_values: frozenset[str]) -> bool:
+    """True when ``text`` is, or embeds, a known secret value."""
+    for secret in secret_values:
+        if text == secret:
+            return True
+        if len(secret) >= _MIN_SUBSTRING_SECRET_LEN and secret in text:
+            return True
+    return False
+
+
+def canonical_payload(
+    value: Any,
+    *,
+    path: str = "",
+    secret_values: frozenset[str] = frozenset(),
+) -> Any:
     """Normalize a configuration value into a deterministic JSON-able structure.
 
     Dataclasses become field-name-keyed dicts, mappings are emitted with sorted
     keys, sequences keep their order, sets are sorted, and ``Path`` (plus any
     other opaque object) degrades to its string form. Deterministic for equal
     inputs, which is the whole property the digest rests on.
+
+    ``path`` is the dotted position of ``value`` in the configuration tree, used
+    to redact the credential-bearing endpoints in ``_REDACTED_VALUE_PATHS``;
+    ``secret_values`` redacts any string carrying a loaded secret regardless of
+    where it sits. Both substitute ``_REDACTED``, preserving presence.
     """
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: canonical_payload(getattr(value, field.name))
+            field.name: canonical_payload(
+                getattr(value, field.name),
+                path=f"{path}.{field.name}" if path else field.name,
+                secret_values=secret_values,
+            )
             for field in sorted(dataclasses.fields(value), key=lambda f: f.name)
         }
     if isinstance(value, dict):
-        return {str(key): canonical_payload(value[key]) for key in sorted(value, key=str)}
+        return {
+            str(key): canonical_payload(
+                value[key],
+                path=f"{path}.{key}" if path else str(key),
+                secret_values=secret_values,
+            )
+            for key in sorted(value, key=str)
+        }
     if isinstance(value, (list, tuple)):
-        return [canonical_payload(item) for item in value]
+        return [
+            canonical_payload(item, path=f"{path}[]", secret_values=secret_values)
+            for item in value
+        ]
     if isinstance(value, (set, frozenset)):
         return sorted(str(item) for item in value)
     if isinstance(value, Path):
-        return str(value)
+        value = str(value)
+    if isinstance(value, str) and value:
+        if path in _REDACTED_VALUE_PATHS or _carries_secret(value, secret_values):
+            return _REDACTED
+        return value
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     return str(value)
 
 
 def resolved_config_payload(config: Any) -> dict[str, Any]:
-    """Return the canonical payload of a resolved config, minus excluded fields."""
+    """Return the canonical payload of a resolved config, minus excluded fields.
+
+    Secret-derived values are redacted rather than digested — see
+    ``_REDACTED_VALUE_PATHS`` and ``_secret_values``.
+    """
+    secret_values = _secret_values(config)
     return {
-        field.name: canonical_payload(getattr(config, field.name))
+        field.name: canonical_payload(
+            getattr(config, field.name), path=field.name, secret_values=secret_values
+        )
         for field in sorted(dataclasses.fields(config), key=lambda f: f.name)
         if field.name not in _DIGEST_EXCLUDED_FIELDS
     }

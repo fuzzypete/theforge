@@ -11,6 +11,7 @@ surfaced by ``forge explain``.
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +19,7 @@ import yaml
 
 from theforge.cli import explain
 from theforge.config import load_config
-from theforge.config.provenance import resolved_config_sha256
+from theforge.config.provenance import resolved_config_payload, resolved_config_sha256
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
@@ -97,6 +98,109 @@ def test_secrets_do_not_participate_in_the_resolved_digest(tmp_path: Path) -> No
 def test_resolved_digest_is_stable_across_repeated_computation(tmp_path: Path) -> None:
     config = _load(_write_config(tmp_path / "a"))
     assert resolved_config_sha256(config) == resolved_config_sha256(config)
+
+
+# ── Secret-derived values must not reach the digest ───────────────────────────
+
+_NTFY_YAML = _BASE_YAML + "\nnotifications:\n  backend: ntfy\n"
+
+
+def _load_with_env_secret(root: Path, value: str, yaml_text: str = _NTFY_YAML):
+    """Load a config whose NTFY_URL comes from ``.forge/.env`` (project secrets)."""
+    config_path = _write_config(root, yaml_text)
+    (root / ".forge").mkdir(parents=True, exist_ok=True)
+    (root / ".forge" / ".env").write_text(f"NTFY_URL={value}\n", encoding="utf-8")
+    return _load(config_path)
+
+
+def test_rotating_a_secret_sourced_ntfy_url_is_not_a_configuration_change(
+    tmp_path: Path,
+) -> None:
+    """NTFY_URL resolves into notifications.ntfy.url — a bearer credential.
+
+    Excluding only the top-level ``secrets`` dict is not enough: the loader lands
+    the secret in a typed field, where digesting it would both fingerprint the
+    secret and make two runs of one configuration look different.
+    """
+    first = _load_with_env_secret(tmp_path / "a", "https://ntfy.sh/topic-alpha-9f2")
+    second = _load_with_env_secret(tmp_path / "b", "https://ntfy.sh/topic-beta-77c")
+
+    assert first.notifications.ntfy is not None  # the secret really was resolved in
+    assert first.notifications.ntfy.url != second.notifications.ntfy.url
+    assert first.provenance.resolved_sha256 == second.provenance.resolved_sha256
+
+
+def test_rotating_an_environment_sourced_ntfy_url_is_not_a_configuration_change(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same guarantee when NTFY_URL comes from the process environment.
+
+    This one is not in ``config.secrets`` at all, so only the path-based
+    redaction can catch it.
+    """
+    monkeypatch.setenv("NTFY_URL", "https://ntfy.sh/topic-alpha-9f2")
+    first = _load(_write_config(tmp_path / "a", _NTFY_YAML))
+    monkeypatch.setenv("NTFY_URL", "https://ntfy.sh/topic-beta-77c")
+    second = _load(_write_config(tmp_path / "b", _NTFY_YAML))
+
+    assert first.notifications.ntfy.url != second.notifications.ntfy.url
+    assert first.provenance.resolved_sha256 == second.provenance.resolved_sha256
+
+
+def test_the_resolved_payload_never_contains_a_secret_value(tmp_path: Path) -> None:
+    """Direct check on the digested payload, not just on digest equality."""
+    secret = "https://ntfy.sh/topic-alpha-9f2"
+    config = _load_with_env_secret(tmp_path / "a", secret)
+
+    payload = json.dumps(resolved_config_payload(config))
+
+    assert secret not in payload
+    assert "topic-alpha-9f2" not in payload
+
+
+def test_enabling_a_notification_backend_is_still_a_configuration_change(
+    tmp_path: Path,
+) -> None:
+    """Redaction preserves presence: the URL is hidden, the backend is not."""
+    without = _load(_write_config(tmp_path / "a"))
+    with_ntfy = _load_with_env_secret(tmp_path / "b", "https://ntfy.sh/topic-alpha-9f2")
+
+    assert without.provenance.resolved_sha256 != with_ntfy.provenance.resolved_sha256
+
+
+def test_a_secret_landing_in_any_field_is_scrubbed(tmp_path: Path) -> None:
+    """The guard is not a notifications special case.
+
+    Any value carrying a loaded secret is redacted wherever it sits, so a future
+    field that resolves a secret cannot silently start fingerprinting it.
+    """
+    loaded = _load(_write_config(tmp_path / "proj"))
+
+    def _with(token: str):
+        return dataclasses.replace(
+            loaded,
+            secrets={"SOME_TOKEN": token},
+            validation=dataclasses.replace(
+                loaded.validation, gate_command=f"make gate TOKEN={token}"
+            ),
+        )
+
+    alpha = _with("s3cret-value-alpha")
+    beta = _with("s3cret-value-beta")
+
+    assert resolved_config_sha256(alpha) == resolved_config_sha256(beta)
+    assert "s3cret-value-alpha" not in json.dumps(resolved_config_payload(alpha))
+
+
+def test_a_short_secret_does_not_redact_unrelated_values(tmp_path: Path) -> None:
+    """Substring scrubbing is length-gated: a two-character secret must not
+    redact half the configuration and flatten every digest together."""
+    loaded = _load(_write_config(tmp_path / "proj"))
+    short = dataclasses.replace(loaded, secrets={"TINY": "ma"})
+
+    payload = json.dumps(resolved_config_payload(short))
+
+    assert "make gate" in payload
 
 
 # ── Step 2: the identity reaches the audit record ─────────────────────────────
