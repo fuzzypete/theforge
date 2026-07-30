@@ -75,8 +75,14 @@ and then fail with `MERGE_FAILED`, leaving reviewed work stranded on its feature
 branch after the full spend. Remedy: commit, stash, or revert the change in the
 project root, then re-run. Each story re-evaluates the condition at its own
 entry, so dirtying the root mid-sprint stops the *next* story rather than
-costing it. Workflows that never merge into the local checkout (`pr`,
-`merge-pr`, `none`) are unaffected.
+costing it — that story escalates in WORKSPACE with the message above instead
+of running.
+
+Whether a story lands locally is decided per story, not per config value. A
+**dependency parent in a parallel sprint** is forced into a local merge by the
+scheduler after it returns, even under `on_approve: none` or `pr`, so it carries
+the precondition too. Workflows where nothing merges into the local checkout are
+genuinely unaffected.
 
 ## 2. Branch & forward-port model
 

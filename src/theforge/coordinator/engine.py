@@ -748,6 +748,7 @@ def run_task(
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -770,6 +771,12 @@ def run_task(
             auto_merge and config, which is right for a standalone run but not
             inside a sprint, where an earlier story may have merged locally
             while this one did not.
+        lands_in_project_root: Override for the landing precondition — whether
+            *this* story's approval merges into the project-root checkout.
+            Distinct from base_lands_locally, which is a run-wide question about
+            the base branch. The sprint scheduler supplies it because in
+            parallel mode it forces a local merge on dependency parents after
+            the story returns, which auto_merge and on_approve do not reveal.
     """
     _ensure_runners()
     state = _fresh_run_state()
@@ -889,7 +896,9 @@ def run_task(
         # for: a dirty project root blocks this story's landing, and in a
         # sprint this is the first point at which a root dirtied by the
         # operator mid-run can be observed while the spend is still avoidable.
-        _landing_block = landing_precondition_error(config, auto_merge=auto_merge)
+        _landing_block = landing_precondition_error(
+            config, auto_merge=auto_merge, lands_in_project_root=lands_in_project_root
+        )
         if _landing_block is not None:
             state.phase = Phase.ESCALATE
             state.error = _landing_block
@@ -1296,6 +1305,7 @@ def _run_resume_coordinator(
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -1330,7 +1340,9 @@ def _run_resume_coordinator(
     # Same landing precondition run_task enforces, at the resume entry point:
     # a resumed story re-runs dev and/or review, so a dirty project root has to
     # refuse here rather than after that spend (#2048).
-    _landing_block = landing_precondition_error(config, auto_merge=auto_merge)
+    _landing_block = landing_precondition_error(
+        config, auto_merge=auto_merge, lands_in_project_root=lands_in_project_root
+    )
     if _landing_block is not None:
         state.phase = Phase.ESCALATE
         state.error = _landing_block
@@ -1525,6 +1537,7 @@ def run_from_review(
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1542,6 +1555,10 @@ def run_from_review(
         auto_merge: When True, merge the feature branch after APPROVE.
         defer_landing: When True, skip the landing step and leave
             landing_status="pending_integration" for the caller (sprint scheduler).
+        lands_in_project_root: Caller's answer to whether this story's approval
+            merges into the project-root checkout, used by the landing
+            precondition. The sprint scheduler supplies it; None derives it from
+            auto_merge and config.
     """
     return _run_resume_coordinator(
         config,
@@ -1560,6 +1577,7 @@ def run_from_review(
         defer_landing=defer_landing,
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
 
@@ -1579,6 +1597,7 @@ def run_from_dev(
     defer_landing: bool = False,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -1593,6 +1612,10 @@ def run_from_dev(
         auto_merge: When True, merge the feature branch after APPROVE.
         defer_landing: When True, skip the landing step and leave
             landing_status="pending_integration" for the caller (sprint scheduler).
+        lands_in_project_root: Caller's answer to whether this story's approval
+            merges into the project-root checkout, used by the landing
+            precondition. The sprint scheduler supplies it; None derives it from
+            auto_merge and config.
     """
     return _run_resume_coordinator(
         config,
@@ -1611,6 +1634,7 @@ def run_from_dev(
         defer_landing=defer_landing,
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
 

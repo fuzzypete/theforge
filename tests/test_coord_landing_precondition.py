@@ -35,6 +35,7 @@ from theforge.coordinator.workspace import (
     _merge_branch,
     landing_precondition_error,
     project_root_dirty_status,
+    story_lands_in_project_root,
 )
 from theforge.sprint.runner import run_sprint
 
@@ -111,6 +112,29 @@ class TestLandingPreconditionError:
         assert project_root_dirty_status(tmp_path) == ""
         assert landing_precondition_error(_merge_config(tmp_path)) is None
 
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_caller_supplied_obligation_overrides_the_derivation(self, mock_shell, tmp_path):
+        """The scheduler's answer wins over auto_merge + on_approve.
+
+        A parallel dependency parent has auto_merge=False and on_approve="none"
+        yet is forced into a local merge after it returns, so the derivation
+        alone would let it spend before the refusal.
+        """
+        mock_shell.side_effect = _shell(DIRTY)
+        config = _merge_config(tmp_path, on_approve="none")
+
+        assert story_lands_in_project_root(config) is False
+        assert story_lands_in_project_root(config, lands_in_project_root=True) is True
+        assert landing_precondition_error(config) is None
+        assert landing_precondition_error(config, lands_in_project_root=True) is not None
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_caller_can_waive_a_derived_obligation(self, mock_shell, tmp_path):
+        """An explicit False also wins — the override is not an OR."""
+        mock_shell.side_effect = _shell(DIRTY)
+        config = _merge_config(tmp_path, on_approve="merge")
+        assert landing_precondition_error(config, lands_in_project_root=False) is None
+
 
 # ── Parity with the landing-time refusal ──────────────────────────────
 
@@ -149,6 +173,27 @@ class TestRunTaskEntry:
         task = _make_task(tmp_path)
 
         result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase is Phase.ESCALATE
+        assert "forge.yaml" in result.message
+        mock_create.assert_not_called()
+
+    @patch("theforge.coordinator.engine._create_workspace")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_scheduler_obligation_escalates_under_on_approve_none(
+        self, mock_shell, mock_create, tmp_path
+    ):
+        """A parallel dependency parent refuses before spend.
+
+        auto_merge is False and on_approve is "none", so only the scheduler's
+        obligation reveals that this story will be forced into a local merge.
+        """
+        mock_shell.side_effect = _shell(DIRTY)
+        config = _merge_config(tmp_path, on_approve="none")
+        task = _make_task(tmp_path)
+
+        result = run_task(config, task, auto_merge=False, lands_in_project_root=True)
 
         assert result.success is False
         assert result.phase is Phase.ESCALATE
@@ -272,3 +317,80 @@ def test_run_sprint_clean_root_proceeds(tmp_path: Path) -> None:
             run_sprint(config, resolved)
 
     mock_pull.assert_called_once()
+
+
+# ── Scheduler seam: the per-story landing obligation reaches the worker ──
+
+
+class _StopDispatch(RuntimeError):
+    """Raised from the fake executor to end the sprint at first submit."""
+
+
+def _capturing_executor(captured: dict):
+    class _FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            # _run_single_story positionals: config, task, triage, run_id,
+            # sprint_name, interactive, notify, resume, effective_auto_merge, ...
+            captured[args[1].slug] = {
+                "lands_in_project_root": kwargs.get("lands_in_project_root"),
+                "effective_auto_merge": args[8],
+            }
+            raise _StopDispatch(args[1].slug)
+
+    return _FakeExecutor
+
+
+def test_parallel_dependency_parent_dispatched_with_landing_obligation(tmp_path: Path) -> None:
+    """A parallel dependency parent must reach its worker knowing it lands locally.
+
+    on_approve is "none" and --auto-merge is off, so ``effective_am`` is False
+    and the story's own flags reveal no landing. The scheduler nevertheless
+    rewrites its result to a local merge once it returns, so without the
+    threaded obligation the dirty-root refusal would land after dev and review
+    (#2048 review iteration 1).
+    """
+    from tests.test_sprint_resume import _make_config as _make_sprint_config
+    from tests.test_sprint_resume import _make_spec_file
+
+    config = _make_sprint_config(tmp_path)
+    assert config.workspace.on_approve == "none"
+
+    parent = _make_spec_file(tmp_path, "Parent", "parent")
+    child = _make_spec_file(tmp_path, "Child", "child", depends_on=["parent"])
+    manifest = tmp_path / "sprint.yaml"
+    manifest.write_text(
+        "name: Test Sprint\nbudget_usd: 10.0\nmax_parallel: 2\nspecs:\n"
+        f"  - {parent.name}\n  - {child.name}\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, bool | None] = {}
+
+    with (
+        patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.ThreadPoolExecutor", _capturing_executor(captured)),
+    ):
+        with pytest.raises(_StopDispatch):
+            run_sprint(config, manifest)
+
+    parent_kwargs = captured.get("parent")
+    assert parent_kwargs is not None, "dependency parent was never dispatched"
+    # Proves the parallel path: the story's own auto-merge flag says no landing.
+    assert parent_kwargs["effective_auto_merge"] is False
+    assert parent_kwargs["lands_in_project_root"] is True, (
+        "dependency parent dispatched without its scheduler-forced landing obligation"
+    )

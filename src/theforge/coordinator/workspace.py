@@ -344,7 +344,36 @@ def project_root_dirty_status(project_root: Path) -> str:
     return out.strip()
 
 
-def landing_precondition_error(config: ForgeConfig, *, auto_merge: bool = False) -> str | None:
+def story_lands_in_project_root(
+    config: ForgeConfig,
+    *,
+    auto_merge: bool = False,
+    lands_in_project_root: bool | None = None,
+) -> bool:
+    """Whether this story's approval merges into the project-root checkout.
+
+    The default derivation mirrors ``completion._finalize_approve``: the
+    ``--auto-merge`` flag forces ``"merge"`` regardless of configuration, and no
+    other ``on_approve`` value (``pr``, ``merge-pr``, ``none``) ever touches that
+    checkout.
+
+    ``lands_in_project_root`` is the caller's own answer and wins when supplied.
+    The sprint scheduler has one: in parallel mode it rewrites a dependency
+    parent's landing to a local merge after the story returns
+    (``runner._attempt_integration``'s ``pending_integration`` conversion), so
+    the story's own ``auto_merge`` and ``on_approve`` understate the obligation.
+    """
+    if lands_in_project_root is not None:
+        return lands_in_project_root
+    return auto_merge or config.workspace.on_approve == "merge"
+
+
+def landing_precondition_error(
+    config: ForgeConfig,
+    *,
+    auto_merge: bool = False,
+    lands_in_project_root: bool | None = None,
+) -> str | None:
     """Refusal message when the project root cannot accept a landing, else ``None``.
 
     A dirty project root makes ``_merge_branch`` refuse *after* dev and review
@@ -353,17 +382,18 @@ def landing_precondition_error(config: ForgeConfig, *, auto_merge: bool = False)
     story's entry, which is the first point a root dirtied mid-sprint can be
     observed while the next story's spend is still avoidable.
 
-    ``auto_merge`` mirrors ``completion._finalize_approve``'s effective-mode
-    resolution: the CLI flag forces ``"merge"`` regardless of configuration.
-    Under ``on_approve`` values that never touch the project-root checkout
-    (``pr``, ``merge-pr``, ``none``) its cleanliness is not forge's business and
-    this returns ``None``.
+    Whether the story lands locally at all comes from
+    ``story_lands_in_project_root``; under workflows that never touch the
+    project-root checkout its cleanliness is not forge's business and this
+    returns ``None``.
 
     The dirty condition mirrors ``_merge_branch`` exactly — untracked files
     included — so anything refused here is something that would have been
     refused at landing anyway.
     """
-    if not (auto_merge or config.workspace.on_approve == "merge"):
+    if not story_lands_in_project_root(
+        config, auto_merge=auto_merge, lands_in_project_root=lands_in_project_root
+    ):
         return None
     if not (config.project_root / ".git").exists():
         return None

@@ -1566,6 +1566,7 @@ def _run_fresh(
     *,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
@@ -1600,6 +1601,7 @@ def _run_fresh(
                 defer_landing=True,
                 stop_event=stop_event,
                 base_lands_locally=base_lands_locally,
+                lands_in_project_root=lands_in_project_root,
             )
         return run_task(
             config,
@@ -1614,6 +1616,7 @@ def _run_fresh(
             defer_landing=True,
             stop_event=stop_event,
             base_lands_locally=base_lands_locally,
+            lands_in_project_root=lands_in_project_root,
         )
 
     # Phase 1: run through PLAN only
@@ -1631,6 +1634,7 @@ def _run_fresh(
         defer_landing=True,
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
     if not plan_result.success:
@@ -1668,6 +1672,7 @@ def _run_fresh(
         defer_landing=True,
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
 
@@ -1687,6 +1692,7 @@ def _run_single_story(
     preflight_states: dict[str, CoordinatorState] | None = None,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -1723,6 +1729,7 @@ def _run_single_story(
                     defer_landing=True,
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
+                    lands_in_project_root=lands_in_project_root,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -1739,6 +1746,7 @@ def _run_single_story(
                     defer_landing=True,
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
+                    lands_in_project_root=lands_in_project_root,
                 )
             else:
                 result = _run_fresh(
@@ -1755,6 +1763,7 @@ def _run_single_story(
                     preflight_states,
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
+                    lands_in_project_root=lands_in_project_root,
                 )
         else:
             result = _run_fresh(
@@ -1771,6 +1780,7 @@ def _run_single_story(
                 preflight_states,
                 stop_event=stop_event,
                 base_lands_locally=base_lands_locally,
+                lands_in_project_root=lands_in_project_root,
             )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
@@ -1811,6 +1821,7 @@ def _run_inherited_story(
     preflight_states: dict[str, CoordinatorState] | None = None,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
     *,
     canonical_ref: str,
     quiesce_timeout: float,
@@ -1890,6 +1901,7 @@ def _run_inherited_story(
         preflight_states,
         stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
 
@@ -4039,6 +4051,19 @@ def run_sprint(
                     False if max_parallel > 1 else (auto_merge or task.slug in dependent_slugs)
                 )
 
+                # Will *this* story's approval merge into the project-root
+                # checkout? effective_am alone understates it: a parallel
+                # dependency parent is forced into a local merge by the
+                # scheduler after it returns (see the pending_integration
+                # conversion below), so with on_approve "none" or "pr" the
+                # worker would otherwise see no landing obligation, run dev and
+                # review, and only then meet the dirty-root refusal (#2048).
+                _story_lands_in_root = (
+                    effective_am
+                    or config.workspace.on_approve == "merge"
+                    or task.slug in dependent_slugs
+                )
+
                 spec_str = slug_to_spec[task.slug]
                 triage = triages.get(spec_str) if resume else None
                 # A story whose agent survived the re-exec is dispatched through
@@ -4084,7 +4109,10 @@ def run_sprint(
                 )
                 stop_evt = threading.Event()
                 stop_events[task.slug] = stop_evt
-                _dispatch_kwargs: dict = {"base_lands_locally": _sprint_lands_locally}
+                _dispatch_kwargs: dict = {
+                    "base_lands_locally": _sprint_lands_locally,
+                    "lands_in_project_root": _story_lands_in_root,
+                }
                 if _inherited:
                     _dispatch_fn = _run_inherited_story
                     _dispatch_kwargs["canonical_ref"] = spec_str
