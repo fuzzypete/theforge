@@ -435,6 +435,10 @@ class RetryPolicy:
     )
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
+    max_diagnose_parse_retries: int = (
+        2  # reformat-only retries when the diagnose agent completes its
+        # investigation but emits unparseable YAML; 0 disables
+    )
     max_plan_review_transport_retries: int = (
         2  # per-reviewer retries on transient plan-review transport/provider failure
     )

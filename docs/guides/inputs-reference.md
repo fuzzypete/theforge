@@ -333,6 +333,10 @@ retry:
                              # (gate failure, hard convention violation) also
                              # spends one, once the dev attempts above are gone.
   max_review_parse_retries: 2  # reviewer output parse/schema error retries
+  max_diagnose_parse_retries: 2 # `forge diagnose` reformat-only retries when the
+                             # investigative agent finishes but emits unparseable
+                             # YAML. The retry re-serializes the completed
+                             # investigation; it does NOT re-investigate. 0 disables.
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
 
 # ── Classic manual profiles (advanced alternative) ─────────
