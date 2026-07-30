@@ -446,6 +446,183 @@ class TestExhaustedRetriesStayRecoverable:
         audit = _audit_for(tmp_path, 2029, result.state.run_id)
         assert audit["agent"]["raw_output_chars"] == len(output)
         assert audit["agent"]["parse_retries"] == []
+        # Nothing needed the inline carrier.
+        assert audit["agent"]["raw_output"] == ""
+
+
+# ── Persistence is guaranteed, not best-effort ────────────────────────
+#
+# An unwritable sidecar must not silently downgrade the recoverability
+# guarantee to the bounded 2000-char tail. Persistence escalates through the
+# audit sidecar, then the run-log fallback, then the audit record itself.
+
+
+def _unwritable(tmp_path: Path, name: str):
+    """Return a path factory whose parent is a regular file, so mkdir/write fail."""
+    blocker = tmp_path / name
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    def _factory(*_args, **kwargs):
+        attempt = kwargs.get("attempt", 0)
+        return blocker / f"attempt-{attempt}.raw.txt"
+
+    return _factory
+
+
+class TestPersistenceIsGuaranteed:
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_unwritable_sidecar_falls_back_to_the_run_log_location(
+        self, mock_agent, mock_fetch, tmp_path, monkeypatch
+    ):
+        import theforge.coordinator.diagnose_flow as flow
+
+        monkeypatch.setattr(
+            flow, "diagnose_raw_output_path", _unwritable(tmp_path, "blocked-audits")
+        )
+        mock_fetch.return_value = _issue()
+        original = _output_with_unterminated_quote()
+        mock_agent.return_value = _fake_agent_result(original, cost=0.7)
+
+        result = flow.run_diagnose_flow(
+            issue_number=2029,
+            config=_config(tmp_path, parse_retries=0),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        # Tier 2 accepted the write, so the guarantee holds without the sidecar.
+        fallback = Path(result.state.raw_output_path)
+        assert fallback.exists()
+        assert fallback.read_text() == original
+        assert ".forge/logs/" in str(fallback).replace("\\", "/")
+        audit = _audit_for(tmp_path, 2029, result.state.run_id)
+        assert audit["agent"]["raw_output_path"] == str(fallback)
+        assert audit["agent"]["raw_output_chars"] == len(original)
+        assert audit["agent"]["raw_output_error"] == ""
+        # The operator is pointed at the real location, not at a missing file.
+        assert str(fallback) in result.message
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_no_writable_location_carries_full_output_inline_in_the_audit(
+        self, mock_agent, mock_fetch, tmp_path, monkeypatch
+    ):
+        """The P1 case: every file location refuses, and the output is STILL recoverable."""
+        import theforge.coordinator.diagnose_flow as flow
+
+        monkeypatch.setattr(
+            flow, "diagnose_raw_output_path", _unwritable(tmp_path, "blocked-audits")
+        )
+        monkeypatch.setattr(
+            flow, "diagnose_fallback_output_path", _unwritable(tmp_path, "blocked-logs")
+        )
+        mock_fetch.return_value = _issue()
+        original = _output_with_unterminated_quote()
+        mock_agent.return_value = _fake_agent_result(original, cost=0.7)
+
+        result = flow.run_diagnose_flow(
+            issue_number=2029,
+            config=_config(tmp_path, parse_retries=0),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.raw_output_path == ""
+        audit = _audit_for(tmp_path, 2029, result.state.run_id)
+        agent = audit["agent"]
+        # The COMPLETE output — not the bounded tail — survives in the audit the
+        # operator reads the failure from.
+        assert agent["raw_output"] == original
+        assert len(original) > 2000
+        assert "Worker pool reserves N-1 slots" in agent["raw_output"]
+        assert agent["raw_output_chars"] == len(original)
+        assert agent["raw_output_sha256"]
+        # Both refused locations are named, so the audit never claims a file that
+        # is not there.
+        assert "blocked-audits" in agent["raw_output_error"]
+        assert "blocked-logs" in agent["raw_output_error"]
+        assert agent["raw_output_paths"] == []
+        # And the terminal message routes the operator to the surviving copy.
+        assert "agent.raw_output" in result.message
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_retry_still_recovers_the_diagnosis_when_no_location_is_writable(
+        self, mock_agent, mock_fetch, mock_post, tmp_path, monkeypatch
+    ):
+        """A persistence failure must not block the retry path from landing a diagnosis."""
+        import theforge.coordinator.diagnose_flow as flow
+
+        monkeypatch.setattr(
+            flow, "diagnose_raw_output_path", _unwritable(tmp_path, "blocked-audits")
+        )
+        monkeypatch.setattr(
+            flow, "diagnose_fallback_output_path", _unwritable(tmp_path, "blocked-logs")
+        )
+        mock_fetch.return_value = _issue()
+        mock_agent.side_effect = [
+            _fake_agent_result(_output_with_unterminated_quote(), cost=0.7),
+            _fake_agent_result(_valid_output(), cost=0.04),
+        ]
+        mock_post.return_value = "https://example/comment-1"
+
+        result = flow.run_diagnose_flow(
+            issue_number=2029,
+            config=_config(tmp_path),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success, result.message
+        assert result.state.phase == DiagnosePhase.DONE
+        audit = _audit_for(tmp_path, 2029, result.state.run_id)
+        # The repaired output is the run's output, carried inline since no file
+        # location would take it.
+        assert audit["agent"]["raw_output"] == _valid_output()
+        entry = audit["agent"]["parse_retries"][0]
+        assert entry["success"] is True
+        # The original emission is not destroyed by the repair that replaced it.
+        assert entry["previous_output"] == _output_with_unterminated_quote()
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_failed_repair_output_is_carried_in_its_attempt_record(
+        self, mock_agent, mock_fetch, tmp_path, monkeypatch
+    ):
+        import theforge.coordinator.diagnose_flow as flow
+
+        monkeypatch.setattr(
+            flow, "diagnose_raw_output_path", _unwritable(tmp_path, "blocked-audits")
+        )
+        monkeypatch.setattr(
+            flow, "diagnose_fallback_output_path", _unwritable(tmp_path, "blocked-logs")
+        )
+        mock_fetch.return_value = _issue()
+        broken_repair = 'still broken: "unterminated' + ("x" * 3000)
+        mock_agent.side_effect = [
+            _fake_agent_result(_output_with_unterminated_quote(), cost=0.7),
+            _fake_agent_result(broken_repair, cost=0.02),
+        ]
+
+        result = flow.run_diagnose_flow(
+            issue_number=2029,
+            config=_config(tmp_path, parse_retries=1),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        entry = _audit_for(tmp_path, 2029, result.state.run_id)["agent"]["parse_retries"][0]
+        # A retry that cost money and produced an unparseable repair is itself
+        # evidence; it survives in full, not as a 2000-char tail.
+        assert entry["output"] == broken_repair
+        assert len(broken_repair) > 2000
+        assert entry["output_path"] == ""
+        assert "blocked-logs" in entry["output_path_error"]
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")

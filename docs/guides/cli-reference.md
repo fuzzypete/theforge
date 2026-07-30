@@ -512,6 +512,13 @@ discard it:
   `agent.raw_output_tail` is a bounded preview; `agent.raw_output_path`,
   `agent.raw_output_paths`, `agent.raw_output_chars`, and
   `agent.raw_output_sha256` point at the full copy on disk.
+- Persistence is guaranteed rather than best-effort. If the audit sidecar cannot
+  be written, the output goes to `.forge/logs/diagnose-<N>/run-<run-id>.raw.txt`;
+  if that also fails, the audit record carries the complete output inline as
+  `agent.raw_output`, and `agent.raw_output_error` names every location that
+  refused it. Read `agent.raw_output_path` first — an empty value means the
+  content is inline. There is no path on which a run consumes a paid-for
+  investigation and leaves only the truncated tail.
 - Unparseable output triggers up to `retry.max_diagnose_parse_retries`
   (default 2) **reformat-only** retries: the agent gets its own output back plus
   the parser error and is asked to re-serialize the same diagnosis — it does not

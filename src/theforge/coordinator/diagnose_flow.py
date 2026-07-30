@@ -473,33 +473,57 @@ def diagnose_raw_output_path(
     return _audit_dir(project_root) / f"{stem}{suffix}"
 
 
+def diagnose_fallback_output_path(
+    project_root: Path, state: DiagnoseState, *, attempt: int = 0
+) -> Path:
+    """Return the second durable location for a run's complete agent output.
+
+    Used when the audit sidecar cannot be written. Lives in the run's own log
+    directory — already created and written to by this flow, and the place
+    ``forge logs`` points an operator at — so a failure isolated to
+    ``.forge/audits`` does not cost the recoverability guarantee.
+    """
+    slug = state.run_slug or f"diagnose-{state.issue_number}"
+    suffix = ".raw.txt" if attempt <= 0 else f".raw.retry{attempt}.txt"
+    return project_root / ".forge" / "logs" / slug / f"run-{state.run_id}{suffix}"
+
+
 def _write_output_sidecar(
     state: DiagnoseState, project_root: Path, text: str, attempt: int
 ) -> tuple[Path | None, str]:
-    """Write one agent emission to its numbered sidecar. Returns ``(path, error)``.
+    """Write one agent emission durably. Returns ``(path, error)``.
 
-    Records the path on ``state.raw_output_paths`` so every emission this run paid
-    for is enumerable from the audit, whether or not it parsed.
+    Tries the canonical audit sidecar, then the run-log fallback. ``error`` is
+    empty exactly when the text reached disk, and names every location that
+    refused it otherwise — a caller must not report a file that is not there.
+
+    Records the written path on ``state.raw_output_paths`` so every emission this
+    run paid for is enumerable from the audit, whether or not it parsed.
     """
     if not text:
         return None, ""
-    path = diagnose_raw_output_path(
-        project_root, state.issue_number, state.run_id, attempt=attempt
+    candidates = (
+        diagnose_raw_output_path(project_root, state.issue_number, state.run_id, attempt=attempt),
+        diagnose_fallback_output_path(project_root, state, attempt=attempt),
     )
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    except OSError as exc:
-        return None, f"failed to persist agent output to {path}: {exc}"
-    if str(path) not in state.raw_output_paths:
-        state.raw_output_paths.append(str(path))
-    return path, ""
+    errors: list[str] = []
+    for path in candidates:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        if str(path) not in state.raw_output_paths:
+            state.raw_output_paths.append(str(path))
+        return path, ""
+    return None, "failed to persist agent output (" + "; ".join(errors) + ")"
 
 
 def persist_agent_output(
     state: DiagnoseState, project_root: Path, *, attempt: int = 0, emit=None
 ) -> Path | None:
-    """Write the agent's full output to its sidecar; record provenance on ``state``.
+    """Persist the agent's full output durably; record provenance on ``state``.
 
     The audit's ``raw_output_tail`` is bounded at 2000 characters — enough to
     glance at, not enough to recover from. A run that spent budget and produced
@@ -507,26 +531,46 @@ def persist_agent_output(
     distinguish an agent defect from a parser defect, and a substantively complete
     diagnosis dies with the process (#2055).
 
-    ``state.raw_output_*`` always describes whatever ``state.agent_output``
-    currently holds, so the recorded digest matches the recorded path.
+    Persistence is guaranteed rather than best-effort, by escalating through three
+    locations until one accepts the content:
 
-    Best-effort — an unwritable sidecar never fails the run, but the error is
-    recorded on ``state`` so the audit does not claim a file that is not there.
-    Returns the path written, or None.
+    1. the audit sidecar (``.forge/audits/diagnose-issue-N-<run>.raw.txt``),
+    2. the run-log fallback (``.forge/logs/<slug>/run-<run>.raw.txt``),
+    3. inline in the audit record itself, as ``agent.raw_output``.
+
+    Tier 3 cannot silently lose the output: it is written by the same
+    ``write_diagnose_audit`` call the operator reads the failure from, and if even
+    that write fails the exception propagates out of the flow rather than being
+    swallowed. So an operator either has the complete output or has a loud error —
+    never a run that quietly consumed a paid-for investigation.
+
+    ``state.raw_output_chars``/``_sha256`` describe whatever ``state.agent_output``
+    currently holds regardless of which tier stored it, so the recorded digest
+    always matches the recorded content.
+
+    Returns the file path written, or None when the content is carried inline.
     """
     if not state.agent_output:
         return None
+    state.raw_output_chars = len(state.agent_output)
+    state.raw_output_sha256 = hashlib.sha256(state.agent_output.encode("utf-8")).hexdigest()
     path, error = _write_output_sidecar(state, project_root, state.agent_output, attempt)
     if path is None:
+        # Every file location refused the write. Carry the complete output in the
+        # audit record instead of degrading to the bounded tail — an audit that
+        # omits what the agent actually said is the failure mode #2055 is about.
         state.raw_output_path = ""
         state.raw_output_error = error
-        if emit is not None and error:
-            emit(f"  [diagnose] WARNING: {error}")
+        state.raw_output_inline = state.agent_output
+        if emit is not None:
+            emit(
+                f"  [diagnose] WARNING: {error} — carrying the full output inline "
+                "in the run audit (agent.raw_output) instead"
+            )
         return None
     state.raw_output_error = ""
     state.raw_output_path = str(path)
-    state.raw_output_chars = len(state.agent_output)
-    state.raw_output_sha256 = hashlib.sha256(state.agent_output.encode("utf-8")).hexdigest()
+    state.raw_output_inline = ""
     if emit is not None:
         emit(f"  [diagnose] full agent output persisted ({state.raw_output_chars} chars): {path}")
     return path
@@ -566,6 +610,9 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "raw_output_chars": state.raw_output_chars,
             "raw_output_sha256": state.raw_output_sha256,
             "raw_output_error": state.raw_output_error,
+            # Tier-3 carrier: non-empty only when no file location accepted the
+            # write, so the complete output is still recoverable from this record.
+            "raw_output": state.raw_output_inline,
             "parse_retries": [dict(entry) for entry in state.parse_retries],
         },
         "landing": {
@@ -929,6 +976,11 @@ def _retry_diagnose_parse(
             retry_output, issue_number=issue_number, partial=partial
         )
         if candidate.artifact is not None:
+            # When the prior emission survives only inline (no file location took
+            # it), carry it in this attempt's record before it is replaced — the
+            # invariant is that a retry never destroys an earlier emission.
+            if state.raw_output_inline:
+                record["previous_output"] = state.raw_output_inline
             state.agent_output = retry_output
             record["success"] = True
             path = persist_agent_output(state, project_root, attempt=attempt, emit=emit)
@@ -948,7 +1000,11 @@ def _retry_diagnose_parse(
         )
         record["output_path"] = str(failed_path) if failed_path is not None else ""
         if failed_error:
+            # Same escalation as the investigation's own output: if no file
+            # location took it, the attempt record carries it in full rather than
+            # leaving only the bounded tail.
             record["output_path_error"] = failed_error
+            record["output"] = retry_output
         state.parse_retries.append(record)
         parsed = candidate
     return parsed
@@ -1270,7 +1326,12 @@ def _run_diagnose_flow_body(
     artifact = parsed.artifact
     if artifact is None:
         attempts = len(state.parse_retries)
-        where = state.raw_output_path or "<not persisted>"
+        if state.raw_output_path:
+            where = state.raw_output_path
+        elif state.raw_output_inline:
+            where = "inline in this run's audit record, field agent.raw_output"
+        else:
+            where = "<no output to persist>"
         state.error = (
             f"PARSE failed: investigative agent did not emit a parseable YAML block "
             f"({parsed.error}) and {attempts} reformat retry attempt(s) did not "

@@ -245,6 +245,10 @@ class DiagnoseState:
     raw_output_chars: int = 0
     raw_output_sha256: str = ""
     raw_output_error: str = ""
+    # Last-resort carrier for the complete output when no file location accepted
+    # the write: the audit record embeds it verbatim as ``agent.raw_output`` rather
+    # than degrading to the bounded tail. Empty whenever a file holds the content.
+    raw_output_inline: str = ""
     # Every sidecar persisted by this run, in write order: the investigation's own
     # output first, then one per reformat parse retry. A retry never overwrites an
     # earlier emission — the original is the evidence separating an agent
