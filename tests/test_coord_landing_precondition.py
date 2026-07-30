@@ -471,14 +471,39 @@ def test_in_manifest_dependency_parent_still_imposes_a_landing_obligation(
     """A parent carried by this sprint is merged locally to unblock its child.
 
     on_approve is "pr" and --auto-merge is off, so only the dependency edge
-    reveals the landing — the sprint must still refuse a dirty root.
+    reveals the landing — the sprint must still refuse a dirty root, and must
+    do so before batch preflight, the first agent spend.
     """
     config, manifest = _dependency_sprint(
         tmp_path, on_approve="pr", dep="parent", in_manifest_parent=True
     )
 
     with ExitStack() as stack:
-        for cm in _entry_patches(set()):
-            stack.enter_context(cm)
+        mocks = [stack.enter_context(cm) for cm in _entry_patches(set())]
+        mock_preflight = mocks[-1]
         with pytest.raises(RuntimeError, match="forge.yaml"):
+            run_sprint(config, manifest)
+
+    mock_preflight.assert_not_called()
+
+
+def test_satisfied_in_manifest_parent_imposes_no_landing_obligation(tmp_path: Path) -> None:
+    """A parent already merged is never dispatched, so it owes no landing.
+
+    Same shape as the test above — an in-manifest dependency parent under
+    on_approve "pr" — except dependency resolution reports it satisfied. Nothing
+    in this sprint can merge into the project-root checkout, so the dirty root
+    must not refuse it (#2048 review iteration 3). Sprint entry cannot know
+    this, which is why the dependency-derived term is asserted only after the
+    satisfied and resume-triage sets are resolved.
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path, on_approve="pr", dep="parent", in_manifest_parent=True
+    )
+
+    with ExitStack() as stack:
+        for cm in _entry_patches({"parent"}):
+            stack.enter_context(cm)
+        # Reaching batch preflight proves neither pass refused.
+        with pytest.raises(RuntimeError, match="stop after baseline"):
             run_sprint(config, manifest)

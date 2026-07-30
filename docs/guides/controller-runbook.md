@@ -82,11 +82,24 @@ Whether a story lands locally is decided per story, not per config value. A
 **dependency parent carried by this sprint** is merged locally to unblock its
 child — in parallel mode the scheduler forces that merge after the parent
 returns — even under `on_approve: none` or `pr`, so those parents carry the
-precondition too. A `depends_on` edge pointing at an **external** issue (already
-merged, or simply not in this sprint) imposes nothing: no story here merges it,
-so a PR-landing sprint with only external edges runs against a dirty root
-untouched. Workflows where nothing merges into the local checkout are genuinely
-unaffected.
+precondition too.
+
+Because of that, the sprint checks twice, and the log line names which pass
+refused:
+
+- `[sprint-entry]` — the configuration-level answer (`on_approve: merge` or
+  `--auto-merge`). Knowable immediately, so this one costs seconds.
+- `[dependency-resolved]` — the dependency-derived answer, asserted once the
+  satisfied and resume-triage sets say which parents will actually be
+  dispatched. Still ahead of intake remediation, batch preflight, and every
+  story dispatch, so nothing has been spent.
+
+A `depends_on` edge imposes nothing when it points at an **external** issue (not
+carried by this sprint) or at a parent already **satisfied** — merged into the
+base branch, or triaged `skip_merged` on resume. Those parents never run and
+never merge, so a PR-landing sprint whose only edges are of that kind runs
+against a dirty root untouched. Workflows where nothing merges into the local
+checkout are genuinely unaffected.
 
 ## 2. Branch & forward-port model
 

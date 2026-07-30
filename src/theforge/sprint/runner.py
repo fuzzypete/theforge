@@ -968,6 +968,33 @@ def _project_root_is_git_checkout(project_root: Path) -> bool:
     return git_dir_check.returncode == 0
 
 
+def _refuse_dirty_root_before_spend(
+    config: ForgeConfig, *, lands_in_project_root: bool, stage: str
+) -> None:
+    """Abort the sprint when the project root cannot accept the landing it owes.
+
+    Called at two points, each as soon as the obligation it tests becomes
+    knowable: ``sprint-entry`` for the configuration-level signals, and
+    ``dependency-resolved`` once the satisfied and resume-triage sets say which
+    in-manifest dependency parents will actually be dispatched and merged. Both
+    run ahead of every agent spend, so the operator learns of a dirty root
+    instead of paying dev and review and meeting the refusal at landing (#2048).
+
+    ``stage`` is logged with the refusal so the audit trail records which pass
+    fired — the two answer different questions and a misfire is diagnosed by
+    knowing which one spoke.
+    """
+    if not lands_in_project_root:
+        return
+    if not _project_root_is_git_checkout(config.project_root):
+        return
+    block = coordinator_workspace.landing_precondition_error(config, lands_in_project_root=True)
+    if block is None:
+        return
+    _log(f"✗ SPRINT ABORT  [{stage}] {block}")
+    raise RuntimeError(block)
+
+
 #: ``GateLabel.purpose`` for the pre-sprint merge-base gate.
 BASELINE_GATE_PURPOSE = "baseline gate"
 
@@ -2691,28 +2718,26 @@ def run_sprint(
     except Exception:
         pass
 
-    # Landing precondition, evaluated before a single agent is dispatched: a
-    # dirty project root makes every local merge refuse, and discovering that at
-    # landing means the story's full dev+review spend is already sunk (#2048).
-    # The predicate deliberately differs from _sprint_lands_locally, which
-    # suppresses itself in parallel mode: parallel stories skip the *eager*
-    # merge but still land through the integration step, so on_approve == "merge"
-    # merges locally regardless of max_parallel. Dependency parents merge locally
-    # even without --auto-merge, hence in_manifest_dependency_parents — the
-    # in-manifest set, because an edge pointing at an external issue produces no
-    # local merge and must not refuse a sprint that never lands here.
-    if _project_root_is_git_checkout(config.project_root):
-        _landing_block = coordinator_workspace.landing_precondition_error(
-            config,
-            lands_in_project_root=(
-                auto_merge
-                or config.workspace.on_approve == "merge"
-                or bool(in_manifest_dependency_parents)
-            ),
-        )
-        if _landing_block is not None:
-            _log(f"✗ SPRINT ABORT  {_landing_block}")
-            raise RuntimeError(_landing_block)
+    # Landing precondition, first pass: a dirty project root makes every local
+    # merge refuse, and discovering that at landing means the story's full
+    # dev+review spend is already sunk (#2048). Only the configuration-level
+    # signals are used here, because they are the only ones knowable this early
+    # and they are never wrong. The predicate deliberately differs from
+    # _sprint_lands_locally, which suppresses itself in parallel mode: parallel
+    # stories skip the *eager* merge but still land through the integration
+    # step, so on_approve == "merge" merges locally regardless of max_parallel.
+    #
+    # The dependency-derived obligation is NOT evaluated here. Whether an
+    # in-manifest parent actually merges depends on the satisfied and
+    # resume-triage sets, which are only resolved further down — asserting it
+    # now would refuse sprints whose parent is already merged and will never be
+    # dispatched. That term is checked at the "dependency-resolved" pass below,
+    # still ahead of every agent spend.
+    _refuse_dirty_root_before_spend(
+        config,
+        lands_in_project_root=(auto_merge or config.workspace.on_approve == "merge"),
+        stage="sprint-entry",
+    )
 
     if not no_pull and _project_root_is_git_checkout(config.project_root):
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
@@ -3039,6 +3064,24 @@ def run_sprint(
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
+
+    # Landing precondition, dependency-resolved pass. A dependency parent this
+    # sprint carries is merged into the project-root checkout to unblock its
+    # child, whatever on_approve says — but only if it is actually dispatched.
+    # A parent already satisfied (closed dependency, branch merged into base) or
+    # triaged skip_merged on resume never runs and never merges, so it owes
+    # nothing and must not refuse a sprint that otherwise never lands here
+    # (#2048 review iteration 3). Both sets are known now and nothing has been
+    # spent yet: intake remediation, batch preflight, and story dispatch are all
+    # still ahead.
+    _dispatchable_dependency_parents = (
+        in_manifest_dependency_parents - satisfied_slugs - skip_slugs
+    )
+    _refuse_dirty_root_before_spend(
+        config,
+        lands_in_project_root=bool(_dispatchable_dependency_parents),
+        stage="dependency-resolved",
+    )
 
     # Surface the current sprint phase to forge status --watch so operators
     # see meaningful progress signals during the multi-minute pre-init window.
