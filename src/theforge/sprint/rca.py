@@ -41,7 +41,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 3
+RULESET_VERSION = 4
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -195,6 +195,15 @@ RULES: tuple[RcaRule, ...] = (
     ),
     # ── primary: signal rules (field-derived) ────────────────────────────────
     RcaRule(
+        rule_id="configuration_changed",
+        failure_class="configuration_changed",
+        role="primary",
+        description=(
+            "The project configuration (forge.yaml) changed while the story was "
+            "in flight — the run did not execute under a single configuration."
+        ),
+    ),
+    RcaRule(
         rule_id="merge_failed",
         failure_class="merge_failed",
         role="primary",
@@ -299,6 +308,11 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     "worker_timeout",
     "workspace_divergence",
     "intake_shape",
+    # A configuration change mid-flight outranks the merge failure it presents
+    # as: "uncommitted forge.yaml in the project root" IS the configuration
+    # change, and remediating it as a merge problem sends the operator to the
+    # PR — the one place the cause is not (#2056).
+    "configuration_changed",
     "merge_failed",
     "merge_arming_failed",
     # A terminal dev-handoff gate-evidence failure supersedes any earlier review
@@ -711,6 +725,61 @@ def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str
     return hits
 
 
+# Words that, alongside a forge.yaml mention in a merge failure, identify the
+# error as "the configuration file was edited" rather than an ordinary conflict.
+_DIRTY_CONFIG_MARKERS: tuple[str, ...] = ("uncommitted", "unstaged", "dirty", "local changes")
+
+
+def _configuration_change_evidence(
+    audit: dict,
+    outcome: str,
+    error: str | None,
+    summary_source: str,
+    audit_source: str,
+) -> tuple[str, str, str] | None:
+    """Return a ``configuration_changed`` hit when the run's config moved (#2056).
+
+    Two evidence sources, preferred in order of authority:
+
+    1. The run's own recorded provenance (``configuration.changed_during_run``) —
+       a mechanical statement by the run about itself, available for every run
+       whose record carries configuration identity.
+    2. A ``MERGE_FAILED`` whose error names a dirty ``forge.yaml``. The
+       configuration change is stated verbatim in that error; classifying it as a
+       merge failure spends the operator's attention on the PR, which is the one
+       place the cause is not.
+    """
+    configuration = audit.get("configuration") if isinstance(audit, dict) else None
+    if isinstance(configuration, dict) and configuration.get("changed_during_run") is True:
+        start = configuration.get("source_sha256") or "?"
+        finish = configuration.get("source_sha256_at_finish") or "?"
+        source_path = configuration.get("source_path") or "forge.yaml"
+        return (
+            "configuration_changed",
+            audit_source,
+            _truncate(
+                f"configuration changed while the run was in flight: {source_path} "
+                f"{start} -> {finish}; outcome={outcome}"
+            ),
+        )
+
+    error_lower = (error or "").lower()
+    if (
+        outcome == "MERGE_FAILED"
+        and "forge.yaml" in error_lower
+        and any(marker in error_lower for marker in _DIRTY_CONFIG_MARKERS)
+    ):
+        return (
+            "configuration_changed",
+            summary_source,
+            _truncate(
+                f"outcome={outcome}; the project configuration was modified during the "
+                f"sprint: {error}"
+            ),
+        )
+    return None
+
+
 def _signal_rule_hits(
     story: dict,
     audit: dict,
@@ -732,6 +801,16 @@ def _signal_rule_hits(
     def _outcome_excerpt(suffix: str = "") -> str:
         tail = f"; {error}" if error else ""
         return _truncate(f"outcome={outcome}{suffix}{tail}")
+
+    # Configuration change (#2056) — checked before the merge signals so the
+    # evidence that names it is attached to the class that explains it. Two
+    # independent sources: the run's own recorded provenance, and the dirty
+    # forge.yaml that a MERGE_FAILED outcome reports as a merge problem.
+    config_change = _configuration_change_evidence(
+        audit, outcome, error, summary_source, audit_source
+    )
+    if config_change is not None:
+        hits.append(config_change)
 
     if outcome == "MERGE_FAILED":
         hits.append(("merge_failed", summary_source, _outcome_excerpt()))
@@ -939,6 +1018,12 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
             "not a code defect requiring LLM diagnosis"
         ),
         "intake_shape": f"reshape the {ref} issue body to satisfy the intake gate, then re-run",
+        "configuration_changed": (
+            f"inspect the forge.yaml change recorded above (git log -p -- forge.yaml), commit "
+            f"or revert it, then re-run {ref} under the intended configuration — the "
+            "configuration changed while the story was in flight, so this is not a PR merge "
+            "problem and the PR is not where the cause is"
+        ),
         "merge_failed": _merge_failed_action(story, ref),
         "merge_arming_failed": (
             f"configure branch protection so auto-merge can arm, or merge {ref} manually"
@@ -975,7 +1060,13 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
     # A story that reached the merge queue produced a reviewed, PR-worthy commit;
     # its landing failed for a post-review reason. Iteration-budget advice there
     # names a cause the evidence contradicts (issue #1946).
-    iteration_advice_applies = primary not in {"iteration_exhaustion", "merge_failed"}
+    iteration_advice_applies = primary not in {
+        "iteration_exhaustion",
+        "merge_failed",
+        # Same reasoning as merge_failed: the story produced a landable commit and
+        # failed for a reason the iteration budget did not cause (#2056).
+        "configuration_changed",
+    }
     if "dev_iteration_limit" in contributing and iteration_advice_applies:
         actions.append("raise the dev iteration budget or narrow the story scope")
     if "review_iteration_limit" in contributing and iteration_advice_applies:

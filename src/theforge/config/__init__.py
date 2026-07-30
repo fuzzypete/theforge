@@ -35,6 +35,11 @@ from .models import (
     model_info_view,
     resolve_agent_spec,
 )
+from .provenance import (
+    ConfigProvenance,
+    build_provenance,
+    resolved_config_sha256,
+)
 from .types import (
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
@@ -76,6 +81,7 @@ __all__ = [
     "ApiFallbackConfig",
     "AssignmentConfig",
     "BackendConfig",
+    "ConfigProvenance",
     "DevConfig",
     "DevVerificationCommand",
     "DiagnoseConfig",
@@ -127,6 +133,9 @@ __all__ = [
     "SCRUBBED_CLI_LAUNCHERS",
     "SCRUBBED_ENV_VARS",
     "SCRUBBED_HOME_PATHS",
+    # provenance (#2056)
+    "build_provenance",
+    "resolved_config_sha256",
     # load
     "_validate_plan_provider",
     "load_config",
