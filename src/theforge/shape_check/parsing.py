@@ -48,8 +48,14 @@ def has_heading(body: str, pattern: str) -> bool:
     return find_heading(body, pattern) is not None
 
 
-def extract_section(body: str, heading_pattern: str) -> str | None:
-    """Return text from a matching heading up to the next heading of same-or-higher level."""
+def section_span(body: str, heading_pattern: str) -> tuple[int, int] | None:
+    """Return ``(start, end)`` offsets of a matching heading's section content.
+
+    ``start`` is the offset just past the end of the heading line; ``end`` is the
+    offset of the next heading of same-or-higher level, or ``len(body)``.
+    Returns ``None`` when no heading matches. Producers that need to insert text
+    into an existing section use this rather than re-deriving heading arithmetic.
+    """
     m = find_heading(body, heading_pattern)
     if not m:
         return None
@@ -57,14 +63,18 @@ def extract_section(body: str, heading_pattern: str) -> str | None:
     start = m.end()
     remainder = body[start:]
     # find next heading of level <= current
-    next_heading = None
     for nm in _HEADING_RE.finditer(remainder):
         if len(nm.group(1)) <= level:
-            next_heading = nm
-            break
-    if next_heading:
-        return remainder[: next_heading.start()]
-    return remainder
+            return start, start + nm.start()
+    return start, len(body)
+
+
+def extract_section(body: str, heading_pattern: str) -> str | None:
+    """Return text from a matching heading up to the next heading of same-or-higher level."""
+    span = section_span(body, heading_pattern)
+    if span is None:
+        return None
+    return body[span[0] : span[1]]
 
 
 def extract_ac_section(body: str) -> str | None:

@@ -286,6 +286,12 @@ def classify(title: str, body: str, labels: list[str]) -> ShapeProposal:
     else:
         proposed_labels = ()
 
+    # Only propose label edits that are actual deltas: a proposal that restates
+    # a label the issue already carries reads as a change the operator must
+    # apply, and makes `forge shape` exit non-zero on an issue that already
+    # satisfies the shape it is being checked against (#2053).
+    proposed_labels = tuple(label for label in proposed_labels if label.lower() not in label_set)
+
     return ShapeProposal(
         classification=primary,
         confidence=confidence,
