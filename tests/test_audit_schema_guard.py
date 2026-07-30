@@ -9,6 +9,7 @@ the writer produces and fails when that drifts without a corresponding
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ from theforge.config import (
     RetryPolicy,
     ValidationConfig,
     WorkspaceConfig,
+    build_provenance,
 )
 from theforge.coordinator import audit as audit_writer
 from theforge.coordinator import audit_substrate
@@ -103,7 +105,12 @@ def _collect_schema(value: object, path: str = "") -> dict[str, str]:
 def _make_config(tmp_path: Path) -> ForgeConfig:
     spec_path = tmp_path / "spec.md"
     spec_path.write_text("# spec", encoding="utf-8")
-    return ForgeConfig(
+    # A real run always loads its config from a file, so the pinned record must
+    # be the *populated* configuration-provenance shape (#2056) — pinning the
+    # null shape would let a writer that stopped recording identity pass.
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    config = ForgeConfig(
         project="test",
         project_root=tmp_path,
         workspace=WorkspaceConfig(
@@ -118,6 +125,7 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         synthesis_profile=None,
         retry=RetryPolicy(),
     )
+    return dataclasses.replace(config, provenance=build_provenance(config, config_path))
 
 
 def _populate_pinned_lists(state: CoordinatorState) -> None:

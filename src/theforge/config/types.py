@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .provenance import ConfigProvenance
+
 if TYPE_CHECKING:
     from .models import AgentDef, AgentSpec, TransportSpec
 
@@ -832,6 +834,11 @@ class ForgeConfig:
     model_registry_sources: dict[str, str] = field(default_factory=dict)
     custom_models: tuple[str, ...] = ()
     diagnose: DiagnoseConfig = field(default_factory=DiagnoseConfig)
+    # Identity of the configuration this object represents (#2056). Populated by
+    # load_config(); None for a directly-constructed config that never came from
+    # a file, which is exactly the "identity unknown" case the audit record must
+    # be able to state rather than fabricate.
+    provenance: ConfigProvenance | None = None
 
     @property
     def review_profile(self) -> ModelProfile:

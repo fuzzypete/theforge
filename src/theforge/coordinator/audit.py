@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from theforge.config import ForgeConfig
+from theforge.config import provenance as config_provenance
 from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
@@ -663,6 +664,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "start_phase": state.start_phase.name if state.start_phase else None,
             "stop_phase": state.stop_phase.name if state.stop_phase else None,
         },
+        # ── Configuration identity (#2056) ────────────────────────────────
+        # What this run was a run *of*: the configuration is part of the run's
+        # identity, so an outcome recorded without it cannot be compared against
+        # another run's outcome. Emitted for every run, with explicit nulls when
+        # identity is unknown.
+        "configuration": _build_configuration_block(config),
         "timing": {
             "started_at": state.started_at,
             "finished_at": finished_at_str,
@@ -1003,6 +1010,64 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "trust_checks": _build_trust_checks(state),
         "trust_status": derive_trust_status(_build_trust_checks(state)),
         **_build_phases_block(state, config),
+    }
+
+
+def _build_configuration_block(config: ForgeConfig) -> dict:
+    """Return the run's configuration-provenance block (#2056).
+
+    Names the configuration the run executed under — ``resolved_sha256``
+    distinguishes one revision from another (two runs with the same digest used
+    the same resolved configuration), ``source_path``/``source_sha256`` identify
+    the ``forge.yaml`` it came from at load time.
+
+    ``changed_during_run`` is decided here, at audit time, by re-reading the same
+    source file and comparing digests. That comparison is the point: a
+    configuration edit that lands mid-flight is a first-class event in the run's
+    own provenance rather than something reconstructible only by joining the
+    audit trail against ``git log``.
+
+    Never raises. A config that was never loaded from a file records a null
+    ``source_path``/``source_sha256`` — "no source identity" is a statement the
+    record must be able to make; a source file unreadable at finish records the
+    load-time identity plus ``finish_read_error``, so an absent digest is never
+    mistaken for an unchanged one.
+    """
+    provenance = getattr(config, "provenance", None)
+    source_path = getattr(provenance, "source_path", None)
+    source_sha256 = getattr(provenance, "source_sha256", None)
+
+    # Digested from the config object the coordinator actually held, not from the
+    # load-time value cached on the provenance: CLI overrides (--dev-model,
+    # --base-branch, --reviewers) rebuild the config after load, and a digest that
+    # ignored them would name a configuration this run did not execute under.
+    try:
+        resolved_sha256: str | None = config_provenance.resolved_config_sha256(config)
+    except Exception:  # pragma: no cover - identity must never break audit emission
+        resolved_sha256 = getattr(provenance, "resolved_sha256", None)
+
+    finish_sha256: str | None = None
+    finish_read_error: str | None = None
+    if source_path:
+        try:
+            finish_sha256 = config_provenance.file_sha256(Path(source_path))
+        except OSError as exc:
+            finish_read_error = f"{type(exc).__name__}: {exc}"
+
+    # Tri-state on purpose: True/False are claims backed by two digests; None
+    # means the comparison could not be made (no identity, or unreadable at
+    # finish) and must not read as "did not change".
+    changed_during_run: bool | None = None
+    if source_sha256 is not None and finish_sha256 is not None:
+        changed_during_run = finish_sha256 != source_sha256
+
+    return {
+        "source_path": source_path,
+        "source_sha256": source_sha256,
+        "resolved_sha256": resolved_sha256,
+        "source_sha256_at_finish": finish_sha256,
+        "changed_during_run": changed_during_run,
+        "finish_read_error": finish_read_error,
     }
 
 
