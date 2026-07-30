@@ -58,6 +58,58 @@ story and per phase. Stories the breaker cancels are recorded **SKIPPED** and
 attributed to the credential, not FAILED — the sprint killed them, no model
 judged them, and they contribute nothing to adaptive memory.
 
+### Landing precondition — clean project root (issue #2048)
+
+Under a landing workflow (`workspace.on_approve: merge`, or `--auto-merge`), a
+sprint refuses at entry when the project root has uncommitted changes, naming
+the offending paths:
+
+```
+LANDING PRECONDITION: uncommitted changes in project root /path/to/repo:  M forge.yaml.
+```
+
+The condition is the same one `_merge_branch` enforces at landing — untracked
+files included — moved to the point where it costs nothing. Before this check,
+a modified `forge.yaml` in the root let a story run dev and review to approval
+and then fail with `MERGE_FAILED`, leaving reviewed work stranded on its feature
+branch after the full spend. Remedy: commit, stash, or revert the change in the
+project root, then re-run. Each story re-evaluates the condition at its own
+entry, so dirtying the root mid-sprint stops the *next* story rather than
+costing it — that story escalates in WORKSPACE with the message above instead
+of running.
+
+Whether a story lands locally is decided per story, not per config value. A
+**dependency parent carried by this sprint** is merged locally to unblock its
+child, so those parents carry the precondition even under `on_approve: none` or
+`pr` — in sequential mode the parent is eager-merged, and in parallel mode the
+scheduler forces the merge after it returns. Two exceptions follow from how that
+resolution actually works, and both mean *no* refusal:
+
+- **`on_approve: merge-pr` in parallel mode.** The parent already has its own
+  landing, so the scheduler never rewrites it to a local merge; it lands through
+  its PR. Sequential mode still eager-merges it, so there the precondition
+  applies.
+- **`--auto-merge` in parallel mode.** The flag is dropped when
+  `max_parallel > 1`, so it cannot cause a local merge and the configured
+  landing path stands.
+
+Because of that, the sprint checks twice, and the log line names which pass
+refused:
+
+- `[sprint-entry]` — the configuration-level answer (`on_approve: merge` or
+  `--auto-merge`). Knowable immediately, so this one costs seconds.
+- `[dependency-resolved]` — the dependency-derived answer, asserted once the
+  satisfied and resume-triage sets say which parents will actually be
+  dispatched. Still ahead of intake remediation, batch preflight, and every
+  story dispatch, so nothing has been spent.
+
+A `depends_on` edge imposes nothing when it points at an **external** issue (not
+carried by this sprint) or at a parent already **satisfied** — merged into the
+base branch, or triaged `skip_merged` on resume. Those parents never run and
+never merge, so a PR-landing sprint whose only edges are of that kind runs
+against a dirty root untouched. Workflows where nothing merges into the local
+checkout are genuinely unaffected.
+
 ## 2. Branch & forward-port model
 
 - Fixes land on the **base branch**. `forward-port.yml` then auto-carries every

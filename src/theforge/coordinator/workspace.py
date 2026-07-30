@@ -28,6 +28,9 @@ run_agent = None
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
 
+# Cap on the porcelain excerpt quoted back to the operator in a dirty-root refusal.
+_DIRTY_ROOT_SUMMARY_LIMIT = 200
+
 # Matches setup_command templates that still contain the {forge_python} placeholder.
 # Captures the install command (group 1).  Matched BEFORE substitution so we never
 # have to parse shlex.quote() output — any valid interpreter path is accepted.
@@ -326,6 +329,86 @@ def _resolve_merge_conflicts(
     return True
 
 
+def project_root_dirty_status(project_root: Path) -> str:
+    """Porcelain status of the project-root checkout; ``""`` when clean.
+
+    A failing ``git status`` yields ``""``: a root we cannot inspect is not
+    evidence of dirt, and the landing check has always failed open there.
+
+    Single source of truth for the landing precondition so the entry-time
+    refusal and ``_merge_branch``'s refusal can never drift apart.
+    """
+    ok, out = _cu._run_shell("git status --porcelain", project_root)
+    if not ok:
+        return ""
+    return out.strip()
+
+
+def story_lands_in_project_root(
+    config: ForgeConfig,
+    *,
+    auto_merge: bool = False,
+    lands_in_project_root: bool | None = None,
+) -> bool:
+    """Whether this story's approval merges into the project-root checkout.
+
+    The default derivation mirrors ``completion._finalize_approve``: the
+    ``--auto-merge`` flag forces ``"merge"`` regardless of configuration, and no
+    other ``on_approve`` value (``pr``, ``merge-pr``, ``none``) ever touches that
+    checkout.
+
+    ``lands_in_project_root`` is the caller's own answer and wins when supplied.
+    The sprint scheduler has one: in parallel mode it rewrites a dependency
+    parent's landing to a local merge after the story returns
+    (``runner._attempt_integration``'s ``pending_integration`` conversion), so
+    the story's own ``auto_merge`` and ``on_approve`` understate the obligation.
+    """
+    if lands_in_project_root is not None:
+        return lands_in_project_root
+    return auto_merge or config.workspace.on_approve == "merge"
+
+
+def landing_precondition_error(
+    config: ForgeConfig,
+    *,
+    auto_merge: bool = False,
+    lands_in_project_root: bool | None = None,
+) -> str | None:
+    """Refusal message when the project root cannot accept a landing, else ``None``.
+
+    A dirty project root makes ``_merge_branch`` refuse *after* dev and review
+    have been paid for (#2048). The condition is knowable before any agent is
+    dispatched, so callers evaluate it at run entry — and re-evaluate it at each
+    story's entry, which is the first point a root dirtied mid-sprint can be
+    observed while the next story's spend is still avoidable.
+
+    Whether the story lands locally at all comes from
+    ``story_lands_in_project_root``; under workflows that never touch the
+    project-root checkout its cleanliness is not forge's business and this
+    returns ``None``.
+
+    The dirty condition mirrors ``_merge_branch`` exactly — untracked files
+    included — so anything refused here is something that would have been
+    refused at landing anyway.
+    """
+    if not story_lands_in_project_root(
+        config, auto_merge=auto_merge, lands_in_project_root=lands_in_project_root
+    ):
+        return None
+    if not (config.project_root / ".git").exists():
+        return None
+    dirty = project_root_dirty_status(config.project_root)
+    if not dirty:
+        return None
+    files = ", ".join(line.strip() for line in dirty.splitlines())[:_DIRTY_ROOT_SUMMARY_LIMIT]
+    return (
+        "LANDING PRECONDITION: uncommitted changes in project root "
+        f"{config.project_root}: {files}. An approved story cannot merge into a "
+        "dirty checkout — commit, stash, or revert these before running, so the "
+        "refusal does not arrive after dev and review have already been paid for."
+    )
+
+
 def _merge_branch(
     project_root: Path,
     base_branch: str,
@@ -354,9 +437,9 @@ def _merge_branch(
         _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
-    ok, dirty = _cu._run_shell("git status --porcelain", project_root)
-    if ok and dirty.strip():
-        info["error"] = f"Uncommitted changes in project root: {dirty.strip()[:200]}"
+    dirty = project_root_dirty_status(project_root)
+    if dirty:
+        info["error"] = f"Uncommitted changes in project root: {dirty[:_DIRTY_ROOT_SUMMARY_LIMIT]}"
         _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
