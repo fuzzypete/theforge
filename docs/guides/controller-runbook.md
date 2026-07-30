@@ -79,10 +79,14 @@ costing it — that story escalates in WORKSPACE with the message above instead
 of running.
 
 Whether a story lands locally is decided per story, not per config value. A
-**dependency parent in a parallel sprint** is forced into a local merge by the
-scheduler after it returns, even under `on_approve: none` or `pr`, so it carries
-the precondition too. Workflows where nothing merges into the local checkout are
-genuinely unaffected.
+**dependency parent carried by this sprint** is merged locally to unblock its
+child — in parallel mode the scheduler forces that merge after the parent
+returns — even under `on_approve: none` or `pr`, so those parents carry the
+precondition too. A `depends_on` edge pointing at an **external** issue (already
+merged, or simply not in this sprint) imposes nothing: no story here merges it,
+so a PR-landing sprint with only external edges runs against a dirty root
+untouched. Workflows where nothing merges into the local checkout are genuinely
+unaffected.
 
 ## 2. Branch & forward-port model
 

@@ -2527,6 +2527,15 @@ def run_sprint(
     }
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
 
+    # Dependency parents this sprint can actually dispatch and integrate itself.
+    # ``dependent_slugs`` is the raw edge target set, which also names external
+    # references — an issue already merged on main, or one this sprint does not
+    # carry. Those parents never run here and never merge into the project-root
+    # checkout, so a landing obligation derived from the raw set would refuse a
+    # PR-landing sprint whose only edge points outside the manifest (#2048
+    # review iteration 2).
+    in_manifest_dependency_parents = dependent_slugs & set(slug_to_context)
+
     # Stories of this sprint whose agent survived the re-exec. They stay in the
     # DAG and are dispatched like any other story, but through the deferred path
     # (``_run_inherited_story``): wait for the inherited agent, then resume from
@@ -2542,10 +2551,12 @@ def run_sprint(
     # its own effective_auto_merge. Parallel mode never eager-merges (see the
     # effective_am computation below, which forces False when max_parallel > 1);
     # sequential mode merges for --auto-merge and, independently of it, for any
-    # story other stories depend on.
+    # story other stories depend on — which is the in-manifest parent set, the
+    # same one ``effective_am`` tests per story. The raw edge-target set would
+    # also count purely external references, which no story here ever merges.
     _sprint_lands_locally = coordinator_workspace._base_branch_lands_locally(
         config,
-        auto_merge=(max_parallel <= 1 and (auto_merge or bool(dependent_slugs))),
+        auto_merge=(max_parallel <= 1 and (auto_merge or bool(in_manifest_dependency_parents))),
     )
 
     total = len(task_entries)
@@ -2687,10 +2698,17 @@ def run_sprint(
     # suppresses itself in parallel mode: parallel stories skip the *eager*
     # merge but still land through the integration step, so on_approve == "merge"
     # merges locally regardless of max_parallel. Dependency parents merge locally
-    # in sequential mode even without --auto-merge, hence dependent_slugs.
+    # even without --auto-merge, hence in_manifest_dependency_parents — the
+    # in-manifest set, because an edge pointing at an external issue produces no
+    # local merge and must not refuse a sprint that never lands here.
     if _project_root_is_git_checkout(config.project_root):
         _landing_block = coordinator_workspace.landing_precondition_error(
-            config, auto_merge=(auto_merge or bool(dependent_slugs))
+            config,
+            lands_in_project_root=(
+                auto_merge
+                or config.workspace.on_approve == "merge"
+                or bool(in_manifest_dependency_parents)
+            ),
         )
         if _landing_block is not None:
             _log(f"✗ SPRINT ABORT  {_landing_block}")
@@ -4061,7 +4079,7 @@ def run_sprint(
                 _story_lands_in_root = (
                     effective_am
                     or config.workspace.on_approve == "merge"
-                    or task.slug in dependent_slugs
+                    or task.slug in in_manifest_dependency_parents
                 )
 
                 spec_str = slug_to_spec[task.slug]

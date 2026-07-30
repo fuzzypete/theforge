@@ -18,6 +18,7 @@ condition being evaluated at the points where the spend can still be avoided:
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -394,3 +395,90 @@ def test_parallel_dependency_parent_dispatched_with_landing_obligation(tmp_path:
     assert parent_kwargs["lands_in_project_root"] is True, (
         "dependency parent dispatched without its scheduler-forced landing obligation"
     )
+
+
+# ── Sprint entry: the obligation follows in-manifest dependency parents ──
+
+
+def _dependency_sprint(
+    tmp_path: Path, *, on_approve: str, dep: str, in_manifest_parent: bool
+) -> tuple[ForgeConfig, Path]:
+    """A dirty-rooted sprint whose only dependency edge is `dep`."""
+    from tests.test_sprint_resume import _make_config as _make_sprint_config
+    from tests.test_sprint_resume import _make_spec_file
+
+    config = _make_sprint_config(tmp_path)
+    config = replace(config, workspace=replace(config.workspace, on_approve=on_approve))
+    (tmp_path / ".git").mkdir(exist_ok=True)
+
+    specs = []
+    if in_manifest_parent:
+        specs.append(_make_spec_file(tmp_path, "Parent", dep).name)
+    specs.append(_make_spec_file(tmp_path, "Child", "child", depends_on=[dep]).name)
+
+    manifest = tmp_path / "sprint.yaml"
+    manifest.write_text(
+        "name: Test Sprint\nbudget_usd: 10.0\nspecs:\n" + "".join(f"  - {s}\n" for s in specs),
+        encoding="utf-8",
+    )
+    return config, manifest
+
+
+def _entry_patches(satisfied: set[str]):
+    return (
+        patch("theforge.sprint.runner._scrub_root_forge_artifacts"),
+        patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+        patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell(DIRTY)),
+        patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "duration_seconds": 0.0, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.resolve_satisfied_dependencies", return_value=satisfied),
+        patch(
+            "theforge.sprint.runner.run_batch_preflight",
+            side_effect=RuntimeError("stop after baseline"),
+        ),
+    )
+
+
+def test_external_satisfied_dependency_does_not_impose_a_landing_obligation(
+    tmp_path: Path,
+) -> None:
+    """A PR-landing sprint whose only edge points outside the manifest must run.
+
+    The dependency target is an already-satisfied external issue: no story here
+    merges into the project-root checkout, so its dirtiness is not forge's
+    business and refusing would block a workflow that cannot hit the landing
+    failure (#2048 review iteration 2).
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path, on_approve="pr", dep="external-issue", in_manifest_parent=False
+    )
+
+    with ExitStack() as stack:
+        for cm in _entry_patches({"external-issue"}):
+            stack.enter_context(cm)
+        # Reaching the baseline gate proves the entry check did not refuse.
+        with pytest.raises(RuntimeError, match="stop after baseline"):
+            run_sprint(config, manifest)
+
+
+def test_in_manifest_dependency_parent_still_imposes_a_landing_obligation(
+    tmp_path: Path,
+) -> None:
+    """A parent carried by this sprint is merged locally to unblock its child.
+
+    on_approve is "pr" and --auto-merge is off, so only the dependency edge
+    reveals the landing — the sprint must still refuse a dirty root.
+    """
+    config, manifest = _dependency_sprint(
+        tmp_path, on_approve="pr", dep="parent", in_manifest_parent=True
+    )
+
+    with ExitStack() as stack:
+        for cm in _entry_patches(set()):
+            stack.enter_context(cm)
+        with pytest.raises(RuntimeError, match="forge.yaml"):
+            run_sprint(config, manifest)
