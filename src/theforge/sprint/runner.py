@@ -968,6 +968,33 @@ def _project_root_is_git_checkout(project_root: Path) -> bool:
     return git_dir_check.returncode == 0
 
 
+def _refuse_dirty_root_before_spend(
+    config: ForgeConfig, *, lands_in_project_root: bool, stage: str
+) -> None:
+    """Abort the sprint when the project root cannot accept the landing it owes.
+
+    Called at two points, each as soon as the obligation it tests becomes
+    knowable: ``sprint-entry`` for the configuration-level signals, and
+    ``dependency-resolved`` once the satisfied and resume-triage sets say which
+    in-manifest dependency parents will actually be dispatched and merged. Both
+    run ahead of every agent spend, so the operator learns of a dirty root
+    instead of paying dev and review and meeting the refusal at landing (#2048).
+
+    ``stage`` is logged with the refusal so the audit trail records which pass
+    fired — the two answer different questions and a misfire is diagnosed by
+    knowing which one spoke.
+    """
+    if not lands_in_project_root:
+        return
+    if not _project_root_is_git_checkout(config.project_root):
+        return
+    block = coordinator_workspace.landing_precondition_error(config, lands_in_project_root=True)
+    if block is None:
+        return
+    _log(f"✗ SPRINT ABORT  [{stage}] {block}")
+    raise RuntimeError(block)
+
+
 #: ``GateLabel.purpose`` for the pre-sprint merge-base gate.
 BASELINE_GATE_PURPOSE = "baseline gate"
 
@@ -1566,6 +1593,7 @@ def _run_fresh(
     *,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
@@ -1600,6 +1628,7 @@ def _run_fresh(
                 defer_landing=True,
                 stop_event=stop_event,
                 base_lands_locally=base_lands_locally,
+                lands_in_project_root=lands_in_project_root,
             )
         return run_task(
             config,
@@ -1614,6 +1643,7 @@ def _run_fresh(
             defer_landing=True,
             stop_event=stop_event,
             base_lands_locally=base_lands_locally,
+            lands_in_project_root=lands_in_project_root,
         )
 
     # Phase 1: run through PLAN only
@@ -1631,6 +1661,7 @@ def _run_fresh(
         defer_landing=True,
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
     if not plan_result.success:
@@ -1668,6 +1699,7 @@ def _run_fresh(
         defer_landing=True,
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
 
@@ -1687,6 +1719,7 @@ def _run_single_story(
     preflight_states: dict[str, CoordinatorState] | None = None,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -1723,6 +1756,7 @@ def _run_single_story(
                     defer_landing=True,
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
+                    lands_in_project_root=lands_in_project_root,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -1739,6 +1773,7 @@ def _run_single_story(
                     defer_landing=True,
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
+                    lands_in_project_root=lands_in_project_root,
                 )
             else:
                 result = _run_fresh(
@@ -1755,6 +1790,7 @@ def _run_single_story(
                     preflight_states,
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
+                    lands_in_project_root=lands_in_project_root,
                 )
         else:
             result = _run_fresh(
@@ -1771,6 +1807,7 @@ def _run_single_story(
                 preflight_states,
                 stop_event=stop_event,
                 base_lands_locally=base_lands_locally,
+                lands_in_project_root=lands_in_project_root,
             )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
@@ -1811,6 +1848,7 @@ def _run_inherited_story(
     preflight_states: dict[str, CoordinatorState] | None = None,
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
     *,
     canonical_ref: str,
     quiesce_timeout: float,
@@ -1890,6 +1928,7 @@ def _run_inherited_story(
         preflight_states,
         stop_event,
         base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
     )
 
 
@@ -2515,6 +2554,40 @@ def run_sprint(
     }
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
 
+    # Dependency parents this sprint can actually dispatch and integrate itself.
+    # ``dependent_slugs`` is the raw edge target set, which also names external
+    # references — an issue already merged on main, or one this sprint does not
+    # carry. Those parents never run here and never merge into the project-root
+    # checkout, so a landing obligation derived from the raw set would refuse a
+    # PR-landing sprint whose only edge points outside the manifest (#2048
+    # review iteration 2).
+    in_manifest_dependency_parents = dependent_slugs & set(slug_to_context)
+
+    # Which landing paths in this sprint actually merge into the project-root
+    # checkout? Both flags mirror the effective-mode resolution the workers
+    # reach (``effective_am`` below → ``completion._finalize_approve``), because
+    # a landing precondition asserted for a merge that never happens refuses
+    # work forge could have done.
+    #
+    #   * ``on_approve: merge`` merges locally in either mode.
+    #   * ``--auto-merge`` forces ``"merge"`` only where the flag survives to
+    #     the worker. ``effective_am`` is hard-False in parallel mode, so the
+    #     flag is dropped there and nothing merges locally on its account.
+    #   * A dependency parent merges locally in sequential mode — ``effective_am``
+    #     forces ``"merge"`` for it whatever ``on_approve`` says — and in
+    #     parallel mode through the scheduler's ``pending_integration``
+    #     conversion. That conversion fires only for a story that produced no
+    #     landing of its own (``landing_status is None``), i.e. ``on_approve``
+    #     ``"pr"`` or ``"none"``. Under ``"merge-pr"`` the parent lands through
+    #     its own PR and never touches the project-root checkout — the same
+    #     carve-out the ``auto_enabled_dependency_merges`` warning makes below.
+    config_lands_in_project_root = config.workspace.on_approve == "merge" or (
+        auto_merge and max_parallel <= 1
+    )
+    dependency_parents_land_in_project_root = (
+        max_parallel <= 1 or config.workspace.on_approve != "merge-pr"
+    )
+
     # Stories of this sprint whose agent survived the re-exec. They stay in the
     # DAG and are dispatched like any other story, but through the deferred path
     # (``_run_inherited_story``): wait for the inherited agent, then resume from
@@ -2530,10 +2603,12 @@ def run_sprint(
     # its own effective_auto_merge. Parallel mode never eager-merges (see the
     # effective_am computation below, which forces False when max_parallel > 1);
     # sequential mode merges for --auto-merge and, independently of it, for any
-    # story other stories depend on.
+    # story other stories depend on — which is the in-manifest parent set, the
+    # same one ``effective_am`` tests per story. The raw edge-target set would
+    # also count purely external references, which no story here ever merges.
     _sprint_lands_locally = coordinator_workspace._base_branch_lands_locally(
         config,
-        auto_merge=(max_parallel <= 1 and (auto_merge or bool(dependent_slugs))),
+        auto_merge=(max_parallel <= 1 and (auto_merge or bool(in_manifest_dependency_parents))),
     )
 
     total = len(task_entries)
@@ -2667,6 +2742,27 @@ def run_sprint(
         _sprint_id = _get_or_create_sprint_id(resolved.name, config.project_root)
     except Exception:
         pass
+
+    # Landing precondition, first pass: a dirty project root makes every local
+    # merge refuse, and discovering that at landing means the story's full
+    # dev+review spend is already sunk (#2048). Only the configuration-level
+    # answer is used here, because it is the only one knowable this early. It
+    # deliberately differs from _sprint_lands_locally, which suppresses itself
+    # in parallel mode: parallel stories skip the *eager* merge but still land
+    # through the integration step, so on_approve == "merge" merges locally
+    # regardless of max_parallel.
+    #
+    # The dependency-derived obligation is NOT evaluated here. Whether an
+    # in-manifest parent actually merges depends on the satisfied and
+    # resume-triage sets, which are only resolved further down — asserting it
+    # now would refuse sprints whose parent is already merged and will never be
+    # dispatched. That term is checked at the "dependency-resolved" pass below,
+    # still ahead of every agent spend.
+    _refuse_dirty_root_before_spend(
+        config,
+        lands_in_project_root=config_lands_in_project_root,
+        stage="sprint-entry",
+    )
 
     if not no_pull and _project_root_is_git_checkout(config.project_root):
         coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
@@ -2993,6 +3089,31 @@ def run_sprint(
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
+
+    # Landing precondition, dependency-resolved pass. A dependency parent this
+    # sprint carries is merged into the project-root checkout to unblock its
+    # child — but only when two things hold, and both are false often enough
+    # that asserting either one alone refuses work forge could have done:
+    #
+    #   1. The parent is actually dispatched. One already satisfied (closed
+    #      dependency, branch merged into base) or triaged skip_merged on resume
+    #      never runs and never merges (#2048 review iteration 3). Both sets are
+    #      known now, and nothing has been spent: intake remediation, batch
+    #      preflight, and story dispatch are all still ahead.
+    #   2. The sprint's landing path for parents is a local merge at all — see
+    #      dependency_parents_land_in_project_root. A parallel merge-pr sprint
+    #      lands its parent through that parent's own PR and never touches the
+    #      project-root checkout (#2048 review iteration 4).
+    _dispatchable_dependency_parents = (
+        in_manifest_dependency_parents - satisfied_slugs - skip_slugs
+    )
+    _refuse_dirty_root_before_spend(
+        config,
+        lands_in_project_root=(
+            bool(_dispatchable_dependency_parents) and dependency_parents_land_in_project_root
+        ),
+        stage="dependency-resolved",
+    )
 
     # Surface the current sprint phase to forge status --watch so operators
     # see meaningful progress signals during the multi-minute pre-init window.
@@ -4023,6 +4144,24 @@ def run_sprint(
                     False if max_parallel > 1 else (auto_merge or task.slug in dependent_slugs)
                 )
 
+                # Will *this* story's approval merge into the project-root
+                # checkout? effective_am alone understates it: a parallel
+                # dependency parent is forced into a local merge by the
+                # scheduler after it returns (see the pending_integration
+                # conversion below), so with on_approve "none" or "pr" the
+                # worker would otherwise see no landing obligation, run dev and
+                # review, and only then meet the dirty-root refusal (#2048).
+                # It also overstates it, hence the dependency_parents_ guard: a
+                # parallel merge-pr parent lands through its PR, not here.
+                _story_lands_in_root = (
+                    effective_am
+                    or config_lands_in_project_root
+                    or (
+                        task.slug in in_manifest_dependency_parents
+                        and dependency_parents_land_in_project_root
+                    )
+                )
+
                 spec_str = slug_to_spec[task.slug]
                 triage = triages.get(spec_str) if resume else None
                 # A story whose agent survived the re-exec is dispatched through
@@ -4068,7 +4207,10 @@ def run_sprint(
                 )
                 stop_evt = threading.Event()
                 stop_events[task.slug] = stop_evt
-                _dispatch_kwargs: dict = {"base_lands_locally": _sprint_lands_locally}
+                _dispatch_kwargs: dict = {
+                    "base_lands_locally": _sprint_lands_locally,
+                    "lands_in_project_root": _story_lands_in_root,
+                }
                 if _inherited:
                     _dispatch_fn = _run_inherited_story
                     _dispatch_kwargs["canonical_ref"] = spec_str
