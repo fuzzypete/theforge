@@ -258,6 +258,16 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.retry.max_plan_review_parse_retries == 0
 
+    def test_diagnose_parse_retries_default(self, tmp_path):
+        config_path = _write_config({"retry": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.max_diagnose_parse_retries == 2
+
+    def test_diagnose_parse_retries_override(self, tmp_path):
+        config_path = _write_config({"retry": {"max_diagnose_parse_retries": 0}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.max_diagnose_parse_retries == 0
+
     def test_auto_model_escalation_defaults_false(self, tmp_path):
         config_path = _write_config({"retry": {}}, tmp_path)
         config = load_config(config_path)

@@ -7,6 +7,8 @@ plan describes how to *act on* a known cause; diagnose describes how to
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import yaml
 
 from theforge.diagnose_types import (
@@ -69,6 +71,14 @@ Mode: {mode}
 
 == OUTPUT FORMAT ==
 
+{output_format}
+"""
+
+# The requested serialization contract, factored out of the investigation prompt
+# so the parse-retry prompt (:func:`build_diagnose_reformat_prompt`) restates the
+# *same* contract verbatim. A retry that quoted a drifted copy of the schema
+# would be asking for a different document than the one the parser accepts.
+_DIAGNOSE_OUTPUT_FORMAT = """\
 Emit a single fenced YAML block.  Required keys:
 
 ```yaml
@@ -120,6 +130,41 @@ related_findings:
   - summary: "<one-line description of a separate adjacent defect>"
     related: "<owning/related issue ref, e.g. '#1649', or empty>"
 ```
+"""
+
+_DIAGNOSE_REFORMAT_PROMPT_TEMPLATE = """\
+Your previous diagnosis output could not be parsed as YAML:
+
+{parse_error}
+
+Your INVESTIGATION is finished and its CONTENT is correct — the confirmed cause,
+the hypotheses, the evidence, and the fix-success criterion are what you meant to
+say.  ONLY the ENCODING (YAML serialization) is broken.  Re-emit the SAME
+diagnosis with the syntax error fixed.
+
+Preserve your previous output verbatim:
+  - Keep the SAME confirmed_cause, word for word.  Do NOT re-scope it.
+  - Keep EVERY hypothesis, with the same statement, status, and evidence.
+  - Keep EVERY inspected_files entry, premise_anchors entry, and
+    related_findings entry.
+  - Keep the same notes.
+
+Dropping or altering a value to make the parse error go away is a WRONG
+response.  If a scalar failed to parse, fix its QUOTING/ESCAPING — the usual
+culprit is an unterminated quoted string or a colon inside an unquoted value.
+Prefer a block scalar (``key: |``) or single quotes for any multi-line or
+punctuation-heavy value.  Do NOT delete the value, do NOT empty an optional
+field such as ``related_findings`` to sidestep the error, and do NOT weaken a
+confirmed cause into an inconclusive one.
+
+Do NOT investigate anything further.  Do NOT read files, run commands, or revise
+your conclusions.  This turn is a serialization repair and nothing else.
+
+{output_format}
+
+Your previous output (fix its YAML syntax, keep its content):
+
+{original_output}
 """
 
 
@@ -234,6 +279,29 @@ def build_diagnose_prompt(
         mode=mode,
         starting_evidence=evidence_block,
         environment=build_environment_briefing(),
+        output_format=_DIAGNOSE_OUTPUT_FORMAT,
+    )
+
+
+def build_diagnose_reformat_prompt(*, original_output: str, parse_error: str) -> str:
+    """Return a reformat-only retry prompt for unparseable diagnose output.
+
+    A completed investigation is the expensive part of a diagnose run; a YAML
+    syntax slip in its serialization is the cheap part.  This prompt asks the
+    agent for *serialization repair only*: it hands back the agent's verbatim
+    prior emission plus the parser's error and restates the same output contract,
+    so the reachable response is "the same diagnosis, correctly encoded".
+
+    It deliberately does NOT ask for renewed investigation (which would spend the
+    budget again for a result already produced) and does NOT relax the schema
+    (dropping the field that failed to encode is named as a wrong answer).  The
+    parser stays strict on the retry output — a retry earns its way in by
+    producing conforming YAML, never by having the contract widened for it.
+    """
+    return _DIAGNOSE_REFORMAT_PROMPT_TEMPLATE.format(
+        parse_error=parse_error or "(no parser detail available)",
+        output_format=_DIAGNOSE_OUTPUT_FORMAT,
+        original_output=original_output or "(previous output was empty)",
     )
 
 
@@ -256,6 +324,21 @@ def _extract_yaml_block(output: str) -> str:
     return output
 
 
+@dataclass(frozen=True)
+class DiagnoseParseOutcome:
+    """Result of one strict parse attempt over diagnose agent output.
+
+    ``artifact`` is None exactly when the output did not yield a YAML mapping;
+    ``error`` then carries the concrete reason (the ``yaml.YAMLError`` message, or
+    the non-mapping root shape).  Callers need that distinction to tell a
+    recoverable serialization defect — worth one reformat retry — from an agent
+    that emitted no diagnosis at all.
+    """
+
+    artifact: DiagnosisArtifact | None
+    error: str = ""
+
+
 def parse_diagnose_output(
     output: str,
     *,
@@ -267,14 +350,41 @@ def parse_diagnose_output(
     Returns None when the YAML cannot be parsed at all.  When the YAML is
     parseable but missing fields, returns an artifact with empty strings for
     missing values; the caller decides what to do with an incomplete artifact.
+
+    Thin wrapper over :func:`parse_diagnose_output_result` for callers that only
+    need the artifact-or-None answer.
+    """
+    return parse_diagnose_output_result(
+        output, issue_number=issue_number, partial=partial
+    ).artifact
+
+
+def parse_diagnose_output_result(
+    output: str,
+    *,
+    issue_number: int,
+    partial: bool = False,
+) -> DiagnoseParseOutcome:
+    """Strictly parse agent output, reporting *why* a parse failed.
+
+    Parsing is unchanged and remains the artifact integrity boundary: a document
+    that is not a YAML mapping is still rejected.  The only addition over
+    :func:`parse_diagnose_output` is that the rejection reason is returned instead
+    of discarded, so the diagnose flow can put it in the audit trail and in a
+    bounded reformat-retry prompt.
     """
     yaml_text = _extract_yaml_block(output)
     try:
         parsed = yaml.safe_load(yaml_text)
-    except yaml.YAMLError:
-        return None
+    except yaml.YAMLError as exc:
+        detail = " ".join(str(exc).split())
+        return DiagnoseParseOutcome(None, f"YAML syntax error: {detail}")
     if not isinstance(parsed, dict):
-        return None
+        return DiagnoseParseOutcome(
+            None,
+            "YAML block did not parse to a mapping of diagnosis keys "
+            f"(root was {type(parsed).__name__}).",
+        )
 
     raw_hypotheses = parsed.get("hypotheses") or []
     hypotheses: list[Hypothesis] = []
@@ -351,7 +461,7 @@ def parse_diagnose_output(
             seen_related.add(key)
             related.append(RelatedFinding(summary=summary, related=ref))
 
-    return DiagnosisArtifact(
+    artifact = DiagnosisArtifact(
         issue_number=issue_number,
         observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
         reproduction_or_evidence=str(parsed.get("reproduction_or_evidence", "")).strip(),
@@ -365,3 +475,4 @@ def parse_diagnose_output(
         premise_anchors=tuple(anchors),
         related_findings=tuple(related),
     )
+    return DiagnoseParseOutcome(artifact)
