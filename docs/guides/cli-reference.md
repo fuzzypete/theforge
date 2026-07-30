@@ -502,6 +502,26 @@ forge diagnose --issue <issue> --interactive
 [Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full
 `capture → shape → diagnose → groom → ready` sequence.
 
+**Recovering a run that failed at PARSE.** A completed investigation is the
+expensive part of a diagnose run, so a syntax error in the YAML it emits does not
+discard it:
+
+- The agent's **complete** output is written to
+  `.forge/audits/diagnose-issue-<N>-<run-id>.raw.txt` before the first parse
+  attempt, on both the success and the failure path. The audit YAML's
+  `agent.raw_output_tail` is a bounded preview; `agent.raw_output_path`,
+  `agent.raw_output_paths`, `agent.raw_output_chars`, and
+  `agent.raw_output_sha256` point at the full copy on disk.
+- Unparseable output triggers up to `retry.max_diagnose_parse_retries`
+  (default 2) **reformat-only** retries: the agent gets its own output back plus
+  the parser error and is asked to re-serialize the same diagnosis — it does not
+  re-investigate. Each attempt writes its own
+  `…-<run-id>.raw.retry<N>.txt` sidecar and one `agent.parse_retries[]` audit
+  entry with the parse error, cost, duration, and outcome.
+- If the retries are exhausted the run still fails, but the diagnosis is
+  readable from the sidecar and can be applied by hand with `gh issue edit`
+  rather than paying for a second investigation.
+
 ---
 
 ## `forge groom`

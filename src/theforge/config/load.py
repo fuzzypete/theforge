@@ -943,6 +943,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_plan_transport_retries=int(retry_data.get("max_plan_transport_retries", 2)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
+        max_diagnose_parse_retries=int(retry_data.get("max_diagnose_parse_retries", 2)),
         max_plan_review_transport_retries=int(
             retry_data.get("max_plan_review_transport_retries", 2)
         ),

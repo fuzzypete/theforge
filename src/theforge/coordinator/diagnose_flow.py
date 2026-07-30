@@ -48,7 +48,12 @@ from theforge.diagnose_types import (
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
-from theforge.task.diagnose_prompts import build_diagnose_prompt, parse_diagnose_output
+from theforge.task.diagnose_prompts import (
+    DiagnoseParseOutcome,
+    build_diagnose_prompt,
+    build_diagnose_reformat_prompt,
+    parse_diagnose_output_result,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -451,6 +456,82 @@ def _audit_dir(project_root: Path) -> Path:
     return project_root / ".forge" / "audits"
 
 
+def diagnose_raw_output_path(
+    project_root: Path, issue_number: int, run_id: str, *, attempt: int = 0
+) -> Path:
+    """Return the deterministic sidecar path for a run's complete agent output.
+
+    Sits beside the run's audit YAML under ``.forge/audits`` and shares its
+    ``diagnose-issue-{N}-{run_id}`` stem, so an operator holding an audit file can
+    find the raw output without a search. ``attempt`` 0 is the investigation's own
+    output; a reformat parse retry writes to its own numbered sidecar rather than
+    overwriting attempt 0, because the original emission is the evidence that
+    distinguishes an agent serialization defect from a parser defect.
+    """
+    stem = f"diagnose-issue-{issue_number}-{run_id}"
+    suffix = ".raw.txt" if attempt <= 0 else f".raw.retry{attempt}.txt"
+    return _audit_dir(project_root) / f"{stem}{suffix}"
+
+
+def _write_output_sidecar(
+    state: DiagnoseState, project_root: Path, text: str, attempt: int
+) -> tuple[Path | None, str]:
+    """Write one agent emission to its numbered sidecar. Returns ``(path, error)``.
+
+    Records the path on ``state.raw_output_paths`` so every emission this run paid
+    for is enumerable from the audit, whether or not it parsed.
+    """
+    if not text:
+        return None, ""
+    path = diagnose_raw_output_path(
+        project_root, state.issue_number, state.run_id, attempt=attempt
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        return None, f"failed to persist agent output to {path}: {exc}"
+    if str(path) not in state.raw_output_paths:
+        state.raw_output_paths.append(str(path))
+    return path, ""
+
+
+def persist_agent_output(
+    state: DiagnoseState, project_root: Path, *, attempt: int = 0, emit=None
+) -> Path | None:
+    """Write the agent's full output to its sidecar; record provenance on ``state``.
+
+    The audit's ``raw_output_tail`` is bounded at 2000 characters — enough to
+    glance at, not enough to recover from. A run that spent budget and produced
+    content must persist that content in full: without it a failure record cannot
+    distinguish an agent defect from a parser defect, and a substantively complete
+    diagnosis dies with the process (#2055).
+
+    ``state.raw_output_*`` always describes whatever ``state.agent_output``
+    currently holds, so the recorded digest matches the recorded path.
+
+    Best-effort — an unwritable sidecar never fails the run, but the error is
+    recorded on ``state`` so the audit does not claim a file that is not there.
+    Returns the path written, or None.
+    """
+    if not state.agent_output:
+        return None
+    path, error = _write_output_sidecar(state, project_root, state.agent_output, attempt)
+    if path is None:
+        state.raw_output_path = ""
+        state.raw_output_error = error
+        if emit is not None and error:
+            emit(f"  [diagnose] WARNING: {error}")
+        return None
+    state.raw_output_error = ""
+    state.raw_output_path = str(path)
+    state.raw_output_chars = len(state.agent_output)
+    state.raw_output_sha256 = hashlib.sha256(state.agent_output.encode("utf-8")).hexdigest()
+    if emit is not None:
+        emit(f"  [diagnose] full agent output persisted ({state.raw_output_chars} chars): {path}")
+    return path
+
+
 def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
     """Write the audit YAML for a diagnose run.
 
@@ -478,6 +559,14 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "duration_s": round(state.agent_duration_s, 3),
             "failure_code": state.agent_failure_code,
             "raw_output_tail": state.agent_output[-2000:] if state.agent_output else "",
+            # Full-output recoverability (#2055): the tail above is for a quick
+            # glance; these fields point at the complete output on disk.
+            "raw_output_path": state.raw_output_path,
+            "raw_output_paths": list(state.raw_output_paths),
+            "raw_output_chars": state.raw_output_chars,
+            "raw_output_sha256": state.raw_output_sha256,
+            "raw_output_error": state.raw_output_error,
+            "parse_retries": [dict(entry) for entry in state.parse_retries],
         },
         "landing": {
             "destination": state.landing_destination,
@@ -712,6 +801,157 @@ def _land_artifact(
     )
     out_path.write_text(full, encoding="utf-8")
     return str(out_path)
+
+
+# ── Parse retry ───────────────────────────────────────────────────────
+# A completed investigation is the expensive part of a diagnose run; a YAML
+# syntax slip in its serialization is the cheap part. Before #2055 the cheap
+# failure destroyed the expensive result: one unterminated quoted scalar in an
+# optional field discarded a confirmed cause, its hypotheses and its evidence,
+# with no retry and only a 2000-character tail retained. This is the review
+# path's per-reviewer parse retry (review_pool._build_review_retry_prompt) applied
+# to the one flow that has no pool to fall back on.
+
+
+def _accumulate_retry_cost(state: DiagnoseState, cost: float | None) -> None:
+    """Fold one retry's cost into the run total without faking a measurement.
+
+    An unmeasured retry (``None``) makes the run's *total* unknown: leaving the
+    pre-retry number in place would record the retry's real spend as free. Once
+    unknown, the total stays unknown — a later measured retry cannot recover the
+    missing one.
+    """
+    if cost is None:
+        state.agent_cost_usd = None
+        return
+    if state.agent_cost_usd is None:
+        return
+    state.agent_cost_usd += cost
+
+
+def _retry_diagnose_parse(
+    *,
+    state: DiagnoseState,
+    initial: DiagnoseParseOutcome,
+    issue_number: int,
+    partial: bool,
+    config: ForgeConfig,
+    project_root: Path,
+    profile: ModelProfile,
+    emit: "callable",
+) -> DiagnoseParseOutcome:
+    """Ask the agent to re-serialize its completed investigation, bounded by config.
+
+    Runs at most ``config.retry.max_diagnose_parse_retries`` reformat-only
+    invocations against the same profile and runner path as the investigation.
+    The investigation itself is NOT re-run: each attempt hands the agent back its
+    own verbatim output plus the parser's error and asks for serialization repair.
+
+    Parsing stays strict on every attempt, and ``state.agent_output`` is replaced
+    only by a retry output that actually parses — a failed repair must not
+    overwrite the original investigation an operator may still want to salvage.
+    Every attempt is appended to ``state.parse_retries`` so the audit shows what
+    was retried, what it cost, and whether it worked.
+
+    Returns the first parsing outcome, or the last failure when the budget is
+    exhausted (``max_diagnose_parse_retries: 0`` returns ``initial`` untouched).
+
+    Two cases return ``initial`` without spending anything, because there is no
+    completed investigation to re-serialize: an agent that emitted nothing at all
+    (the timeout/kill shape — the content floor downstream reports that as
+    "produced no diagnosis"), and a run that has already breached its budget
+    envelope, where more spend is exactly what the envelope forbids.
+    """
+    if not state.agent_output.strip():
+        emit(
+            "  [diagnose] agent emitted no output — no serialization to repair, "
+            "skipping reformat retry"
+        )
+        return initial
+    if (
+        state.agent_cost_usd is not None
+        and state.agent_cost_usd > config.diagnose.budget_usd * 1.05
+    ):
+        emit(
+            f"  [diagnose] budget ${config.diagnose.budget_usd} already exceeded — "
+            "skipping reformat retry"
+        )
+        return initial
+    max_retries = max(0, int(config.retry.max_diagnose_parse_retries))
+    parsed = initial
+    for attempt in range(1, max_retries + 1):
+        emit(
+            f"  ↻ [diagnose] agent output failed YAML parse — reformat retry "
+            f"{attempt}/{max_retries}: {parsed.error[:160]}"
+        )
+        record: dict = {
+            "attempt": attempt,
+            "parse_error": parsed.error,
+            "cost_usd": None,
+            "duration_s": 0.0,
+            "success": False,
+        }
+        prompt = build_diagnose_reformat_prompt(
+            original_output=state.agent_output, parse_error=parsed.error
+        )
+        t0 = time.monotonic()
+        try:
+            retry_result = _run_agent_with_heartbeat(
+                prompt=prompt,
+                profile=profile,
+                working_dir=project_root,
+                secrets=config.secrets,
+                on_heartbeat=emit,
+            )
+        except Exception as exc:
+            duration = time.monotonic() - t0
+            state.agent_duration_s += duration
+            record["duration_s"] = round(duration, 3)
+            record["error"] = f"reformat retry crashed: {exc}"
+            state.parse_retries.append(record)
+            emit(f"  [diagnose] reformat retry {attempt} crashed: {exc}")
+            break
+
+        duration = time.monotonic() - t0
+        state.agent_duration_s += duration
+        record["duration_s"] = round(duration, 3)
+        raw_cost = getattr(retry_result, "cost_usd", None)
+        cost = float(raw_cost) if raw_cost is not None else None
+        record["cost_usd"] = round(cost, 6) if cost is not None else None
+        _accumulate_retry_cost(state, cost)
+        retry_output = getattr(retry_result, "output", "") or ""
+        record["output_chars"] = len(retry_output)
+        record["output_tail"] = retry_output[-2000:]
+        if not getattr(retry_result, "success", False):
+            record["failure_code"] = getattr(retry_result, "failure_code", None)
+
+        candidate = parse_diagnose_output_result(
+            retry_output, issue_number=issue_number, partial=partial
+        )
+        if candidate.artifact is not None:
+            state.agent_output = retry_output
+            record["success"] = True
+            path = persist_agent_output(state, project_root, attempt=attempt, emit=emit)
+            record["output_path"] = str(path) if path is not None else ""
+            state.parse_retries.append(record)
+            emit(
+                f"  [diagnose] reformat retry {attempt} produced parseable YAML — "
+                "investigation recovered"
+            )
+            return candidate
+        # A repair that still does not parse cost real money and is itself
+        # evidence (did the agent re-investigate? did it drop the field?), so it
+        # gets its own sidecar rather than surviving only as a 2000-char tail.
+        record["parse_error_after"] = candidate.error
+        failed_path, failed_error = _write_output_sidecar(
+            state, project_root, retry_output, attempt
+        )
+        record["output_path"] = str(failed_path) if failed_path is not None else ""
+        if failed_error:
+            record["output_path_error"] = failed_error
+        state.parse_retries.append(record)
+        parsed = candidate
+    return parsed
 
 
 # ── Public entry point ────────────────────────────────────────────────
@@ -985,22 +1225,56 @@ def _run_diagnose_flow_body(
     # Budget guard — if the agent cost exceeded the configured budget, mark
     # the result as partial regardless of whether the agent reported success.
     # A cost-unknown run (None) cannot be shown to exceed the budget, so it is
-    # not treated as a budget breach here.
-    budget_exceeded = (
-        state.agent_cost_usd is not None
-        and state.agent_cost_usd > config.diagnose.budget_usd * 1.05
-    )
+    # not treated as a budget breach here. Re-evaluated after any parse retry,
+    # whose spend counts against the same envelope.
+    def _budget_exceeded() -> bool:
+        return (
+            state.agent_cost_usd is not None
+            and state.agent_cost_usd > config.diagnose.budget_usd * 1.05
+        )
+
+    budget_exceeded = _budget_exceeded()
     if budget_exceeded:
         partial = True
 
     # ── PARSE ─────────────────────────────────────────────────────────
     emit_phase(DiagnosePhase.PARSE)
-    artifact = parse_diagnose_output(
+    # Persist the agent's complete output BEFORE the first parse attempt, so both
+    # the success and the failure path leave the investigation recoverable from
+    # disk. A run that spent budget and produced content must not have that
+    # content exist only in this process's memory (#2055).
+    persist_agent_output(state, project_root, emit=emit)
+
+    parsed = parse_diagnose_output_result(
         state.agent_output, issue_number=issue_number, partial=partial
     )
+    if parsed.artifact is None:
+        # The investigation is done; only its serialization is broken. Ask for the
+        # same diagnosis, correctly encoded, before declaring the paid-for work
+        # lost. Parsing of each retry stays strict.
+        parsed = _retry_diagnose_parse(
+            state=state,
+            initial=parsed,
+            issue_number=issue_number,
+            partial=partial,
+            config=config,
+            project_root=project_root,
+            profile=profile,
+            emit=emit,
+        )
+        # Retry invocations spend against the same budget envelope.
+        budget_exceeded = _budget_exceeded()
+        if budget_exceeded:
+            partial = True
+
+    artifact = parsed.artifact
     if artifact is None:
+        attempts = len(state.parse_retries)
+        where = state.raw_output_path or "<not persisted>"
         state.error = (
-            f"PARSE failed: investigative agent did not emit a parseable YAML block. "
+            f"PARSE failed: investigative agent did not emit a parseable YAML block "
+            f"({parsed.error}) and {attempts} reformat retry attempt(s) did not "
+            f"produce one. Full agent output: {where}. "
             f"Raw tail: {state.agent_output[-200:]!r}"
         )
         emit_phase(DiagnosePhase.FAILED)
