@@ -467,7 +467,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 3
+    assert payload["ruleset_version"] == 4
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -488,9 +488,9 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     write_sprint_rca(d)
     before = read_sprint_rca(d)
     assert before["stories"]["issue-5"]["primary_failure_class"] == UNKNOWN_CLASS
-    assert before["ruleset_version"] == 3
+    assert before["ruleset_version"] == 4
 
-    # Improved rule set (v4): a new rule now recognises the previously-unknown
+    # Improved rule set (v5): a new rule now recognises the previously-unknown
     # signature. Inputs on disk are unchanged.
     improved_rule = rca_mod.RcaRule(
         rule_id="flooble_detected",
@@ -504,12 +504,12 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(
         rca_mod, "_PRIMARY_PRIORITY", ("flooble_fault", *rca_mod._PRIMARY_PRIORITY)
     )
-    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 4)
+    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 5)
 
     write_sprint_rca(d, overwrite=True)
     after = read_sprint_rca(d)
     assert after["stories"]["issue-5"]["primary_failure_class"] == "flooble_fault"
-    assert after["ruleset_version"] == 4
+    assert after["ruleset_version"] == 5
     # Same inputs, different rule set → distinguishable analyses.
     assert before["ruleset_version"] != after["ruleset_version"]
 

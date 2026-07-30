@@ -45,6 +45,7 @@ from .profiles import (
     _parse_provider_fallbacks,
     override_constrains_model,
 )
+from .provenance import build_provenance
 from .role_derivation import derive_roles
 from .sandbox_capabilities import get_preset
 from .secrets import _parse_notifications
@@ -1475,7 +1476,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     diagnose_cfg = _parse_diagnose_config(raw.get("diagnose", {}))
 
-    return ForgeConfig(
+    config = ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
         workspace=workspace,
@@ -1520,3 +1521,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         custom_models=custom_models,
         diagnose=diagnose_cfg,
     )
+    # Configuration identity is derived here, once, from the fully-resolved
+    # config (#2056) — consumers record what the run executed under instead of
+    # each re-deriving it (or, as before, recording nothing at all).
+    return dataclasses.replace(config, provenance=build_provenance(config, config_path))
