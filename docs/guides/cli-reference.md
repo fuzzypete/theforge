@@ -469,6 +469,14 @@ contract is promised yet.
 written. **Epic** classifications may propose child stories in prose; no
 child issues are created.
 
+**The body restructure is strictly additive.** It only appends what the shape
+gate reports missing — an absent `## Observed` / `## Expected` section, or the
+specific `## Diagnosis` components the gate names — inserting missing diagnosis
+components into the existing `## Diagnosis` section. Existing headings are never
+re-levelled, rewritten, or demoted into quoted prose. A bug body that already
+passes the shape gate produces no diff, and `forge shape <issue>` exits 0 when
+neither the body nor the labels need changing.
+
 Every invocation writes a row into the audit substrate's `shape_events`
 table (issue number, input source, classification, confidence, ambiguity
 question count, whether `--apply` mutated the issue).

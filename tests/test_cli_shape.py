@@ -162,6 +162,38 @@ def test_shape_issue_calls_gh_and_applies(mock_run, tmp_path, capsys):
     assert row == ("issue", "bug", 1, "no-diagnosis")
 
 
+@patch("theforge.cli.shape.subprocess.run")
+def test_shape_exits_zero_on_gate_passing_bug(mock_run, tmp_path, capsys):
+    """A bug issue the shape gate already accepts needs no shaping (#2053)."""
+    body = (
+        "## Observed behavior\n\n"
+        "`forge shape --apply` rewrote a passing body into a failing one.\n\n"
+        "## Expected behavior\n\n"
+        "A remediation is a no-op on input that already passes.\n\n"
+        "## Diagnosis\n\n"
+        "- **Observed symptom:** the applied body no longer passes the gate.\n"
+        "- **Evidence:** issue #2050 at baseline `f2caf7d`.\n"
+        "- **Confirmed cause:** the renderer probed for an H3 heading.\n"
+        "- **Affected code path:** `intake.shape_render._restructure_bug`.\n"
+        "- **Fix-success criterion:** the body is returned unchanged.\n"
+    )
+    mock_run.return_value = _proc(
+        stdout=json.dumps(
+            {
+                "title": "forge shape --apply rewrites a passing bug body",
+                "body": body,
+                "labels": [{"name": "bug"}],
+            }
+        )
+    )
+    args = _make_args(tmp_path, issue=2053)
+    rc = cmd_shape(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Proposed body restructure:" not in out
+    assert "Add labels:" not in out
+
+
 def test_shape_no_input_errors(tmp_path, capsys):
     args = _make_args(tmp_path)
     rc = cmd_shape(args)
