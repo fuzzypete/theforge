@@ -402,8 +402,43 @@ def render_routing_decision(block: dict) -> list[str]:
     return lines
 
 
-def _print_block(block: dict, label: str) -> int:
-    print(f"# {label}")
+def render_configuration(block: object) -> list[str]:
+    """Render the record's configuration-provenance block (#2056).
+
+    Pure formatting over fields the audit layer already wrote. An absent block
+    (a record predating configuration identity, backfilled to ``None`` on read)
+    is stated as such rather than rendered as "unchanged" — a run whose
+    configuration cannot be named must not look like one that can.
+    """
+    lines = ["Configuration", "-" * 60]
+    if not isinstance(block, dict):
+        lines.append(
+            "  not recorded — this run predates configuration provenance, so the "
+            "configuration it executed under cannot be established from the audit trail"
+        )
+        lines.append("")
+        return lines
+    lines.append(f"  resolved digest: {block.get('resolved_sha256') or '(unknown)'}")
+    lines.append(f"  source: {block.get('source_path') or '(unknown)'}")
+    lines.append(f"  source digest: {block.get('source_sha256') or '(unknown)'}")
+    changed = block.get("changed_during_run")
+    if changed is True:
+        lines.append(
+            "  ⚠ changed during run: yes — the source file differed at finish "
+            f"({block.get('source_sha256_at_finish') or '(unknown)'}); this run did not "
+            "execute under a single configuration"
+        )
+    elif changed is False:
+        lines.append("  changed during run: no")
+    else:
+        detail = block.get("finish_read_error")
+        suffix = f" ({detail})" if detail else ""
+        lines.append(f"  changed during run: undetermined{suffix}")
+    lines.append("")
+    return lines
+
+
+def _print_block(block: dict) -> int:
     for line in render_routing_decision(block):
         print(line)
     return 0
@@ -416,6 +451,12 @@ def _explain_from_record(record: dict, label: str) -> int:
     migration backfills ``routing_decision: None``) from a present one so the
     operator is never shown a misleading empty summary.
     """
+    # Configuration identity first: it says what this run was a run *of*, and it
+    # is worth printing even when the routing rationale below is unavailable.
+    print(f"# {label}")
+    for line in render_configuration(record.get("configuration")):
+        print(line)
+
     if "routing_decision" not in record or record.get("routing_decision") is None:
         print(
             f"[forge] {label}: no routing_decision block recorded for this run "
@@ -431,7 +472,7 @@ def _explain_from_record(record: dict, label: str) -> int:
             file=sys.stderr,
         )
         return 1
-    return _print_block(block, label)
+    return _print_block(block)
 
 
 def cmd_explain(args: object) -> int:
