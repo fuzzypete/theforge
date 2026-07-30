@@ -1,6 +1,8 @@
 """Render shape proposals as operator-facing text + body restructure.
 
-Pure text-shaping helpers, stdlib only. No I/O.
+Pure text-shaping helpers, no I/O. Stdlib plus the ``shape_check`` parsers and
+the declarative diagnosis spec — the restructure must aim at exactly the shape
+the gate enforces, so it reads that contract rather than restating it (#2053).
 """
 
 from __future__ import annotations
@@ -13,16 +15,38 @@ from theforge.intake.shape_classify import (
     DiagnosisState,
     ShapeProposal,
 )
+from theforge.shape_check.diagnosis_spec import (
+    DIAGNOSIS_HEADING,
+    REQUIRED_DIAGNOSIS_COMPONENTS,
+)
+from theforge.shape_check.heuristics import (
+    DIAGNOSIS_HEADING_PATTERN,
+    diagnosis_completeness,
+)
+from theforge.shape_check.parsing import has_heading, section_span
+
+# Heading patterns for the two narrative sections a bug body carries alongside
+# its Diagnosis. Matched heading-level-agnostically through the same parser the
+# gate uses, so a conformant ``## Observed behavior`` is recognised as present
+# (#2053: a private substring probe for a hard-coded heading level is exactly
+# the producer/validator drift ``diagnosis_spec`` exists to eliminate).
+_OBSERVED_HEADING_PATTERN = r"\bobserved\b|what happened"
+_EXPECTED_HEADING_PATTERN = r"\bexpected\b"
+
+# The gate's own acceptance-criteria heading vocabulary (parsing.extract_ac_section).
+_AC_HEADING_PATTERN = r"acceptance criteria|done criteria|checklist"
 
 
 def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
     """Return the proposed restructured body for the issue, or ``current_body``
     unchanged when no restructure is proposed.
 
-    The restructure is intentionally minimal — it adds the scaffolding the
-    downstream producers (diagnose/groom) expect to see, and never deletes
-    existing operator text. The original body is appended under a quoted
-    ``Original`` block so nothing is silently lost.
+    The restructure is strictly additive: it appends the scaffolding the shape
+    gate and the downstream producers (diagnose/groom) require and nothing else.
+    Existing operator structure is never rewritten, re-levelled, or demoted into
+    quoted prose — a remediation offered toward a gate must be a no-op on input
+    that gate already accepts, and additive on input that is partially
+    conformant (#2053).
     """
     current_body = current_body or ""
     if proposal.classification is Classification.BUG:
@@ -34,46 +58,86 @@ def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
     return current_body
 
 
-def _has_section(body: str, marker: str) -> bool:
-    return marker.lower() in body.lower()
-
-
 def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
-    parts: list[str] = []
-    if not _has_section(current_body, "## Observed"):
-        parts.append("## Observed\n\n<fill from current body>\n")
-    if not _has_section(current_body, "## Expected"):
-        parts.append("## Expected\n\n<state the category-level rule that should hold here>\n")
-    if not _has_section(current_body, "### Diagnosis"):
-        state = proposal.diagnosis_state or DiagnosisState.NO_DIAGNOSIS
-        if state is DiagnosisState.NO_DIAGNOSIS:
-            line = "Status: no diagnosis yet. Next step: run `forge diagnose`."
-        elif state is DiagnosisState.DIAGNOSIS_CAUSE_UNKNOWN:
-            line = (
-                "Status: investigation in progress; cause unknown. Next step: continue diagnosis."
-            )
+    body = current_body
+    appended: list[str] = []
+    if not has_heading(body, _OBSERVED_HEADING_PATTERN):
+        appended.append("## Observed\n\n<fill from current body>\n")
+    if not has_heading(body, _EXPECTED_HEADING_PATTERN):
+        appended.append("## Expected\n\n<state the category-level rule that should hold here>\n")
+
+    # The gate is the authority on what a complete Diagnosis section is, so ask
+    # it directly instead of probing for a heading string of our own choosing.
+    complete, missing = diagnosis_completeness(body)
+    if not complete:
+        if has_heading(body, DIAGNOSIS_HEADING_PATTERN):
+            # Section exists but is incomplete: add only the missing components,
+            # in place, leaving every original heading at its original level.
+            body = _fill_diagnosis_gaps(body, missing)
         else:
-            line = "Status: confirmed cause documented."
-        parts.append(f"### Diagnosis\n\n{line}\n")
-    if not parts:
-        return current_body
-    rendered = "\n".join(parts).rstrip() + "\n"
-    if current_body.strip():
-        rendered += "\n## Original\n\n" + _quote_block(current_body) + "\n"
-    return rendered
+            appended.append(_diagnosis_section(proposal))
+
+    if not appended:
+        return body
+    return _append_sections(body, appended)
+
+
+def _diagnosis_status_line(proposal: ShapeProposal) -> str:
+    state = proposal.diagnosis_state or DiagnosisState.NO_DIAGNOSIS
+    if state is DiagnosisState.NO_DIAGNOSIS:
+        return "Status: no diagnosis yet. Next step: run `forge diagnose`."
+    if state is DiagnosisState.DIAGNOSIS_CAUSE_UNKNOWN:
+        return "Status: investigation in progress; cause unknown. Next step: continue diagnosis."
+    return "Status: confirmed cause documented."
+
+
+def _diagnosis_bullets(missing_tokens: list[str]) -> list[str]:
+    """Placeholder bullets for the components the gate reports missing.
+
+    Labels come from :mod:`theforge.shape_check.diagnosis_spec` so the scaffold
+    names exactly the components the validator scans for.
+    """
+    tokens = {token.lower() for token in missing_tokens}
+    return [
+        f"- **{component.label}:** <fill in>"
+        for component in REQUIRED_DIAGNOSIS_COMPONENTS
+        if component.token in tokens
+    ]
+
+
+def _diagnosis_section(proposal: ShapeProposal) -> str:
+    """A whole ``## Diagnosis`` scaffold, at the heading level the gate requires."""
+    lines = [DIAGNOSIS_HEADING, "", _diagnosis_status_line(proposal), ""]
+    lines.extend(_diagnosis_bullets([c.token for c in REQUIRED_DIAGNOSIS_COMPONENTS]))
+    return "\n".join(lines) + "\n"
+
+
+def _fill_diagnosis_gaps(body: str, missing_tokens: list[str]) -> str:
+    """Append the missing component bullets to the end of the Diagnosis section."""
+    span = section_span(body, DIAGNOSIS_HEADING_PATTERN)
+    bullets = _diagnosis_bullets(missing_tokens)
+    if span is None or not bullets:
+        return body
+    head = body[: span[1]].rstrip("\n")
+    tail = body[span[1] :].lstrip("\n")
+    block = "\n".join(bullets)
+    if tail:
+        return f"{head}\n{block}\n\n{tail}"
+    return f"{head}\n{block}\n"
+
+
+def _append_sections(body: str, parts: list[str]) -> str:
+    block = "\n".join(parts).rstrip("\n") + "\n"
+    if not body.strip():
+        return block
+    return body.rstrip("\n") + "\n\n" + block
 
 
 def _restructure_enhancement(current_body: str) -> str:
-    if _has_section(current_body, "## Acceptance criteria") or _has_section(
-        current_body, "## Acceptance Criteria"
-    ):
+    if has_heading(current_body, _AC_HEADING_PATTERN):
         return current_body
     suffix = "\n\n## Acceptance criteria\n\n- <state an observable, testable outcome>\n"
     return (current_body.rstrip() + suffix) if current_body.strip() else suffix.lstrip("\n")
-
-
-def _quote_block(text: str) -> str:
-    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
 
 
 def render_proposal(
