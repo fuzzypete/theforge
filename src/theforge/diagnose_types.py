@@ -280,8 +280,10 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     """Render a DiagnosisArtifact as a Markdown ``## Diagnosis`` section.
 
     Output format intentionally matches the headings expected by the shape gate
-    (DIAGNOSIS_HEADING_PATTERN / required Diagnosis labels in shape_check)
-    so a landed artifact makes the issue fix-ready.
+    (DIAGNOSIS_HEADING_PATTERN / required Diagnosis labels in shape_check) so a
+    landed artifact is *readable* by the gate. Readable is not the same as
+    fix-ready: the confirmed-cause value decides that, and an artifact that
+    confirmed no cause lands investigation-ready (#2060).
 
     Raises ``ValueError`` when the artifact carries no substantive content.
     Rendering an all-empty artifact would emit a Diagnosis section whose only
@@ -341,7 +343,14 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             "",
             "### Confirmed cause",
             "",
-            artifact.confirmed_cause.strip() or "_(empty)_",
+            # An empty cause is the designed honest-refusal outcome (the
+            # diagnose prompt asks for `confirmed_cause: ""` when nothing was
+            # confirmed), so it is written as an explicit non-assertion rather
+            # than a slot placeholder: the readiness derivation reads this
+            # value, and a record that no cause was found must never read as a
+            # record that one was (#2060).
+            artifact.confirmed_cause.strip()
+            or "unknown — the investigation did not confirm a cause",
             "",
             "### Affected code path",
             "",
