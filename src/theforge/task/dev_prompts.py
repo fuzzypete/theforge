@@ -78,6 +78,13 @@ def render_verification_section(
     would execute repository files the agent can edit. The polling protocol is
     spelled out because the coordinator answers asynchronously — an agent that
     writes a request and reads immediately would see no response file.
+
+    It is also told the deadline on the other side of that asynchrony: ending
+    the iteration while a request is still in flight gets it killed
+    (`DevVerificationBroker.stop` / `_cancel_active`), not resumed later. Without
+    that stated, "poll, and if you don't see a response move on" reads as safe
+    to abandon in place — the agent has no way to infer that yielding is what
+    kills the command it is waiting on.
     """
     if not commands or not request_dir or not response_dir:
         return ""
@@ -121,6 +128,14 @@ def render_verification_section(
         refused ones. If no response file has appeared well after the command
         would have finished, treat the request as failed and move on rather than
         waiting indefinitely.
+
+        **This blocks your iteration — it does not survive ending it.** A
+        command still running when your iteration ends is killed, not resumed:
+        there is no mode where you end your turn now and the coordinator hands
+        you the result later. If you ask for a command, you must stay in this
+        iteration and keep polling until you have read its response file
+        (or given up per the limit above) before you finish. Ending your turn
+        while a request is still outstanding loses it.
 
         This is for your own feedback loop. It does not replace the gate, which
         the coordinator still runs authoritatively after you complete.

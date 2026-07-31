@@ -497,3 +497,7 @@ class TestPromptSection:
         # The agent is told it asks by name, and that the gate stays coordinator-owned.
         assert "by name" in section
         assert "coordinator still runs authoritatively" in section
+        # The agent is told the coordinator kills an in-flight command when the
+        # iteration ends, so it knows not to yield its turn while waiting (#2077).
+        assert "killed" in section
+        assert "does not survive ending it" in section
