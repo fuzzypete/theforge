@@ -22,9 +22,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = (
-    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "close-on-merge.yml"
-)
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "close-on-merge.yml"
 
 # A stub `gh` that answers the call shapes the workflow makes, driven by
 # FAKE_* env vars:
@@ -123,7 +121,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_bug_issue_is_left_open_pending_symptom_verification(tmp_path):
-    """AC: a merged PR fixing a bug issue does not close it before the symptom is observed to stop."""
+    """AC: a merged PR fixing a bug issue does not close it before the symptom is observed."""
     result = _run_step(
         tmp_path,
         "Fixes #2047",
