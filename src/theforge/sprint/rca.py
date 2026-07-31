@@ -41,7 +41,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 4
+RULESET_VERSION = 5
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -119,6 +119,14 @@ class RcaRule:
     # field-derived (implemented in ``_signal_rule_hits``) rather than
     # pattern-based.
     patterns: tuple[str, ...] = ()
+    # When True, the rule's patterns are scanned only against sources forge
+    # emitted about its own execution — structured summary/audit fields and run
+    # or iteration logs — never against agent-authored prose (``authored`` kind:
+    # markdown and preflight artifacts, which carry analysis *of the target
+    # repository*). Set it on any rule whose patterns are ordinary English a
+    # dev/reviewer agent could plausibly write about the project under
+    # development; see ``_text_source_kind_for_path``.
+    forge_emitted_only: bool = False
 
 
 # ── Classifier rule set (single discoverable location) ────────────────────────
@@ -133,7 +141,18 @@ RULES: tuple[RcaRule, ...] = (
         rule_id="provider_usage_limit",
         failure_class="provider_quota",
         role="primary",
-        description="Provider reported a usage/quota/rate limit in captured output.",
+        description=(
+            "Provider reported a usage/quota/rate limit — from the run's own CLI "
+            "transport telemetry, or from a limit phrase in forge-emitted output."
+        ),
+        # "rate limit" / "overloaded" / "resource exhausted" are ordinary English an
+        # agent can write while analysing the project under development, so this rule
+        # carries the same exposure #2031 fixed for the fallback rule. Two guards,
+        # short of deleting patterns that still catch real provider errors nothing
+        # else records: agent-authored prose is out of scope for the scan
+        # (``forge_emitted_only``), and forge's own per-iteration quota observation
+        # fires the rule without any text at all (``_provider_quota_evidence``).
+        forge_emitted_only=True,
         patterns=(
             "usage limit",
             "current quota",
@@ -275,8 +294,19 @@ RULES: tuple[RcaRule, ...] = (
         rule_id="provider_fallback_not_applied",
         failure_class="fallback_not_applied",
         role="contributing",
-        description="A configured provider fallback did not apply on the failure.",
-        patterns=("fallback not applied", "no fallback", "fallback unavailable"),
+        description=(
+            "A configured provider fallback did not apply on the failure — "
+            "field-derived from the run's own transport telemetry "
+            "(transport_fallback_reason set with transport_fallback_fired false)."
+        ),
+        # Deliberately NOT pattern-based (#2031). The prior patterns were ordinary
+        # English ("no fallback", "fallback unavailable") matched as unanchored
+        # substrings against every text source, which includes agent-authored prose
+        # *about the project under development*. That fired the rule on a preflight
+        # analysis of a target repo's own error handling and sent the operator to
+        # wire a forge subsystem that had never been involved. A runtime cause code
+        # may only be assigned from something forge emits about its own execution,
+        # so detection moved to ``_fallback_not_applied_evidence``.
     ),
     RcaRule(
         rule_id="dev_iteration_limit_hit",
@@ -547,7 +577,9 @@ def _classify_story(
     evidence: list[dict] = []
     structured_primary_classes: list[str] = []
     text_primary_classes: list[str] = []
-    contributing_classes: list[str] = []
+    # (failure_class, source_kind) so an unclassifiable story can drop the
+    # contributing factors that rest on nothing but a text scan.
+    contributing_hits: list[tuple[str, str]] = []
     for rule_id, source, excerpt, matched_pattern, source_kind in hits:
         if rule_id in seen_rules:
             continue
@@ -572,7 +604,7 @@ def _classify_story(
             else:
                 text_primary_classes.append(rule.failure_class)
         elif rule.role == "contributing":
-            contributing_classes.append(rule.failure_class)
+            contributing_hits.append((rule.failure_class, source_kind))
 
     # Always append the baseline outcome evidence last.
     evidence.append(
@@ -589,7 +621,20 @@ def _classify_story(
 
     # Contributing factors: unique, in rule-declaration order, minus whichever
     # class was elevated to primary.
-    contributing = _dedupe_ordered(contributing_classes)
+    #
+    # When the engine could not classify the failure at all, its own uncertainty
+    # propagates (#2031): a text-scan-derived amplifier is a match on vocabulary,
+    # and asserting one confidently — plus the remediation the operator is then
+    # told to go perform — on a run forge has just declared unexplained costs more
+    # trust than declining to guess. Field-derived (structured) factors are the
+    # run's own recorded facts, not an inference, so they still stand.
+    contributing = _dedupe_ordered(
+        [
+            failure_class
+            for failure_class, source_kind in contributing_hits
+            if primary != UNKNOWN_CLASS or source_kind == "structured"
+        ]
+    )
 
     partial_value = _detect_partial_value(story, audit)
     actions = _recommend_actions(primary, contributing, story)
@@ -710,6 +755,10 @@ def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str
         if not rule.patterns:
             continue
         for src in sources:
+            if rule.forge_emitted_only and src.kind == "authored":
+                # Agent-authored prose describes the work being attempted, not the
+                # run attempting it — it can never assign this rule's cause code.
+                continue
             lowered = src.text.lower()
             matched = [p for p in rule.patterns if _pattern_matches(p, lowered)]
             if not matched:
@@ -780,6 +829,84 @@ def _configuration_change_evidence(
     return None
 
 
+def _dev_loop_entries(audit: dict) -> list[dict]:
+    """The per-dev-iteration telemetry records the coordinator audit persisted."""
+    iterations = audit.get("iterations") if isinstance(audit, dict) else None
+    dev_loop = iterations.get("dev_loop") if isinstance(iterations, dict) else None
+    if not isinstance(dev_loop, list):
+        return []
+    return [entry for entry in dev_loop if isinstance(entry, dict)]
+
+
+def _provider_quota_evidence(audit: dict, audit_source: str) -> tuple[str, str, str] | None:
+    """Return a ``provider_usage_limit`` hit from the run's own quota observation.
+
+    ``cli_quota_error_observed`` is forge's classification of *its own* CLI
+    invocation — set from the transport's exit code or its captured stderr/stdout
+    by ``runners.cli._classify_cli_fallback_decision`` — and the coordinator audit
+    records it per dev iteration. That makes it a statement about the run, unlike
+    the rule's English patterns.
+
+    Restricted to the *terminal* dev iteration with no fallback fired: an earlier
+    quota blip that a fallback absorbed, or that a later iteration recovered from,
+    is not what the story died of, and provider_quota is the highest-priority
+    primary class — promoting a survived blip to root cause would send the
+    operator to wait for a quota reset that was never the blocker.
+    """
+    entries = _dev_loop_entries(audit)
+    if not entries:
+        return None
+    last = entries[-1]
+    if not last.get("cli_quota_error_observed") or last.get("transport_fallback_fired"):
+        return None
+    iteration = last.get("iteration")
+    where = f"dev iteration {iteration}" if iteration is not None else "the terminal dev iteration"
+    reason = _nonempty(last.get("transport_fallback_reason"))
+    detail = f" ({reason})" if reason else ""
+    return (
+        "provider_usage_limit",
+        audit_source,
+        _truncate(
+            f"the run's own transport telemetry recorded a provider quota/rate-limit "
+            f"error on {where}{detail}, with no fallback transport applied"
+        ),
+    )
+
+
+def _fallback_not_applied_evidence(audit: dict, audit_source: str) -> tuple[str, str, str] | None:
+    """Return a ``provider_fallback_not_applied`` hit from the run's own telemetry.
+
+    The authoritative statement that a provider fallback did not apply is made by
+    forge itself, per dev iteration, in ``iterations.dev_loop``:
+    ``transport_fallback_reason`` is set only when the CLI transport failed with a
+    fallback-eligible error (quota/capacity/model-not-found), and
+    ``transport_fallback_fired`` records whether a fallback transport actually ran.
+    Reason set + fired false is exactly "forge classified the failure as one a
+    fallback should have covered, and no fallback was applied" — the fallback
+    machinery reporting on itself, never vocabulary borrowed from agent prose.
+
+    (Reason set + fired true is a fallback that *did* apply — including one that
+    applied and then failed — so it is deliberately not a hit.)
+    """
+    for entry in _dev_loop_entries(audit):
+        reason = _nonempty(entry.get("transport_fallback_reason"))
+        if not reason or entry.get("transport_fallback_fired"):
+            continue
+        iteration = entry.get("iteration")
+        where = f"dev iteration {iteration}" if iteration is not None else "a dev iteration"
+        transport = _nonempty(entry.get("transport_used")) or "cli"
+        return (
+            "provider_fallback_not_applied",
+            audit_source,
+            _truncate(
+                f"{where} failed with a fallback-eligible transport error ({reason}) but no "
+                f"provider fallback was applied (transport_fallback_fired=false, "
+                f"transport_used={transport})"
+            ),
+        )
+    return None
+
+
 def _signal_rule_hits(
     story: dict,
     audit: dict,
@@ -811,6 +938,15 @@ def _signal_rule_hits(
     )
     if config_change is not None:
         hits.append(config_change)
+
+    # Provider quota / fallback classification from the run's own transport
+    # telemetry rather than scanned for in prose (#2031).
+    quota_hit = _provider_quota_evidence(audit, audit_source)
+    if quota_hit is not None:
+        hits.append(quota_hit)
+    fallback_hit = _fallback_not_applied_evidence(audit, audit_source)
+    if fallback_hit is not None:
+        hits.append(fallback_hit)
 
     if outcome == "MERGE_FAILED":
         hits.append(("merge_failed", summary_source, _outcome_excerpt()))
