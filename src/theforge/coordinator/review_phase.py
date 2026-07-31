@@ -77,6 +77,7 @@ from .state import (
     Phase,
     RetryReason,
     ReviewCycleMetadata,
+    ReviewedCommitVerification,
     ReviewIterationTelemetry,
 )
 from .util import (
@@ -166,6 +167,34 @@ def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
             if failed_name not in verdicts:
                 verdicts[failed_name] = "FAIL"
     return verdicts
+
+
+def _record_reviewed_commit_provenance(
+    state: CoordinatorState, meta: ReviewCycleMetadata, workspace_path: Path
+) -> None:
+    """Stamp the commit this cycle judges, and its verification state (#2052).
+
+    Called at cycle open, before reviewers read the tree, so the recorded SHA is
+    the one they are given. The verification state is derived mechanically from
+    the gate provenance already on state — never from verdict or summary text,
+    which would let a reviewer's prose stand in for a gate result.
+    """
+    ok, out = _run_shell("git rev-parse HEAD", workspace_path)
+    sha = out.strip() if ok else ""
+    meta.reviewed_commit = sha or None
+    story_validation_verdict = (
+        state.story_validation_result.verdict
+        if state.story_validation_result is not None
+        else None
+    )
+    meta.verification = ReviewedCommitVerification.derive(
+        reviewed_commit=meta.reviewed_commit,
+        gate_commit=state.last_gate_commit,
+        gate_decision=state.last_gate_decision,
+        gate_runs=state.gate_runs,
+        validate_blocks=len(state.validate_blocks),
+        story_validation_verdict=story_validation_verdict,
+    )
 
 
 def _run_escalate_gate(
@@ -1028,6 +1057,7 @@ def _run_review_phase(
         synthesized=False,
         parse_retries=0,
     )
+    _record_reviewed_commit_provenance(state, meta, workspace_path)
     state.review_cycle_metadata.append(meta)
     # Snapshot the result COUNT, not a coerced dollar subtotal: this cycle's
     # cost is the sum over the results this cycle appends, and that sum stays
@@ -1923,6 +1953,7 @@ def _run_review_only_phase(
         failed=[],
         synthesized=False,
     )
+    _record_reviewed_commit_provenance(state, meta, workspace_path)
     state.review_cycle_metadata.append(meta)
 
     _pool_start = time.monotonic()

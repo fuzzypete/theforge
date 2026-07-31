@@ -155,6 +155,11 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         # covers the story's whole history rather than restarting at the most
         # recent --resume (#1984).
         "gate_runs": state.gate_runs,
+        # Which commit the gate last judged, and what it decided. Without these
+        # a resumed run reports every review cycle as ungated even though a gate
+        # ran before the resume (#2052).
+        "last_gate_commit": state.last_gate_commit,
+        "last_gate_decision": state.last_gate_decision,
         "hygiene_escalation_dev_commit_sha": state.hygiene_escalation_dev_commit_sha,
         "hygiene_escalation_prior_approve_count": state.hygiene_escalation_prior_approve_count,
         "hygiene_escalation_total_count": state.hygiene_escalation_total_count,
@@ -202,6 +207,10 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         state.surviving_families = data["surviving_families"]
     if isinstance(data.get("gate_runs"), int) and not isinstance(data.get("gate_runs"), bool):
         state.gate_runs = max(0, int(data["gate_runs"]))
+    if isinstance(data.get("last_gate_commit"), str) and data["last_gate_commit"]:
+        state.last_gate_commit = data["last_gate_commit"]
+    if isinstance(data.get("last_gate_decision"), str) and data["last_gate_decision"]:
+        state.last_gate_decision = data["last_gate_decision"]
     if data.get("escalate_kind") in ("hygiene", "content", "decompose"):
         state.escalate_kind = data["escalate_kind"]
     if isinstance(data.get("hygiene_escalation_dev_commit_sha"), str):

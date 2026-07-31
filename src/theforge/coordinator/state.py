@@ -355,6 +355,94 @@ class ReviewIterationTelemetry:
     restated_findings: int
 
 
+#: Verification states a reviewed commit can be in. Derived mechanically from
+#: the recorded gate provenance — never inferred from verdict or summary text.
+REVIEWED_COMMIT_VERIFICATION_STATES = (
+    "gate_passed",
+    "gate_failed",
+    "gate_skipped",
+    "gate_stale",
+    "ungated",
+    "unknown",
+)
+
+
+@dataclass(frozen=True)
+class ReviewedCommitVerification:
+    """Verification state of the commit a single review cycle judged (#2052).
+
+    A review verdict stored without the verification state of the code it
+    judged is indistinguishable from a stale verdict that later commits already
+    superseded. This records, per cycle, what the gate had actually said about
+    the exact commit under review at the moment the cycle opened.
+
+    ``state`` is one of :data:`REVIEWED_COMMIT_VERIFICATION_STATES`:
+
+    - ``gate_passed`` / ``gate_failed`` — the gate ran on *this* commit
+    - ``gate_skipped``  — a story ``gate:`` override suppressed the gate
+    - ``gate_stale``    — the gate ran, but on a different (earlier) commit
+    - ``ungated``       — no gate has run for this story yet
+    - ``unknown``       — the reviewed commit could not be resolved
+    """
+
+    state: str = "unknown"
+    # Decision recorded by the most recent gate execution: PASS / FAIL /
+    # ERROR / SKIPPED, or None when no gate has run.
+    gate_decision: str | None = None
+    # Commit the most recent gate execution ran against, or None.
+    gate_commit: str | None = None
+    # Total gate executions for this story so far (survives --resume).
+    gate_runs: int = 0
+    # Count of coordinator-raised blocking findings recorded at cycle open.
+    validate_blocks: int = 0
+    # Verdict of the story (spec) validator, when one ran.
+    story_validation_verdict: str | None = None
+
+    @classmethod
+    def derive(
+        cls,
+        *,
+        reviewed_commit: str | None,
+        gate_commit: str | None,
+        gate_decision: str | None,
+        gate_runs: int = 0,
+        validate_blocks: int = 0,
+        story_validation_verdict: str | None = None,
+    ) -> ReviewedCommitVerification:
+        """Classify a reviewed commit against the recorded gate provenance."""
+        if not reviewed_commit:
+            state = "unknown"
+        elif not gate_commit:
+            state = "ungated"
+        elif gate_commit != reviewed_commit:
+            state = "gate_stale"
+        elif gate_decision == "SKIPPED":
+            state = "gate_skipped"
+        elif gate_decision == "PASS":
+            state = "gate_passed"
+        else:
+            state = "gate_failed"
+        return cls(
+            state=state,
+            gate_decision=gate_decision,
+            gate_commit=gate_commit,
+            gate_runs=gate_runs,
+            validate_blocks=validate_blocks,
+            story_validation_verdict=story_validation_verdict,
+        )
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        """Render as the ``verification`` block of a rendered review cycle."""
+        return {
+            "state": self.state,
+            "gate_decision": self.gate_decision,
+            "gate_commit": self.gate_commit,
+            "gate_runs": self.gate_runs,
+            "validate_blocks": self.validate_blocks,
+            "story_validation_verdict": self.story_validation_verdict,
+        }
+
+
 @dataclass
 class ReviewCycleMetadata:
     """Per-cycle metadata for audit logging."""
@@ -381,6 +469,13 @@ class ReviewCycleMetadata:
     degraded_quorum: bool = False
     # Human-readable audit note describing a degraded-quorum decision, or None.
     degraded_quorum_warning: str | None = None
+    # ── Reviewed-commit provenance (#2052) ────────────────────────────
+    # The repository HEAD this cycle's reviewers judged, and the verification
+    # state of that exact commit. Both stay None for metadata deserialized from
+    # older runs, which render as an explicit "unknown" verification state
+    # rather than silently reading as current.
+    reviewed_commit: str | None = None
+    verification: ReviewedCommitVerification | None = None
 
 
 @dataclass(frozen=True)
@@ -473,6 +568,13 @@ class CoordinatorState:
     # synthetic "PASS" on the skip path (so non-runs are counted) (#1984).
     # Persisted to the resume sidecar so escalation counts survive --resume.
     gate_runs: int = 0
+    # Commit the most recent gate ran against, and the decision it returned
+    # ("PASS"/"FAIL"/"ERROR", or "SKIPPED" for a story gate override). Recorded
+    # as a pair so a review cycle can state whether the code it judged was the
+    # code the gate judged (#2052). Persisted to the resume sidecar: without it
+    # a resumed run reports every cycle as ungated even though a gate ran.
+    last_gate_commit: str | None = None
+    last_gate_decision: str | None = None
     last_review_findings: str | None = None
     cycle_history: list[CycleHistory] = field(default_factory=list)
     cycle_history_total: int = 0  # monotonically increasing count of all appended entries
