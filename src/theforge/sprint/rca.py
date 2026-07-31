@@ -998,6 +998,41 @@ def _merge_failed_action(story: dict, ref: str) -> str:
     return f"inspect {ref}'s PR for the merge failure cause recorded above, then re-run the merge"
 
 
+def _launch_collision_action(story: dict, ref: str) -> str:
+    """Next step for a launch-guard drop, gated on what the worktree holds.
+
+    "Clear the worktree" is destructive advice, and a drop is not evidence that
+    the worktree is disposable: in #2079 the colliding worktrees held this
+    sprint's own unmerged commits, and following the advice would have destroyed
+    them. So the clearing advice is emitted only when the absence of unmerged
+    work was positively established — an unknown answer gets the preserving
+    advice, exactly as a known-nonzero one does.
+    """
+    commits = story.get("unmerged_commits")
+    determined = story.get("unmerged_work_determined")
+    dirty = story.get("worktree_dirty")
+    branch = _nonempty(story.get("branch"))
+    worktree = _nonempty(story.get("worktree"))
+    where = f" (branch {branch})" if branch else ""
+
+    has_commits = isinstance(commits, int) and not isinstance(commits, bool) and commits > 0
+    if has_commits or dirty is True:
+        held = f"{commits} unmerged commit(s)" if has_commits else "uncommitted changes"
+        location = f" at {worktree}" if worktree else ""
+        return (
+            f"preserve the worktree{location} blocking {ref}{where}: it holds {held} — "
+            "recover that branch (push it, or land/rebase it) BEFORE clearing anything, "
+            "and do not re-sprint the story until the work is safe"
+        )
+    if determined is True:
+        return f"clear the active worktree/lock blocking {ref}, then re-sprint it"
+    return (
+        f"inspect the worktree/lock blocking {ref}{where} before clearing it — whether it "
+        "holds unmerged work was never established, so treat it as if it does "
+        "(git log/status in the worktree, then recover or clear deliberately)"
+    )
+
+
 def _recommend_actions(primary: str, contributing: list[str], story: dict) -> list[str]:
     """Map primary class + contributing factors to actionable next steps."""
     ref = _story_ref(story)
@@ -1037,7 +1072,7 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
             "gate (or re-sprint) before trusting any earlier review verdict"
         ),
         "operator_action": f"perform the operator action described in {ref} (no dev agent can)",
-        "launch_collision": (f"clear the active worktree/lock blocking {ref}, then re-sprint it"),
+        "launch_collision": _launch_collision_action(story, ref),
         "sprint_state_stranded": (
             f"re-resume/reconcile the sprint so {ref}'s prior-generation state is "
             "recovered — do NOT clear the worktree and re-sprint fresh, which would "

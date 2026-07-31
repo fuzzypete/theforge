@@ -37,6 +37,13 @@ REASON_STRANDED_WORKTREE = "stranded-prior-generation-worktree"
 # collision. The runner surfaces this string on the story's live status while it
 # waits for the inherited agent to finish, then resumes the story.
 REASON_IN_FLIGHT = "in-flight-current-sprint"
+# Not a drop reason either: the deferral marker for a story whose liveness could
+# not be established (an unreadable/absent agent sidecar) but whose worktree is
+# present. Failing to resolve liveness is not evidence that nothing is running,
+# so such a story is treated exactly like a confirmed in-flight one — deferred
+# and resumed by this sprint — instead of falling through to the branch whose
+# remediation is to delete the worktree (#2079).
+REASON_IN_FLIGHT_UNRESOLVED = "in-flight-liveness-unresolved"
 
 # Prior-generation outcome strings (upper-cased) that mean the story succeeded
 # and its worktree should be reconciled/preserved rather than treated as a fresh
@@ -53,6 +60,7 @@ def acquire_launch_story_locks(
     force: bool = False,
     prior_outcomes: dict[str, str] | None = None,
     live_slugs: set[str] | None = None,
+    unresolved_slugs: set[str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     """Acquire launch-time story locks after checking for active worktrees.
 
@@ -82,6 +90,13 @@ def acquire_launch_story_locks(
     inherited agent exits and then resumes it. Dropping them instead would strand
     the story, since no other process can adopt an agent group this pid owns.
 
+    ``unresolved_slugs`` names the stories whose liveness could *not* be
+    established (see :class:`theforge.sprint.live_stories.LivenessResolution`).
+    They are handled identically to ``live_slugs``: an unresolved lookup is not
+    evidence that no agent is running, and classifying such a story as a foreign
+    ``REASON_ACTIVE_WORKTREE`` collision is what produced #2079 — a sprint
+    dropping its own committed work and advising the operator to delete it.
+
     Invariants the callers rely on:
 
     - Every slug in the returned ``dropped_slugs`` is *not* counted in
@@ -99,13 +114,29 @@ def acquire_launch_story_locks(
     # the story stays scheduled and keeps its launch lock, because this process
     # is the only one that can still finish it (the runner waits for the
     # inherited agent, then resumes the story through triage).
-    in_flight_slugs = [s for s in slugs if s in (live_slugs or set())]
+    #
+    # A story whose liveness could not be resolved is held to the same rule: the
+    # lookup failing is not evidence that its agent is gone, so it is deferred
+    # rather than reconciled against a worktree that may be under active write.
+    confirmed_live = [s for s in slugs if s in (live_slugs or set())]
+    unresolved_live = [
+        s for s in slugs if s in (unresolved_slugs or set()) and s not in confirmed_live
+    ]
+    in_flight_slugs = confirmed_live + unresolved_live
     dropped: dict[str, str] = {}
-    if in_flight_slugs:
+    if confirmed_live:
         print(
-            f"[forge] IN-FLIGHT {', '.join(in_flight_slugs)}: agent process group "
+            f"[forge] IN-FLIGHT {', '.join(confirmed_live)}: agent process group "
             "from this sprint survived the re-exec; preserving the live worktree and "
             "deferring the story until its agent finishes.",
+            file=sys.stderr,
+            flush=True,
+        )
+    if unresolved_live:
+        print(
+            f"[forge] IN-FLIGHT {', '.join(unresolved_live)}: liveness of this "
+            "sprint's own agent could not be resolved; preserving the worktree and "
+            "deferring the story rather than treating it as a foreign collision.",
             file=sys.stderr,
             flush=True,
         )
