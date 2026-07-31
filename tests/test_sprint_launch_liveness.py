@@ -420,6 +420,47 @@ def test_unreadable_worktree_state_is_treated_as_holding_work(tmp_path: Path) ->
     assert describe_worktree_work(work)
 
 
+def test_unknown_dirty_state_is_not_a_determined_empty_worktree(tmp_path: Path) -> None:
+    """Ruling out commits does not rule out uncommitted work.
+
+    Commit counting can succeed while ``git status`` fails (a lock file, a
+    permission error). Reporting that as a determined-empty worktree would put a
+    dirty worktree back on the free-drop-and-clear path this change closes.
+    """
+    _worktree_with_commit(tmp_path, "issue-2048")
+
+    with patch(
+        "theforge.sprint.dropped_work._is_dirty",
+        return_value=None,
+    ):
+        work = inspect_worktree_work(
+            "issue-2048",
+            project_root=tmp_path,
+            path_pattern="{slug}",
+            base_branch="forge/issue-2048",  # HEAD == base: zero commits ahead
+            branch_pattern="forge/{slug}",
+        )
+
+    assert work.commits_ahead == 0
+    assert work.dirty is None
+    assert work.determined is False
+    assert work.may_have_work is True
+    assert "git status failed" in (describe_worktree_work(work) or "")
+
+
+def test_unresolvable_worktree_path_is_not_a_determined_empty_worktree(tmp_path: Path) -> None:
+    """A worktree whose location cannot even be computed is unknown, not absent."""
+    work = inspect_worktree_work(
+        "issue-2048",
+        project_root=tmp_path,
+        path_pattern="{missing_key}",
+        base_branch="main",
+    )
+
+    assert work.determined is False
+    assert work.may_have_work is True
+
+
 def test_absent_worktree_is_determined_empty(tmp_path: Path) -> None:
     """A story that never got a worktree is a genuinely free drop."""
     work = inspect_worktree_work(
@@ -670,6 +711,25 @@ def test_launch_collision_remediation_is_conservative_when_undetermined() -> Non
     from theforge.sprint.rca import _recommend_actions
 
     actions = _recommend_actions("launch_collision", [], {"slug": "issue-2048"})
+
+    assert "clear the active worktree" not in actions[0]
+    assert "inspect the worktree" in actions[0]
+
+
+def test_launch_collision_remediation_withholds_clearing_on_unknown_dirty_state() -> None:
+    """Zero commits plus an unread dirty state is not a clearable worktree."""
+    from theforge.sprint.rca import _recommend_actions
+
+    actions = _recommend_actions(
+        "launch_collision",
+        [],
+        {
+            "slug": "issue-2048",
+            "unmerged_commits": 0,
+            "unmerged_work_determined": False,
+            "worktree_dirty": None,
+        },
+    )
 
     assert "clear the active worktree" not in actions[0]
     assert "inspect the worktree" in actions[0]

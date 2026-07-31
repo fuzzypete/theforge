@@ -47,8 +47,15 @@ class WorktreeWork:
 
     @property
     def determined(self) -> bool:
-        """True when the commit count was actually established."""
-        return self.commits_ahead is not None
+        """True only when *both* forms of work were actually established.
+
+        Committed and uncommitted work are two independent ways a worktree can
+        hold the only copy of something. Ruling out one says nothing about the
+        other, so a zero commit count paired with an unreadable ``git status`` is
+        not a worktree known to be empty — treating it as one is the same
+        unknown-means-nothing inference this whole change exists to remove.
+        """
+        return self.commits_ahead is not None and self.dirty is not None
 
     @property
     def has_work(self) -> bool:
@@ -59,11 +66,13 @@ class WorktreeWork:
     def may_have_work(self) -> bool:
         """True when work is confirmed present, or could not be ruled out.
 
-        The predicate every destructive decision must consult: an existing
-        worktree whose state could not be read is not a worktree known to be
-        empty.
+        The predicate every destructive decision must consult: a worktree whose
+        state could not be read is not a worktree known to be empty. Absence is
+        reported only through ``determined`` — a worktree that does not exist
+        sets both counters explicitly rather than leaving them unknown — so no
+        unreadable case can reach this as a False.
         """
-        return self.has_work or (self.exists and not self.determined)
+        return self.has_work or not self.determined
 
     def as_state_fields(self) -> dict[str, object]:
         """Fields recorded on the story's audit/state entry."""
@@ -138,7 +147,9 @@ def inspect_worktree_work(
     try:
         exists = worktree.is_dir()
     except OSError:
-        exists = False
+        # Whether there is a worktree at all is itself unknown — leave every
+        # counter unset so the caller treats it as possibly holding work.
+        return WorktreeWork(slug=slug, path=str(worktree), branch=branch, exists=True)
     if not exists:
         # No worktree: nothing was left behind, and that is a determined answer.
         return WorktreeWork(
@@ -174,8 +185,12 @@ def describe_worktree_work(work: WorktreeWork) -> str | None:
         head = f"{work.commits_ahead} unmerged commit(s) on {where}"
     elif work.determined:
         head = f"uncommitted changes on {where}"
-    else:
+    elif work.commits_ahead is None:
         head = f"unread worktree state on {where} (git could not be queried)"
+    else:
+        # Commits ruled out, uncommitted changes not: still possibly the only
+        # copy of something.
+        head = f"unread uncommitted state on {where} (no commits ahead; git status failed)"
     if work.dirty and work.commits_ahead:
         head += " plus uncommitted changes"
     if work.path:
