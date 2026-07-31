@@ -63,6 +63,22 @@ class TestPerRunFileWrite:
         assert data["parent_run_id"] is None
         assert "forge_version" in data
 
+    def test_forge_version_reflects_installed_version(self, tmp_path: Path) -> None:
+        """forge_version must reflect the running package, not a hardcoded literal."""
+        import theforge
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        result = _make_result(tmp_path, run_id="run-version-001")
+
+        _write_audit(result, config, task)
+
+        run_file = tmp_path / ".forge" / "audits" / "runs" / "run-version-001.json"
+        data = json.loads(run_file.read_text())
+
+        assert data["forge_version"] == theforge.__version__
+        assert data["forge_version"] != "0.1.0"
+
     def test_per_run_file_not_written_when_run_id_is_none(self, tmp_path: Path) -> None:
         """When run_id is None, the per-run file should not be written."""
         config = _make_config(tmp_path)

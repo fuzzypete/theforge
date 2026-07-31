@@ -6,6 +6,7 @@ import datetime
 import subprocess
 from pathlib import Path
 
+from theforge import __version__ as FORGE_VERSION
 from theforge.config import ForgeConfig
 from theforge.config import provenance as config_provenance
 from theforge.config.sandbox_capabilities import resolve_capabilities
@@ -630,7 +631,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
     ]
 
     return {
-        "forge_version": "0.1.0",
+        "forge_version": FORGE_VERSION,
         "schema_version": SCHEMA_VERSION,
         "run_id": state.run_id,
         "task": {
