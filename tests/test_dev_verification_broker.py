@@ -369,6 +369,164 @@ class TestShutdownWithCommandInFlight:
         assert record["refusal_reason"] == "cancelled_at_iteration_end"
 
 
+class TestShutdownBudgetIsTheDeclaredTimeout:
+    """A declared ``timeout`` is the budget the command actually gets (#2078).
+
+    The shutdown wait used to be a fixed 30s constant unrelated to the declared
+    value, so a command configured at 1800s could never obtain more than 30s
+    once the agent's turn ended — every configured value described something
+    that could not happen.
+    """
+
+    def test_stop_lets_a_command_run_past_the_fixed_grace_toward_its_own_timeout(self, tmp_path):
+        slow = DevVerificationCommand(
+            name="check-ios", command="xcodebuild build", timeout=30, output_tail_chars=100
+        )
+        broker = _broker(tmp_path, commands=(slow,))
+        started = threading.Event()
+
+        def slow_command(cmd, cwd, **kwargs):
+            kwargs["on_process_start"](object())
+            started.set()
+            # Comfortably longer than the (patched) fixed grace, comfortably
+            # shorter than the command's own declared budget.
+            time.sleep(0.6)
+            return (True, "** BUILD SUCCEEDED **", 0, False)
+
+        with (
+            patch_gate_shell(side_effect=slow_command),
+            patch("theforge.coordinator.util._kill_process_group") as mock_kill,
+            patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 0.05),
+        ):
+            broker.start()
+            _request(broker, "r1", {"command": "check-ios"})
+            assert started.wait(10), "command never started"
+            # The agent has returned; stop() is called exactly as dev_phase does.
+            broker.stop()
+
+        assert mock_kill.call_count == 0, "the declared timeout was truncated by the grace"
+        (record,) = broker.records()
+        assert record["cancelled"] is False
+        assert record["exit_code"] == 0
+        assert _response(broker, "r1")["success"] is True
+
+    def test_stop_still_kills_a_command_that_outruns_its_declared_timeout(self, tmp_path):
+        """The budget is the declared timeout — generous, but still terminal."""
+        brief = DevVerificationCommand(
+            name="check-ios", command="xcodebuild build", timeout=1, output_tail_chars=100
+        )
+        broker = _broker(tmp_path, commands=(brief,))
+        started = threading.Event()
+        release = threading.Event()
+        killed: list[object] = []
+
+        def wedged_command(cmd, cwd, **kwargs):
+            kwargs["on_process_start"](object())
+            started.set()
+            assert release.wait(10), "command was never terminated"
+            return (False, "partial build output", -9, False)
+
+        def fake_kill(proc):
+            killed.append(proc)
+            release.set()
+            return True
+
+        with (
+            patch_gate_shell(side_effect=wedged_command),
+            patch("theforge.coordinator.util._kill_process_group", side_effect=fake_kill),
+            patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 0.05),
+            patch("theforge.coordinator.dev_verification._TIMEOUT_SETTLE_SECONDS", 0.1),
+        ):
+            broker.start()
+            _request(broker, "r1", {"command": "check-ios"})
+            assert started.wait(10), "command never started"
+            broker.stop()
+
+        assert killed, "a command past its declared budget must not survive shutdown"
+        (record,) = broker.records()
+        assert record["cancelled"] is True
+        assert record["refusal_reason"] == "cancelled_at_iteration_end"
+
+    def test_stop_falls_back_to_the_fixed_grace_with_no_command_in_flight(self, tmp_path):
+        broker = _broker(tmp_path)
+
+        with patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 5.0):
+            broker.start()
+            elapsed_start = time.monotonic()
+            broker.stop()
+            elapsed = time.monotonic() - elapsed_start
+
+        # Nothing was running, so the idle thread exits at once rather than
+        # burning the fallback grace.
+        assert elapsed < 4.0
+        assert broker.records() == []
+
+    def test_an_explicit_stop_timeout_overrides_the_derived_budget(self, tmp_path):
+        """Callers that pass a budget get it, declared timeout notwithstanding."""
+        broker = _broker(tmp_path)  # VERIFY_WATCH declares 900s
+        started = threading.Event()
+        release = threading.Event()
+        killed: list[object] = []
+
+        def wedged_command(cmd, cwd, **kwargs):
+            kwargs["on_process_start"](object())
+            started.set()
+            assert release.wait(10), "command was never terminated"
+            return (False, "", -9, False)
+
+        def fake_kill(proc):
+            killed.append(proc)
+            release.set()
+            return True
+
+        with (
+            patch_gate_shell(side_effect=wedged_command),
+            patch("theforge.coordinator.util._kill_process_group", side_effect=fake_kill),
+        ):
+            broker.start()
+            _request(broker, "r1", {"command": "verify-watch"})
+            assert started.wait(10), "command never started"
+            broker.stop(timeout=0.2)
+
+        assert killed, "an explicit stop timeout must bound the wait"
+
+    def test_the_derived_budget_shrinks_as_the_command_burns_its_own_timeout(self, tmp_path):
+        """The wait is the *remaining* budget, not the declared value restarted."""
+        import theforge.coordinator.dev_verification as dv
+
+        declared = DevVerificationCommand(
+            name="check-ios", command="xcodebuild build", timeout=100, output_tail_chars=100
+        )
+        broker = _broker(tmp_path, commands=(declared,))
+        now = time.monotonic()
+        broker._active = dv._ActiveCommand("r1", declared, None, now - 60.0)
+
+        with (
+            patch.object(dv, "_SHUTDOWN_GRACE_SECONDS", 30.0),
+            patch.object(dv, "_TIMEOUT_SETTLE_SECONDS", 5.0),
+        ):
+            budget = broker._shutdown_budget()
+
+        assert 40.0 <= budget <= 46.0, budget
+
+    def test_the_fixed_grace_is_a_floor_for_a_command_already_past_its_budget(self, tmp_path):
+        import theforge.coordinator.dev_verification as dv
+
+        declared = DevVerificationCommand(
+            name="check-ios", command="xcodebuild build", timeout=10, output_tail_chars=100
+        )
+        broker = _broker(tmp_path, commands=(declared,))
+        broker._active = dv._ActiveCommand("r1", declared, None, time.monotonic() - 500.0)
+
+        with (
+            patch.object(dv, "_SHUTDOWN_GRACE_SECONDS", 30.0),
+            patch.object(dv, "_TIMEOUT_SETTLE_SECONDS", 5.0),
+        ):
+            # Its own timeout handling is due to fire; shutdown gives that room
+            # to land rather than pre-empting the honest timed_out record.
+            assert broker._shutdown_budget() == 30.0
+
+
 class TestAuditRecords:
     def test_records_carry_the_outcome_without_duplicating_output(self, tmp_path):
         broker = _broker(tmp_path, max_requests=2)
