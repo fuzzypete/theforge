@@ -197,8 +197,14 @@ def test_reexec_reconcile_prior_done_drop_ends_succeeded_and_preserves_cost(
 ) -> None:
     """Issue #1838: a re-exec drop tagged ``reconciled-prior-generation-done``
     (as the CLI passes when a worktree matches a prior-generation DONE story)
-    must end succeeded (ALREADY_DONE), be excluded from preflight + dispatch, and
-    carry the prior generation's cost — never re-run as a fresh collision."""
+    must end succeeded, be excluded from preflight + dispatch, and carry the
+    prior generation's cost — never re-run as a fresh collision.
+
+    Issue #2042 narrowed *which* succeeded outcome: the prior generation
+    recorded DONE here, so the reconciled story reports DONE. It previously
+    reported ALREADY_DONE, which told the operator a story that ran and landed
+    a commit had done nothing.
+    """
     from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
 
     _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -258,12 +264,168 @@ def test_reexec_reconcile_prior_done_drop_ends_succeeded_and_preserves_cost(
     assert "feature-a" not in dispatched_slugs
     assert dispatched_slugs == ["feature-b"]
 
-    # (b) It ends succeeded (ALREADY_DONE) and carries the prior cost.
+    # (b) It ends succeeded and carries the prior cost.
     assert result.specs_succeeded == 2
     assert result.specs_failed == 0
     assert result.total_cost_usd == pytest.approx(1.33)
 
-    # (c) The summary records it as ALREADY_DONE via the reconcile source.
+    # (c) The summary preserves the prior generation's DONE — not ALREADY_DONE,
+    #     and not tagged as a no-op reconcile source (#2042).
+    summary = yaml.safe_load(
+        (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text()
+    )
+    by_slug = {s["slug"]: s for s in summary["stories"]}
+    assert by_slug["feature-a"]["outcome"] == "DONE"
+    assert by_slug["feature-a"].get("outcome_source") is None
+
+
+def test_reexec_reconcile_prior_done_renders_done_in_live_status(
+    tmp_path: Path,
+) -> None:
+    """Issue #2042: the operator-facing row for a reconciled prior-DONE story.
+
+    The reported symptom was read from ``forge status`` *while the sprint was
+    still running*: a story showed DONE on completion, then flipped to
+    ALREADY_DONE minutes later when a mid-sprint re-exec ("source updated after
+    pull") re-initialised the live state file. This asserts the live row at
+    exactly that moment — during the next story's dispatch — because that is the
+    surface the operator consults to decide whether a re-run is needed.
+    """
+    from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
+    from theforge.sprint.status_reader import read_live_status
+
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 0.33)
+    persist_accumulated_story_state(
+        sprint_id,
+        "Test Sprint",
+        tmp_path,
+        [
+            {
+                "canonical_ref": "feature-a.md",
+                "slug": "feature-a",
+                "path": "feature-a.md",
+                "outcome": "DONE",
+                "cost_usd": 0.33,
+                "story_run_id": "run-prev",
+                "depends_on": [],
+            }
+        ],
+    )
+
+    def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
+        return StoryTriage(
+            story_path=spec_path,
+            action="full",
+            reason="x",
+            worktree_path=None,
+            slug=Path(spec_path).stem,
+        )
+
+    observed: dict = {}
+
+    def run_task_side_effect(*args, **kwargs):
+        # Mid-sprint read, standing in for the operator's `forge status`.
+        entries = read_live_status("run-live", tmp_path) or []
+        for entry in entries:
+            if entry.slug == "feature-a":
+                observed["status"] = entry.status
+                observed["detail"] = entry.detail
+        return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", side_effect=run_task_side_effect),
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        run_sprint(
+            config,
+            manifest_path,
+            reexec=True,
+            run_id="run-live",
+            dropped_slugs={"feature-a": REASON_RECONCILE_PRIOR_DONE},
+        )
+
+    assert observed, "run_task never ran; live status was not sampled mid-sprint"
+    assert observed["status"] == "done"
+    # The regression: this read "ALREADY_DONE (...)" for a story that ran,
+    # spent budget and landed a commit in the prior generation.
+    assert observed["detail"] == "DONE"
+    assert "ALREADY_DONE" not in observed["detail"]
+
+
+def test_reexec_reconcile_preserves_prior_already_done_as_noop(
+    tmp_path: Path,
+) -> None:
+    """A reconciled story whose prior generation was a genuine no-op keeps
+    ALREADY_DONE and its ``reexec_reconcile`` source tag.
+
+    The #2042 fix makes the prior terminal decide the reported outcome, so this
+    pins the other half of that rule: no landed DONE evidence means the no-op
+    classification survives, with the source tag that distinguishes it from a
+    preflight short-circuit.
+    """
+    from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
+
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 0.0)
+    persist_accumulated_story_state(
+        sprint_id,
+        "Test Sprint",
+        tmp_path,
+        [
+            {
+                "canonical_ref": "feature-a.md",
+                "slug": "feature-a",
+                "path": "feature-a.md",
+                "outcome": "ALREADY_DONE",
+                "outcome_source": "preflight_verdict",
+                "cost_usd": 0.0,
+                "story_run_id": "run-prev",
+                "depends_on": [],
+            }
+        ],
+    )
+
+    def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
+        return StoryTriage(
+            story_path=spec_path,
+            action="full",
+            reason="x",
+            worktree_path=None,
+            slug=Path(spec_path).stem,
+        )
+
+    fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=fresh_result),
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        result = run_sprint(
+            config,
+            manifest_path,
+            reexec=True,
+            dropped_slugs={"feature-a": REASON_RECONCILE_PRIOR_DONE},
+        )
+
+    # Still succeeded and still satisfies dependency gating (marked complete).
+    assert result.specs_succeeded == 2
+    assert result.specs_failed == 0
+
     summary = yaml.safe_load(
         (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text()
     )

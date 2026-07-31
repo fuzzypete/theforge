@@ -3639,6 +3639,33 @@ def run_sprint(
                 "sprint did not schedule"
             )
 
+    def _reconciled_prior_outcome(slug: str) -> StoryOutcome:
+        """Terminal outcome to preserve for a prior generation's finished story.
+
+        The launch guard collapses every succeeded prior outcome into the single
+        drop reason ``REASON_RECONCILE_PRIOR_DONE`` (see
+        ``launch_guard._PRIOR_SUCCEEDED_OUTCOMES``), so the reason alone cannot
+        say whether the prior generation ran the story to DONE or short-circuited
+        it as a no-op ALREADY_DONE. Projecting ALREADY_DONE for both tells the
+        operator that a story which ran, spent budget and landed a commit did
+        nothing — the exact inversion reported in #2042, where a mid-sprint
+        re-exec ("source updated after pull") relabelled every already-completed
+        story minutes after it finished.
+
+        The prior generation's own recorded terminal is the evidence that
+        settles it, so prefer it. ALREADY_DONE remains the fallback for the case
+        it legitimately describes: a reconciled story with no surviving record of
+        having run.
+        """
+        entry = _story_state.get(slug)
+        if entry is not None and entry.outcome is StoryOutcome.DONE:
+            return StoryOutcome.DONE
+        ref = slug_to_context.get(slug, (None, None, None))[2]
+        prior = recovered_prior_entries_by_ref.get(ref) if ref else None
+        if isinstance(prior, dict) and str(prior.get("outcome") or "").upper() == "DONE":
+            return StoryOutcome.DONE
+        return StoryOutcome.ALREADY_DONE
+
     for slug, reason in _dropped_slugs.items():
         if slug not in slug_to_context:
             continue
@@ -3656,17 +3683,16 @@ def run_sprint(
             # dependencies of any current story that depends_on this slug —
             # a reconciled prior-DONE is a met dependency, exactly like a
             # resume skip_merged, so dependents must not be stranded/skipped.
-            _log(f"ALREADY_DONE {slug} (reconciled from prior generation)")
+            _reconciled = _reconciled_prior_outcome(slug)
+            _log(f"{_reconciled.name} {slug} (reconciled from prior generation)")
             dag.mark_complete(slug)
-            _set_outcome(slug, StoryOutcome.ALREADY_DONE, reason=reason)
-            _record_current_story_entry(
-                slug,
-                "ALREADY_DONE",
-                extras={
-                    "drop_reason": reason,
-                    "outcome_source": "reexec_reconcile",
-                },
-            )
+            _set_outcome(slug, _reconciled, reason=reason)
+            _reconcile_extras: dict = {"drop_reason": reason}
+            if _reconciled is StoryOutcome.ALREADY_DONE:
+                # Only a genuine no-op carries the ALREADY_DONE source tag; a
+                # reconciled DONE must not be tagged as one.
+                _reconcile_extras["outcome_source"] = "reexec_reconcile"
+            _record_current_story_entry(slug, _reconciled.name, extras=_reconcile_extras)
         elif reason == REASON_STRANDED_WORKTREE:
             # A prior-generation worktree exists but the story did not succeed:
             # recoverable stranded sprint state. Keep it DROPPED but retain the
@@ -3824,13 +3850,16 @@ def run_sprint(
                 _detail = {"final_outcome": "ESCALATE"}
             elif _drop_reason == REASON_RECONCILE_PRIOR_DONE:
                 # Prior generation already completed this story — surface it as
-                # done, reconciled, not a fresh drop.
+                # done, reconciled, not a fresh drop. Preserve *which* terminal
+                # it reached: this row is what `forge status` renders in the
+                # DETAIL column, so hard-coding ALREADY_DONE here is what made a
+                # landed story read as a no-op after a re-exec (#2042).
                 _status = "done"
                 _blocked_by = []
-                _detail = {
-                    "final_outcome": "ALREADY_DONE",
-                    "outcome_source": "reexec_reconcile",
-                }
+                _reconciled_live = _reconciled_prior_outcome(_slug)
+                _detail = {"final_outcome": _reconciled_live.name}
+                if _reconciled_live is StoryOutcome.ALREADY_DONE:
+                    _detail["outcome_source"] = "reexec_reconcile"
             elif _drop_reason == REASON_STRANDED_WORKTREE:
                 # Recoverable stranded prior-generation sprint state — name it
                 # distinctly rather than as a generic drop.
