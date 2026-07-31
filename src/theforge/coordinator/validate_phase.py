@@ -211,7 +211,25 @@ def _gate_attempts(state: CoordinatorState) -> int:
     return state.gate_runs
 
 
-def _record_gate_run(state: CoordinatorState, workspace_path: Path) -> None:
+def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision: str) -> None:
+    """Record which commit the gate just judged, and what it decided (#2052).
+
+    Stored as a pair so a review cycle can say whether the commit its reviewers
+    read is the commit the gate ran on — a verdict against an earlier tree is
+    not evidence about the current one. Recorded for the skip path too, with
+    decision ``SKIPPED``, so an override reads as a suppressed gate rather than
+    as a passing one. A HEAD read that fails leaves the commit unset, which
+    renders as ``ungated``: unknown provenance, never assumed-current.
+    """
+    state.last_gate_decision = decision
+    ok, out = _cu._run_shell("git rev-parse HEAD", workspace_path)
+    sha = out.strip() if ok else ""
+    state.last_gate_commit = sha or None
+
+
+def _record_gate_run(
+    state: CoordinatorState, workspace_path: Path, decision: str | None = None
+) -> None:
     """Count one gate execution and persist the count for ``--resume``.
 
     Called immediately after the gate command returns, before any routing, so
@@ -222,6 +240,8 @@ def _record_gate_run(state: CoordinatorState, workspace_path: Path) -> None:
     the run: the count degrades, the story does not.
     """
     state.gate_runs += 1
+    if decision is not None:
+        _record_gate_commit(state, workspace_path, decision)
     try:
         save_trajectory_state(workspace_path, state)
     except Exception as exc:  # noqa: BLE001
@@ -651,6 +671,9 @@ def _run_validate_phase(
         gate_decision: str | None = "PASS"
         gate_err: str | None = None
         gate_result_for_telemetry = gate_decision
+        # No gate ran, so this is not a gate run — but the commit still has a
+        # verification state, and "suppressed by override" is that state.
+        _record_gate_commit(state, workspace_path, "SKIPPED")
     else:
         if gate_override is not None:
             _log_phase(state.phase, "running gate... (override)")
@@ -669,7 +692,7 @@ def _run_validate_phase(
         # The gate command ran. Count it here — before decision/error routing —
         # so timeouts and errors, which return without ever appending to
         # gate_decisions, are still counted as the executions they were (#1984).
-        _record_gate_run(state, workspace_path)
+        _record_gate_run(state, workspace_path, decision=gate_decision or "ERROR")
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)

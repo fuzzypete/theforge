@@ -334,12 +334,25 @@ def _load_story_summary_entry_from_audit(
 
     reviews = audit_data.get("reviews")
     verdict = None
+    # Provenance of the verdict reported below: the commit that verdict judged
+    # and that commit's verification state. Carried alongside the verdict so a
+    # summary cannot present a superseded verdict as a current one (#2052).
+    verdict_commit: str | None = None
+    verdict_verification_state: str | None = None
     if isinstance(reviews, list) and reviews:
         last_review = reviews[-1]
         if isinstance(last_review, dict):
             raw_verdict = last_review.get("verdict")
             if isinstance(raw_verdict, str) and raw_verdict:
                 verdict = raw_verdict
+            raw_commit = last_review.get("commit")
+            if isinstance(raw_commit, str) and raw_commit:
+                verdict_commit = raw_commit
+            verification = last_review.get("verification")
+            raw_state = verification.get("state") if isinstance(verification, dict) else None
+            verdict_verification_state = (
+                raw_state if isinstance(raw_state, str) and raw_state else "unknown"
+            )
     if verdict is None and outcome_block.get("success") is True:
         verdict = "APPROVE"
 
@@ -374,6 +387,8 @@ def _load_story_summary_entry_from_audit(
         "outcome": final_phase,
         "outcome_source": outcome_source,
         "verdict": verdict,
+        "verdict_commit": verdict_commit,
+        "verdict_verification_state": verdict_verification_state,
         "cost_usd": _optional_cost(cost_block.get("total_usd"))
         if isinstance(cost_block, dict)
         else 0.0,
@@ -542,6 +557,16 @@ def _write_sprint_audit(
             for i, meta in enumerate(res.state.review_cycle_metadata):
                 cycle_entry: dict = {
                     "cycle": i + 1,
+                    # Reviewed-commit provenance (#2052). A cycle summary that
+                    # carries the verdict but drops the commit and its gate
+                    # state reintroduces the ambiguity at the sprint level.
+                    "commit": meta.reviewed_commit,
+                    "verification_state": (
+                        meta.verification.state if meta.verification is not None else "unknown"
+                    ),
+                    "gate_decision": (
+                        meta.verification.gate_decision if meta.verification is not None else None
+                    ),
                     "pool": meta.pool_models,
                     "successful": meta.successful,
                     "failed": meta.failed,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from theforge.config import ForgeConfig
 
-from .state import CoordinatorState
+from .state import CoordinatorState, ReviewedCommitVerification
 
 
 def _model_usage_entries(r: object) -> list[dict]:
@@ -79,6 +79,16 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
     for i, meta in enumerate(state.review_cycle_metadata):
         entry: dict = {
             "cycle": i + 1,
+            # Provenance of what this cycle judged (#2052). Without it a stored
+            # verdict is indistinguishable from one later commits superseded.
+            # Metadata from older runs carries neither, and renders as an
+            # explicit "unknown" verification state rather than as current.
+            "commit": meta.reviewed_commit,
+            "verification": (
+                meta.verification.to_audit_dict()
+                if meta.verification is not None
+                else ReviewedCommitVerification().to_audit_dict()
+            ),
             "pool_models": meta.pool_models,
             "successful": meta.successful,
             "failed": meta.failed,

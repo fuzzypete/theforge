@@ -185,6 +185,22 @@ def cmd_audit(args: object) -> int:
             summary = r.get("summary", "")
             print(f"    Cycle {cycle}: {verdict} ({p1} P1, {p2} P2) — {summary}")
 
+            # What the verdict was a verdict about. A cycle rendered without
+            # its commit and that commit's gate state reads as current even
+            # when later commits already superseded it (#2052).
+            commit = r.get("commit")
+            verification = r.get("verification")
+            vstate = verification.get("state") if isinstance(verification, dict) else None
+            gate_decision = (
+                verification.get("gate_decision") if isinstance(verification, dict) else None
+            )
+            if commit or vstate:
+                commit_str = commit[:12] if isinstance(commit, str) and commit else "unknown"
+                verification_str = vstate or "unknown"
+                if gate_decision:
+                    verification_str = f"{verification_str} (gate {gate_decision})"
+                print(f"      Reviewed commit: {commit_str} — verification: {verification_str}")
+
             findings = r.get("findings", [])
             if findings:
                 for finding in findings:
