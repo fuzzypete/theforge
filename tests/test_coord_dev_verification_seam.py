@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,13 +39,13 @@ VERIFY_WATCH = DevVerificationCommand(
 VERIFY_OUTPUT = "** TEST SUCCEEDED **"
 
 
-def _config_with_verification(tmp_path: Path, *, max_requests: int = 10):
+def _config_with_verification(tmp_path: Path, *, max_requests: int = 10, commands=None):
     base = _make_config(tmp_path)
     return dataclasses.replace(
         base,
         validation=dataclasses.replace(
             base.validation,
-            dev_verification_commands=(VERIFY_WATCH,),
+            dev_verification_commands=(VERIFY_WATCH,) if commands is None else commands,
             dev_verification_max_requests=max_requests,
         ),
     )
@@ -295,12 +296,73 @@ class TestDevLoopConsumesCoordinatorVerification:
         assert "/.forge/verify/iter-2/requests" in prompt
         assert "/.forge/verify/iter-2/responses" in prompt
 
-    def test_a_command_still_running_at_handoff_is_killed_and_audited(self, tmp_path):
-        """No declared command outlives the iteration, and none vanishes from audit."""
+    def test_a_command_still_running_at_handoff_keeps_its_declared_timeout(self, tmp_path):
+        """The seam's no-argument ``stop()`` must not truncate a declared budget (#2078).
+
+        ``dev_phase`` calls ``_verification_broker.stop()`` with no arguments in
+        its ``finally``. That call used to wait a fixed 30s and then kill,
+        regardless of the command's declared ``timeout`` — so a project
+        declaring 1800s could never obtain more than 30s of it. Here the fixed
+        grace is patched to a hair, the declared budget is 900s, and the command
+        finishes well past the grace: it must run to completion and be recorded
+        as a real result rather than as a cancellation.
+        """
         from theforge.coordinator.dev_phase import _run_dev_phase
         from theforge.coordinator.state import CoordinatorState
 
         config = _config_with_verification(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+        state.dev_iteration = 1
+
+        started = threading.Event()
+        gate = _gate_side_effect(workspace, "PASS")
+
+        def shell(cmd, cwd, **kwargs):
+            if cmd != VERIFY_WATCH.command:
+                return gate(cmd, cwd, **kwargs)
+            kwargs["on_process_start"](object())
+            started.set()
+            # Far past the (patched) fixed grace, far inside the declared 900s.
+            time.sleep(0.6)
+            return (True, VERIFY_OUTPUT, 0, False)
+
+        def run_agent(*, prompt, **kwargs):
+            """An agent that requests a build, then exits without waiting for it."""
+            request_dir = Path(_extract_dir(prompt, "requests"))
+            tmp = request_dir / "r1.json.tmp"
+            tmp.write_text(json.dumps({"command": "verify-watch"}), encoding="utf-8")
+            tmp.rename(request_dir / "r1.json")
+            assert started.wait(10), "the command never started"
+            return _make_agent_result()
+
+        with (
+            patch_gate_shell(side_effect=shell),
+            patch("theforge.coordinator.util._kill_process_group") as mock_kill,
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=run_agent),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+            patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 0.05),
+        ):
+            _run_dev_phase(
+                state, config, task, "# t\n", workspace, "feat/x", notify=False, logger=None
+            )
+
+        assert mock_kill.call_count == 0, "the declared timeout was truncated at the seam"
+        (record,) = state.dev_verification_requests
+        assert record["command_name"] == "verify-watch"
+        assert record["cancelled"] is False
+        assert record["exit_code"] == 0
+        assert state.pending_dev_verification_requests == state.dev_verification_requests
+
+    def test_a_command_outliving_its_declared_timeout_is_killed_and_audited(self, tmp_path):
+        """The budget is generous but terminal: no command outlives its own timeout."""
+        from theforge.coordinator.dev_phase import _run_dev_phase
+        from theforge.coordinator.state import CoordinatorState
+
+        brief = dataclasses.replace(VERIFY_WATCH, timeout=1)
+        config = _config_with_verification(tmp_path, commands=(brief,))
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -339,13 +401,14 @@ class TestDevLoopConsumesCoordinatorVerification:
             patch("theforge.coordinator.util._kill_process_group", side_effect=fake_kill),
             patch("theforge.coordinator.dev_phase.run_agent", side_effect=run_agent),
             patch("theforge.coordinator.dev_phase.log_agent_result"),
-            patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 0.2),
+            patch("theforge.coordinator.dev_verification._SHUTDOWN_GRACE_SECONDS", 0.05),
+            patch("theforge.coordinator.dev_verification._TIMEOUT_SETTLE_SECONDS", 0.1),
         ):
             _run_dev_phase(
                 state, config, task, "# t\n", workspace, "feat/x", notify=False, logger=None
             )
 
-        assert killed, "the in-flight command must not outlive the dev iteration"
+        assert killed, "a command past its declared timeout must not outlive the iteration"
         # The record reaches the DEV snapshot despite the agent already being gone.
         (record,) = state.dev_verification_requests
         assert record["command_name"] == "verify-watch"
