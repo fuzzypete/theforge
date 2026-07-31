@@ -80,9 +80,11 @@ from .dag import (
     resolve_satisfied_dependencies,
 )
 from .display import _print_worker_status, _story_header
+from .dropped_work import WorktreeWork, describe_worktree_work, inspect_worktree_work
 from .gate_timeout_resolver import resolve_effective_gate_timeout
 from .launch_guard import (
     REASON_IN_FLIGHT,
+    REASON_IN_FLIGHT_UNRESOLVED,
     REASON_RECONCILE_PRIOR_DONE,
     REASON_STRANDED_WORKTREE,
 )
@@ -1290,6 +1292,7 @@ def _continuation_evidence(
     *,
     reexec: bool,
     live_story_slugs: set[str],
+    unresolved_slugs: "set[str] | None" = None,
 ) -> str | None:
     """Describe why this launch is a continuation of in-flight work, or None.
 
@@ -1304,13 +1307,28 @@ def _continuation_evidence(
     Deliberately narrow: prior *recorded* outcomes are not used as evidence,
     because a sprint id is stable across separate invocations of the same sprint
     and would make an unrelated later run skip its baseline gate.
+
+    Liveness that could not be *resolved* counts as evidence too, and is named as
+    such: the gate's precondition is "no dev work has started", and an unreadable
+    sidecar cannot establish that. Asserting the precondition anyway is the same
+    empty-set-means-idle inference that produced #2079.
     """
-    if not reexec or not live_story_slugs:
+    if not reexec:
         return None
-    return (
-        "agent process groups still running for "
-        f"{', '.join(sorted(live_story_slugs))} after the re-exec"
-    )
+    parts: list[str] = []
+    if live_story_slugs:
+        parts.append(
+            "agent process groups still running for "
+            f"{', '.join(sorted(live_story_slugs))} after the re-exec"
+        )
+    if unresolved_slugs:
+        parts.append(
+            "liveness unresolved (worktree present, agent record unreadable) for "
+            f"{', '.join(sorted(unresolved_slugs))} after the re-exec"
+        )
+    if not parts:
+        return None
+    return "; ".join(parts)
 
 
 def _skipped_baseline_gate(config: ForgeConfig, evidence: str) -> dict[str, object]:
@@ -2468,6 +2486,7 @@ def run_sprint(
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
     force: bool = False,
     live_story_slugs: "set[str] | None" = None,
+    unresolved_live_slugs: "set[str] | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -2505,6 +2524,11 @@ def run_sprint(
             this process is the only one that can still finish them. Their
             existence is also the evidence that startup-only checks (the baseline
             gate) no longer hold their precondition.
+        unresolved_live_slugs: Stories whose liveness could not be established
+            after a re-exec (unreadable/absent agent sidecars). Treated exactly
+            like ``live_story_slugs`` everywhere protection or deferral matters —
+            an unresolved lookup is not evidence that no agent is running — but
+            reported honestly as unresolved rather than as observed live work.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -2530,7 +2554,14 @@ def run_sprint(
     # would otherwise treat their state as foreign — the orphan worktree sweep,
     # the baseline gate's "nothing has started yet" precondition, the gate-timeout
     # load model — is told about them explicitly.
-    _live_story_slugs: set[str] = {s for s in (live_story_slugs or set()) if s}
+    _confirmed_live_slugs: set[str] = {s for s in (live_story_slugs or set()) if s}
+    _unresolved_live_slugs: set[str] = {
+        s for s in (unresolved_live_slugs or set()) if s and s not in _confirmed_live_slugs
+    }
+    # One set for every consumer that must not treat the worktree as foreign.
+    # Unresolved liveness joins confirmed-live here deliberately: the failure to
+    # resolve is not evidence the agent is gone (#2079).
+    _live_story_slugs: set[str] = _confirmed_live_slugs | _unresolved_live_slugs
 
     # Establish that the agents are reachable BEFORE committing wall clock or
     # budget to them (#1952). This runs ahead of the baseline gate, the base
@@ -2787,7 +2818,8 @@ def run_sprint(
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     _continuation_reason = _continuation_evidence(
         reexec=reexec,
-        live_story_slugs=_live_story_slugs,
+        live_story_slugs=_confirmed_live_slugs,
+        unresolved_slugs=_unresolved_live_slugs,
     )
     if _continuation_reason is not None:
         baseline_gate = _skipped_baseline_gate(config, _continuation_reason)
@@ -3218,7 +3250,7 @@ def run_sprint(
         *,
         error: str | None = None,
         error_type: str | None = None,
-        cost_usd: float = 0.0,
+        cost_usd: float | None = 0.0,
         extras: dict | None = None,
     ) -> None:
         task_ctx = slug_to_context.get(slug)
@@ -3566,9 +3598,51 @@ def run_sprint(
     # ``preserved-escalated`` is a disjoint case: the worktree is intentionally
     # kept for human review, and counts as skipped (not failed) in aggregates.
     _dropped_slugs: dict[str, str] = dict(dropped_slugs or {})
+    _dropped_work: dict[str, WorktreeWork] = {}
+    # slug -> description of the work the drop abandoned. Membership is the
+    # single test for "this drop was not free and not evidence-free".
+    _dropped_with_work: dict[str, str] = {}
+
+    def _inspect_dropped_work(slug: str) -> WorktreeWork:
+        work = inspect_worktree_work(
+            slug,
+            project_root=config.project_root,
+            path_pattern=config.workspace.path_pattern,
+            base_branch=config.workspace.base_branch,
+            branch_pattern=getattr(config.workspace, "branch_pattern", None),
+        )
+        _dropped_work[slug] = work
+        return work
+
+    def _reclaim_dropped_agents(slug: str) -> None:
+        """Settle any inherited agent group belonging to a story we will not run.
+
+        This sprint owns the group — the sidecar names this pid — so nothing else
+        can adopt it. Leaving it running hands a live process to the next
+        invocation's orphan reaper, hours later and with no context (#2079).
+        """
+        from .live_stories import reclaim_inherited_agents  # noqa: PLC0415
+
+        try:
+            killed = reclaim_inherited_agents(
+                slug,
+                project_root=config.project_root,
+                path_pattern=config.workspace.path_pattern,
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup must not fail the sprint
+            _log(f"WARN {slug}: could not reclaim inherited agent group(s): {exc}")
+            return
+        if killed:
+            _log(
+                f"RECLAIMED {slug}: terminated inherited agent process group(s) "
+                f"{', '.join(str(p) for p in killed)} belonging to a story this "
+                "sprint did not schedule"
+            )
+
     for slug, reason in _dropped_slugs.items():
         if slug not in slug_to_context:
             continue
+        _reclaim_dropped_agents(slug)
         if reason == "preserved-escalated":
             _log(f"PRESERVED {slug} (escalated worktree held for review)")
             dag.mark_skipped(slug)
@@ -3609,10 +3683,45 @@ def run_sprint(
                 extras={"drop_reason": reason},
             )
         else:
-            _log(f"DROPPED {slug} (reason: {reason})")
+            # A dropped story is normally a story that never ran — but if its
+            # worktree holds commits, it did run, and recording that as a $0.00
+            # no-evidence drop erases exactly the run an operator needs evidence
+            # for. Cost cannot be recovered here (the spend was the previous
+            # process image's), so it is recorded as unmeasured, not as zero.
+            work = _inspect_dropped_work(slug)
+            work_detail = describe_worktree_work(work)
+            if work_detail:
+                _dropped_with_work[slug] = work_detail
+            _detail_msg = f"{reason}: {work_detail}" if work_detail else reason
+            _log(f"DROPPED {slug} (reason: {_detail_msg})")
             dag.mark_skipped(slug)
-            _set_outcome(slug, StoryOutcome.DROPPED, reason=reason)
-            _record_current_story_entry(slug, "DROPPED", error=reason, error_type="dropped")
+            _extras: dict[str, object] = {"drop_reason": reason, **work.as_state_fields()}
+            if work_detail:
+                unmeasured_spend.append(f"dropped-with-work:{slug}")
+                _set_outcome(
+                    slug,
+                    StoryOutcome.DROPPED,
+                    reason=_detail_msg,
+                    cost_usd=None,
+                    detail={"final_outcome": "DROPPED", **_extras},
+                )
+                _record_current_story_entry(
+                    slug,
+                    "DROPPED",
+                    error=_detail_msg,
+                    error_type="dropped",
+                    cost_usd=None,
+                    extras=_extras,
+                )
+            else:
+                _set_outcome(slug, StoryOutcome.DROPPED, reason=reason)
+                _record_current_story_entry(
+                    slug,
+                    "DROPPED",
+                    error=reason,
+                    error_type="dropped",
+                    extras=_extras,
+                )
 
     # Persist resume-time already-completed stories before any possible re-exec
     # handoff so later generations can recover the full logical sprint history.
@@ -3732,6 +3841,19 @@ def run_sprint(
                 _status = "failed"
                 _blocked_by = [f"dropped: {_drop_reason}"]
                 _detail = {"final_outcome": "ESCALATE"}
+                # A drop that abandoned real work says so here, with the work
+                # named — an operator reading this row must not have to infer
+                # from a zero cost that nothing was produced.
+                _work = _dropped_work.get(_slug)
+                _work_detail = _dropped_with_work.get(_slug)
+                if _work is not None and _work_detail:
+                    _blocked_by = [f"dropped: {_drop_reason}: {_work_detail}"]
+                    _detail = {
+                        "final_outcome": "DROPPED",
+                        "drop_reason": _drop_reason,
+                        "drop_detail": _work_detail,
+                        **_work.as_state_fields(),
+                    }
             elif _triage and _triage.action == "skip_merged":
                 _status = "done"
                 _detail = {
@@ -3742,12 +3864,18 @@ def run_sprint(
                 _status = "skipped"
                 _detail = {"final_outcome": "SKIPPED"}
             elif _slug in _inflight_slugs:
-                # Still running from before the re-exec: this run will wait for
-                # that agent and then resume the story, so it is waiting work —
-                # not a drop, and not something an operator should read as idle.
+                # Still running from before the re-exec — or not resolvable as
+                # finished, which this run treats the same way. Either way it
+                # waits for the agent and then resumes the story: not a drop, and
+                # not something an operator should read as idle.
+                _in_flight_reason = (
+                    REASON_IN_FLIGHT_UNRESOLVED
+                    if _slug in _unresolved_live_slugs
+                    else REASON_IN_FLIGHT
+                )
                 _status = "waiting"
-                _blocked_by = [f"in flight: {REASON_IN_FLIGHT}"]
-                _detail = {"in_flight": True, "in_flight_reason": REASON_IN_FLIGHT}
+                _blocked_by = [f"in flight: {_in_flight_reason}"]
+                _detail = {"in_flight": True, "in_flight_reason": _in_flight_reason}
             elif _blocked_by:
                 _status = "blocked"
                 _detail = {}
@@ -3760,7 +3888,9 @@ def run_sprint(
                     "path": _display_key,
                     "status": _status,
                     "phase": "PREFLIGHT" if _status == "waiting" else None,
-                    "cost_usd": 0.0,
+                    # A dropped story that abandoned work has a real, unrecovered
+                    # cost: record it unmeasured rather than fabricating $0.00.
+                    "cost_usd": None if _slug in _dropped_with_work else 0.0,
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
                     "blocked_by": _blocked_by,
                     "complexity": None,

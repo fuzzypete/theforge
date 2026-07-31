@@ -13,6 +13,7 @@ from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import run_sprint
 from theforge.sprint.launch_guard import acquire_launch_story_locks
+from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
 from theforge.sprint.runner import parse_manifest_slugs
@@ -27,6 +28,11 @@ _BACKSTOP: dict[str, str | None] = {"outcome": "completed", "cause": None}
 # either completing run_sprint or catching an exception (SIGINT, SystemExit,
 # BaseException escaping the runner).
 _UNKNOWN_END_CAUSE = "sprint process ended before recording a completion"
+
+# A launch that is not a re-exec has no inherited work by construction: nothing
+# is live and nothing is unresolved. Distinct from a failed lookup, which yields
+# an *unresolved* result (see ``_resolve_story_liveness``).
+_NO_LIVENESS = LivenessResolution()
 
 
 def _exc_cause(exc: BaseException) -> str:
@@ -285,8 +291,9 @@ def _cmd_sprint(args: object) -> int:
         except Exception:
             prior_outcomes = None
     # Stories this same process (the pid survives ``os.execv``) still has agents
-    # running for. They are this run's own live work, not foreign state.
-    in_flight_slugs = _resolve_live_story_slugs(config, slugs) if reexec else set()
+    # running for — plus the ones whose liveness could not be established, which
+    # are this run's own possible live work, not foreign state either.
+    liveness = _resolve_story_liveness(config, slugs) if reexec else _NO_LIVENESS
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs,
         config=config,
@@ -294,7 +301,8 @@ def _cmd_sprint(args: object) -> int:
         allow_drop=reexec,
         force=force,
         prior_outcomes=prior_outcomes,
-        live_slugs=in_flight_slugs,
+        live_slugs=set(liveness.live_slugs),
+        unresolved_slugs=set(liveness.unresolved_slugs),
     )
     if launch_error is not None:
         return launch_error
@@ -369,7 +377,8 @@ def _cmd_sprint(args: object) -> int:
             run_id=run_id,
             dropped_slugs=dropped_slugs,
             force=force,
-            live_story_slugs=in_flight_slugs,
+            live_story_slugs=set(liveness.live_slugs),
+            unresolved_live_slugs=set(liveness.unresolved_slugs),
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
@@ -407,6 +416,7 @@ def _acquire_launch_locks(
     force: bool = False,
     prior_outcomes: dict[str, str] | None = None,
     live_slugs: set[str] | None = None,
+    unresolved_slugs: set[str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
         slugs=slugs,
@@ -416,26 +426,33 @@ def _acquire_launch_locks(
         force=force,
         prior_outcomes=prior_outcomes,
         live_slugs=live_slugs,
+        unresolved_slugs=unresolved_slugs,
     )
 
 
-def _resolve_live_story_slugs(config: object, slugs: list[str]) -> set[str]:
+def _resolve_story_liveness(config: object, slugs: list[str]) -> LivenessResolution:
     """Stories of this same process still executing across a re-exec boundary.
 
     Thin CLI seam over :mod:`theforge.sprint.live_stories` — the ownership
-    decision itself lives in the sprint package. Best-effort: a resolution
-    failure degrades to today's behaviour rather than failing the launch.
+    decision and the fail-closed semantics both live in the sprint package. A
+    resolution failure yields an *unresolved* result, never an empty one: "we
+    could not ask" must stay distinguishable from "nothing is running", or the
+    launch guard reconciles this run's own live work as a foreign collision
+    (#2079).
     """
-    try:
-        from theforge.sprint.live_stories import resolve_live_story_slugs  # noqa: PLC0415
+    from theforge.sprint.live_stories import (  # noqa: PLC0415
+        resolve_liveness,
+        unresolved_liveness,
+    )
 
-        return resolve_live_story_slugs(
+    try:
+        return resolve_liveness(
             slugs,
             project_root=config.project_root,
             path_pattern=config.workspace.path_pattern,
         )
-    except Exception:
-        return set()
+    except Exception as exc:  # noqa: BLE001 - fail closed, never fail the launch
+        return unresolved_liveness(slugs, reason=f"liveness lookup unavailable: {exc}")
 
 
 def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, str]:
@@ -1155,8 +1172,9 @@ def _run_query_mode(
     # flattening them into fresh collisions. Best-effort — a miss degrades to
     # today's behavior.
     prior_outcomes = _resolve_prior_outcomes(config, resolved.name) if reexec else None
-    # Stories this same process still has live agents for (see manifest mode).
-    in_flight_slugs = _resolve_live_story_slugs(config, slugs) if reexec else set()
+    # Stories this same process still has live (or unresolved) agents for — see
+    # manifest mode above for why unresolved is deferred rather than dropped.
+    liveness = _resolve_story_liveness(config, slugs) if reexec else _NO_LIVENESS
     locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
         slugs=slugs,
         config=config,
@@ -1164,7 +1182,8 @@ def _run_query_mode(
         allow_drop=reexec,
         force=force,
         prior_outcomes=prior_outcomes,
-        live_slugs=in_flight_slugs,
+        live_slugs=set(liveness.live_slugs),
+        unresolved_slugs=set(liveness.unresolved_slugs),
     )
     if launch_error is not None:
         return launch_error
@@ -1247,7 +1266,8 @@ def _run_query_mode(
             skipped_issues=skipped_issues,
             entry_intake_outcomes=entry_intake_outcomes,
             force=force,
-            live_story_slugs=in_flight_slugs,
+            live_story_slugs=set(liveness.live_slugs),
+            unresolved_live_slugs=set(liveness.unresolved_slugs),
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such

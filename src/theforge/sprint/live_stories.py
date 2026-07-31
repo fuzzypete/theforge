@@ -37,10 +37,13 @@ from theforge.process_group import group_is_alive, kill_agent_group
 
 __all__ = [
     "InheritedAgentGroup",
+    "LivenessResolution",
     "await_inherited_agents",
     "reclaim_inherited_agents",
     "resolve_inherited_agents",
+    "resolve_liveness",
     "resolve_live_story_slugs",
+    "unresolved_liveness",
 ]
 
 
@@ -53,14 +56,67 @@ class InheritedAgentGroup:
     sidecar: Path
 
 
-def _agent_sidecars(project_root: Path) -> list[Path]:
+@dataclass(frozen=True)
+class LivenessResolution:
+    """What a liveness lookup established — including what it could not.
+
+    ``live_slugs`` are *confirmed* live: a sidecar owned by this pid names the
+    slug's worktree and its group answered "alive". ``unresolved_slugs`` are the
+    slugs the lookup could not answer for, because a sidecar was unreadable or
+    malformed, the agents directory could not be listed, or the liveness probe
+    itself failed. The distinction is the whole point of this type: an empty
+    ``live_slugs`` alone cannot tell a caller whether nothing is running or
+    whether nothing could be *asked*, and treating the second as the first is how
+    a sprint's own running story became a foreign worktree collision (#2079).
+
+    Unresolved is scoped to slugs whose worktree exists on disk: a slug with no
+    worktree has nothing that could be live, so a scan failure says nothing about
+    it and it stays fully schedulable.
+    """
+
+    live_slugs: frozenset[str] = frozenset()
+    unresolved_slugs: frozenset[str] = frozenset()
+    failures: tuple[str, ...] = ()
+
+    @property
+    def resolved(self) -> bool:
+        """True when every candidate slug's liveness was actually established."""
+        return not self.unresolved_slugs
+
+    @property
+    def deferred_slugs(self) -> frozenset[str]:
+        """Slugs that must not be reconciled as foreign state by this launch.
+
+        Confirmed-live and unresolved alike: both may have an agent of this
+        generation writing to their worktree right now.
+        """
+        return frozenset(self.live_slugs | self.unresolved_slugs)
+
+
+def unresolved_liveness(slugs: Iterable[str], *, reason: str) -> LivenessResolution:
+    """A resolution that established nothing — every slug stays unresolved.
+
+    The fail-closed answer for a caller whose lookup could not run at all (a bad
+    config, an import failure). Coarser than :func:`resolve_liveness`, which can
+    scope the taint to slugs that actually have a worktree, because a failure
+    this early means even that much is unknown.
+    """
+    return LivenessResolution(
+        live_slugs=frozenset(),
+        unresolved_slugs=frozenset(s for s in slugs if s),
+        failures=(reason,),
+    )
+
+
+def _agent_sidecars(project_root: Path) -> tuple[list[Path], str | None]:
+    """Sidecar paths, plus a failure description when they could not be listed."""
     agents_dir = Path(project_root) / ".forge" / "runs" / "agents"
     if not agents_dir.exists():
-        return []
+        return [], None
     try:
-        return sorted(agents_dir.glob("*.json"))
-    except OSError:
-        return []
+        return sorted(agents_dir.glob("*.json")), None
+    except OSError as exc:
+        return [], f"agents directory {agents_dir} could not be listed: {exc}"
 
 
 def _slug_for_sandbox(sandbox: Path, worktree_to_slug: dict[Path, str]) -> str | None:
@@ -84,6 +140,66 @@ def _worktree_index(slugs: Iterable[str], root: Path, path_pattern: str) -> dict
     return index
 
 
+def _scan_inherited_agents(
+    worktree_to_slug: dict[Path, str],
+    root: Path,
+    *,
+    owner_pid: int | None,
+    only_live: bool,
+    is_group_alive: Callable[[int], bool],
+) -> tuple[list[InheritedAgentGroup], list[tuple[str | None, str]]]:
+    """Scan the sidecar directory, returning groups and unresolved-liveness facts.
+
+    Each failure is ``(slug_or_None, description)``. ``None`` means the failure
+    could not be attributed to one slug — an unreadable sidecar names no worktree,
+    so it may belong to any of them and taints them all.
+    """
+    failures: list[tuple[str | None, str]] = []
+    sidecars, listing_failure = _agent_sidecars(root)
+    if listing_failure is not None:
+        failures.append((None, listing_failure))
+
+    my_pid = os.getpid() if owner_pid is None else int(owner_pid)
+    found: list[InheritedAgentGroup] = []
+    for sidecar in sidecars:
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            failures.append((None, f"sidecar {sidecar.name} is unreadable: {exc}"))
+            continue
+        if not isinstance(data, dict):
+            failures.append((None, f"sidecar {sidecar.name} is not a record"))
+            continue
+        if data.get("owner_pid") != my_pid:
+            # Another process's group: not this sprint generation's work.
+            continue
+        pgid = data.get("pgid")
+        sandbox_raw = data.get("sandbox_dir")
+        if not isinstance(pgid, int) or not sandbox_raw:
+            failures.append((None, f"sidecar {sidecar.name} names no pgid/sandbox"))
+            continue
+        try:
+            sandbox = Path(str(sandbox_raw)).resolve()
+        except OSError as exc:
+            failures.append((None, f"sidecar {sidecar.name} sandbox is unresolvable: {exc}"))
+            continue
+        slug = _slug_for_sandbox(sandbox, worktree_to_slug)
+        if slug is None:
+            # Ours, but for a story outside this launch's slug set — knowable,
+            # and irrelevant here.
+            continue
+        if only_live:
+            try:
+                alive = is_group_alive(pgid)
+            except Exception as exc:  # noqa: BLE001 - a failed probe is unresolved, not "dead"
+                failures.append((slug, f"liveness probe for pgid {pgid} failed: {exc}"))
+                continue
+            if not alive:
+                continue
+        found.append(InheritedAgentGroup(slug=slug, pgid=pgid, sidecar=sidecar))
+    return found, failures
+
+
 def resolve_inherited_agents(
     slugs: Iterable[str],
     *,
@@ -101,42 +217,81 @@ def resolve_inherited_agents(
     worktree. With ``only_live`` (the default) dead groups are filtered out;
     pass ``False`` to reach their sidecar records for cleanup.
 
-    Best-effort by construction: an unreadable or malformed sidecar is ignored
-    rather than raised on. The cost of a miss is today's behaviour (the story is
-    treated as foreign), so this must never fail a launch.
+    Returns only what it could positively establish. Callers that must not read
+    "found nothing" as "nothing is running" use :func:`resolve_liveness`, which
+    reports the same scan's failures instead of discarding them.
     """
     root = Path(project_root)
     worktree_to_slug = _worktree_index(slugs, root, path_pattern)
     if not worktree_to_slug:
         return []
+    groups, _failures = _scan_inherited_agents(
+        worktree_to_slug,
+        root,
+        owner_pid=owner_pid,
+        only_live=only_live,
+        is_group_alive=is_group_alive,
+    )
+    return groups
 
-    my_pid = os.getpid() if owner_pid is None else int(owner_pid)
-    found: list[InheritedAgentGroup] = []
-    for sidecar in _agent_sidecars(root):
+
+def _existing_worktree_slugs(worktree_to_slug: dict[Path, str]) -> set[str]:
+    present: set[str] = set()
+    for path, slug in worktree_to_slug.items():
         try:
-            data = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        if data.get("owner_pid") != my_pid:
-            # Another process's group: not this sprint generation's work.
-            continue
-        pgid = data.get("pgid")
-        sandbox_raw = data.get("sandbox_dir")
-        if not isinstance(pgid, int) or not sandbox_raw:
-            continue
-        try:
-            sandbox = Path(str(sandbox_raw)).resolve()
+            if path.exists():
+                present.add(slug)
         except OSError:
-            continue
-        slug = _slug_for_sandbox(sandbox, worktree_to_slug)
-        if slug is None:
-            continue
-        if only_live and not is_group_alive(pgid):
-            continue
-        found.append(InheritedAgentGroup(slug=slug, pgid=pgid, sidecar=sidecar))
-    return found
+            # Cannot even tell whether the worktree is there — assume it may be.
+            present.add(slug)
+    return present
+
+
+def resolve_liveness(
+    slugs: Iterable[str],
+    *,
+    project_root: Path,
+    path_pattern: str,
+    owner_pid: int | None = None,
+    is_group_alive: Callable[[int], bool] = group_is_alive,
+) -> LivenessResolution:
+    """Establish, per slug, whether this process still has an agent running for it.
+
+    Fail-closed: any part of the lookup that could not be completed leaves the
+    affected slugs *unresolved* rather than silently absent from ``live_slugs``.
+    A launch guard must be able to tell "this story is definitely not running"
+    from "nobody could say", because only the first justifies reconciling the
+    story's worktree as foreign state.
+    """
+    wanted = [s for s in slugs if s]
+    try:
+        root = Path(project_root)
+        worktree_to_slug = _worktree_index(wanted, root, path_pattern)
+        groups, failures = _scan_inherited_agents(
+            worktree_to_slug,
+            root,
+            owner_pid=owner_pid,
+            only_live=True,
+            is_group_alive=is_group_alive,
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken scan resolves nothing
+        return unresolved_liveness(wanted, reason=f"liveness scan failed: {exc}")
+
+    live = {group.slug for group in groups}
+    if not failures:
+        return LivenessResolution(live_slugs=frozenset(live))
+
+    if any(slug is None for slug, _msg in failures):
+        # An unattributable failure could concern any worktree that exists.
+        tainted = _existing_worktree_slugs(worktree_to_slug)
+    else:
+        tainted = {slug for slug, _msg in failures if slug}
+    unresolved = (tainted & set(wanted)) - live
+    return LivenessResolution(
+        live_slugs=frozenset(live),
+        unresolved_slugs=frozenset(unresolved),
+        failures=tuple(msg for _slug, msg in failures),
+    )
 
 
 def resolve_live_story_slugs(
@@ -147,17 +302,20 @@ def resolve_live_story_slugs(
     owner_pid: int | None = None,
     is_group_alive: Callable[[int], bool] = group_is_alive,
 ) -> set[str]:
-    """The subset of *slugs* whose inherited agent group is still running."""
-    return {
-        group.slug
-        for group in resolve_inherited_agents(
+    """The subset of *slugs* whose inherited agent group is confirmed running.
+
+    Drops the unresolved set; use :func:`resolve_liveness` where "unknown" and
+    "not running" must not be conflated.
+    """
+    return set(
+        resolve_liveness(
             slugs,
             project_root=project_root,
             path_pattern=path_pattern,
             owner_pid=owner_pid,
             is_group_alive=is_group_alive,
-        )
-    }
+        ).live_slugs
+    )
 
 
 def _discard_records(groups: Iterable[InheritedAgentGroup]) -> None:
