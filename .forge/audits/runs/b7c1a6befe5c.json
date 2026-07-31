@@ -1,0 +1,2187 @@
+{
+  "schema_version": 16,
+  "run_id": "b7c1a6befe5c",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "A failure cause code is assigned from text describing the target repository's source rather than forge's own run",
+    "slug": "issue-2031",
+    "story_path": null,
+    "story_text": "## Observed\n\nObserved in sprint issues-248,245,246,231, story #248.\n\nForge recorded the story's primary cause as unknown_needs_rca, meaning it had already\ndetermined it could not classify the failure. It nonetheless attached a contributing\ncause naming an unapplied fallback, and surfaced to the operator the next step \"wire\nthe provider fallback so the next failure recovers automatically\".\n\nThe evidence string attached to that contributing cause was a sentence lifted from\nthe story's own preflight log. That sentence described the target repository's\napplication code \u2014 a rest-timer scheduling function that invalidates a session\nunconditionally with no fallback or guard path preserving the existing alarm. It was\nan analysis of the defect the story existed to fix. It had no relationship to forge's\nown fallback machinery, which is what the cause code denotes and what the\nrecommendation told the operator to go wire.\n\nThe classification therefore rested on a word appearing in a description of the work,\nmatched as though it were a description of the run. The operator-facing recommendation\nthat followed pointed at a subsystem that had not failed and was not involved, while\nthe actual failure went unexplained.\n\n## Expected\n\nA cause code should be assigned only from evidence about forge's own\nexecution. Text originating in the target repository \u2014 its source, its issue body, its\npreflight analysis \u2014 describes the work being attempted, not the run attempting it,\nand must not be matched into runtime cause codes on the strength of shared vocabulary.\nWhen forge has determined it cannot classify a failure, that determination should\npropagate: it should not also emit a confident contributing cause, and it should not\nderive an operator recommendation from one. Recommending remediation of a subsystem\non unsupported evidence costs more operator trust than declining to guess.\n## Diagnosis\n\n- **Observed symptom:** the `provider_fallback_not_applied` rule fires on\n  reviewer prose containing the phrase \"no fallback\", adding a false\n  contributing factor and a false recommended action to a story's RCA entry.\n\n- **Evidence:** the rule declares plain-English patterns \u2014\n  `patterns=(\"fallback not applied\", \"no fallback\", \"fallback unavailable\")` at\n  `src/theforge/sprint/rca.py:270`, within the rule defined at lines 265-271.\n  Alphabetic patterns are matched as unanchored substrings: `_pattern_matches`\n  (`src/theforge/sprint/rca.py:674-685`) anchors only purely-numeric patterns\n  with digit boundaries and applies plain containment to everything else. The\n  text scanned includes agent-authored content, because `_collect_text_sources`\n  (`src/theforge/sprint/rca.py:592-671`) gathers the story's iteration logs and\n  run log as sources. The false hit is recorded in\n  `hdp/.forge/logs/issues-248,245,246,231/sprint-rca.yaml` under `issue-248`,\n  citing `issue-248/preflight-raw.log`, and the corresponding action string is\n  emitted by `_recommend_actions` (`src/theforge/sprint/rca.py:922-986`).\n\n- **Ruled out:** not a mis-scoped source list \u2014 scanning agent output is\n  deliberate and is what lets genuine text rules such as\n  `worker_thread_timeout` and `provider_usage_limit` work; the defect is the\n  pattern's specificity, not the corpus. Not a one-off phrasing coincidence \u2014\n  \"no fallback\" is unqualified ordinary English and will recur in any review\n  discussing error handling, as will \"rate limit\" and \"overloaded\" in the\n  `provider_usage_limit` rule, so the class of defect is structural rather than\n  incidental to this run. Not a priority or precedence bug \u2014 the rule's\n  `contributing` role is correct and it did not displace the primary class; it\n  was wrong to fire at all.\n\n- **Confirmed cause:** `provider_fallback_not_applied` is keyed on generic\n  English phrases matched as unanchored substrings against natural-language\n  agent output, so it cannot distinguish forge reporting that a provider\n  fallback did not apply from an agent writing about fallbacks in the project\n  under development.\n\n- **Affected code path:** `src/theforge/sprint/rca.py` \u2014 the\n  `provider_fallback_not_applied` rule (lines 265-271), `_pattern_matches`\n  (lines 674-685), `_text_rule_hits` (lines 687-713), and the\n  `fallback_not_applied` action string in `_recommend_actions` (lines 922-986).\n\n- **Fix-success criterion:** an RCA generated over a run whose only occurrence\n  of \"fallback\" is in agent-authored prose about the project under development\n  records no `provider_fallback_not_applied` factor and no provider-fallback\n  recommended action; and an RCA over a run in which forge genuinely declined or\n  failed to apply a configured provider fallback still records it.\n\n## Notes\n\nThe generalizable half is that a text rule keyed on ordinary English cannot be\nmade reliable by tightening the phrase, only by anchoring it to something forge\nemits itself \u2014 a structured field, or a log line with a marker the coordinator\ncontrols. `provider_usage_limit` (`rca.py:131-150`) carries the same exposure\nwith patterns including \"rate limit\" and \"overloaded\"; it was not observed\nmisfiring in this run and is not claimed as a defect here, but a fix that only\nedits the fallback strings leaves the shape in place.\n\nDiagnosis added 2026-07-29 while auditing whether `forge rca` would have surfaced\nthe real cause of the same sprint's failure. It did not, and this false positive\nwas in the same artifact.\n",
+    "github_issue": 2031,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'A failure cause code is assigned from text describing the target repository's source rather than forge's own run' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2031",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "ddf64f41d89261f603b0024165e834a0f9eb38492532d54f5c681fcced351a61",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-07-31T14:42:52.280293+00:00",
+    "finished_at": "2026-07-31T14:57:28.867531+00:00",
+    "duration_seconds": 876.587238
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2031",
+    "branch": "feat/issue-2031",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 2.7683619999999993,
+        "duration_s": 386.96,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 2.1979979999999997,
+        "duration_s": 205.34,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 4,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 1.237114,
+        "duration_s": 65.55
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 4,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 0.970474,
+        "duration_s": 78.73
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 4,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 5,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 900,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 5,
+      "base_review": 4,
+      "profile_history_runs": 163,
+      "profile_avg_iterations": 1.5828,
+      "profile_avg_cost_usd": 4.541321,
+      "profile_raw_dev_max": 2.3742,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 900,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.0826,
+      "review_history_sample_size": 18,
+      "p75_review": 2,
+      "chosen_review_max": 4,
+      "rationale": "derived dev limits from 163 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-07-31T14:42:53.229848+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-07-31T14:51:37.851314+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 7.526457299999999,
+    "dev_usd": 4.966359999999999,
+    "review_usd": 2.207588,
+    "dev_invocations": 2,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 2.7683619999999993,
+        "duration_seconds": 386.96238929219544,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.004888
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.763473999999999
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 2.1979979999999997,
+        "duration_seconds": 205.335483915871,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.1979979999999997
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.494212,
+        "duration_seconds": 32.69017193757463,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.494212
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.742902,
+        "duration_seconds": 32.69017193757463,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.742902
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.540973,
+        "duration_seconds": 39.29336352099199,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.540973
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.429501,
+        "duration_seconds": 39.29336352099199,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.429501
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Well-diagnosed, localized bug in src/theforge/sprint/rca.py where the provider_fallback_not_applied text rule matches unanchored generic English substrings against agent-authored prose describing the target repo, producing a false contributing cause and false operator recommendation; all cited code paths (RULES entry lines 274-280, _pattern_matches 688-698, _collect_text_sources 606-685, _recommend_actions fallback action at 1091-1092) were directly verified.",
+    "complexity": "medium",
+    "complexity_score": 5,
+    "implementation_complexity_score": 5,
+    "validation_complexity_score": 3,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 5",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "3 operator-visible surfaces enumerated in acceptance criteria: 231/sprint-rca.yaml, forge rca, issue-248/preflight-raw.log",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.3525093,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "98bf42733a63",
+    "cache_snapshot": {
+      "worktree_head": "441c7418f1c14068b45ba232e310c0ccd83acb64",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "441c7418f1c14068b45ba232e310c0ccd83acb64",
+      "story_content_hash": "75f84bc08bc9b1a30d0c66dc8da9541cd9fdbeb6d633d2173f9f761bdac5ad6e"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "441c7418f1c14068b45ba232e310c0ccd83acb64",
+      "current_worktree_head": "441c7418f1c14068b45ba232e310c0ccd83acb64",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "441c7418f1c14068b45ba232e310c0ccd83acb64",
+      "current_evaluation_base_branch_head": "441c7418f1c14068b45ba232e310c0ccd83acb64",
+      "cached_story_content_hash": "75f84bc08bc9b1a30d0c66dc8da9541cd9fdbeb6d633d2173f9f761bdac5ad6e",
+      "current_story_content_hash": "75f84bc08bc9b1a30d0c66dc8da9541cd9fdbeb6d633d2173f9f761bdac5ad6e",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.3525093,
+        "duration_s": 59.3,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 5,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gemini-3.5-flash",
+          "source": "forge.yaml",
+          "canonical_id": "google/gemini-3.5-flash/api"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 5 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 5 \u2192 tier mid ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier mid, providers ['openai', 'google'], complexity score 5; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gemini-3.5-flash",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 5,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2031/iter_1.yaml",
+      "handoff": {
+        "summary": "Converted the provider_fallback_not_applied RCA rule from unanchored English substring patterns ('no fallback', 'fallback unavailable', 'fallback not applied') to a field-derived signal rule detected in _fallback_not_applied_evidence, which reads the run's own dev-loop transport telemetry from the per-story audit: transport_fallback_reason set (a fallback-eligible CLI transport failure forge itself classified) with transport_fallback_fired false (no fallback transport ran). This is the fallback machinery reporting on its own execution, so agent-authored prose about the target repository can no longer assign the cause code on shared vocabulary. Separately, when the primary class is unknown_needs_rca, contributing factors whose evidence came only from a text scan are no longer promoted into contributing_factors and no operator recommendation is derived from them; their evidence entries are still recorded so the trace is not lost, and structured field-derived contributing factors (the run's own recorded facts) still stand. RULESET_VERSION bumped 4 -> 5 so the changed conclusions are a visible, versioned re-analysis; the two existing tests that pin that constant were updated to match (the monkeypatched 'improved' version in test_improved_ruleset_regenerates_versioned moved 5 -> 6). Added six tests including a coordinator-audit seam test driving real DevIterationTelemetry through generate_audit_log into the RCA engine, so the cause code is verified against the field the coordinator actually writes.",
+        "commits": [
+          {
+            "sha": "a0cab14",
+            "message": "fix(rca): derive provider_fallback_not_applied from forge's own transport telemetry"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "An RCA generated over a run whose only occurrence of 'fallback' is in agent-authored prose about the project under development records no provider_fallback_not_applied factor and no provider-fallback recommended action",
+            "status": "MET",
+            "notes": "The rule has no patterns at all now, so no text source can fire it. test_agent_prose_about_project_fallbacks_is_not_a_runtime_cause reproduces the observed case (a preflight-raw.log sentence about a rest-timer function with 'no fallback', plus a dev iteration log saying 'the fallback is unavailable' / 'fallback not applied') and asserts the factor, the evidence rule_id, and the 'wire the provider fallback' action are all absent while the story stays unknown_needs_rca."
+          },
+          {
+            "criterion": "An RCA over a run in which forge genuinely declined or failed to apply a configured provider fallback still records it",
+            "status": "MET",
+            "notes": "test_genuine_unapplied_provider_fallback_still_recorded (audit fixture) and test_fallback_seam_coordinator_audit_to_rca (real DevIterationTelemetry -> generate_audit_log -> RCA) both assert the factor, its audit-sourced evidence naming the transport reason, and the recommended action. test_applied_provider_fallback_is_not_recorded_as_unapplied pins the negative side (fired=true is not 'not applied')."
+          },
+          {
+            "criterion": "When forge has determined it cannot classify a failure, that determination propagates: it does not also emit a confident contributing cause or derive an operator recommendation from one",
+            "status": "MET",
+            "notes": "Implemented in _classify_story: contributing hits now carry their source kind, and under UNKNOWN_CLASS only structured (field-derived) ones survive into contributing_factors, so _recommend_actions cannot derive advice from a text-scan guess. Covered by test_unclassified_story_drops_text_derived_contributing_factors and test_structured_contributing_factor_survives_unknown_primary. See story_deviations for the interpretation call on 'structured survives'."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Expected section reads 'it should not also emit a confident contributing cause' when primary is unknown. I implemented this for text-scan-derived contributing factors only; contributing factors derived from forge's own structured audit/summary fields (dev/review iteration limits, and the new telemetry-derived fallback factor) still stand under an unknown primary. Rationale: those are the run's recorded facts rather than an inference from vocabulary, and suppressing them would discard real signal the operator needs precisely when nothing else explains the failure. A blanket suppression is a one-line change to the filter in _classify_story if the stricter reading is wanted.",
+          "RULESET_VERSION 4 -> 5 required editing two existing assertions in tests/test_sprint_rca.py (test_ruleset_version_stamped, test_improved_ruleset_regenerates_versioned) that pin the constant. These tests are directly about the version contract this change is obliged to bump; no test logic or coverage was weakened."
+        ],
+        "deferred_items": [
+          "provider_usage_limit (rca.py:131-150) still carries the same structural exposure via 'rate limit' / 'overloaded' / 'resource exhausted' patterns matched against agent prose. The story's Notes explicitly scope it out as not-a-claimed-defect; the anchoring pattern established here (field-derived from forge-emitted telemetry, e.g. cli_quota_error_observed which the audit already records per dev iteration) is directly reusable for it.",
+          "Full gate not run \u2014 sandbox denies mkstemp and multiprocessing semaphores, which fails 17 tests in tests/test_cut_rc_isolation.py, tests/test_sprint_lock.py, and tests/test_sprint_reexec_collision.py with PermissionError/'Operation not permitted' regardless of this change. Everything else passes: 6562 passed, 38 skipped, and all 66 tests across test_sprint_rca.py, test_sprint_rca_skip_context.py, and test_cli_sprint_digest.py are green."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2031/iter_2.yaml",
+      "handoff": {
+        "summary": "Iteration 2 (advisory cleanup after APPROVE) addresses the carried P2 on provider_usage_limit, which shared the exposure #2031 fixed for the fallback rule: 'rate limit', 'overloaded', 'resource exhausted' are ordinary English matched as unanchored substrings against agent prose. Rather than deleting patterns that still catch real provider errors nothing else records (API-transport quota errors appear only in captured output; cli_quota_error_observed is CLI-only), it gets two guards. First, a new RcaRule.forge_emitted_only field, set on provider_usage_limit and honored in _text_rule_hits: the rule's patterns are scanned only against sources forge emitted about its own run, never against 'authored'-kind sources (markdown and preflight artifacts, which carry analysis of the target repository). Second, a new _provider_quota_evidence signal so the rule fires field-derived from cli_quota_error_observed in the coordinator audit's dev-loop telemetry \u2014 forge's own classification of its own CLI invocation \u2014 with no text at all; it is restricted to the terminal dev iteration with no fallback fired, because provider_quota is the highest-priority primary class and promoting a quota blip that a later iteration or a fallback recovered from would send the operator to wait out a quota reset that was never the blocker. Extracted _dev_loop_entries so both telemetry readers share one guarded accessor. Iteration 1's work (fallback rule converted to field-derived; unknown_needs_rca dropping text-derived contributing factors and their recommendations) is unchanged and its tests still pass.",
+        "commits": [
+          {
+            "sha": "a0cab14",
+            "message": "fix(rca): derive provider_fallback_not_applied from forge's own transport telemetry"
+          },
+          {
+            "sha": "131c722",
+            "message": "fix(rca): address review findings (iter 2)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "An RCA generated over a run whose only occurrence of 'fallback' is in agent-authored prose about the project under development records no provider_fallback_not_applied factor and no provider-fallback recommended action",
+            "status": "MET",
+            "notes": "The rule has no patterns at all, so no text source can fire it. test_agent_prose_about_project_fallbacks_is_not_a_runtime_cause reproduces the observed case (preflight-raw.log sentence about a rest-timer function plus a dev iteration log saying 'the fallback is unavailable' / 'fallback not applied') and asserts the factor, the evidence rule_id, and the 'wire the provider fallback' action are all absent while the story stays unknown_needs_rca."
+          },
+          {
+            "criterion": "An RCA over a run in which forge genuinely declined or failed to apply a configured provider fallback still records it",
+            "status": "MET",
+            "notes": "test_genuine_unapplied_provider_fallback_still_recorded (audit fixture) and test_fallback_seam_coordinator_audit_to_rca (real DevIterationTelemetry -> generate_audit_log -> RCA) assert the factor, its audit-sourced evidence naming the transport reason, and the recommended action. test_applied_provider_fallback_is_not_recorded_as_unapplied pins the negative side."
+          },
+          {
+            "criterion": "When forge has determined it cannot classify a failure, that determination propagates: it does not also emit a confident contributing cause or derive an operator recommendation from one",
+            "status": "MET",
+            "notes": "Under UNKNOWN_CLASS only structured (field-derived) contributing hits survive into contributing_factors, so _recommend_actions cannot derive advice from a text-scan guess; the evidence trail still records what fired. Covered by test_unclassified_story_drops_text_derived_contributing_factors and test_structured_contributing_factor_survives_unknown_primary. Interpretation call noted in story_deviations."
+          },
+          {
+            "criterion": "[Carried P2] provider_usage_limit no longer assigns a cause code from generic English in target-repo prose",
+            "status": "MET",
+            "notes": "test_agent_prose_about_project_rate_limits_is_not_provider_quota (preflight log + .md both discussing rate limits/overload/quota in the project under development) stays unknown_needs_rca with no provider_usage_limit evidence. test_provider_quota_from_run_telemetry_without_any_matching_text covers the new field-derived path, and test_survived_quota_blip_is_not_promoted_to_root_cause covers both negatives (recovered by a later iteration; absorbed by a fallback that fired). The pre-existing test_provider_quota_with_gate_timeout confirms genuine detection from captured agent output ('log' kind) is unaffected."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Expected section reads 'it should not also emit a confident contributing cause' when primary is unknown. Implemented for text-scan-derived contributing factors only; factors derived from forge's own structured audit/summary fields (dev/review iteration limits, telemetry-derived fallback) still stand under an unknown primary, because those are the run's recorded facts rather than an inference from vocabulary. A blanket suppression is a one-line change to the filter in _classify_story if the stricter reading is wanted.",
+          "The carried P2 asked to convert provider_usage_limit to a field-derived signal rule. It is now additionally field-derived, but its patterns were kept: cli_quota_error_observed is set only on the CLI transport, so deleting the patterns would lose API-transport provider errors that appear only in captured output. The false-positive half of the finding is closed by forge_emitted_only instead.",
+          "RULESET_VERSION was bumped 4 -> 5 in iteration 1 and left at 5 here: v5 exists only on this unmerged branch, so there is no persisted artifact produced by 'v5 minus this cleanup' that a further bump would distinguish it from. The two existing tests pinning that constant were updated in iteration 1 and are unchanged this iteration."
+        ],
+        "deferred_items": [
+          "Full gate not run \u2014 sandbox denies mkstemp and multiprocessing semaphores, failing 17 tests in tests/test_cut_rc_isolation.py, tests/test_sprint_lock.py and tests/test_sprint_reexec_collision.py with PermissionError/'Operation not permitted' regardless of this change (identical set and count as iteration 1, verified against unmodified code paths). Everything else passes: 6565 passed, 38 skipped, and all 69 tests across test_sprint_rca.py, test_sprint_rca_skip_context.py and test_cli_sprint_digest.py are green."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The implementation anchors provider fallback RCA classification to Forge transport telemetry, preserves the observed unknown outcome for target-repo prose, and has focused regression coverage. | [google-gemini-3.5-flash] The implementation successfully converts the provider_fallback_not_applied rule to a field-derived signal rule and propagates unclassifiable failure uncertainty by dropping text-derived contributing factors.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 131,
+          "description": "The provider_usage_limit rule matches generic English phrases like 'rate limit' and 'overloaded' as unanchored substrings against natural-language agent output, exposing it to false positives when agents discuss resource limits in the target repository.",
+          "reviewers": [
+            "google-gemini-3.5-flash"
+          ],
+          "reporter": "google-gemini-3.5-flash"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: provider_fallback_not_applied fired on agent-authored target-repository prose containing fallback vocabulary and produced an unsupported provider-fallback recommendation while the story remained unknown_needs_rca.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:275 removes all text patterns from provider_fallback_not_applied, src/theforge/sprint/rca.py:809 derives that rule only from audit iterations.dev_loop transport_fallback_reason plus transport_fallback_fired false, src/theforge/sprint/rca.py:612 suppresses text-derived contributing factors when the primary is unknown_needs_rca, and tests/test_sprint_rca.py:444 reproduces the rest-timer preflight prose with \"no fallback\" plus dev prose with \"fallback is unavailable\" and \"fallback not applied\" while asserting no provider_fallback_not_applied evidence, no fallback_not_applied factor, no \"wire the provider fallback\" action, and primary_failure_class remains unknown_needs_rca; tests/test_sprint_rca.py:478 and tests/test_sprint_rca.py:612 verify genuine audit-sourced fallback telemetry still records the cause through the coordinator audit seam, and pytest tests/test_sprint_rca.py -q passed with 47 tests."
+        },
+        {
+          "criterion": "An RCA generated over a run whose only occurrence of 'fallback' is in agent-authored prose about the project under development records no provider_fallback_not_applied factor and no provider-fallback recommended action",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/sprint/rca.py:275-291, the patterns attribute of provider_fallback_not_applied is removed. In tests/test_sprint_rca.py:444-476, test_agent_prose_about_project_fallbacks_is_not_a_runtime_cause verifies that agent prose containing 'no fallback' or 'fallback is unavailable' does not trigger the rule, and that the story remains unknown_needs_rca with no provider-fallback recommended action."
+        },
+        {
+          "criterion": "An RCA over a run in which forge genuinely declined or failed to apply a configured provider fallback still records it",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/sprint/rca.py:809-846, _fallback_not_applied_evidence reads the run's own dev-loop transport telemetry from the per-story audit. In tests/test_sprint_rca.py:478-528, test_genuine_unapplied_provider_fallback_still_recorded verifies that a genuine unapplied provider fallback is correctly recorded. In tests/test_sprint_rca.py:530-556, test_applied_provider_fallback_is_not_recorded_as_unapplied verifies that a fallback that fired is not recorded as unapplied. In tests/test_sprint_rca.py:612-663, test_fallback_seam_coordinator_audit_to_rca verifies the seam from real dev telemetry to generate_audit_log to RCA fallback classification."
+        },
+        {
+          "criterion": "When forge has determined it cannot classify a failure, that determination propagates: it does not also emit a confident contributing cause or derive an operator recommendation from one",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/sprint/rca.py:612-618, _classify_story filters out contributing factors whose source kind is not 'structured' (i.e., text-scan-derived ones) when the primary failure class is UNKNOWN_CLASS. In tests/test_sprint_rca.py:558-582, test_unclassified_story_drops_text_derived_contributing_factors verifies that an unexplained failure drops text-derived contributing factors. In tests/test_sprint_rca.py:584-610, test_structured_contributing_factor_survives_unknown_primary verifies that structured (field-derived) contributing factors still stand under an unknown primary."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] No prior P1s were pending, and the current diff resolves the observed fallback false positive without introducing a blocking regression. | [google-gemini-3.5-flash] The implementation successfully derives failure cause codes from forge's own transport telemetry and prevents false positives from target-repo prose.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: provider_fallback_not_applied fired on target-repository prose containing fallback vocabulary and produced a provider-fallback recommendation while the story stayed unknown_needs_rca.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:293 removes text patterns from provider_fallback_not_applied, src/theforge/sprint/rca.py:876 derives the fallback hit from dev-loop transport telemetry, src/theforge/sprint/rca.py:947 appends that structured hit into runtime classification, and src/theforge/sprint/rca.py:631 suppresses text-derived contributing factors when primary remains unknown so src/theforge/sprint/rca.py:1227 cannot derive fallback advice from them. tests/test_sprint_rca.py:444 reproduces the observed rest-timer preflight sentence plus fallback prose and asserts unknown_needs_rca, no provider_fallback_not_applied evidence, no fallback_not_applied factor, and no wire-the-provider-fallback action at tests/test_sprint_rca.py:470. tests/test_sprint_rca.py:478 and tests/test_sprint_rca.py:612 cover genuine audit-derived fallback failures, and pytest tests/test_sprint_rca.py -q passed with 50 tests."
+        },
+        {
+          "criterion": "An RCA generated over a run whose only occurrence of 'fallback' is in agent-authored prose about the project under development records no provider_fallback_not_applied factor and no provider-fallback recommended action",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:294-310 (patterns removed from provider_fallback_not_applied rule), src/theforge/sprint/rca.py:758-761 (skipping authored sources for forge_emitted_only rules), and tests/test_sprint_rca.py:441-474 (test_agent_prose_about_project_fallbacks_is_not_a_runtime_cause)"
+        },
+        {
+          "criterion": "An RCA over a run in which forge genuinely declined or failed to apply a configured provider fallback still records it",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:870-901 (_fallback_not_applied_evidence), src/theforge/sprint/rca.py:946-948 (invoking it in _signal_rule_hits), and tests/test_sprint_rca.py:477-549 (test_genuine_unapplied_provider_fallback_still_recorded and test_applied_provider_fallback_is_not_recorded_as_unapplied)"
+        },
+        {
+          "criterion": "When forge has determined it cannot classify a failure, that determination propagates: it does not also emit a confident contributing cause or derive an operator recommendation from one",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:624-636 (filtering out text-derived contributing factors when primary is UNKNOWN_CLASS), and tests/test_sprint_rca.py:552-594 (test_unclassified_story_drops_text_derived_contributing_factors and test_structured_contributing_factor_survives_unknown_primary)"
+        },
+        {
+          "criterion": "[Carried P2] provider_usage_limit no longer assigns a cause code from generic English in target-repo prose",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:141-161 (provider_usage_limit rule updated with forge_emitted_only=True), src/theforge/sprint/rca.py:832-867 (_provider_quota_evidence), and tests/test_sprint_rca.py:665-744 (test_agent_prose_about_project_rate_limits_is_not_provider_quota, test_provider_quota_from_run_telemetry_without_any_matching_text, and test_survived_quota_blip_is_not_promoted_to_root_cause)"
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2092",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2031",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2092",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2092",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-31T14:57:28.867531+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1417 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1195 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1527 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 846 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1081 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2384 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1662 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1495 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1715 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1914 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1167 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1028 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1192 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1201 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1107 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1421 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 720 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1514 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 5236 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1028 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1281 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1092 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1107 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1115 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1575 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1746 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "b4adf1a6476fae53",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 131,
+      "severity": "P2",
+      "description": "The provider_usage_limit rule matches generic English phrases like 'rate limit' and 'overloaded' as unanchored substrings against natural-language agent output, exposing it to false positives when agents discuss resource limits in the target repository.",
+      "reporter": "google-gemini-3.5-flash",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 5,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "google-gemini-3.5-flash": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gemini-3.5-flash",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 5 \u2192 tier mid ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 5,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8226,
+        "weighted_success_rate": 0.824,
+        "sample_size": 62,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.824,
+          "threshold": 0.6,
+          "sample_size": 62,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": []
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 5 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "anti_self_review"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 82,
+            "completed": 82,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 36,
+            "completed": 29,
+            "raw": 0.8056,
+            "weighted": 0.7899,
+            "rate": 0.7899,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 82,
+            "completed": 82,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 66,
+            "completed": 59,
+            "raw": 0.8939,
+            "weighted": 0.9022,
+            "rate": 0.9022,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 36,
+            "completed": 29,
+            "raw": 0.8056,
+            "weighted": 0.7899,
+            "rate": 0.7899,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier mid, providers ['openai', 'google'], complexity score 5; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.352509,
+      "duration_s": 59.3,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 4.96636,
+      "duration_s": 592.3,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 128.3,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 2.207588,
+      "duration_s": 143.97,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 1.035185,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 1.172403,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 7.526457,
+    "duration_s": 923.87,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "d4da596355dd",
+  "sprint_name": "issues-2049,2052,2031,2042,2067"
+}
