@@ -55,13 +55,18 @@ _POLL_INTERVAL_S = 0.25
 # this many polls before treating the file as genuinely malformed. Agents are
 # told to write atomically (tmp + rename); this is the belt to that suspenders.
 _MALFORMED_RETRY_POLLS = 12
-# Shutdown budget. When the agent returns, a declared command may still be
-# running. It gets this long to finish on its own — a build seconds from done
-# yields a real record worth keeping — and is then killed outright. It must not
-# survive the iteration: an unconfined build racing the coordinator's own
-# authoritative gate in the same worktree is exactly what the gate result would
-# then be measuring.
+# Fallback shutdown budget, used only when shutdown cannot derive a budget from
+# the in-flight command itself (nothing running, or a command declared with no
+# meaningful timeout). It is a floor, never a cap: a command's declared
+# ``timeout`` is a promise about how long that work is permitted to take, and a
+# fixed constant that truncates it makes every configured value describe
+# something that cannot happen (#2078).
 _SHUTDOWN_GRACE_SECONDS = 30.0
+# Slack added to a command's own remaining budget when waiting it out at
+# shutdown, so ``_run_shell_detailed``'s timeout handling — kill the process
+# group, drain output, return ``timed_out=True`` — gets to land and produce the
+# honest record rather than being pre-empted a moment before it fires.
+_TIMEOUT_SETTLE_SECONDS = 5.0
 # After the kill, how long to wait for the serving thread to finish recording
 # the terminated command's outcome.
 _CANCEL_JOIN_SECONDS = 15.0
@@ -118,6 +123,27 @@ class VerificationRequestRecord:
         }
 
 
+@dataclass(frozen=True)
+class _ActiveCommand:
+    """The declared command currently executing, as shutdown needs to see it.
+
+    ``started`` is a ``time.monotonic`` stamp taken just before the subprocess
+    is launched, so shutdown can compute how much of the command's declared
+    budget is left rather than applying a budget of its own.
+    """
+
+    request_id: str
+    declared: DevVerificationCommand
+    proc: object | None
+    started: float
+
+    def remaining_budget(self, now: float) -> float:
+        """Return seconds left of this command's declared timeout, floored at 0."""
+        if self.declared.timeout is None or self.declared.timeout <= 0:
+            return 0.0
+        return max(0.0, float(self.declared.timeout) - (now - self.started))
+
+
 @dataclass
 class DevVerificationBroker:
     """Serve declared verification requests for one dev iteration.
@@ -140,13 +166,12 @@ class DevVerificationBroker:
     _malformed_polls: dict[str, int] = field(default_factory=dict, init=False)
     _stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
-    # The command currently executing, if any, guarded by ``_active_lock``:
-    # ``(request_id, command, Popen | None)``. ``stop`` reads this from the
-    # coordinator thread to kill a command that outlived the iteration, and
-    # ``_execute`` reads ``_cancelled`` afterwards to record the kill honestly.
-    _active: tuple[str, DevVerificationCommand, object | None] | None = field(
-        default=None, init=False
-    )
+    # The command currently executing, if any, guarded by ``_active_lock``.
+    # ``stop`` reads this from the coordinator thread both to size its wait
+    # against the command's own declared budget and to kill a command that
+    # outlived that budget; ``_execute`` reads ``_cancelled_ids`` afterwards to
+    # record the kill honestly.
+    _active: _ActiveCommand | None = field(default=None, init=False)
     _active_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _cancelled_ids: set[str] = field(default_factory=set, init=False)
 
@@ -189,37 +214,58 @@ class DevVerificationBroker:
         self._thread.start()
 
     def stop(self, timeout: float | None = None) -> None:
-        """Stop serving, and guarantee no declared command outlives the iteration.
+        """Stop serving, and guarantee no declared command outlives its own budget.
 
-        ``timeout`` defaults to ``_SHUTDOWN_GRACE_SECONDS``, resolved at call
-        time rather than bound as a default argument so the budget stays a single
-        module-level knob.
+        The agent can exit while a command it asked for is still running.
+        Dropping that command silently is not an option: the request would leave
+        no audit record at all, which is precisely the invisibility this
+        capability exists to remove. Neither is letting it run unbounded — an
+        unconfined build still writing to the worktree would race the
+        coordinator's own authoritative gate, which then measures a tree the
+        build was still mutating.
 
-        The agent can exit while a command it asked for is still running. Waiting
-        that command out is not an option — a declared command's budget is
-        minutes, and an unconfined build still writing to the worktree would race
-        the coordinator's own authoritative gate, which then measures a tree the
-        build was still mutating. Dropping it silently is worse: the request
-        would leave no audit record at all, which is precisely the invisibility
-        this capability exists to remove.
+        So shutdown is bounded and terminal, but the bound is the command's
+        *own* declared ``timeout``, not a constant of this module's choosing.
+        A command declared at 1800s that has run 40s gets the remaining ~1760s
+        to finish; only past that is its process group killed and the real
+        outcome of the kill recorded by the serving thread. A fixed grace here
+        would make every declared timeout unreachable and every configured value
+        describe something that cannot occur (#2078).
 
-        So shutdown is bounded and terminal. The in-flight command gets
-        ``timeout`` seconds to finish naturally; past that its process group is
-        killed and the serving thread records the real outcome of the kill. If
-        even that does not land, a synthetic cancelled record is written here so
-        the request is never absent from the trail.
+        ``timeout``, when passed, overrides that derivation outright — callers
+        that know the budget they want (tests, mostly) still get it.
         """
         self._stop_event.set()
         thread, self._thread = self._thread, None
         if thread is None:
             return
-        thread.join(timeout=_SHUTDOWN_GRACE_SECONDS if timeout is None else timeout)
+        thread.join(timeout=self._shutdown_budget() if timeout is None else timeout)
         if not thread.is_alive():
             return
         cancelled = self._cancel_active()
         thread.join(timeout=_CANCEL_JOIN_SECONDS)
         if cancelled is not None:
             self._backfill_cancelled_record(cancelled)
+
+    def _shutdown_budget(self) -> float:
+        """Return how long shutdown waits for the in-flight command, in seconds.
+
+        ``_SHUTDOWN_GRACE_SECONDS`` is a floor, not a cap: it covers the case
+        where there is nothing running (or a command with no meaningful declared
+        budget) and a request could still be mid-flight, while a command that
+        declared a longer budget keeps all of it.
+        """
+        with self._active_lock:
+            active = self._active
+        if active is None:
+            return _SHUTDOWN_GRACE_SECONDS
+        remaining = active.remaining_budget(time.monotonic())
+        if remaining <= 0:
+            # Its own timeout is already due; ``_run_shell_detailed`` is about to
+            # fire it, so allow that to land rather than pre-empting the honest
+            # ``timed_out=True`` record with a cancellation.
+            return _SHUTDOWN_GRACE_SECONDS
+        return max(_SHUTDOWN_GRACE_SECONDS, remaining + _TIMEOUT_SETTLE_SECONDS)
 
     def _cancel_active(self) -> tuple[str, DevVerificationCommand] | None:
         """Kill the in-flight declared command's process group, if any.
@@ -233,11 +279,12 @@ class DevVerificationBroker:
             active = self._active
             if active is None:
                 return None
-            request_id, declared, proc = active
+            request_id, declared, proc = active.request_id, active.declared, active.proc
             self._cancelled_ids.add(request_id)
         _cu._log(
             f"  ⚠ DEV   verification {declared.name!r} (request {request_id}) was still "
-            "running when the dev iteration ended — terminating it"
+            f"running when its declared budget of {declared.timeout}s ran out after the "
+            "dev iteration ended — terminating it"
         )
         if proc is not None:
             try:
@@ -410,10 +457,13 @@ class DevVerificationBroker:
             # its group. Registered *before* the run rather than after, because
             # the whole point is to reach a command that has not finished.
             with self._active_lock:
-                self._active = (request_id, declared, proc)
+                self._active = _ActiveCommand(request_id, declared, proc, started)
 
+        # Published before the run too, so a ``stop`` racing the launch sizes its
+        # wait against this command's declared budget rather than seeing nothing
+        # in flight and falling back to the fixed grace.
         with self._active_lock:
-            self._active = (request_id, declared, None)
+            self._active = _ActiveCommand(request_id, declared, None, started)
         try:
             ok, output, exit_code, timed_out = _cu._run_shell_detailed(
                 declared.command,
