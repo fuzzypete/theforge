@@ -662,6 +662,111 @@ def test_fallback_seam_coordinator_audit_to_rca(tmp_path: Path) -> None:
     assert "fallback_not_applied" in entry["contributing_factors"]
 
 
+def test_agent_prose_about_project_rate_limits_is_not_provider_quota(tmp_path: Path) -> None:
+    """The same anchoring applies to the quota rule's ordinary-English patterns.
+
+    "rate limit" / "overloaded" are phrases an agent writes while analysing the
+    project under development; they are scanned for only in output forge emitted
+    about its own run, never in agent-authored preflight/markdown analysis.
+    """
+    d = _sprint_dir(tmp_path, name="prose-rate-limit")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-310", "outcome": "FAILED", "error": "story did not complete"}]),
+    )
+    (d / "issue-310").mkdir(parents=True, exist_ok=True)
+    (d / "issue-310" / "preflight-raw.log").write_text(
+        "The upload endpoint has no rate limit, so a burst of clients leaves the "
+        "worker pool overloaded and the quota limit unenforced.\n",
+        encoding="utf-8",
+    )
+    (d / "issue-310" / "dev-notes.md").write_text(
+        "Plan: add a rate limit guard so the service is not overloaded.\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-310"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert "provider_usage_limit" not in {ev["rule_id"] for ev in entry["evidence"]}
+
+
+def test_provider_quota_from_run_telemetry_without_any_matching_text(tmp_path: Path) -> None:
+    """Forge's own per-iteration quota observation classifies with no text at all."""
+    d = _sprint_dir(tmp_path, name="telemetry-quota")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-311", "outcome": "FAILED", "error": "dev agent failed"}]),
+    )
+    _write(
+        d / "issue-311" / "audit.yaml",
+        {
+            "iterations": {
+                "dev_loop": [
+                    {
+                        "iteration": 1,
+                        "cli_quota_error_observed": True,
+                        "transport_fallback_fired": False,
+                        "transport_fallback_reason": "CLI exited 7",
+                    }
+                ]
+            }
+        },
+    )
+
+    entry = _build(d)["stories"]["issue-311"]
+    assert entry["primary_failure_class"] == "provider_quota"
+    hit = next(ev for ev in entry["evidence"] if ev["rule_id"] == "provider_usage_limit")
+    assert hit["source"].endswith("audit.yaml")
+    assert any("quota" in a for a in entry["recommended_next_actions"])
+
+
+def test_survived_quota_blip_is_not_promoted_to_root_cause(tmp_path: Path) -> None:
+    """A quota error an earlier iteration or a fallback recovered from is not the cause."""
+    d = _sprint_dir(tmp_path, name="quota-blip")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {"slug": "issue-312", "outcome": "FAILED", "error": "gate never passed"},
+                {"slug": "issue-313", "outcome": "FAILED", "error": "gate never passed"},
+            ]
+        ),
+    )
+    # Recovered by a later iteration.
+    _write(
+        d / "issue-312" / "audit.yaml",
+        {
+            "iterations": {
+                "dev_loop": [
+                    {"iteration": 1, "cli_quota_error_observed": True},
+                    {"iteration": 2, "cli_quota_error_observed": False},
+                ]
+            }
+        },
+    )
+    # Absorbed by a fallback transport that did fire.
+    _write(
+        d / "issue-313" / "audit.yaml",
+        {
+            "iterations": {
+                "dev_loop": [
+                    {
+                        "iteration": 1,
+                        "cli_quota_error_observed": True,
+                        "transport_fallback_fired": True,
+                        "transport_used": "api",
+                    }
+                ]
+            }
+        },
+    )
+
+    stories = _build(d)["stories"]
+    for slug in ("issue-312", "issue-313"):
+        assert stories[slug]["primary_failure_class"] == UNKNOWN_CLASS
+        assert "provider_usage_limit" not in {ev["rule_id"] for ev in stories[slug]["evidence"]}
+
+
 # ── Engine: determinism / regenerability ──────────────────────────────────────
 
 

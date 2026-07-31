@@ -119,6 +119,14 @@ class RcaRule:
     # field-derived (implemented in ``_signal_rule_hits``) rather than
     # pattern-based.
     patterns: tuple[str, ...] = ()
+    # When True, the rule's patterns are scanned only against sources forge
+    # emitted about its own execution — structured summary/audit fields and run
+    # or iteration logs — never against agent-authored prose (``authored`` kind:
+    # markdown and preflight artifacts, which carry analysis *of the target
+    # repository*). Set it on any rule whose patterns are ordinary English a
+    # dev/reviewer agent could plausibly write about the project under
+    # development; see ``_text_source_kind_for_path``.
+    forge_emitted_only: bool = False
 
 
 # ── Classifier rule set (single discoverable location) ────────────────────────
@@ -133,7 +141,18 @@ RULES: tuple[RcaRule, ...] = (
         rule_id="provider_usage_limit",
         failure_class="provider_quota",
         role="primary",
-        description="Provider reported a usage/quota/rate limit in captured output.",
+        description=(
+            "Provider reported a usage/quota/rate limit — from the run's own CLI "
+            "transport telemetry, or from a limit phrase in forge-emitted output."
+        ),
+        # "rate limit" / "overloaded" / "resource exhausted" are ordinary English an
+        # agent can write while analysing the project under development, so this rule
+        # carries the same exposure #2031 fixed for the fallback rule. Two guards,
+        # short of deleting patterns that still catch real provider errors nothing
+        # else records: agent-authored prose is out of scope for the scan
+        # (``forge_emitted_only``), and forge's own per-iteration quota observation
+        # fires the rule without any text at all (``_provider_quota_evidence``).
+        forge_emitted_only=True,
         patterns=(
             "usage limit",
             "current quota",
@@ -736,6 +755,10 @@ def _text_rule_hits(sources: list[_TextSource]) -> list[tuple[str, str, str, str
         if not rule.patterns:
             continue
         for src in sources:
+            if rule.forge_emitted_only and src.kind == "authored":
+                # Agent-authored prose describes the work being attempted, not the
+                # run attempting it — it can never assign this rule's cause code.
+                continue
             lowered = src.text.lower()
             matched = [p for p in rule.patterns if _pattern_matches(p, lowered)]
             if not matched:
@@ -806,6 +829,50 @@ def _configuration_change_evidence(
     return None
 
 
+def _dev_loop_entries(audit: dict) -> list[dict]:
+    """The per-dev-iteration telemetry records the coordinator audit persisted."""
+    iterations = audit.get("iterations") if isinstance(audit, dict) else None
+    dev_loop = iterations.get("dev_loop") if isinstance(iterations, dict) else None
+    if not isinstance(dev_loop, list):
+        return []
+    return [entry for entry in dev_loop if isinstance(entry, dict)]
+
+
+def _provider_quota_evidence(audit: dict, audit_source: str) -> tuple[str, str, str] | None:
+    """Return a ``provider_usage_limit`` hit from the run's own quota observation.
+
+    ``cli_quota_error_observed`` is forge's classification of *its own* CLI
+    invocation — set from the transport's exit code or its captured stderr/stdout
+    by ``runners.cli._classify_cli_fallback_decision`` — and the coordinator audit
+    records it per dev iteration. That makes it a statement about the run, unlike
+    the rule's English patterns.
+
+    Restricted to the *terminal* dev iteration with no fallback fired: an earlier
+    quota blip that a fallback absorbed, or that a later iteration recovered from,
+    is not what the story died of, and provider_quota is the highest-priority
+    primary class — promoting a survived blip to root cause would send the
+    operator to wait for a quota reset that was never the blocker.
+    """
+    entries = _dev_loop_entries(audit)
+    if not entries:
+        return None
+    last = entries[-1]
+    if not last.get("cli_quota_error_observed") or last.get("transport_fallback_fired"):
+        return None
+    iteration = last.get("iteration")
+    where = f"dev iteration {iteration}" if iteration is not None else "the terminal dev iteration"
+    reason = _nonempty(last.get("transport_fallback_reason"))
+    detail = f" ({reason})" if reason else ""
+    return (
+        "provider_usage_limit",
+        audit_source,
+        _truncate(
+            f"the run's own transport telemetry recorded a provider quota/rate-limit "
+            f"error on {where}{detail}, with no fallback transport applied"
+        ),
+    )
+
+
 def _fallback_not_applied_evidence(audit: dict, audit_source: str) -> tuple[str, str, str] | None:
     """Return a ``provider_fallback_not_applied`` hit from the run's own telemetry.
 
@@ -821,13 +888,7 @@ def _fallback_not_applied_evidence(audit: dict, audit_source: str) -> tuple[str,
     (Reason set + fired true is a fallback that *did* apply — including one that
     applied and then failed — so it is deliberately not a hit.)
     """
-    iterations = audit.get("iterations") if isinstance(audit, dict) else None
-    dev_loop = iterations.get("dev_loop") if isinstance(iterations, dict) else None
-    if not isinstance(dev_loop, list):
-        return None
-    for entry in dev_loop:
-        if not isinstance(entry, dict):
-            continue
+    for entry in _dev_loop_entries(audit):
         reason = _nonempty(entry.get("transport_fallback_reason"))
         if not reason or entry.get("transport_fallback_fired"):
             continue
@@ -878,8 +939,11 @@ def _signal_rule_hits(
     if config_change is not None:
         hits.append(config_change)
 
-    # Provider fallback that never applied (#2031) — read from the run's own
-    # transport telemetry rather than scanned for in prose.
+    # Provider quota / fallback classification from the run's own transport
+    # telemetry rather than scanned for in prose (#2031).
+    quota_hit = _provider_quota_evidence(audit, audit_source)
+    if quota_hit is not None:
+        hits.append(quota_hit)
     fallback_hit = _fallback_not_applied_evidence(audit, audit_source)
     if fallback_hit is not None:
         hits.append(fallback_hit)
