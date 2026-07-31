@@ -211,6 +211,14 @@ def _gate_attempts(state: CoordinatorState) -> int:
     return state.gate_runs
 
 
+def _persist_trajectory(state: CoordinatorState, workspace_path: Path, what: str) -> None:
+    """Write the resume sidecar. A write failure degrades data, never the run."""
+    try:
+        save_trajectory_state(workspace_path, state)
+    except Exception as exc:  # noqa: BLE001
+        _log_verbose(f"Could not persist {what}: {exc}")
+
+
 def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision: str) -> None:
     """Record which commit the gate just judged, and what it decided (#2052).
 
@@ -220,11 +228,18 @@ def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision:
     decision ``SKIPPED``, so an override reads as a suppressed gate rather than
     as a passing one. A HEAD read that fails leaves the commit unset, which
     renders as ``ungated``: unknown provenance, never assumed-current.
+
+    Persisted here rather than only on the gate-run path. The skip path records
+    a decision without a gate run, so hanging persistence off ``_record_gate_run``
+    lost the pair whenever a story stopped after VALIDATE and resumed into
+    REVIEW — the resumed cycle then rendered a deliberately suppressed gate as
+    ``ungated``, which is exactly the wrong verification state to report.
     """
     state.last_gate_decision = decision
     ok, out = _cu._run_shell("git rev-parse HEAD", workspace_path)
     sha = out.strip() if ok else ""
     state.last_gate_commit = sha or None
+    _persist_trajectory(state, workspace_path, "gate-commit provenance")
 
 
 def _record_gate_run(
@@ -241,11 +256,10 @@ def _record_gate_run(
     """
     state.gate_runs += 1
     if decision is not None:
+        # Writes the whole sidecar, incremented gate_runs included.
         _record_gate_commit(state, workspace_path, decision)
-    try:
-        save_trajectory_state(workspace_path, state)
-    except Exception as exc:  # noqa: BLE001
-        _log_verbose(f"Could not persist gate-run count: {exc}")
+    else:
+        _persist_trajectory(state, workspace_path, "gate-run count")
 
 
 def _new_review_cycle_available(state: CoordinatorState, config: ForgeConfig) -> bool:

@@ -177,6 +177,54 @@ class TestGateProvenanceCapture:
         assert restored.last_gate_decision == "PASS"
         assert restored.gate_runs == 3
 
+    def test_gate_run_persists_provenance_without_a_second_write(self, tmp_path: Path) -> None:
+        """The gate-run path must reach the sidecar with the pair, not just the count."""
+        from theforge.coordinator.run_setup import load_trajectory_state
+        from theforge.coordinator.validate_phase import _record_gate_run
+
+        repo = _init_repo(tmp_path)
+        state = CoordinatorState()
+        _record_gate_run(state, repo, decision="PASS")
+
+        restored = CoordinatorState()
+        load_trajectory_state(repo, restored)
+        assert restored.gate_runs == 1
+        assert restored.last_gate_commit == _git(repo, "rev-parse", "HEAD")
+        assert restored.last_gate_decision == "PASS"
+
+    def test_skipped_gate_survives_resume_into_review(self, tmp_path: Path) -> None:
+        """A `gate: none` override must not resume as `ungated`.
+
+        The skip path records a decision without a gate run, so provenance that
+        only persisted alongside the run count vanished when a story stopped
+        after VALIDATE and resumed into REVIEW — the resumed cycle then reported
+        a deliberately suppressed gate as an ungated one.
+        """
+        from theforge.coordinator.run_setup import load_trajectory_state
+        from theforge.coordinator.validate_phase import _record_gate_commit
+
+        repo = _init_repo(tmp_path)
+        head = _git(repo, "rev-parse", "HEAD")
+
+        # VALIDATE with a story gate override, then the run stops.
+        validate_state = CoordinatorState()
+        _record_gate_commit(validate_state, repo, "SKIPPED")
+        assert validate_state.gate_runs == 0  # a skip is not a gate run
+
+        # --resume picks the story back up and opens a review cycle.
+        resumed = CoordinatorState()
+        load_trajectory_state(repo, resumed)
+        assert resumed.last_gate_commit == head
+        assert resumed.last_gate_decision == "SKIPPED"
+
+        meta = _meta()
+        _record_reviewed_commit_provenance(resumed, meta, repo)
+        assert meta.verification is not None
+        assert meta.verification.state == "gate_skipped"
+
+        resumed.review_cycle_metadata.append(meta)
+        assert build_reviews(resumed)[0]["verification"]["state"] == "gate_skipped"
+
 
 class TestAuditRendering:
     """Every rendered review cycle names its commit and verification state."""
