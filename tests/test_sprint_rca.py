@@ -438,6 +438,230 @@ def test_unknown_needs_rca_residual(tmp_path: Path) -> None:
     assert any("diagnose" in a for a in entry["recommended_next_actions"])
 
 
+# ── Engine: cause codes come from forge's own run, not target-repo prose (#2031) ──
+
+
+def test_agent_prose_about_project_fallbacks_is_not_a_runtime_cause(tmp_path: Path) -> None:
+    """Agent prose analysing the *target repository* must not assign a cause code.
+
+    A preflight/dev agent describing the project under development ("no fallback
+    path", "the fallback is unavailable") is describing the work being attempted,
+    not the run attempting it. Matching that vocabulary into
+    ``provider_fallback_not_applied`` told the operator to go wire a forge
+    subsystem that was never involved.
+    """
+    d = _sprint_dir(tmp_path, name="prose-fallback")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-248", "outcome": "FAILED", "error": "story did not complete"}]),
+    )
+    (d / "issue-248").mkdir(parents=True, exist_ok=True)
+    (d / "issue-248" / "preflight-raw.log").write_text(
+        "The rest-timer scheduling function invalidates the session unconditionally, "
+        "with no fallback or guard path preserving the existing alarm.\n",
+        encoding="utf-8",
+    )
+    (d / "issue-248" / "dev-iteration-1.log").write_text(
+        "Dev notes: the fallback is unavailable in the target module, so a fallback "
+        "not applied branch has to be added.\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-248"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert "fallback_not_applied" not in entry["contributing_factors"]
+    assert "provider_fallback_not_applied" not in {ev["rule_id"] for ev in entry["evidence"]}
+    assert not any("wire the provider fallback" in a for a in entry["recommended_next_actions"])
+    assert any("diagnose" in a for a in entry["recommended_next_actions"])
+
+
+def test_genuine_unapplied_provider_fallback_still_recorded(tmp_path: Path) -> None:
+    """A fallback forge really declined to apply is still classified.
+
+    Detection is field-derived from the run's own transport telemetry: a
+    fallback-eligible transport failure (``transport_fallback_reason``) where no
+    fallback ran (``transport_fallback_fired: false``).
+    """
+    d = _sprint_dir(tmp_path, name="real-fallback")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-300",
+                    "outcome": "ESCALATE",
+                    "error": "escalated",
+                    "verdict": "REQUEST_CHANGES",
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-300" / "audit.yaml",
+        {
+            "iterations": {
+                "dev_loop": [
+                    {
+                        "iteration": 1,
+                        "transport_fallback_fired": False,
+                        "transport_fallback_reason": None,
+                        "transport_used": "cli",
+                    },
+                    {
+                        "iteration": 2,
+                        "transport_fallback_fired": False,
+                        "transport_fallback_reason": "cli_quota_exhausted",
+                        "transport_used": "cli",
+                    },
+                ]
+            }
+        },
+    )
+
+    entry = _build(d)["stories"]["issue-300"]
+    assert entry["primary_failure_class"] == "review_rejected"
+    assert "fallback_not_applied" in entry["contributing_factors"]
+    hit = next(ev for ev in entry["evidence"] if ev["rule_id"] == "provider_fallback_not_applied")
+    assert hit["source"].endswith("audit.yaml")
+    assert "cli_quota_exhausted" in hit["excerpt"]
+    assert any("wire the provider fallback" in a for a in entry["recommended_next_actions"])
+
+
+def test_applied_provider_fallback_is_not_recorded_as_unapplied(tmp_path: Path) -> None:
+    """A fallback that fired (even into a later failure) is not "not applied"."""
+    d = _sprint_dir(tmp_path, name="fired-fallback")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-301", "outcome": "FAILED", "error": "boom"}]),
+    )
+    _write(
+        d / "issue-301" / "audit.yaml",
+        {
+            "iterations": {
+                "dev_loop": [
+                    {
+                        "iteration": 1,
+                        "transport_fallback_fired": True,
+                        "transport_fallback_reason": "cli_quota_exhausted",
+                        "transport_used": "api",
+                    }
+                ]
+            }
+        },
+    )
+
+    entry = _build(d)["stories"]["issue-301"]
+    assert "fallback_not_applied" not in entry["contributing_factors"]
+    assert not any("wire the provider fallback" in a for a in entry["recommended_next_actions"])
+
+
+def test_unclassified_story_drops_text_derived_contributing_factors(tmp_path: Path) -> None:
+    """An unexplained failure does not also assert a confident text-scan amplifier.
+
+    ``unknown_needs_rca`` means forge could not classify the run; a contributing
+    factor resting only on a text scan — and the remediation derived from it —
+    must not be emitted alongside that admission.
+    """
+    d = _sprint_dir(tmp_path, name="unknown-contributing")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-302", "outcome": "FAILED", "error": "unexplained"}]),
+    )
+    (d / "issue-302").mkdir(parents=True, exist_ok=True)
+    (d / "run-6c83b3061455.log").write_text(
+        "Pending decision timed out after 10m 0s — auto-escalating for #302\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-302"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert entry["contributing_factors"] == []
+    # The evidence trail still records what fired, so the trace is not lost.
+    assert "pending_decision_auto_rejected" in {ev["rule_id"] for ev in entry["evidence"]}
+    assert not any("operator decision gate" in a for a in entry["recommended_next_actions"])
+
+
+def test_structured_contributing_factor_survives_unknown_primary(tmp_path: Path) -> None:
+    """Field-derived amplifiers are the run's own facts, not an inference."""
+    d = _sprint_dir(tmp_path, name="unknown-structured-contributing")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-303", "outcome": "FAILED", "error": "unexplained"}]),
+    )
+    _write(
+        d / "issue-303" / "audit.yaml",
+        {
+            "iterations": {
+                "dev_loop": [
+                    {
+                        "iteration": 1,
+                        "transport_fallback_fired": False,
+                        "transport_fallback_reason": "cli_quota_exhausted",
+                    }
+                ]
+            }
+        },
+    )
+
+    entry = _build(d)["stories"]["issue-303"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert "fallback_not_applied" in entry["contributing_factors"]
+    assert any("wire the provider fallback" in a for a in entry["recommended_next_actions"])
+
+
+def test_fallback_seam_coordinator_audit_to_rca(tmp_path: Path) -> None:
+    """Seam: real dev telemetry → generate_audit_log → RCA fallback classification.
+
+    Verifies the cause code is anchored to the field the coordinator actually
+    writes, not to a field name this test invented.
+    """
+    from coord_test_helpers import _make_config, _make_task
+
+    from theforge.coordinator.audit import generate_audit_log
+    from theforge.coordinator.state import (
+        CoordinatorResult,
+        CoordinatorState,
+        DevIterationTelemetry,
+        Phase,
+    )
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1, review_cycle=0)
+    state.phase = Phase.ESCALATE
+    state.error = "dev agent failed"
+    state.dev_iteration_telemetry = [
+        DevIterationTelemetry(
+            iteration=1,
+            max_iterations=3,
+            cost_usd=1.0,
+            duration_s=5.0,
+            cycle=0,
+            gate_result="FAIL",
+            transport_fallback_fired=False,
+            transport_fallback_reason="cli_quota_exhausted",
+            transport_used="cli",
+        )
+    ]
+
+    audit = generate_audit_log(
+        config,
+        task,
+        CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message=state.error),
+    )
+
+    d = _sprint_dir(tmp_path, name="seam-fallback")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-304", "outcome": "MERGE_FAILED", "error": "conflict"}]),
+    )
+    _write(d / "issue-304" / "audit.yaml", audit)
+
+    entry = _build(d)["stories"]["issue-304"]
+    assert entry["primary_failure_class"] == "merge_failed"
+    assert "fallback_not_applied" in entry["contributing_factors"]
+
+
 # ── Engine: determinism / regenerability ──────────────────────────────────────
 
 
@@ -467,7 +691,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 4
+    assert payload["ruleset_version"] == 5
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -488,9 +712,9 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     write_sprint_rca(d)
     before = read_sprint_rca(d)
     assert before["stories"]["issue-5"]["primary_failure_class"] == UNKNOWN_CLASS
-    assert before["ruleset_version"] == 4
+    assert before["ruleset_version"] == 5
 
-    # Improved rule set (v5): a new rule now recognises the previously-unknown
+    # Improved rule set (v6): a new rule now recognises the previously-unknown
     # signature. Inputs on disk are unchanged.
     improved_rule = rca_mod.RcaRule(
         rule_id="flooble_detected",
@@ -504,12 +728,12 @@ def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(
         rca_mod, "_PRIMARY_PRIORITY", ("flooble_fault", *rca_mod._PRIMARY_PRIORITY)
     )
-    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 5)
+    monkeypatch.setattr(rca_mod, "RULESET_VERSION", 6)
 
     write_sprint_rca(d, overwrite=True)
     after = read_sprint_rca(d)
     assert after["stories"]["issue-5"]["primary_failure_class"] == "flooble_fault"
-    assert after["ruleset_version"] == 5
+    assert after["ruleset_version"] == 6
     # Same inputs, different rule set → distinguishable analyses.
     assert before["ruleset_version"] != after["ruleset_version"]
 
