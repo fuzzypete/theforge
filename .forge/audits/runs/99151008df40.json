@@ -1,0 +1,523 @@
+{
+  "schema_version": 15,
+  "run_id": "99151008df40",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "A fixed 30s shutdown grace bounds every dev verification command, so a declared multi-minute timeout is unreachable",
+    "slug": "issue-2078",
+    "story_path": null,
+    "story_text": "## Diagnosis\n\n- **Observed symptom:** every dev verification command is bounded by a fixed 30s post-iteration grace regardless of its configured timeout, so a command declared with a multi-minute budget cannot obtain that budget. A project declaring `check-ios` at 1800s and `build-ios` at 900s saw an effective budget of 43.4s.\n- **Evidence:** hdp run `e173ff619035`, story `issue-240` \u2014 `check-ios`, declared `timeout: 1800`, was killed at `duration_s: 43.39` with `timed_out: false` and `refusal_reason: cancelled_at_iteration_end`. The trace `.forge/traces/verify-iter1-check-ios-1.txt` ends inside `xcodebuild build`; roughly 20s of the 43.4s was consumed by the npm/vite bundle step that precedes compilation, so the declared work had barely started.\n- **Confirmed cause:** `_SHUTDOWN_GRACE_SECONDS = 30.0` is a module constant applied uniformly by `stop()`, unrelated to the per-command `timeout` resolved from `validation.dev_verification_commands`. A command's own timeout governs only the case where the agent blocks in-turn for the full duration; once the iteration ends, the constant is the only budget that applies.\n- **Affected code path:** `coordinator.dev_verification` \u2014 `_SHUTDOWN_GRACE_SECONDS` and `DevVerificationBroker.stop`.\n- **Fix-success criterion:** a declared command's configured timeout is the budget it can actually obtain, or the configuration surface refuses a timeout the lifecycle cannot honor.\n\n## Expected\n\nA declared timeout is a promise about how long work is permitted to take. Where one mechanism advertises a budget and a second, unrelated mechanism truncates it, the configuration value describes something that cannot occur, and an operator tuning it observes no effect from any setting. The budget an interface accepts should be the budget it grants, or it should decline the value where it is configured rather than where the work is lost. The truncation is additionally hard to attribute because the terminal record reports the command as not timed out, which is accurate about the mechanism and misleading about the cause.\n\n## Related\n\n- Follow-up to #2050 (the capability this budget governs).\n",
+    "github_issue": 2078,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'A fixed 30s shutdown grace bounds every dev verification command, so a declared multi-minute timeout is unreachable' completed. Review approved after 1 cycle(s), 0 dev iteration(s). Branch: feat/issue-2078",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "timing": {
+    "started_at": "2026-07-31T00:54:05.736631+00:00",
+    "finished_at": "2026-07-31T00:56:55.274743+00:00",
+    "duration_seconds": 169.538112
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2078",
+    "branch": "feat/issue-2078",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "gate_runs": 0,
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 3,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.737024,
+        "duration_s": 155.22
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": null,
+      "complexity_band_input": null,
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "dev",
+      "model_actual": "gpt-5.4-mini",
+      "model_provider": null,
+      "model_cli": "codex",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 900,
+      "base_dev_cost_estimate_usd": 30.0,
+      "static_dev_max": 3,
+      "complexity_score_used": null,
+      "rationale": "no complexity score available; using static configured limits"
+    },
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 2.7370241,
+    "dev_usd": 0,
+    "review_usd": 2.7370241,
+    "dev_invocations": 0,
+    "review_invocations": 5,
+    "agents": [
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.8476455999999999,
+        "duration_seconds": 30.98904332499951,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.019648
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.8279976
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.6088665000000001,
+        "duration_seconds": 30.98904332499951,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.6088665000000001
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": 0.1095055,
+        "duration_seconds": 30.98904332499951,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.4",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.1095055
+          }
+        ],
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "review",
+        "profile": "claude-opus",
+        "cost_usd": 0.7330375,
+        "duration_seconds": 30.98904332499951,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.019648
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.7133895
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.437969,
+        "duration_seconds": 30.98904332499951,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.437969
+          }
+        ],
+        "model_used": "gpt-5.5"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "SKIPPED",
+    "reason": null,
+    "complexity": null,
+    "complexity_score": null,
+    "implementation_complexity_score": null,
+    "validation_complexity_score": null,
+    "complexity_projection": null,
+    "complexity_evidence": [],
+    "work_type": null,
+    "domains": [],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.0,
+    "cached": false,
+    "original_verdict": null,
+    "source_run_id": null,
+    "cache_snapshot": null,
+    "cache_validation": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": []
+  },
+  "context_manifests": [
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "claude-sonnet",
+        "google-gemini-3.5-flash",
+        "openai-gpt-5.4",
+        "claude-opus",
+        "openai-gpt-5.5"
+      ],
+      "successful": [
+        "claude-sonnet",
+        "google-gemini-3.5-flash",
+        "openai-gpt-5.4",
+        "claude-opus",
+        "openai-gpt-5.5"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "claude-sonnet": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "openai-gpt-5.4": "succeeded",
+        "claude-opus": "succeeded",
+        "openai-gpt-5.5": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[claude-sonnet] Shutdown budget now derives from the in-flight command's declared timeout (with a fixed floor when nothing is running), correctly fixing the truncation bug; logic verified against _run_shell_detailed's own communicate(timeout=...) semantics and thoroughly tested. | [google-gemini-3.5-flash] The dev verification broker now correctly derives its shutdown budget from the active command's declared timeout, ensuring configured budgets are fully honored. | [openai-gpt-5.4] The broker now derives shutdown wait time from the active command's remaining declared timeout on the live dev-phase path, and the added broker and seam tests cover both the original truncation symptom and the terminal timeout behavior. | [claude-opus] Shutdown wait is now derived from the in-flight command's remaining declared timeout with the fixed 30s grace kept only as a floor; behaviour verified by new broker and seam tests (49 passed locally). | [openai-gpt-5.5] The shutdown path now grants in-flight dev verification commands their remaining declared timeout, with focused broker and dev-phase seam coverage.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: a declared command's configured timeout is the budget it can actually obtain rather than being truncated by a fixed 30s post-iteration grace.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/dev_verification.py:216-266 (_shutdown_budget and stop) derive the join timeout from _ActiveCommand.remaining_budget(now), falling back to _SHUTDOWN_GRACE_SECONDS only when nothing is in flight or the command's own timeout is already due. Reproduction test tests/test_coord_dev_verification_seam.py test_a_command_still_running_at_handoff_keeps_its_declared_timeout patches the fixed grace to 0.05s, declares a 900s timeout, runs the command 0.6s (far past the old grace), and asserts mock_kill.call_count == 0 and the record shows cancelled is False \u2014 directly reproducing and refuting the original #2078 symptom (43.4s kill against an 1800s declaration). Complementary tests confirm the budget is still terminal (test_a_command_outliving_its_declared_timeout_is_killed_and_audited) and unit-level budget arithmetic (test_the_derived_budget_shrinks_as_the_command_burns_its_own_timeout, test_the_fixed_grace_is_a_floor_for_a_command_already_past_its_budget). Verified declared.timeout is always a positive int at config load (src/theforge/config/load.py:435), matching the value passed to _run_shell_detailed's proc.communicate(timeout=declared.timeout), so the remaining-budget calculation lines up with when that call's own TimeoutExpired actually fires. All 49 tests in the two touched test files pass locally."
+        },
+        {
+          "criterion": "Symptom resolution: a declared command's configured timeout is the budget it can actually obtain, or the configuration surface refuses a timeout the lifecycle cannot honor.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/dev_verification.py:250-268 (implementation of _shutdown_budget) and tests/test_dev_verification_broker.py:381-412 (test_stop_lets_a_command_run_past_the_fixed_grace_toward_its_own_timeout)"
+        },
+        {
+          "criterion": "Symptom resolution: every dev verification command is bounded by a fixed 30s post-iteration grace regardless of its configured timeout, so a command declared with a multi-minute budget cannot obtain that budget.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/dev_verification.py:216-268 changed stop() to join on a derived shutdown budget from the active command's remaining declared timeout instead of the fixed 30s cap, while src/theforge/coordinator/dev_phase.py:840-847 and 834-835 keep the no-argument stop() call on the live path. The original failure mode is exercised by tests/test_dev_verification_broker.py:381-411, which proves stop() lets a command run past the patched fixed grace toward its own timeout, and tests/test_coord_dev_verification_seam.py:299-357, which proves the real dev-phase finally path no longer truncates a 900s declared timeout when the agent exits early. The terminal bound is also covered by tests/test_dev_verification_broker.py:413-448 and tests/test_coord_dev_verification_seam.py:359-417, which verify commands that overrun their declared timeout are still killed and audited.; src/theforge/coordinator/dev_verification.py:242 calls stop() with _shutdown_budget() when no explicit timeout is provided, src/theforge/coordinator/dev_verification.py:250 derives that shutdown budget from the active command's remaining declared timeout, and src/theforge/coordinator/dev_verification.py:465 publishes the active command before launch so the runtime stop path can consume it. tests/test_dev_verification_broker.py:381 verifies a command runs past a patched fixed grace and completes without cancellation, and tests/test_coord_dev_verification_seam.py:299 verifies the dev_phase no-argument stop() seam no longer truncates the declared 900s command budget. Focused verification passed: pytest tests/test_dev_verification_broker.py tests/test_coord_dev_verification_seam.py, 49 passed."
+        },
+        {
+          "criterion": "Symptom resolution: a declared dev verification command is bounded by a fixed 30s post-iteration grace instead of its configured timeout, so a command declared at 1800s is killed after ~43s with timed_out=false and refusal_reason=cancelled_at_iteration_end.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/dev_verification.py:242 replaces the fixed thread.join(_SHUTDOWN_GRACE_SECONDS) with self._shutdown_budget(); _shutdown_budget at :250-268 reads the guarded _ActiveCommand and returns max(_SHUTDOWN_GRACE_SECONDS, remaining + _TIMEOUT_SETTLE_SECONDS), where remaining comes from _ActiveCommand.remaining_budget (:141-145) measured from the monotonic stamp taken just before launch (_execute :453, :460, :466), so the grace is a floor rather than a cap. The remaining<=0 branch (:263-267) deliberately yields to _run_shell_detailed's own timeout so the terminal record reads timed_out=True rather than a cancellation, which addresses the misattribution half of the symptom. The reported failure mode is reproduced directly: tests/test_dev_verification_broker.py test_stop_lets_a_command_run_past_the_fixed_grace_toward_its_own_timeout declares check-ios / 'xcodebuild build' with the fixed grace patched to 0.05s, runs 0.6s, and asserts _kill_process_group was never called and the record is cancelled=false / exit_code=0 \u2014 this fails on the pre-fix code. test_the_derived_budget_shrinks_as_the_command_burns_its_own_timeout pins the remaining-budget arithmetic (100s declared, 60s elapsed -> 40-46s) and test_the_fixed_grace_is_a_floor_for_a_command_already_past_its_budget pins the floor. Terminality is still covered: test_stop_still_kills_a_command_that_outruns_its_declared_timeout asserts the kill and cancelled_at_iteration_end for a 1s declaration. The seam is covered at the real dev_phase boundary (tests/test_coord_dev_verification_seam.py test_a_command_still_running_at_handoff_keeps_its_declared_timeout and test_a_command_outliving_its_declared_timeout_is_killed_and_audited), which matters because dev_phase's finally calls stop() with no arguments \u2014 the exact call path that produced the 43.4s truncation. _active is cleared in _execute's finally (:475-478), so a completed command cannot leave a stale budget behind. Both files pass: 49 passed."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.4",
+      "provider": null,
+      "model": "gpt-5.4",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.4/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-opus",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2087",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2078",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2087",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2087",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-07-31T00:56:55.274743+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.0,
+      "duration_s": null,
+      "outcome": "skipped"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": {
+      "cost_usd": 2.737024,
+      "duration_s": 154.95,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 0.847646,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 0.608867,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.4": {
+          "cost": 0.109506,
+          "verdict": "APPROVE"
+        },
+        "claude-opus": {
+          "cost": 0.733038,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.5": {
+          "cost": 0.437969,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 2.737024,
+    "duration_s": 154.95,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 1
+  },
+  "sprint_id": "2b6edd13e6b4",
+  "sprint_name": "issues-2077,2078,2079"
+}
