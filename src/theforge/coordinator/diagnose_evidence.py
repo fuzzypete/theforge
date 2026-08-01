@@ -16,6 +16,15 @@ Design constraints:
 - **Best-effort.** An issue with no recognizable references (or references that
   resolve to nothing on disk) produces an empty block — the flow then behaves
   exactly as it did before this feature existed.
+- **Namespaced.** A reference is only meaningful relative to the namespace it
+  was written in. A bare ``#NNNN`` carries no namespace, so this module refuses
+  to resolve it rather than defaulting to whichever repository the orchestrator
+  happens to be executing in: an issue filed here about an adopter project's
+  ``#246`` must not be handed this repository's PR #246 as "evidence". Only
+  repository-qualified references (``owner/repo#NNNN`` or a github.com issue/PR
+  URL) name a namespace, and those are resolved against the repository they
+  name. Loading nothing is a correct outcome; loading same-numbered content
+  from the wrong repository is not.
 - **Bounded.** Every excerpt is truncated to a fixed line/char cap, each
   reference kind is capped in count, and the whole block is capped in total
   size. The operator can predict the maximum prompt growth from the constants
@@ -59,9 +68,26 @@ _HISTORY_LINE_CHAR_CAP = 800  # per-line truncation of a history match
 # shape alone.
 _HEX_ID_RE = re.compile(r"\b[0-9a-f]{12}\b")
 # Branch names TheForge creates: a conventional-commit-style prefix plus a slug.
-_BRANCH_RE = re.compile(r"\b(?:feat|fix|chore|refactor|docs|test|perf|hotfix)/[A-Za-z0-9._/-]+")
-# PR / issue cross-references.
-_ISSUE_PR_RE = re.compile(r"#(\d{1,7})\b")
+_BRANCH_PREFIXES = ("feat", "fix", "chore", "refactor", "docs", "test", "perf", "hotfix")
+_BRANCH_RE = re.compile(rf"\b(?:{'|'.join(_BRANCH_PREFIXES)})/[A-Za-z0-9._/-]+")
+# PR / issue cross-references. Only *repository-qualified* forms are recognized;
+# a bare "#NNNN" names no repository and is deliberately not matched (see the
+# module docstring's namespace constraint).
+#   owner/repo#NNNN — the lookbehind keeps the owner segment from starting
+#   mid-path; a "feat/…"-style branch head is rejected separately in
+#   _extract_qualified_refs, since "feat/issue-2057#3" is shaped like a
+#   repo-qualified reference but names a branch, not a repository.
+_QUALIFIED_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9._/-])([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*)#(\d{1,7})\b"
+)
+#   https://github.com/owner/repo/issues/NNNN (or /pull/NNNN)
+_GITHUB_URL_REF_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*)"
+    r"/(?:issues|pull)/(\d{1,7})\b"
+)
+# Bare, namespace-free references — matched only so the flow can *report* that
+# they were declined. They are never resolved.
+_BARE_REF_RE = re.compile(r"(?<![A-Za-z0-9._/-])#(\d{1,7})\b")
 # An explicit ``.forge/...`` file path with an extension (audit, log, jsonl…).
 _FORGE_PATH_RE = re.compile(r"\.forge/[A-Za-z0-9._:,/-]+\.[A-Za-z0-9]+")
 
@@ -74,10 +100,16 @@ class StartingEvidence:
     or ``""`` when nothing was found. ``reference_labels`` is the list of short
     human labels for each excerpt that was loaded — recorded in the audit so an
     operator can see, deterministically, what the orchestrator handed the agent.
+
+    ``declined_labels`` lists namespace-free references the body cited that were
+    deliberately *not* resolved (bare ``#NNNN``). Recorded for the same reason:
+    an operator reading the audit can see that a reference was seen and skipped
+    on purpose, rather than inferring silence from an empty evidence block.
     """
 
     text: str = ""
     reference_labels: list[str] = field(default_factory=list)
+    declined_labels: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -321,43 +353,63 @@ def _load_branch_history(branches: list[str], project_root: Path) -> list[_Item]
 
 
 def _load_pr_issue_refs(
-    numbers: list[str], project_root: Path, *, self_issue_number: int | None
+    refs: list[tuple[str, str]], project_root: Path, *, self_issue_number: int | None
 ) -> list[_Item]:
-    """Load a bounded summary for each cited #NNNN (skipping the issue itself)."""
+    """Load a bounded summary for each repo-qualified reference.
+
+    ``refs`` is a list of ``(owner/repo, number)`` pairs — every reference
+    carries the namespace it was written in, and each lookup is pinned to that
+    namespace with ``gh --repo``. ``project_root`` is still the subprocess cwd
+    (it is where ``gh``'s auth/config resolve from), but it no longer decides
+    *which* repository a number means.
+
+    A reference whose number equals ``self_issue_number`` is skipped: it is
+    either the issue under diagnosis (self-evidence is worthless) or a
+    same-numbered issue elsewhere, and declining to load is the safe direction
+    for both.
+    """
     items: list[_Item] = []
     # Drop the self-issue first (it costs no gh call), then bound gh *attempts*:
     # each remaining reference fires 1-2 gh subprocesses whether or not it
-    # resolves, so a body citing many unresolved #NNNN must not spend one
-    # timeout per reference before the agent starts.
+    # resolves, so a body citing many unresolved refs must not spend one timeout
+    # per reference before the agent starts.
     self_ref = str(self_issue_number) if self_issue_number is not None else None
-    candidates = [num for num in numbers if num != self_ref]
-    for num in candidates[:_MAX_GH_ATTEMPTS_PER_KIND]:
+    candidates = [(repo, num) for repo, num in refs if num != self_ref]
+    for repo, num in candidates[:_MAX_GH_ATTEMPTS_PER_KIND]:
         if len(items) >= _MAX_ITEMS_PER_KIND:
             break
         # A #NNNN can be a PR or an issue. Try PR first (richer landing signal),
         # fall back to the issue view. Both fail open.
         pr_out = _run_gh(
-            ["pr", "view", num, "--json", "number,state,title,mergedAt,mergeCommit"],
+            [
+                "pr",
+                "view",
+                num,
+                "--repo",
+                repo,
+                "--json",
+                "number,state,title,mergedAt,mergeCommit",
+            ],
             project_root,
         )
         if pr_out:
             items.append(
                 _Item(
-                    label=f"PR #{num}",
-                    header=f"PR #{num} (gh pr view {num}):",
+                    label=f"PR {repo}#{num}",
+                    header=f"PR {repo}#{num} (gh pr view {num} --repo {repo}):",
                     body=_truncate(pr_out),
                 )
             )
             continue
         issue_out = _run_gh(
-            ["issue", "view", num, "--json", "number,state,title"],
+            ["issue", "view", num, "--repo", repo, "--json", "number,state,title"],
             project_root,
         )
         if issue_out:
             items.append(
                 _Item(
-                    label=f"issue #{num}",
-                    header=f"Issue #{num} (gh issue view {num}):",
+                    label=f"issue {repo}#{num}",
+                    header=f"Issue {repo}#{num} (gh issue view {num} --repo {repo}):",
                     body=_truncate(issue_out),
                 )
             )
@@ -381,13 +433,19 @@ def build_starting_evidence(
     anything on disk / via ``gh``. The whole block is capped at
     ``_MAX_TOTAL_EVIDENCE_CHARS``; excess items are dropped (and logged) rather
     than silently exploding the prompt.
+
+    Bare ``#NNNN`` references are reported in ``declined_labels`` and never
+    resolved — they name no repository, and the repository this call happens to
+    run in is not a substitute for the one the reference was written about.
     """
     body = issue_body or ""
 
     hex_ids = _ordered_unique(_HEX_ID_RE.findall(body))
     branches = _ordered_unique([m.rstrip(".,;:)]}'\"") for m in _BRANCH_RE.findall(body)])
-    pr_issue_numbers = _ordered_unique(_ISSUE_PR_RE.findall(body))
+    qualified_refs = _extract_qualified_refs(body)
     forge_paths = _ordered_unique([m.rstrip(".,;:)]}'\"") for m in _FORGE_PATH_RE.findall(body)])
+
+    declined = _declined_bare_refs(body, self_issue_number=self_issue_number)
 
     items: list[_Item] = []
     items += _load_run_logs(hex_ids, project_root)
@@ -395,17 +453,60 @@ def build_starting_evidence(
     items += _load_history_entries(hex_ids, project_root)
     items += _load_forge_paths(forge_paths, project_root)
     items += _load_branch_history(branches, project_root)
-    items += _load_pr_issue_refs(
-        pr_issue_numbers, project_root, self_issue_number=self_issue_number
-    )
+    items += _load_pr_issue_refs(qualified_refs, project_root, self_issue_number=self_issue_number)
 
     if not items:
-        return StartingEvidence()
+        return StartingEvidence(declined_labels=declined)
 
-    return _render(items)
+    return _render(items, declined_labels=declined)
 
 
-def _render(items: list[_Item]) -> StartingEvidence:
+def _extract_qualified_refs(body: str) -> list[tuple[str, str]]:
+    """Return ordered, deduped ``(owner/repo, number)`` pairs cited in ``body``.
+
+    Both written forms are accepted — ``owner/repo#NNNN`` and a github.com
+    issue/PR URL — and both carry the namespace the reference was written in.
+    """
+    pairs = _QUALIFIED_REF_RE.findall(body) + _GITHUB_URL_REF_RE.findall(body)
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
+    for repo, num in pairs:
+        # "feat/issue-2057#3" is a branch plus a number, not owner/repo#number.
+        # An ambiguous token resolves to nothing rather than to a guess.
+        if repo.split("/", 1)[0] in _BRANCH_PREFIXES:
+            continue
+        key = (repo, num)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _declined_bare_refs(body: str, *, self_issue_number: int | None) -> list[str]:
+    """Return labels for namespace-free ``#NNNN`` references that were skipped.
+
+    A bare number that is already qualified elsewhere in the body (the ``#NNNN``
+    tail of an ``owner/repo#NNNN``) is not a decline, and neither is a mention of
+    the issue under diagnosis.
+    """
+    qualified = {num for _repo, num in _extract_qualified_refs(body)}
+    self_ref = str(self_issue_number) if self_issue_number is not None else None
+    out: list[str] = []
+    for num in _ordered_unique(_BARE_REF_RE.findall(body)):
+        if num in qualified or num == self_ref:
+            continue
+        out.append(f"#{num}")
+    if out:
+        _log.debug(
+            "starting-evidence: declined %d unqualified reference(s): %s",
+            len(out),
+            ", ".join(out),
+        )
+    return out
+
+
+def _render(items: list[_Item], *, declined_labels: list[str] | None = None) -> StartingEvidence:
     """Assemble loaded items into the bounded STARTING EVIDENCE block."""
     header = "== STARTING EVIDENCE (auto-loaded from issue body references) =="
     rendered: list[str] = []
@@ -427,4 +528,8 @@ def _render(items: list[_Item]) -> StartingEvidence:
         rendered.append(f"[{dropped} further reference excerpt(s) omitted to bound the prompt]")
 
     text = header + "\n\n" + "\n\n".join(rendered)
-    return StartingEvidence(text=text, reference_labels=labels)
+    return StartingEvidence(
+        text=text,
+        reference_labels=labels,
+        declined_labels=list(declined_labels or []),
+    )

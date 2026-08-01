@@ -141,7 +141,7 @@ class TestGhBackedEvidence:
         assert "feat/issue-1135" in ev.text
         assert "1143" in ev.text
 
-    def test_pr_number_loads_view_and_skips_self_issue(self, tmp_path):
+    def test_qualified_ref_loads_view_pinned_to_its_repo(self, tmp_path):
         calls = []
 
         def fake_run_gh(args, project_root):
@@ -152,30 +152,47 @@ class TestGhBackedEvidence:
 
         with patch("theforge.coordinator.diagnose_evidence._run_gh", side_effect=fake_run_gh):
             ev = build_starting_evidence(
-                issue_body="Related to #1143 but this is issue #1420.",
+                issue_body="Related to fuzzypete/theforge#1143 but this is issue #1420.",
                 project_root=tmp_path,
                 self_issue_number=1420,
             )
         assert "1143" in ev.text
+        # The lookup names the repository the reference was written about.
+        pr_view = next(a for a in calls if a[:2] == ["pr", "view"])
+        assert pr_view[pr_view.index("--repo") + 1] == "fuzzypete/theforge"
         # The self-issue (#1420) must not be queried.
         assert not any(a[:2] == ["pr", "view"] and a[2] == "1420" for a in calls)
+
+    def test_github_url_reference_is_resolved_against_its_repo(self, tmp_path):
+        def fake_run_gh(args, project_root):
+            if args[:2] == ["pr", "view"]:
+                return None
+            return '{"number": 246, "state": "OPEN", "title": "session state lost"}'
+
+        with patch("theforge.coordinator.diagnose_evidence._run_gh", side_effect=fake_run_gh):
+            ev = build_starting_evidence(
+                issue_body="See https://github.com/fuzzypete/hdp/issues/246 for the symptom.",
+                project_root=tmp_path,
+            )
+        assert "session state lost" in ev.text
+        assert "issue fuzzypete/hdp#246" in ev.reference_labels
 
     def test_gh_failure_fails_open(self, tmp_path):
         with patch("theforge.coordinator.diagnose_evidence._run_gh", return_value=None):
             ev = build_starting_evidence(
-                issue_body="Branch feat/issue-9 and PR #99.",
+                issue_body="Branch feat/issue-9 and PR fuzzypete/theforge#99.",
                 project_root=tmp_path,
             )
         assert ev.is_empty
 
     def test_many_unresolved_refs_are_gh_call_bounded(self, tmp_path):
-        # A body citing far more branches and #NNNN than the attempt cap must
-        # not fire an unbounded number of (up-to-30s) gh subprocesses before the
-        # agent starts. All unresolved → gh returns None every time.
+        # A body citing far more branches and qualified refs than the attempt cap
+        # must not fire an unbounded number of (up-to-30s) gh subprocesses before
+        # the agent starts. All unresolved → gh returns None every time.
         from theforge.coordinator.diagnose_evidence import _MAX_GH_ATTEMPTS_PER_KIND
 
         branches = " ".join(f"feat/issue-{i}" for i in range(40))
-        prs = " ".join(f"#{2000 + i}" for i in range(40))
+        prs = " ".join(f"acme/widgets#{2000 + i}" for i in range(40))
         calls = []
 
         def fake_run_gh(args, project_root):
@@ -189,12 +206,82 @@ class TestGhBackedEvidence:
             )
         assert ev.is_empty
         branch_calls = [a for a in calls if a[:2] == ["pr", "list"]]
-        # A #NNNN attempt is a PR view then (on failure) an issue view: 2 gh calls.
+        # A ref attempt is a PR view then (on failure) an issue view: 2 gh calls.
         pr_calls = [a for a in calls if a[:2] == ["pr", "view"]]
         issue_calls = [a for a in calls if a[:2] == ["issue", "view"]]
         assert len(branch_calls) == _MAX_GH_ATTEMPTS_PER_KIND
         assert len(pr_calls) == _MAX_GH_ATTEMPTS_PER_KIND
         assert len(issue_calls) == _MAX_GH_ATTEMPTS_PER_KIND
+
+
+class TestUnqualifiedReferencesAreNotResolved:
+    """A bare ``#NNNN`` names no repository. Resolving it against whichever
+    checkout diagnose happens to run in injects same-numbered content from the
+    wrong project as asserted evidence — a strictly worse failure than loading
+    nothing. See issue #2057 / run 59bdfe42256b."""
+
+    def test_bare_number_fires_no_gh_lookup(self, tmp_path):
+        calls = []
+
+        def fake_run_gh(args, project_root):
+            calls.append(args)
+            # Simulate the local repo genuinely having these numbers.
+            return '{"number": 246, "state": "MERGED", "title": "Soft conventions"}'
+
+        with patch("theforge.coordinator.diagnose_evidence._run_gh", side_effect=fake_run_gh):
+            ev = build_starting_evidence(
+                issue_body=(
+                    "Observed in the hdp project: #246 and #248 describe the "
+                    "session-state defects, see also #245 and #231."
+                ),
+                project_root=tmp_path,
+                self_issue_number=2029,
+            )
+        assert ev.is_empty
+        assert calls == []
+        # Local same-numbered content never reaches the prompt.
+        assert "Soft conventions" not in ev.text
+
+    def test_declined_bare_refs_are_reported(self, tmp_path):
+        with patch("theforge.coordinator.diagnose_evidence._run_gh", return_value=None):
+            ev = build_starting_evidence(
+                issue_body="hdp #246 and #248 (this is #2029).",
+                project_root=tmp_path,
+                self_issue_number=2029,
+            )
+        # Reported as declined-on-purpose, not silently absent; the issue under
+        # diagnosis is not itself a declined reference.
+        assert ev.declined_labels == ["#246", "#248"]
+
+    def test_branch_like_path_fragment_is_not_a_repo_qualifier(self, tmp_path):
+        calls = []
+
+        def fake_run_gh(args, project_root):
+            calls.append(args)
+            return None
+
+        with patch("theforge.coordinator.diagnose_evidence._run_gh", side_effect=fake_run_gh):
+            build_starting_evidence(
+                issue_body="On feat/issue-2057#3 the check fails.",
+                project_root=tmp_path,
+            )
+        # "issue-2057" is a branch segment, not a repository name.
+        assert not any(a[:2] in (["pr", "view"], ["issue", "view"]) for a in calls)
+
+    def test_qualified_and_bare_forms_coexist(self, tmp_path):
+        def fake_run_gh(args, project_root):
+            if args[:2] == ["pr", "view"] and "--repo" in args:
+                return '{"number": 246, "state": "OPEN", "title": "hdp session state"}'
+            return None
+
+        with patch("theforge.coordinator.diagnose_evidence._run_gh", side_effect=fake_run_gh):
+            ev = build_starting_evidence(
+                issue_body="fuzzypete/hdp#246 is the real one; #248 is unqualified.",
+                project_root=tmp_path,
+            )
+        assert "hdp session state" in ev.text
+        assert ev.reference_labels == ["PR fuzzypete/hdp#246"]
+        assert ev.declined_labels == ["#248"]
 
 
 class TestBounding:
