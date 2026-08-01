@@ -443,6 +443,10 @@ class TestStaleWorktree:
         workspace.mkdir()
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            if "worktree list --porcelain" in cmd:
+                # git registers the path, so it is a real worktree and not
+                # leftover residue.
+                return (True, f"worktree {workspace}\nbranch refs/heads/feat/test-task\n")
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "feat/test-task")
             if "git status --porcelain" in cmd:

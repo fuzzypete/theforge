@@ -204,13 +204,48 @@ def _branch_merge_evidence(
     project_root: Path,
     slug: str | None = None,
 ) -> MergeEvidence:
-    """Return structured merge evidence for ``branch`` against ``base_branch``."""
+    """Return structured merge evidence for ``branch`` against ``base_branch``.
+
+    Evidence is consulted strongest-first, and issue state is deliberately not a
+    precondition for any of it (#2111). Whether a referencing GitHub issue is
+    closed is a policy another system owns and is free to redefine — symptom bugs
+    are now held open pending verification after their fix lands — so gating merge
+    detection on it silently disabled detection for a whole class of story and
+    re-ran work already in the base branch. Issue closure survives only as a
+    corroborating signal for *external* dependencies in
+    :func:`resolve_satisfied_dependencies`.
+
+    Order of precedence:
+
+    1. The forge audit trail — the evidence this run recorded when it landed the
+       branch. Owned evidence is consulted before any external signal.
+    2. Git topology — a regular merge, provable locally.
+    3. GitHub's own record of a merged PR for the branch.
+    4. A base commit whose message references the issue. This is the loosest
+       signal (any commit mentioning ``(#N)`` matches), so it runs last, only
+       once every stronger source has declined.
+    """
     no_merge = MergeEvidence(merged=False)
     issue_number = _issue_number_from_slug(slug) if slug is not None else None
     if issue_number is None:
         issue_number = _issue_number_from_ref(branch)
-    issue_is_closed = issue_number is None or _is_issue_closed(issue_number, project_root)
 
+    # 1. Owned evidence: the APPROVE + landed record this run wrote itself.
+    if slug is not None:
+        try:
+            if _has_prior_review_approve(project_root, slug, base_branch, branch):
+                return _with_pr_metadata(
+                    MergeEvidence(merged=True, source="audit"),
+                    branch,
+                    project_root,
+                    issue_number,
+                )
+        except Exception:
+            # A transient audit-read failure must not discard the remaining
+            # evidence sources below — fall through rather than claim no_merge.
+            pass
+
+    # 2. Git topology.
     try:
         merge_result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, base_branch],
@@ -243,52 +278,34 @@ def _branch_merge_evidence(
                 if unique_count > 0:
                     # Regular merge: base has moved past branch and branch had
                     # unique work of its own.
-                    if issue_is_closed:
-                        return _with_pr_metadata(
-                            MergeEvidence(merged=True, source="topology"),
-                            branch,
-                            project_root,
-                            issue_number,
-                        )
-                    return no_merge
+                    return _with_pr_metadata(
+                        MergeEvidence(merged=True, source="topology"),
+                        branch,
+                        project_root,
+                        issue_number,
+                    )
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
-    if not issue_is_closed:
-        return no_merge
-
-    if issue_number is not None and _has_base_commit_referencing_issue(
-        project_root,
-        base_branch,
-        issue_number,
-    ):
-        return _with_pr_metadata(
-            MergeEvidence(merged=True, source="issue_commit"),
-            branch,
-            project_root,
-            issue_number,
-        )
-
-    # Fast-forward merges at the same tip and squash merges both need the audit
-    # trail fallback. In real squash merges, --is-ancestor returns non-zero, so
-    # this check must live outside the topology-success branch above.
-    if slug is not None:
-        try:
-            if _has_prior_review_approve(project_root, slug, base_branch, branch):
-                return _with_pr_metadata(
-                    MergeEvidence(merged=True, source="audit"),
-                    branch,
-                    project_root,
-                    issue_number,
-                )
-        except Exception:
-            return no_merge
-
+    # 3. GitHub's record of the merge. Fast-forward merges at the same tip and
+    # squash merges are both invisible to topology, so they need this and the
+    # issue-commit fallback below.
     merged_pr = (
         _lookup_merged_pr_for_branch(branch, project_root) if issue_number is not None else None
     )
     if merged_pr is not None:
         return merged_pr
+
+    # 4. Loosest signal last: a base commit message referencing the issue. The
+    #    merged-PR lookup above already declined, so there is no PR metadata to
+    #    attach here.
+    if issue_number is not None and _has_base_commit_referencing_issue(
+        project_root,
+        base_branch,
+        issue_number,
+    ):
+        return MergeEvidence(merged=True, source="issue_commit")
+
     return no_merge
 
 
@@ -300,7 +317,7 @@ def _is_branch_merged(
 ) -> bool:
     """Return True if branch has been merged into base_branch.
 
-    Three detection paths handle the merge strategies theforge uses:
+    Detection must cover the merge strategies theforge uses:
 
     1. Regular merge commit (git merge --no-edit fallback):
        --is-ancestor passes AND branch..base_branch count > 0 (base advanced
@@ -315,9 +332,12 @@ def _is_branch_merged(
        The feature branch tip remains an ancestor of base because it was based
        on base, but the squash commit on base is a new commit with no parent
        relationship to the branch. Git topology alone therefore cannot prove
-       the merge. Issue-backed branches first look for a base commit that
-       references the issue, then fall back to the forge APPROVE audit trail
-       when slug is provided.
+       the merge, so the forge APPROVE audit trail (when slug is provided), a
+       merged PR for the branch, and finally a base commit referencing the
+       issue stand in for it.
+
+    See :func:`_branch_merge_evidence` for the order these are consulted in and
+    why GitHub issue state is not part of it.
 
     A branch that was merely created at base HEAD (count == 0, no audit entry)
     correctly returns False.
@@ -596,7 +616,10 @@ def _triage_spec(
         commits_ahead = None
         commits_behind = None
 
-    # 2. Check if already merged to base branch.
+    # 2. Check if already merged to base branch. This must stay ahead of the
+    # stale/empty classification below: a same-tip branch is ambiguous, and
+    # resolving it toward "no work was done" discards a landed story, while
+    # resolving it toward "already merged" at worst repeats a skip (#2111).
     # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
     # for fast-forward merges where branch and base land on the same commit.
     merge_evidence = _branch_merge_evidence(branch, base_branch, project_root, slug=slug)
@@ -614,10 +637,12 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 3. A branch at the base tip (0 ahead, 0 behind) is stale/empty, not merged.
-    # This can happen when a prior run created the branch/worktree but never
-    # produced story commits. Treat it as full so WORKSPACE recreates it, even
-    # if the old worktree directory has already been removed.
+    # 3. A branch at the base tip (0 ahead, 0 behind) with no merge evidence of
+    # any kind is stale/empty, not merged. This can happen when a prior run
+    # created the branch/worktree but never produced story commits. Treat it as
+    # full so WORKSPACE recreates it, even if the old worktree directory has
+    # already been removed. Step 2 above has already claimed every same-tip
+    # branch backed by audit, PR, or issue-commit evidence.
     if commits_ahead == [] and commits_behind == 0:
         stale_reason = (
             f"branch is at {base_branch} HEAD with 0 commits ahead"
