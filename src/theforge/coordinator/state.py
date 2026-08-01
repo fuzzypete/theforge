@@ -918,6 +918,15 @@ class CoordinatorState:
     # this set carries a failed ``agent_judgment_obtained`` trust check, so it is
     # tainted and teaches nothing (ADR-0006 clause 4).
     infrastructure_failure: dict | None = None
+    # ── Shared run-infrastructure failures (#2107) ────────────────────────────
+    # Failures of a resource every story in a sprint shares — a path outside the
+    # workspace that all workers write, such as the rolling advisory-conventions
+    # artifact. Each entry: component, path, error, error_type. Recorded here,
+    # and rendered into the audit, so the failure is attributable to the
+    # infrastructure rather than to whichever story was executing when it
+    # surfaced. Non-fatal by construction: the story's own outcome, audit, and
+    # cost accounting are unaffected.
+    shared_infrastructure_failures: list[dict] = field(default_factory=list)
     # Phases that completed with a reviewer/agent pool shrunk by substrate
     # failures. Each entry: phase, pool_size, lost (names), remaining, failures.
     # A degraded-pool completion is not the same kind of result as a full-pool

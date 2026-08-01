@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig
 from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
@@ -1827,6 +1828,44 @@ def _run_single_story(
                 base_lands_locally=base_lands_locally,
                 lands_in_project_root=lands_in_project_root,
             )
+    except AdvisoryArtifactError as exc:
+        # Second of the two layers that keep a shared-resource failure off the
+        # story's record (#2107). Both are pinned by tests:
+        #
+        #   1. Containment at the call site — coordinator.validate_phase absorbs
+        #      a failed advisory update, so the story keeps its real phase,
+        #      audit, and cost. Pinned by test_coord_convention_parallel.py::
+        #      test_advisory_persistence_failure_does_not_cost_the_story_its_result.
+        #   2. This worker boundary — whatever the call site did not contain must
+        #      still be attributed to the infrastructure. Pinned by
+        #      test_sprint_infrastructure_attribution.py.
+        #
+        # Layer 1 handles today's only raise site, which is why layer 2 does not
+        # fire in the current call graph. It is retained deliberately: the
+        # blanket handler immediately below converts *any* escaping exception
+        # into this story's ESCALATE verdict at cost_usd 0.0 — precisely the
+        # misattribution this issue reports — and once the exception has left the
+        # coordinator, nothing else can tell the two apart.
+        _log(f"ERROR {task.slug}: shared infrastructure failure: {exc}")
+        message = f"Shared infrastructure failure (advisory artifact): {exc}"
+        failure_record = exc.as_failure_record()
+        failure_state = CoordinatorState(
+            phase=Phase.ESCALATE,
+            started_at=started_at.isoformat(),
+            workspace_path=workspace_path,
+            log_dir=_make_story_log_dir(config, task.slug, sprint_name),
+            error=message,
+            error_type=ERROR_TYPE_INFRASTRUCTURE_ABORT,
+        )
+        failure_state.infrastructure_failure = {"message": message, **failure_record}
+        failure_state.shared_infrastructure_failures.append(failure_record)
+        result = CoordinatorResult(
+            success=False,
+            phase=Phase.ESCALATE,
+            state=failure_state,
+            message=message,
+            infrastructure_failure=True,
+        )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
         failure_state = CoordinatorState(

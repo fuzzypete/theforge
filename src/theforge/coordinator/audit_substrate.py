@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 16
+CURRENT_RECORD_SCHEMA_VERSION = 17
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1048,6 +1048,26 @@ def _migrate_v15_to_v16(record: dict) -> dict:
     return {**record, "configuration": None}
 
 
+def _migrate_v16_to_v17(record: dict) -> dict:
+    """Add the shared run-infrastructure failure ledger (issue #2107).
+
+    v17 records list failures of resources every story of a sprint shares — a
+    path outside the workspace that all workers write, such as the rolling
+    advisory-conventions artifact — so such a failure is attributable to the
+    infrastructure rather than to whichever story was executing when it
+    surfaced.
+
+    A v16 record predates the ledger: the failure was not distinguished from the
+    story's own outcome, so no such list could exist. Backfilling an empty list
+    states exactly that — nothing was recorded — without inventing entries the
+    writer never observed. The stored record is never rewritten (ADR-0002
+    refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    if "shared_infrastructure_failures" in record:
+        return record
+    return {**record, "shared_infrastructure_failures": []}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1072,6 +1092,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     13: _migrate_v13_to_v14,
     14: _migrate_v14_to_v15,
     15: _migrate_v15_to_v16,
+    16: _migrate_v16_to_v17,
 }
 
 
