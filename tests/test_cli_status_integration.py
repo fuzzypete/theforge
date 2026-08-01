@@ -569,3 +569,54 @@ def test_watch_loop_drops_finished_sprint_on_next_frame(tmp_path: Path, capsys: 
     assert rc == 0
     assert "run=run-a" in out
     assert out.count("run=run-b") == 2
+
+
+# ── forge status reports orphaned agent groups, it does not kill them (#2115) ──
+
+
+def test_status_reports_orphan_agent_groups_without_signalling_them(
+    tmp_path: Path, capsys: object
+) -> None:
+    """A read-only inspection command must not send group SIGKILLs as a side effect.
+
+    Reaping from ``forge status`` meant a routine operator command signalled
+    process groups off recorded pgids the OS had since recycled. Status now
+    reports the records; the reap belongs to the commands that already mutate run
+    state (``forge stop``, sprint launch).
+    """
+    import subprocess
+    import sys
+
+    from theforge import process_group
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    pgid = os.getpgid(proc.pid)
+    agents_dir = tmp_path / ".forge" / "runs" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = agents_dir / f"999999-{pgid}.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "owner_pid": 999_999,  # never-assigned high pid: certainly dead
+                "pgid": pgid,
+                "run_id": "run-old",
+                "sandbox_dir": str(tmp_path),
+                "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                "origin": "agent",
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        rc, out = _run_cmd_status(tmp_path, capsys)
+        assert rc == 0
+        assert proc.poll() is None, "forge status killed a process group"
+        assert sidecar.exists(), "forge status consumed the record it only reported"
+        assert f"pgid={pgid}" in out
+        assert "orphaned agent process group record(s)" in out
+    finally:
+        process_group.kill_agent_group(pgid)
+        proc.wait(timeout=5)

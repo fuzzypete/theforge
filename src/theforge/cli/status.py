@@ -446,6 +446,19 @@ def _resolve_watch_run_ids(active_run_ids: list[str], project_root: Path) -> lis
     return watch_ids
 
 
+def _report_orphan_agents(orphans: list[dict]) -> None:
+    """Print orphaned agent process groups; kill nothing (#2115)."""
+    if not orphans:
+        return
+    print(f"[forge] {len(orphans)} orphaned agent process group record(s):")
+    for record in orphans:
+        print(
+            f"  pgid={record.get('pgid')} owner sprint pid={record.get('owner_pid')} "
+            f"(dead) run={record.get('run_id')} sandbox={record.get('sandbox_dir')}"
+        )
+    print("[forge] These are reaped by `forge stop` or the next sprint launch.")
+
+
 def cmd_status(args: object) -> int:
     """Show active forge runs and pending decisions."""
     from theforge import pending as _pending
@@ -457,11 +470,14 @@ def cmd_status(args: object) -> int:
     config = load_config(config_path)
     project_root = config.project_root
 
-    # Reap agent process groups orphaned by an abruptly-killed sprint. Natural
-    # adjacency to list_active_runs, which already prunes stale PID files.
+    # Report — never signal — agent process groups orphaned by an abruptly-killed
+    # sprint. Reaping here made a read-only inspection command send group SIGKILLs
+    # as a side effect of being run, which is how unrelated processes came to be
+    # killed off recycled pgids (#2115). `forge stop` and sprint startup, both of
+    # which already mutate run state, own the actual reap.
     from theforge import process_group as _process_group
 
-    _process_group.reap_orphan_agents(project_root)
+    _report_orphan_agents(_process_group.list_orphan_agents(project_root))
 
     recent = getattr(args, "recent", False)
     last = getattr(args, "last", False)
