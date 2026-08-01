@@ -15,6 +15,7 @@ from theforge.shape_check.diagnosis_spec import (
     required_diagnosis_tokens,
 )
 from theforge.shape_check.parsing import (
+    FenceTracker,
     extract_ac_section,
     extract_bullets,
     extract_section,
@@ -744,7 +745,7 @@ def check_implementation_design_dump(
         signals += len(pat.findall(ac))
     # Detect fenced blocks tagged python/yaml even without signature
     for line in ac.splitlines():
-        m = re.match(r"^\s*```(\w+)\s*$", line)
+        m = re.match(r"^\s*(?:`{3,}|~{3,})(\w+)\s*$", line)
         if m and m.group(1).lower() in _DESIGN_FENCE_LANGS:
             signals += 1
     if signals >= 3:
@@ -786,20 +787,15 @@ _PLAN_EXCEPTION_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-_FENCE_RE = re.compile(r"^\s*```")
-
 
 def _strip_fenced_blocks(body: str) -> str:
-    out: list[str] = []
-    in_fence = False
-    for line in body.splitlines():
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        out.append(line)
-    return "\n".join(out)
+    """Drop fenced code, so prose heuristics never read quoted samples as prose.
+
+    Shares :class:`FenceTracker` with the structural parsers: one definition of
+    what counts as literal content, both fence families included.
+    """
+    tracker = FenceTracker()
+    return "\n".join(line for line in body.splitlines() if tracker.feed(line) == "outside")
 
 
 _EXAMPLE_HEADING_RE = re.compile(
