@@ -83,6 +83,11 @@ def _triage_git_mock(commit_line: bytes = b"abc1234 some commit\n"):
         m = MagicMock()
         if "--is-ancestor" in cmd:
             m.returncode = 1  # not merged
+        elif any(isinstance(c, str) and c.startswith("--grep=") for c in cmd):
+            # No base commit references the issue — the branch is unmerged, so
+            # the issue-commit merge-evidence search must come back empty.
+            m.returncode = 0
+            m.stdout = b""
         elif "log" in cmd:
             m.returncode = 0
             m.stdout = commit_line
