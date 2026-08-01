@@ -3,8 +3,14 @@
 Refusal-capable: when the classifier's confidence is low, the command
 keeps the item as ``todo:draft`` and emits structured ambiguity questions
 rather than forcing a classification. Without ``--apply`` it prints a
-diff and exits non-zero; with ``--apply`` it edits the issue via ``gh``.
+diff; with ``--apply`` it edits the issue via ``gh``.
 The command never auto-invokes a producer (`forge diagnose`, `forge groom`).
+
+Outside ``--apply``, the exit code is the readiness signal: 0 when the issue
+already satisfies the shape gate and this command asks nothing further of the
+operator, 1 otherwise. That holds for ``--next`` too — a recommendation that
+still names a pipeline stage is not a success (#2054). Under ``--apply`` the
+exit code reports whether the mutation succeeded, not readiness.
 """
 
 from __future__ import annotations
@@ -24,6 +30,8 @@ from theforge.intake.shape_classify import (
     classify,
 )
 from theforge.intake.shape_render import (
+    ShapeReadiness,
+    evaluate_readiness,
     next_command,
     render_proposal,
     restructure_body,
@@ -103,9 +111,15 @@ def _apply_to_github(
     issue_number: int,
     proposal: ShapeProposal,
     new_body: str,
+    current_body: str,
     cwd: Path,
 ) -> bool:
-    """Apply label edits + body restructure via gh. Returns True on success."""
+    """Apply label edits + body restructure via gh. Returns True on success.
+
+    Each edit is applied only where it is an actual delta — a body write that
+    replaces the body with its own content is a mutation the operator did not
+    ask for and cannot see in the proposal (#2054).
+    """
     # Add labels (one --add-label per label keeps gh happy across versions).
     for label in proposal.proposed_labels:
         proc = _gh(
@@ -127,6 +141,8 @@ def _apply_to_github(
             )
             print(err, file=sys.stderr)
             return False
+    if new_body == current_body:
+        return True
     # Body restructure goes via --body-file so we don't have to escape.
     import tempfile
 
@@ -185,6 +201,9 @@ def cmd_shape(args: argparse.Namespace) -> int:
         confidence=Confidence.LOW,
     )
     apply_mutated = False
+    # None until the issue is loaded and the gate can actually be run — an
+    # early failure records "no verdict observed" rather than a fabricated one.
+    readiness: ShapeReadiness | None = None
 
     try:
         title: str
@@ -214,11 +233,17 @@ def cmd_shape(args: argparse.Namespace) -> int:
             return 1
 
         proposal = classify(title, body, labels)
+        # Readiness is computed against the state actually observed, so the
+        # command can report a terminal "nothing to do" rather than always
+        # naming a further pipeline stage (#2054).
+        readiness = evaluate_readiness(proposal, title=title, body=body, labels=labels)
 
-        # --next: print only the operator-facing next command and exit 0.
+        # --next: print only the operator-facing next command. The exit code is
+        # the same readiness signal every other path reports — a recommendation
+        # that still names a stage is not success (#2054).
         if args.next:
-            print(next_command(proposal, issue_number))
-            return 0
+            print(next_command(proposal, issue_number, ready=readiness.ready))
+            return 0 if readiness.ready else 1
 
         source_label = (
             f"#{issue_number} {title!r}".strip()
@@ -234,7 +259,7 @@ def cmd_shape(args: argparse.Namespace) -> int:
             show_diff=True,
         )
         print(rendered, end="")
-        print(next_command(proposal, issue_number))
+        print(next_command(proposal, issue_number, ready=readiness.ready))
 
         if args.apply:
             if proposal.classification is Classification.UNRESOLVED:
@@ -250,22 +275,32 @@ def cmd_shape(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
+            if readiness.ready:
+                # Nothing to apply: mutating here would rewrite the issue with
+                # the content it already has (#2054).
+                print(f"No changes to apply; #{issue_number} already satisfies the shape gate.")
+                return 0
             new_body = restructure_body(proposal, body)
-            ok = _apply_to_github(issue_number, proposal, new_body, project_root)
+            has_delta = bool(
+                proposal.proposed_labels or proposal.removed_labels or new_body != body
+            )
+            ok = _apply_to_github(issue_number, proposal, new_body, body, project_root)
             if not ok:
                 return 1
+            if not has_delta:
+                # The issue does not satisfy the gate, but nothing this command
+                # proposes would move it — say so rather than claim an edit that
+                # never happened (#2054).
+                print(f"Nothing to apply to #{issue_number}; no proposed edits differ from it.")
+                return 0
             print(f"Applied proposal to #{issue_number}.")
             apply_mutated = True
             return 0
 
-        # Without --apply: non-zero when changes would be needed.
-        needs_change = (
-            proposal.classification is Classification.UNRESOLVED
-            or bool(proposal.proposed_labels)
-            or bool(proposal.removed_labels)
-            or restructure_body(proposal, body) != body
-        )
-        return 1 if needs_change else 0
+        # Without --apply: exit zero exactly when the issue is already ready —
+        # the exit code is the readiness signal, so a gate-passing issue is
+        # distinguishable from one that still needs work (#2054).
+        return 0 if readiness.ready else 1
     finally:
         _safe_emit(
             project_root,
@@ -273,6 +308,7 @@ def cmd_shape(args: argparse.Namespace) -> int:
             input_source=input_source,
             proposal=proposal,
             apply_mutated=apply_mutated,
+            readiness=readiness,
         )
 
 
@@ -283,6 +319,7 @@ def _safe_emit(
     input_source: str,
     proposal: ShapeProposal,
     apply_mutated: bool,
+    readiness: ShapeReadiness | None = None,
 ) -> None:
     try:
         emit_shape_event(
@@ -296,6 +333,7 @@ def _safe_emit(
             diagnosis_state=(
                 proposal.diagnosis_state.value if proposal.diagnosis_state is not None else None
             ),
+            gate_verdict=(readiness.verdict.value if readiness is not None else None),
         )
     except Exception as exc:  # noqa: BLE001 — audit emission is fire-and-forget
         print(f"[forge shape] audit emission failed: {exc}", file=sys.stderr)
@@ -330,7 +368,10 @@ def register_parser(subparsers: object) -> None:
         "--next",
         action="store_true",
         default=False,
-        help="Print only the recommended next operator command and exit (never auto-invokes it)",
+        help=(
+            "Print only the recommended next operator command and exit "
+            "(never auto-invokes it; exits 0 only when nothing is left to do)"
+        ),
     )
     p.set_defaults(func=cmd_shape)
 
