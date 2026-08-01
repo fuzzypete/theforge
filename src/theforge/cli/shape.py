@@ -3,8 +3,14 @@
 Refusal-capable: when the classifier's confidence is low, the command
 keeps the item as ``todo:draft`` and emits structured ambiguity questions
 rather than forcing a classification. Without ``--apply`` it prints a
-diff and exits non-zero; with ``--apply`` it edits the issue via ``gh``.
+diff; with ``--apply`` it edits the issue via ``gh``.
 The command never auto-invokes a producer (`forge diagnose`, `forge groom`).
+
+Outside ``--apply``, the exit code is the readiness signal: 0 when the issue
+already satisfies the shape gate and this command asks nothing further of the
+operator, 1 otherwise. That holds for ``--next`` too — a recommendation that
+still names a pipeline stage is not a success (#2054). Under ``--apply`` the
+exit code reports whether the mutation succeeded, not readiness.
 """
 
 from __future__ import annotations
@@ -232,10 +238,12 @@ def cmd_shape(args: argparse.Namespace) -> int:
         # naming a further pipeline stage (#2054).
         readiness = evaluate_readiness(proposal, title=title, body=body, labels=labels)
 
-        # --next: print only the operator-facing next command and exit 0.
+        # --next: print only the operator-facing next command. The exit code is
+        # the same readiness signal every other path reports — a recommendation
+        # that still names a stage is not success (#2054).
         if args.next:
             print(next_command(proposal, issue_number, ready=readiness.ready))
-            return 0
+            return 0 if readiness.ready else 1
 
         source_label = (
             f"#{issue_number} {title!r}".strip()
@@ -360,7 +368,10 @@ def register_parser(subparsers: object) -> None:
         "--next",
         action="store_true",
         default=False,
-        help="Print only the recommended next operator command and exit (never auto-invokes it)",
+        help=(
+            "Print only the recommended next operator command and exit "
+            "(never auto-invokes it; exits 0 only when nothing is left to do)"
+        ),
     )
     p.set_defaults(func=cmd_shape)
 

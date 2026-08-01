@@ -463,7 +463,8 @@ should become before grooming or diagnosing it.
 **The command never auto-invokes a producer.** `--next` prints a hint
 (`forge diagnose --issue 123`, `forge groom 123`, etc.); it does not run it.
 `--next` output is human-readable in v0.11; no stable machine-readable
-contract is promised yet.
+contract is promised yet. Its exit code carries the same readiness signal as
+the default path — 0 only when the recommendation is terminal.
 
 **ADR candidates** receive a proposed slug and title — the ADR file is not
 written. **Epic** classifications may propose child stories in prose; no
@@ -488,8 +489,10 @@ Next: none — #2050 already satisfies the shape gate (verdict: runnable); no fu
 ```
 
 Any other state exits 1 and names the stage that still owes work (`forge
-diagnose`, `forge groom`, splitting an epic, closing a duplicate). `--apply` on
-a gate-passing issue makes no `gh` call at all.
+diagnose`, `forge groom`, splitting an epic, closing a duplicate). This holds
+for `--next` too. `--apply` is the exception: it reports whether the mutation
+succeeded, not whether the issue is ready, and on a gate-passing issue it makes
+no `gh` call at all.
 
 Every invocation writes a row into the audit substrate's `shape_events`
 table (issue number, input source, classification, confidence, ambiguity

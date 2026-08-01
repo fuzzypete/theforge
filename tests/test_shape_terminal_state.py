@@ -163,6 +163,25 @@ def test_shape_next_flag_reports_terminal_state(mock_run, tmp_path, capsys):
 
 
 @patch("theforge.cli.shape.subprocess.run")
+def test_shape_next_flag_exits_nonzero_when_work_remains(mock_run, tmp_path, capsys):
+    """--next reports the same readiness signal as every other path."""
+    mock_run.return_value = _gh_view("thing is broken", SYMPTOM_ONLY_BODY, ["bug"])
+    rc = cmd_shape(_make_args(tmp_path, issue=77, next=True))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out.strip() == "Next: forge diagnose 77"
+
+
+@patch("theforge.cli.shape.subprocess.run")
+def test_shape_next_flag_exits_nonzero_for_unresolved_draft(mock_run, tmp_path, capsys):
+    mock_run.return_value = _gh_view("???", "", [])
+    rc = cmd_shape(_make_args(tmp_path, issue=78, next=True))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "ambiguity" in out.lower()
+
+
+@patch("theforge.cli.shape.subprocess.run")
 def test_shape_exits_nonzero_and_names_a_stage_when_work_remains(mock_run, tmp_path, capsys):
     mock_run.return_value = _gh_view("thing is broken", SYMPTOM_ONLY_BODY, ["bug"])
     rc = cmd_shape(_make_args(tmp_path, issue=77))
