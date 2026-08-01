@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,})(.*?)\s*$")
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+?)\s*$")
 _EXAMPLE_HEADING_RE = re.compile(
     r"^(?:"
@@ -32,13 +33,56 @@ class ContextualFencedBlock:
     in_example_section: bool
 
 
+def fenced_spans(body: str) -> list[tuple[int, int]]:
+    """Return ``(start, end)`` character offsets of each fenced code region.
+
+    A region runs from the start of its opening fence line through the end of
+    its closing fence line. A fence closes on a line with at least as many
+    backticks as the opener and no info string; an unclosed fence runs to the
+    end of the document, as in CommonMark.
+    """
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    open_start: int | None = None
+    open_ticks = 0
+    for line in body.splitlines(keepends=True):
+        m = _FENCE_RE.match(line)
+        if m:
+            ticks = len(m.group(1))
+            if open_start is None:
+                open_start = offset
+                open_ticks = ticks
+            elif ticks >= open_ticks and not m.group(2).strip():
+                spans.append((open_start, offset + len(line)))
+                open_start = None
+        offset += len(line)
+    if open_start is not None:
+        spans.append((open_start, len(body)))
+    return spans
+
+
+def iter_headings(body: str) -> list[re.Match[str]]:
+    """Return every heading match in ``body`` that is not inside a fenced block.
+
+    Headings quoted inside fenced code are content the author is exhibiting,
+    not structure of the document itself, so they are excluded.
+    """
+    spans = fenced_spans(body)
+    return [
+        m
+        for m in _HEADING_RE.finditer(body)
+        if not any(start <= m.start() < end for start, end in spans)
+    ]
+
+
 def find_heading(body: str, pattern: str) -> re.Match[str] | None:
     """Return a re.Match for the first heading whose text matches ``pattern``.
 
-    The match's ``start()`` is the start of the heading line.
+    Headings inside fenced code blocks are ignored. The match's ``start()`` is
+    the start of the heading line.
     """
     regex = re.compile(pattern, re.IGNORECASE)
-    for m in _HEADING_RE.finditer(body):
+    for m in iter_headings(body):
         if regex.search(m.group(2)):
             return m
     return None
@@ -53,19 +97,20 @@ def section_span(body: str, heading_pattern: str) -> tuple[int, int] | None:
 
     ``start`` is the offset just past the end of the heading line; ``end`` is the
     offset of the next heading of same-or-higher level, or ``len(body)``.
-    Returns ``None`` when no heading matches. Producers that need to insert text
-    into an existing section use this rather than re-deriving heading arithmetic.
+    Headings inside fenced code blocks bound nothing — a fenced sample of a
+    document's shape is content, so the section runs past it. Returns ``None``
+    when no heading matches. Producers that need to insert text into an existing
+    section use this rather than re-deriving heading arithmetic.
     """
     m = find_heading(body, heading_pattern)
     if not m:
         return None
     level = len(m.group(1))
     start = m.end()
-    remainder = body[start:]
-    # find next heading of level <= current
-    for nm in _HEADING_RE.finditer(remainder):
-        if len(nm.group(1)) <= level:
-            return start, start + nm.start()
+    # find next unfenced heading of level <= current
+    for nm in iter_headings(body):
+        if nm.start() >= start and len(nm.group(1)) <= level:
+            return start, nm.start()
     return start, len(body)
 
 

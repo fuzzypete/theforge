@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 
+from theforge.intake.shape_classify import DiagnosisState, _detect_diagnosis_state
 from theforge.shape_check import (
     DEFAULT_CLUSTER_THRESHOLD,
     Reason,
@@ -18,6 +19,7 @@ from theforge.shape_check import (
 )
 from theforge.shape_check.classifier import classify
 from theforge.shape_check.heuristics import (
+    check_bug_missing_diagnosis,
     check_criterion_needs_live_evidence,
     check_epic_or_tracking,
     check_implementation_design_dump,
@@ -28,10 +30,14 @@ from theforge.shape_check.heuristics import (
     check_superseded,
     check_too_many_behavioral_clusters,
     check_untriaged_finding,
+    diagnosis_completeness,
 )
 from theforge.shape_check.parsing import (
+    extract_ac_section,
     extract_contextual_bullets,
     extract_contextual_fenced_code_blocks,
+    extract_section,
+    has_heading,
 )
 
 WELL_FORMED_AC = textwrap.dedent(
@@ -527,6 +533,161 @@ class TestExampleParsingContext:
 
         blocks = extract_contextual_fenced_code_blocks(body)
         assert [block.in_example_section for block in blocks] == [True, False]
+
+
+class TestFencedHeadingsAreNotStructure:
+    """Headings inside fenced code are quoted samples, not document structure (#2059)."""
+
+    QUOTED_SAMPLE_BUG_BODY = textwrap.dedent(
+        """\
+        ## Observed behavior
+
+        The command restructures the body. It proposes:
+
+        ```markdown
+        ## Observed behavior
+        <symptom>
+
+        ### Diagnosis
+        Status: confirmed cause documented.
+
+        ## Acceptance Criteria
+        - <criterion>
+        ```
+
+        ## Diagnosis
+
+        - **Observed symptom.** Command exits 1 instead of 0 on success.
+        - **Evidence.** Reproduction in run id `abc123`.
+        - **Ruled out.** Config drift; verified config is loaded correctly.
+        - **Confirmed cause.** Off-by-one in exit-code computation at runner.py:42.
+        - **Affected code path.** runner.exit_code, cli.main return.
+        - **Fix-success criterion.** Command returns 0 on success path.
+        """
+    )
+
+    def test_extract_section_skips_heading_inside_fence(self):
+        section = extract_section(self.QUOTED_SAMPLE_BUG_BODY, r"diagnosis|root cause")
+        assert section is not None
+        assert "Confirmed cause" in section
+        assert "Status: confirmed cause documented." not in section
+
+    def test_extract_ac_section_skips_heading_inside_fence(self):
+        assert extract_ac_section(self.QUOTED_SAMPLE_BUG_BODY) is None
+
+        body = self.QUOTED_SAMPLE_BUG_BODY + textwrap.dedent(
+            """\
+
+            ## Acceptance Criteria
+            - The gate admits a body that quotes markdown.
+            """
+        )
+        ac = extract_ac_section(body)
+        assert ac is not None
+        assert "The gate admits a body that quotes markdown." in ac
+        assert "<criterion>" not in ac
+
+    def test_has_heading_ignores_fenced_only_heading(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+
+            ```markdown
+            ### Diagnosis
+            Status: confirmed cause documented.
+            ```
+            """
+        )
+        assert not has_heading(body, r"diagnosis|root cause")
+        assert extract_section(body, r"diagnosis|root cause") is None
+
+    def test_section_span_does_not_end_at_fenced_heading(self):
+        body = textwrap.dedent(
+            """\
+            ## Diagnosis
+
+            Prose before the sample.
+
+            ```markdown
+            ## Notes
+            quoted
+            ```
+
+            Prose after the sample.
+
+            ## Notes
+            real notes
+            """
+        )
+        section = extract_section(body, r"diagnosis")
+        assert section is not None
+        assert "Prose after the sample." in section
+        assert "real notes" not in section
+
+    def test_unclosed_fence_runs_to_end_of_body(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+
+            ```markdown
+            ## Diagnosis
+            quoted, and the fence is never closed
+            """
+        )
+        assert not has_heading(body, r"diagnosis")
+
+    def test_gate_admits_bug_quoting_a_diagnosis_sample(self):
+        assert diagnosis_completeness(self.QUOTED_SAMPLE_BUG_BODY) == (True, [])
+        assert (
+            check_bug_missing_diagnosis(
+                "shape gate misparses", self.QUOTED_SAMPLE_BUG_BODY, ["bug"]
+            )
+            is None
+        )
+
+    def test_gate_still_refuses_a_fenced_only_diagnosis(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+            It exits 1.
+
+            ## Expected behavior
+            It exits 0.
+
+            ```markdown
+            ## Diagnosis
+            - **Observed symptom.** x
+            - **Evidence.** y
+            - **Ruled out.** z
+            - **Confirmed cause.** off-by-one
+            - **Affected code path.** runner.py
+            - **Fix-success criterion.** exits 0
+            ```
+            """
+        )
+        ok, missing = diagnosis_completeness(body)
+        assert not ok
+        assert missing == ["missing Diagnosis section"]
+        reason = check_bug_missing_diagnosis("it exits 1", body, ["bug"])
+        assert reason is not None
+        assert reason.code == "needs_diagnosis"
+
+    def test_classifier_reads_the_real_diagnosis_not_the_quoted_one(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+
+            ```markdown
+            ### Diagnosis
+            Status: confirmed cause documented.
+            ```
+
+            ## Diagnosis
+
+            Not yet investigated.
+            """
+        )
+        assert _detect_diagnosis_state(body) is DiagnosisState.NO_DIAGNOSIS
 
 
 class TestTooManyBehavioralClusters:
