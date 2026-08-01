@@ -1829,17 +1829,23 @@ def _run_single_story(
                 lands_in_project_root=lands_in_project_root,
             )
     except AdvisoryArtifactError as exc:
-        # The worker boundary for a shared-resource failure. Containment is
-        # primarily at the call site — coordinator.validate_phase absorbs a
-        # failed advisory update and lets the story keep its real outcome — so
-        # in the current call graph nothing reaches here. That is exactly what
-        # makes this branch worth keeping rather than what makes it redundant:
-        # the blanket handler below turns *any* escaping exception into this
-        # story's ESCALATE verdict at cost_usd 0.0, which is the misattribution
-        # #2107 reports. A shared-resource failure that ever reaches the worker
-        # — from a future call site, or a call site whose own containment fails
-        # — must be recorded against the infrastructure, and this is the only
-        # place that can do it once the exception has left the coordinator.
+        # Second of the two layers that keep a shared-resource failure off the
+        # story's record (#2107). Both are pinned by tests:
+        #
+        #   1. Containment at the call site — coordinator.validate_phase absorbs
+        #      a failed advisory update, so the story keeps its real phase,
+        #      audit, and cost. Pinned by test_coord_convention_parallel.py::
+        #      test_advisory_persistence_failure_does_not_cost_the_story_its_result.
+        #   2. This worker boundary — whatever the call site did not contain must
+        #      still be attributed to the infrastructure. Pinned by
+        #      test_sprint_infrastructure_attribution.py.
+        #
+        # Layer 1 handles today's only raise site, which is why layer 2 does not
+        # fire in the current call graph. It is retained deliberately: the
+        # blanket handler immediately below converts *any* escaping exception
+        # into this story's ESCALATE verdict at cost_usd 0.0 — precisely the
+        # misattribution this issue reports — and once the exception has left the
+        # coordinator, nothing else can tell the two apart.
         _log(f"ERROR {task.slug}: shared infrastructure failure: {exc}")
         message = f"Shared infrastructure failure (advisory artifact): {exc}"
         failure_record = exc.as_failure_record()
