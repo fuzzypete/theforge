@@ -623,6 +623,7 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
         "starting_evidence": {
             "reference_labels": list(state.starting_evidence_labels),
             "chars": state.starting_evidence_chars,
+            "declined_unqualified_refs": list(state.starting_evidence_declined),
         },
         "baseline": {
             "sha": state.baseline_sha,
@@ -1213,6 +1214,10 @@ def _run_diagnose_flow_body(
     # hypothesis-formation rather than rediscovering pointers already in the
     # body. Best-effort — an issue with no recognizable references yields an
     # empty block and the prompt is unchanged from pre-feature behavior.
+    # Namespace-aware: only repo-qualified references (owner/repo#NNNN, github
+    # URLs) are resolved. A bare #NNNN is reported as declined rather than
+    # resolved against this checkout, which on a cross-project issue would hand
+    # the agent a same-numbered local PR/issue as "evidence".
     evidence = build_starting_evidence(
         issue_body=state.issue_body,
         project_root=project_root,
@@ -1220,11 +1225,18 @@ def _run_diagnose_flow_body(
     )
     state.starting_evidence_labels = list(evidence.reference_labels)
     state.starting_evidence_chars = len(evidence.text)
+    state.starting_evidence_declined = list(evidence.declined_labels)
     if evidence.reference_labels:
         emit(
             f"  [diagnose] pre-loaded {len(evidence.reference_labels)} evidence "
             f"excerpt(s) from issue-body references: "
             f"{', '.join(evidence.reference_labels)}"
+        )
+    if evidence.declined_labels:
+        emit(
+            f"  [diagnose] declined {len(evidence.declined_labels)} unqualified "
+            f"issue-body reference(s) (no repository named, not resolved against "
+            f"this checkout): {', '.join(evidence.declined_labels)}"
         )
 
     # ── INVESTIGATE ───────────────────────────────────────────────────
