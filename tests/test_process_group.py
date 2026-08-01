@@ -27,6 +27,9 @@ from theforge.runners.runner_codex import _run_codex
 
 _FAKE_BIN = Path(__file__).parent / "fake_bin"
 
+# Sentinel for "compute the real fingerprint" vs. an explicit (possibly None) one.
+_UNSET = object()
+
 
 def _pid_alive(pid: int) -> bool:
     try:
@@ -52,26 +55,41 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:
 # ---------------------------------------------------------------------------
 
 
-class TestReapOrphanAgents:
+class _SidecarWriter:
     def _write_sidecar(
-        self, project_root: Path, owner_pid: int, pgid: int, sandbox: str | None = None
+        self,
+        project_root: Path,
+        owner_pid: int,
+        pgid: int,
+        sandbox: str | None = None,
+        *,
+        fingerprint: str | None = _UNSET,
+        origin: str | None = None,
     ) -> Path:
+        """Write a sidecar; by default with the *real* fingerprint of ``pgid``.
+
+        ``fingerprint`` may be overridden to simulate the recycled-pgid case
+        (a record whose recorded leader is not the one now holding the id).
+        """
         agents_dir = project_root / ".forge" / "runs" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
         path = agents_dir / f"{owner_pid}-{pgid}.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "owner_pid": owner_pid,
-                    "pgid": pgid,
-                    "run_id": "run-test",
-                    "sandbox_dir": sandbox,
-                }
+        record: dict[str, object] = {
+            "owner_pid": owner_pid,
+            "pgid": pgid,
+            "run_id": "run-test",
+            "sandbox_dir": sandbox,
+            "leader_fingerprint": (
+                process_group._leader_fingerprint(pgid) if fingerprint is _UNSET else fingerprint
             ),
-            encoding="utf-8",
-        )
+        }
+        if origin is not None:
+            record["origin"] = origin
+        path.write_text(json.dumps(record), encoding="utf-8")
         return path
 
+
+class TestReapOrphanAgents(_SidecarWriter):
     def test_dead_owner_group_is_killed_and_sidecar_unlinked(self, tmp_path: Path) -> None:
         """A sidecar whose owner sprint is dead → its group is killpg-ed and the file removed."""
         proc = subprocess.Popen(
@@ -124,6 +142,162 @@ class TestReapOrphanAgents:
 
 
 # ---------------------------------------------------------------------------
+# Identity verification before signalling (issue #2115)
+# ---------------------------------------------------------------------------
+
+
+class TestReapVerifiesGroupIdentity(_SidecarWriter):
+    """A recorded pgid is a claim about the past, not a durable handle.
+
+    The OS recycles process-group ids, and sidecars persist until some later
+    sweep consumes them, so the group holding a recorded id at reap time may be
+    an unrelated process. Every one of these asserts that a record which cannot
+    be *shown* to still describe its group produces no signal at all.
+    """
+
+    def test_recycled_pgid_is_not_signalled(self, tmp_path: Path) -> None:
+        """The bug: a live group whose leader is not the recorded one is spared."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        # Same pgid, but the recorded fingerprint is a real one belonging to a
+        # different process — the shape a recycled pgid actually produces, not a
+        # value the format check alone could reject.
+        sidecar = self._write_sidecar(
+            tmp_path,
+            owner_pid=999_999,
+            pgid=pgid,
+            fingerprint=process_group._leader_fingerprint(os.getpid()),
+        )
+        try:
+            assert process_group.reap_orphan_agents(tmp_path) == 0
+            assert proc.poll() is None, (
+                "an unrelated process group holding a recycled pgid was killed"
+            )
+            assert not sidecar.exists(), "the unverifiable record must be discarded"
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    def test_record_without_a_fingerprint_is_not_signalled(self, tmp_path: Path) -> None:
+        """No evidence is not weak evidence — a legacy record kills nothing."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        sidecar = self._write_sidecar(tmp_path, owner_pid=999_999, pgid=pgid, fingerprint=None)
+        try:
+            assert process_group.reap_orphan_agents(tmp_path) == 0
+            assert proc.poll() is None, "a group was killed on an unverifiable record"
+            assert not sidecar.exists()
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    def test_record_for_a_vanished_group_is_dropped(self, tmp_path: Path) -> None:
+        """Nothing holds the pgid any more: no signal, and the record goes away."""
+        proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        pgid = proc.pid
+        proc.wait(timeout=5)
+        sidecar = self._write_sidecar(
+            tmp_path, owner_pid=999_999, pgid=pgid, fingerprint="Thu Jan  1 00:00:00 1970"
+        )
+        assert process_group.reap_orphan_agents(tmp_path) == 0
+        assert not sidecar.exists()
+
+    def test_surviving_descendants_are_still_reaped_after_the_leader_exits(
+        self, tmp_path: Path
+    ) -> None:
+        """The #2013 case must survive the new check.
+
+        A group whose leader has exited but which still has members cannot have
+        had its pgid reused — the kernel will not hand out a pid that is still in
+        use as a process-group id — so those members are provably the registered
+        group's, and killing them is exactly what the reaper is for.
+        """
+        pidfile = tmp_path / "gc.pid"
+        script = (
+            "import subprocess,sys,pathlib,time;"
+            "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+            f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))"
+        )
+        leader = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+        pgid = os.getpgid(leader.pid)
+        sidecar = self._write_sidecar(tmp_path, owner_pid=999_999, pgid=pgid)
+        leader.wait(timeout=10)
+        assert _wait_until(pidfile.exists, timeout=5.0)
+        gc_pid = int(pidfile.read_text().strip())
+        try:
+            assert process_group.reap_orphan_agents(tmp_path) == 1
+            assert _wait_until(lambda: not _pid_alive(gc_pid)), (
+                "a grandchild left by an exited leader was not reaped"
+            )
+            assert not sidecar.exists()
+        finally:
+            try:
+                os.kill(gc_pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def test_test_origin_record_is_discarded_unsignalled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operator's sweep never acts on a record the suite left behind."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        sidecar = self._write_sidecar(tmp_path, owner_pid=999_999, pgid=pgid, origin="test")
+        # The sweeping process is a real forge invocation, not a test run.
+        monkeypatch.setattr(process_group, "_running_under_pytest", lambda: False)
+        try:
+            assert process_group.reap_orphan_agents(tmp_path) == 0
+            assert proc.poll() is None, "a test-origin record was acted on as real work"
+            assert not sidecar.exists()
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+
+class TestListOrphanAgents:
+    """``forge status`` must be able to see orphans without touching them."""
+
+    def test_lists_dead_owner_records_without_signalling_or_unlinking(
+        self, tmp_path: Path
+    ) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / f"999999-{pgid}.json"
+        sidecar.write_text(
+            json.dumps({"owner_pid": 999_999, "pgid": pgid, "sandbox_dir": str(tmp_path)}),
+            encoding="utf-8",
+        )
+        live = agents_dir / f"{os.getpid()}-4242.json"
+        live.write_text(json.dumps({"owner_pid": os.getpid(), "pgid": 4242}), encoding="utf-8")
+        try:
+            orphans = process_group.list_orphan_agents(tmp_path)
+            assert [record["pgid"] for record in orphans] == [pgid]
+            assert proc.poll() is None, "a read-only listing killed a process group"
+            assert sidecar.exists(), "a read-only listing must not consume records"
+            assert live.exists()
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    def test_missing_agents_dir_lists_nothing(self, tmp_path: Path) -> None:
+        assert process_group.list_orphan_agents(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
 # Registry sidecars (register / unregister)
 # ---------------------------------------------------------------------------
 
@@ -145,6 +319,54 @@ class TestRegistry:
 
         process_group.unregister_agent_group(pgid)
         assert not sidecar.exists()
+
+    def test_register_records_the_group_leader_fingerprint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The identity evidence the reaper needs is captured at registration (#2115)."""
+        monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            process_group.register_agent_group(pgid, sandbox_dir=tmp_path)
+            sidecar = tmp_path / ".forge" / "runs" / "agents" / f"{os.getpid()}-{pgid}.json"
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            assert data["leader_fingerprint"] == process_group._leader_fingerprint(pgid)
+            assert data["leader_fingerprint"], "no start time captured for a live leader"
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    @pytest.mark.skipif(
+        not (sys.platform.startswith("linux") or sys.platform == "darwin"),
+        reason="kernel start-time interface is Linux/macOS only",
+    )
+    def test_fingerprinting_spawns_no_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Registration must not exec anything to fingerprint a group (#2115).
+
+        It runs for every agent and gate launch, and ``ps`` is both a spawn in a
+        hot path and an exec a sandbox profile can deny — which would silently
+        leave every record unverifiable.
+        """
+
+        def _no_spawn(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("fingerprinting spawned a process")
+
+        monkeypatch.setattr(subprocess, "Popen", _no_spawn)
+        assert process_group._leader_fingerprint(os.getpid())
+
+    def test_register_marks_records_written_by_a_test_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suite-written record must be distinguishable from real work (#2115)."""
+        monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+        process_group.register_agent_group(4242, sandbox_dir=tmp_path)
+        sidecar = tmp_path / ".forge" / "runs" / "agents" / f"{os.getpid()}-4242.json"
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert data["origin"] == "test"
 
     def test_register_is_noop_without_project_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

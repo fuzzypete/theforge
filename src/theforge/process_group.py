@@ -12,9 +12,12 @@ Two mechanisms cooperate:
    the direct child.
 2. **Orphan reaper** (`reap_orphan_agents`) — synchronous group-kill cannot run
    when the parent sprint is ``SIGKILL``-ed, so each spawned group records its
-   pgid + owner pid in a sidecar under ``.forge/runs/agents/``. A later ``forge``
-   invocation (status/stop/sprint-startup) sweeps those sidecars and ``killpg``-s
-   any group whose owner sprint is no longer alive.
+   pgid + owner pid in a sidecar under ``.forge/runs/agents/``. A later
+   *mutating* ``forge`` invocation (stop / sprint-startup) sweeps those sidecars
+   and ``killpg``-s any group whose owner sprint is no longer alive **and whose
+   recorded identity still matches the group presently holding that pgid**
+   (`reap_orphan_agents`). ``forge status`` only reports them (`list_orphan_agents`) —
+   a command whose job is to describe state must not signal processes (#2115).
 
 Stdlib-only by design (convention 4) so it can be imported by both the runners
 and the CLI without pulling in heavier dependencies.
@@ -26,6 +29,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -282,6 +286,86 @@ def _sidecar_path(agents_dir: Path, owner_pid: int, pgid: int) -> Path:
     return agents_dir / f"{owner_pid}-{pgid}.json"
 
 
+def _running_under_pytest() -> bool:
+    """True when this process is a test run rather than a dispatched agent.
+
+    Sidecars written by the suite are otherwise indistinguishable from ones
+    describing real work, and they land in whatever ``FORGE_PROJECT_ROOT`` the
+    test process inherited — in the dogfood setup, the *real* project (#2115).
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules
+
+
+def _start_time_from_proc(pid: int) -> str | None:
+    """Linux: field 22 of ``/proc/<pid>/stat`` — start time in jiffies since boot."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    # comm (field 2) is parenthesised and may itself contain spaces, so split
+    # after the final ')' rather than tokenising the whole line.
+    _, _, rest = raw.rpartition(")")
+    fields = rest.split()
+    # rest starts at field 3 (state), so starttime (field 22) is index 19.
+    if len(fields) < 20:
+        return None
+    return f"proc:{fields[19]}"
+
+
+def _start_time_from_sysctl(pid: int) -> str | None:
+    """macOS/BSD: ``kinfo_proc.kp_proc.p_starttime`` via ``sysctl``.
+
+    ``extern_proc`` opens with a union whose other arm is ``p_starttime``, so the
+    ``timeval`` sits at offset 0 of the returned record. Microsecond resolution
+    makes it a far sharper identity than ``ps``'s second-granularity ``lstart``.
+    """
+    import ctypes  # noqa: PLC0415
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        # CTL_KERN, KERN_PROC, KERN_PROC_PID, <pid>
+        mib = (ctypes.c_int * 4)(1, 14, 1, pid)
+        buf = ctypes.create_string_buffer(4096)
+        size = ctypes.c_size_t(len(buf))
+        if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        if size.value < ctypes.sizeof(ctypes.c_long) + ctypes.sizeof(ctypes.c_int):
+            return None
+        seconds = ctypes.cast(buf, ctypes.POINTER(ctypes.c_long))[0]
+        micros = ctypes.cast(buf, ctypes.POINTER(ctypes.c_int))[2]
+    except (OSError, ValueError, AttributeError):
+        return None
+    return f"sysctl:{seconds}.{micros:06d}"
+
+
+def _leader_fingerprint(pgid: int) -> str | None:
+    """Start-time fingerprint of the process leading *pgid*, or None.
+
+    The pgid of a group spawned with ``start_new_session=True`` *is* its leader's
+    pid, so the leader's start time is a property a recycled pgid cannot
+    reproduce — the evidence the reaper needs before signalling anything (#2115).
+
+    Read from the kernel directly — ``/proc`` on Linux, ``sysctl`` on macOS — so
+    that taking a fingerprint costs no process spawn: this sits in the path of
+    every agent and gate launch, and ``ps`` is an exec that a sandbox profile can
+    deny outright. ``ps`` remains only as the fallback for a platform with
+    neither interface. Each value carries its source, so a record written from
+    one source is never compared against another (a mismatch there would read as
+    "recycled" and, correctly, kill nothing).
+    """
+    from theforge.detach import _is_pid_alive  # noqa: PLC0415
+    from theforge.pid import _pid_start_time  # noqa: PLC0415
+
+    if not is_killable_pgid(pgid) or not _is_pid_alive(pgid):
+        return None
+    if sys.platform.startswith("linux"):
+        return _start_time_from_proc(pgid)
+    if sys.platform == "darwin":
+        return _start_time_from_sysctl(pgid)
+    started = _pid_start_time(pgid)
+    return None if started is None else f"ps:{started}"
+
+
 def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) -> None:
     """Record a spawned agent group's pgid so a later reaper can kill orphans.
 
@@ -289,6 +373,11 @@ def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) ->
     runs dir, where ``owner_pid`` is the sprint process (``os.getpid()``). Per-pgid
     files avoid write contention from parallel review pools. No-op when the runs
     dir is unresolvable (e.g. ``FORGE_PROJECT_ROOT`` unset in tests).
+
+    Two fields exist purely so a later sweep can decide whether the record is
+    still safe to act on: ``leader_fingerprint`` — the group leader's start time,
+    the evidence that the group holding this pgid at reap time is the group
+    registered here — and ``origin``, which marks records left by a test run.
     """
     agents_dir = _agents_dir_from_env()
     if agents_dir is None:
@@ -299,6 +388,8 @@ def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) ->
         "pgid": pgid,
         "run_id": os.environ.get(_RUN_ID_ENV),
         "sandbox_dir": str(sandbox_dir) if sandbox_dir is not None else None,
+        "leader_fingerprint": _leader_fingerprint(pgid),
+        "origin": "test" if _running_under_pytest() else "agent",
     }
     try:
         agents_dir.mkdir(parents=True, exist_ok=True)
@@ -370,14 +461,117 @@ def kill_agent_group(pgid: int) -> bool:
 # ── Orphan reaper ────────────────────────────────────────────────────
 
 
+def _group_exists(pgid: int) -> bool:
+    """True only when *pgid* is provably a live group we may signal.
+
+    The strict twin of `group_is_alive`, which errs toward "alive" so a record is
+    never dropped while it might still be the only handle on a survivor. Here the
+    question is the opposite one — may we *signal* this group — so an
+    unanswerable probe (EPERM: a group we do not own, which after pgid reuse is
+    exactly the group we must not touch) counts as "no".
+    """
+    if not is_killable_pgid(pgid):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _identity_verdict(pgid: object, fingerprint: object) -> tuple[bool, str]:
+    """Decide whether *pgid* still denotes the registered group; (may_signal, why).
+
+    Process-group ids are recycled by the OS, so a persisted pgid is a claim
+    about a past moment, not a durable handle. Sending a group ``SIGKILL`` on
+    that claim alone is how a routine sweep came to signal unrelated processes
+    (#2115): the cost of not killing a stale group is one lingering process, and
+    the cost of killing the wrong one is unbounded and lands outside this tool.
+    So a signal requires positive evidence, in one of two forms:
+
+    * **The leader is alive** — then its start time must equal the one recorded
+      at registration. A recycled pgid cannot reproduce that. No recorded
+      fingerprint, or no readable current one, means no evidence: discard.
+    * **The leader has exited but the group is non-empty** — the case the reaper
+      exists for (npm→node→leaf grandchildren outliving a refused teardown,
+      #2013). This is safe without a fingerprint because both Linux and XNU
+      refuse to hand out a pid that is still in use as a process-group id, so a
+      group that has never been empty since registration cannot have been
+      re-created under the same id by anyone else.
+
+    Anything else — an empty group, a group we may not signal — is discarded.
+    """
+    from theforge.detach import _is_pid_alive  # noqa: PLC0415
+
+    if not isinstance(pgid, int) or not is_killable_pgid(pgid):
+        return False, "pgid cannot denote a real process group"
+    if _is_pid_alive(pgid):
+        if not isinstance(fingerprint, str) or not fingerprint:
+            return False, "record carries no leader fingerprint to check the holder against"
+        current = _leader_fingerprint(pgid)
+        if current is None:
+            return False, "the current holder's start time could not be read"
+        if current != fingerprint:
+            return False, (
+                f"pgid is now held by a different process (started {current!r}, "
+                f"record was written for one started {fingerprint!r})"
+            )
+        return True, "the leader's start time still matches the record"
+    if _group_exists(pgid):
+        return True, "the leader exited but the group is non-empty, so the pgid cannot be reused"
+    return False, "no live process group holds this pgid"
+
+
+def _load_sidecar(sidecar: Path) -> dict[str, Any] | None:
+    """Parsed sidecar with a usable owner_pid/pgid pair, or None if unusable."""
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not isinstance(data.get("owner_pid"), int) or not isinstance(data.get("pgid"), int):
+        return None
+    return data
+
+
+def list_orphan_agents(project_root: Path) -> list[dict[str, Any]]:
+    """Sidecars whose owner sprint is dead, without touching anything.
+
+    Read-only by contract: no signals, no unlinks. This is what an inspection
+    command such as ``forge status`` may call; killing is reserved for the
+    commands that already mutate run state (#2115).
+    """
+    from theforge.detach import _is_pid_alive  # noqa: PLC0415
+
+    agents_dir = project_root / ".forge" / "runs" / "agents"
+    if not agents_dir.exists():
+        return []
+    orphans: list[dict[str, Any]] = []
+    for sidecar in sorted(agents_dir.glob("*.json")):
+        data = _load_sidecar(sidecar)
+        if data is None:
+            continue
+        if _is_pid_alive(data["owner_pid"]):
+            continue
+        orphans.append(data)
+    return orphans
+
+
 def reap_orphan_agents(project_root: Path) -> int:
     """Kill agent groups whose owner sprint is dead; return the count reaped.
 
-    Sweeps ``.forge/runs/agents/*.json``. For each sidecar whose ``owner_pid`` is
-    no longer alive, ``killpg`` the recorded group, unlink the sidecar, and log the
-    reaped sandbox path loudly. Groups whose owner is still alive are left intact.
-    This is the guaranteed path for the abrupt-``SIGKILL`` case, where the
-    synchronous group kill in `run_in_process_group` never got to run.
+    Sweeps ``.forge/runs/agents/*.json``. A sidecar is acted on only when its
+    ``owner_pid`` is no longer alive *and* the group presently holding the
+    recorded pgid can still be shown to be the registered one (see
+    `_identity_verdict`); otherwise the record is discarded unsignalled, with the
+    reason logged. Groups whose owner is still alive are left intact — the sprint's
+    own teardown owns them. This is the guaranteed path for the
+    abrupt-``SIGKILL`` case, where the synchronous group kill in
+    `run_in_process_group` never got to run.
+
+    Mutating by design, so only mutating commands (``forge stop``, sprint
+    startup) may call it; ``forge status`` uses `list_orphan_agents` instead.
     """
     from theforge.detach import _is_pid_alive  # noqa: PLC0415
 
@@ -387,27 +581,44 @@ def reap_orphan_agents(project_root: Path) -> int:
 
     reaped = 0
     for sidecar in sorted(agents_dir.glob("*.json")):
-        try:
-            data = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # Corrupt/unreadable sidecar — drop it so it doesn't linger forever.
+        data = _load_sidecar(sidecar)
+        if data is None:
+            # Corrupt/unusable sidecar — drop it so it doesn't linger forever.
             _unlink(sidecar)
             continue
 
-        owner_pid = data.get("owner_pid")
-        pgid = data.get("pgid")
-        if not isinstance(owner_pid, int) or not isinstance(pgid, int):
-            _unlink(sidecar)
-            continue
+        owner_pid = data["owner_pid"]
+        pgid = data["pgid"]
 
         if _is_pid_alive(owner_pid):
             # Sprint still running — its own teardown owns this group.
             continue
 
         sandbox = data.get("sandbox_dir")
+        # A record the suite left behind describes a test subprocess that exited
+        # long ago, not a dispatched agent. Only a test run may act on one; for an
+        # operator's sweep it is noise pointing at a recyclable pgid (#2115).
+        if data.get("origin") == "test" and not _running_under_pytest():
+            _log(
+                f"  discarding test-origin agent sidecar pgid={pgid} unsignalled "
+                f"(owner pid={owner_pid} is dead, sandbox={sandbox})"
+            )
+            _unlink(sidecar)
+            continue
+
+        may_signal, reason = _identity_verdict(pgid, data.get("leader_fingerprint"))
+        if not may_signal:
+            _log(
+                f"  discarding stale agent sidecar pgid={pgid} unsignalled: {reason} "
+                f"(owner sprint pid={owner_pid} is dead, sandbox={sandbox})"
+            )
+            _unlink(sidecar)
+            continue
+
         _log(
             f"  reaping orphaned agent process group pgid={pgid} "
-            f"(owner sprint pid={owner_pid} is dead, sandbox={sandbox})"
+            f"(owner sprint pid={owner_pid} is dead, sandbox={sandbox}, "
+            f"identity: {reason})"
         )
         kill_agent_group(pgid)
         _unlink(sidecar)
