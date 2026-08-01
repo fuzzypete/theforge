@@ -9,6 +9,7 @@ from unittest.mock import patch
 from coord_test_helpers import _make_config, _make_task
 
 from theforge.cli.shared import _write_audit
+from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 
 
@@ -54,9 +55,9 @@ class TestPerRunFileWrite:
         data = json.loads(run_file.read_text())
 
         assert "schema_version" in data
-        # New per-run records are written at schema_version=16 (#2056 added the
-        # run-level configuration-provenance block); pre-slice records read as 1.
-        assert data["schema_version"] == 16
+        # New per-run records are written at the writer's current schema
+        # version; pre-slice records read as 1.
+        assert data["schema_version"] == CURRENT_RECORD_SCHEMA_VERSION
         assert "run_id" in data
         assert data["run_id"] == "run-envelope-001"
         assert "parent_run_id" in data

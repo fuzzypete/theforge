@@ -657,6 +657,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             # Pools that completed with members lost to the substrate.
             "degraded_pools": list(state.degraded_pools),
         },
+        # ── Shared run-infrastructure failures (#2107) ────────────────────
+        # Failures of a resource every story shares (e.g. the rolling advisory
+        # artifact all workers of a sprint write). Rendered verbatim so the
+        # operator sees the real errno and path and can attribute the failure to
+        # the infrastructure instead of to this story's work.
+        "shared_infrastructure_failures": list(state.shared_infrastructure_failures),
         "outcome": {
             "success": result.success,
             "final_phase": result.phase.name,

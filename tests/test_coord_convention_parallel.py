@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from coord_test_helpers import _make_config, _make_task
 
+from theforge.advisory_conventions import AdvisoryArtifactError
 from theforge.config.types import HardConventionsConfig
 from theforge.coordinator.state import CoordinatorState, Phase, RetryReason
 from theforge.coordinator.validate_phase import _run_validate_phase, _ValidateOutcome
@@ -197,6 +198,63 @@ class TestConventionParallelCheck:
                 "blocking": False,
             }
         ]
+
+    @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
+    @patch("theforge.coordinator.validate_phase.update_advisory_violations")
+    @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
+    @patch("theforge.coordinator.validate_phase.run_gate_full")
+    @patch("theforge.coordinator.validate_phase._cu._run_shell")
+    @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
+    def test_advisory_persistence_failure_does_not_cost_the_story_its_result(
+        self,
+        mock_deindex,
+        mock_shell,
+        mock_gate,
+        mock_cv,
+        mock_update_advisory,
+        mock_telemetry,
+        tmp_path,
+    ):
+        """A failure to persist the shared advisory artifact is infrastructure's,
+        not the story's: VALIDATE still PASSes and the failure is recorded on the
+        run's shared-infrastructure ledger for the audit (#2107)."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            conventions_hard=HardConventionsConfig(max_module_lines=500),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = _make_state()
+
+        viol = _make_violation(rule="max_module_lines", blocking=False)
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        mock_gate.return_value = ("PASS", None, "", "make gate", 0)
+        mock_cv.return_value = ([viol], [viol])
+        mock_shell.return_value = (True, "")  # clean worktree
+        artifact = tmp_path / ".forge" / "conventions" / "advisory.yaml"
+        mock_update_advisory.side_effect = AdvisoryArtifactError(
+            artifact, FileNotFoundError(2, "No such file or directory")
+        )
+
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            workspace,
+            notify=False,
+            logger=None,
+        )
+
+        assert outcome is _ValidateOutcome.PASS
+        assert result is None
+        assert state.error is None
+        failures = state.shared_infrastructure_failures
+        assert len(failures) == 1
+        assert failures[0]["component"] == "advisory_conventions_artifact"
+        assert failures[0]["path"] == str(artifact)
+        assert failures[0]["error_type"] == "FileNotFoundError"
+        assert "No such file or directory" in failures[0]["error"]
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
