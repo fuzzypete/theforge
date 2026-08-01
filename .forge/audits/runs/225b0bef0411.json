@@ -1,0 +1,1623 @@
+{
+  "schema_version": 16,
+  "run_id": "225b0bef0411",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "The shape gate reads headings inside fenced code blocks as document structure, refusing well-formed bugs that quote markdown",
+    "slug": "issue-2059",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nThe shape gate's section parser treats headings inside fenced code blocks as\nreal headings, so a bug body that quotes markdown is parsed against the quoted\nsample rather than its own structure and is refused as incomplete.\n\nEncountered while filing a bug about `forge shape`'s body restructure. The body\nquotes the restructured output the command proposes, which contains a `###\nDiagnosis` stub, and then carries its own complete `## Diagnosis` section\nfurther down. The gate reports:\n\n```\ndiagnosis_completeness: (False, ['observed symptom', 'evidence',\n                                 'affected code path', 'fix-success criterion'])\ncheck_bug_missing_diagnosis: Reason(code='needs_diagnosis', severity=BLOCKING)\n```\n\n`extract_section(body, r\"diagnosis|root cause\")` returns the quoted stub:\n\n```\n'\\nStatus: confirmed cause documented.\\n'\n```\n\nThat heading sits at character 840, preceded by three fence delimiters \u2014 an odd\ncount, so it is inside an open fence. The body's real `## Diagnosis` section,\nwhich contains every required component, is never reached, because extraction\nstops at the first heading match and that match is inside a code sample.\n\nThe effect is that a well-formed bug about markdown handling cannot pass the\ngate while it accurately quotes the markdown it is about. Removing the evidence\nmakes it pass.\n\n## Expected behavior\n\nA parser that reads a document's structure must read the document's own\nstructure, not the structure of samples the document quotes. Fenced code blocks\nexist to mark content as literal rather than as markup, so text inside them is\ndata the author is exhibiting, and treating it as though the author had written\nit at the top level inverts what the fence means. The consequence here is\nselective: it penalises exactly the issues whose subject matter is document\nshape, which are the ones where quoting the shape verbatim is the strongest\navailable evidence \u2014 so a gate that mis-parses fenced samples systematically\nrefuses the best-evidenced members of one class of bug and rewards removing\ntheir evidence. Structural extraction should therefore skip fenced regions, and\nwhere a document contains a real section and a quoted one, the real section is\nthe one that determines the verdict.\n\n## Diagnosis\n\n- **Observed symptom:** `extract_section` matches a heading inside a fenced code\n  block, so a bug body quoting markdown is evaluated against the quoted sample\n  and reported as missing Diagnosis components it actually contains.\n\n- **Evidence:** measured at baseline `f2caf7d` against a body containing a\n  fenced sample with a `### Diagnosis` heading followed by a genuine\n  `## Diagnosis` section with all five required components.\n  `extract_section(body, r\"diagnosis|root cause\")` returns\n  `'\\nStatus: confirmed cause documented.\\n'` \u2014 the fenced sample's content \u2014\n  and the first `### Diagnosis` occurrence is preceded by three ``` delimiters,\n  placing it inside an open fence. `diagnosis_completeness`\n  (`src/theforge/shape_check/heuristics.py:322-344`) consumes that section\n  directly and reports four missing tokens; `check_bug_missing_diagnosis`\n  (`heuristics.py:463-500`) then returns a BLOCKING `needs_diagnosis`. The same\n  body passes both once the heading in the sample is rewritten so it is no\n  longer at line start.\n\n- **Ruled out:** not a heading-level mismatch \u2014 the sample's heading is H3 and\n  the real section is H2, and the pattern `DIAGNOSIS_HEADING_PATTERN`\n  (`heuristics.py:217`) intentionally matches either, so the defect is which\n  occurrence wins rather than which levels are recognised. Not a\n  first-match-wins policy error in isolation \u2014 taking the first heading is\n  reasonable, and would be correct if fenced regions were excluded from\n  consideration. Not confined to the diagnosis check \u2014 `extract_section`,\n  `extract_ac_section` and `has_heading` share the same parsing module and the\n  same blindness, so an enhancement body quoting a sample `## Acceptance\n  criteria` block is exposed the same way.\n\n- **Confirmed cause:** the shape-check parsing helpers scan for headings without\n  tracking fenced-code state, so a heading inside a fenced block is\n  indistinguishable from a heading in the document body.\n\n- **Affected code path:** `src/theforge/shape_check/parsing.py` \u2014\n  `extract_section`, `find_heading`, `has_heading` and `extract_ac_section`;\n  consumed by `src/theforge/shape_check/heuristics.py` (`diagnosis_completeness`\n  at lines 322-344, `check_bug_missing_diagnosis` at 463-500) and by\n  `src/theforge/intake/shape_classify.py` (`_detect_diagnosis_state`, lines\n  95-104).\n\n- **Fix-success criterion:** a bug body that contains a `## Diagnosis` section\n  with all required components passes the gate regardless of any headings\n  appearing inside fenced code blocks elsewhere in the body, including a fenced\n  sample of a differently-shaped Diagnosis section; and a body whose only\n  Diagnosis-like heading is inside a fence is still correctly refused as having\n  no Diagnosis section.\n\n## Notes\n\nFound by running the shape gate over the body of a bug being filed about\n`forge shape` \u2014 the body was refused because it quoted the output it was\nreporting. The gate is doing its job in the sense that it refused; it refused\nfor a reason that was not true.\n\nThe `_detect_diagnosis_state` path in `shape_classify.py` shares the helper and\nwill therefore classify diagnosis state from a quoted sample as well, which\nmeans `forge shape` can report a confidently wrong `Proposed diagnosis state`\nfor the same class of body.\n",
+    "github_issue": 2059,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'The shape gate reads headings inside fenced code blocks as document structure, refusing well-formed bugs that quote markdown' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2059",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "ddf64f41d89261f603b0024165e834a0f9eb38492532d54f5c681fcced351a61",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-01T05:40:45.789908+00:00",
+    "finished_at": "2026-08-01T05:58:25.610599+00:00",
+    "duration_seconds": 1059.820691
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2059",
+    "branch": "feat/issue-2059",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 1.5195525,
+        "duration_s": 363.27,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/shape_check/parsing.py",
+          "tests/test_shape_check.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 2.301302,
+        "duration_s": 283.85,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/shape_check/heuristics.py",
+          "src/theforge/shape_check/parsing.py",
+          "tests/test_shape_check.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 1,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 4,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 0.681706,
+        "duration_s": 102.12
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 4,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 0.713604,
+        "duration_s": 82.41
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 4,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 5,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 900,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 5,
+      "base_review": 4,
+      "profile_history_runs": 166,
+      "profile_avg_iterations": 1.5843,
+      "profile_avg_cost_usd": 4.542976,
+      "profile_raw_dev_max": 2.3765,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 900,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.086,
+      "review_history_sample_size": 17,
+      "p75_review": 2,
+      "chosen_review_max": 4,
+      "rationale": "derived dev limits from 166 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-01T05:40:47.261454+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-01T05:51:09.020864+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 5.5994381,
+    "dev_usd": 3.8208545000000003,
+    "review_usd": 1.3953105,
+    "dev_invocations": 2,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 1.5195525,
+        "duration_seconds": 363.2717812079936,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.004581999999999999
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.5149705
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 2.301302,
+        "duration_seconds": 283.84927283297293,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.301302
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.329182,
+        "duration_seconds": 50.958999312482774,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.329182
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.352524,
+        "duration_seconds": 50.958999312482774,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.352524
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.348536,
+        "duration_seconds": 41.13491462508682,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.348536
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.3650685,
+        "duration_seconds": 41.13491462508682,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.3650685
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed in src/theforge/shape_check/parsing.py that find_heading/section_span (and thus extract_section, has_heading, extract_ac_section) scan headings via _HEADING_RE.finditer without tracking fenced-code state, matching the spec's diagnosis exactly; heuristics.py:357,382,522 and shape_classify.py:96 consume extract_section with DIAGNOSIS_HEADING_PATTERN as described.",
+    "complexity": "medium",
+    "complexity_score": 5,
+    "implementation_complexity_score": 3,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 3",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "7 operator-visible surfaces enumerated in acceptance criteria: against a body containing a fenced sample with a, can report a confidently wrong, forge shape, heading followed by a genuine, occurrence is preceded by three, path in, returns the quoted stub:",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "parsing"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.38327310000000003,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "e2b35a884858",
+    "cache_snapshot": {
+      "worktree_head": "4d990098a75d9371b79e44a51bb54ee5a87cb30d",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "4d990098a75d9371b79e44a51bb54ee5a87cb30d",
+      "story_content_hash": "b92cf80f6a3b7af2e5a6935bd6a613e63fbc58695a304db1eb083812bb6cdefa"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "4d990098a75d9371b79e44a51bb54ee5a87cb30d",
+      "current_worktree_head": "4d990098a75d9371b79e44a51bb54ee5a87cb30d",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "4d990098a75d9371b79e44a51bb54ee5a87cb30d",
+      "current_evaluation_base_branch_head": "4d990098a75d9371b79e44a51bb54ee5a87cb30d",
+      "cached_story_content_hash": "b92cf80f6a3b7af2e5a6935bd6a613e63fbc58695a304db1eb083812bb6cdefa",
+      "current_story_content_hash": "b92cf80f6a3b7af2e5a6935bd6a613e63fbc58695a304db1eb083812bb6cdefa",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.38327310000000003,
+        "duration_s": 51.81,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 5,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gemini-3.5-flash",
+          "source": "forge.yaml",
+          "canonical_id": "google/gemini-3.5-flash/api"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 5 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:parsing (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 5 \u2192 tier mid ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier mid, providers ['openai', 'google'], complexity score 5; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gemini-3.5-flash",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 5,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2059/iter_1.yaml",
+      "handoff": {
+        "summary": "Made the shape-check parsing helpers fence-aware. Added `fenced_spans(body)` \u2014 which returns character offsets of each fenced region, closing on a fence of >= the opener's backtick count with no info string, and running to end-of-document when unclosed (CommonMark) \u2014 and `iter_headings(body)`, which yields only heading matches outside those spans. `find_heading` and `section_span` now route through `iter_headings` instead of scanning raw text with `_HEADING_RE.finditer`, so `extract_section`, `extract_ac_section`, `has_heading` and every downstream consumer (heuristics.diagnosis_completeness, check_bug_missing_diagnosis, cause_assertion_state, intake.shape_classify._detect_diagnosis_state, groom_flow, shape_render) read the document's own structure rather than the structure of samples it quotes. section_span additionally no longer terminates a section at a fenced heading, so a real section containing a quoted sample of a differently-shaped section runs past it. Added a TestFencedHeadingsAreNotStructure class covering the fix in both directions.",
+        "commits": [
+          {
+            "sha": "79c4df6",
+            "message": "fix(shape_check): skip fenced code when parsing document structure"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A bug body that contains a ## Diagnosis section with all required components passes the gate regardless of any headings appearing inside fenced code blocks elsewhere in the body, including a fenced sample of a differently-shaped Diagnosis section.",
+            "status": "MET",
+            "notes": "test_gate_admits_bug_quoting_a_diagnosis_sample uses a body that quotes a fenced markdown sample containing a `### Diagnosis` stub before its real `## Diagnosis` section; diagnosis_completeness returns (True, []) and check_bug_missing_diagnosis returns None. test_extract_section_skips_heading_inside_fence asserts the extracted section is the real one, not the stub."
+          },
+          {
+            "criterion": "A body whose only Diagnosis-like heading is inside a fence is still correctly refused as having no Diagnosis section.",
+            "status": "MET",
+            "notes": "test_gate_still_refuses_a_fenced_only_diagnosis puts a fully-populated Diagnosis section inside a fence; diagnosis_completeness returns (False, ['missing Diagnosis section']) and check_bug_missing_diagnosis returns a BLOCKING needs_diagnosis. test_has_heading_ignores_fenced_only_heading covers the helper level, and test_unclosed_fence_runs_to_end_of_body covers the unterminated-fence case."
+          },
+          {
+            "criterion": "The same blindness in extract_ac_section / has_heading / find_heading is addressed, not just the diagnosis check (spec Diagnosis, 'Ruled out' and 'Affected code path').",
+            "status": "MET",
+            "notes": "The fix is in find_heading/section_span, which all four helpers share, so extract_ac_section and has_heading are fixed by construction. test_extract_ac_section_skips_heading_inside_fence covers an enhancement-shaped body quoting a sample `## Acceptance Criteria` block; test_classifier_reads_the_real_diagnosis_not_the_quoted_one covers shape_classify._detect_diagnosis_state reporting from the real section rather than the quoted one."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "17 pre-existing test failures remain in tests/test_cut_rc_isolation.py, tests/test_sprint_lock.py and tests/test_sprint_reexec_collision.py. Verified identical at baseline by swapping in the HEAD version of parsing.py and re-running those three files: same 17 failures. They are subprocess/process-supervision tests with no path to shape_check."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2059/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 addresses the P1 tilde-fence finding, treating it as a pattern bug rather than a one-line gap. The prior iteration's fenced_spans() was backtick-only, and grepping the pattern found five more independent backtick-only fence trackers: fenced_code_blocks, extract_top_level_bullet_blocks, extract_contextual_bullets and extract_contextual_fenced_code_blocks in parsing.py, plus _strip_fenced_blocks in heuristics.py. Extracted FenceTracker as the module's single definition of fenced-code state \u2014 it recognises both marker families, closes a fence only on a line using the same marker character at >= the opener's length with no info string, and leaves an unclosed fence open to end of document (CommonMark) \u2014 and routed all six call sites through it, so no two shape-check parsers can disagree about what text is literal. Also widened the design-dump language-tag probe in heuristics.py:748 to accept tilde openers. Kept the fence regex at any indentation rather than CommonMark's 0-3 spaces: extract_top_level_bullet_blocks has always matched fences indented under a bullet, and tightening it would have silently regressed bullet-block extraction. Added six tests covering tilde equivalents of both gate-level cases, cross-family non-closing, longer-vs-shorter fence nesting, and both fenced-block extractors.",
+        "commits": [
+          {
+            "sha": "79c4df6",
+            "message": "fix(shape_check): skip fenced code when parsing document structure"
+          },
+          {
+            "sha": "d12aaf4",
+            "message": "fix(shape_check): treat tilde fences as fences (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A bug body that contains a ## Diagnosis section with all required components passes the gate regardless of any headings appearing inside fenced code blocks elsewhere in the body, including a fenced sample of a differently-shaped Diagnosis section.",
+            "status": "MET",
+            "notes": "test_gate_admits_bug_quoting_a_diagnosis_sample (backticks) and test_gate_admits_bug_quoting_a_tilde_fenced_diagnosis_sample (tildes, same body rewritten by _with_tilde_fences) both assert diagnosis_completeness == (True, []) and check_bug_missing_diagnosis is None."
+          },
+          {
+            "criterion": "A body whose only Diagnosis-like heading is inside a fence is still correctly refused as having no Diagnosis section.",
+            "status": "MET",
+            "notes": "test_gate_still_refuses_a_fenced_only_diagnosis and test_gate_still_refuses_a_tilde_fenced_only_diagnosis both get (False, ['missing Diagnosis section']) and a BLOCKING needs_diagnosis. test_unclosed_fence_runs_to_end_of_body covers the unterminated case."
+          },
+          {
+            "criterion": "Fenced-code handling is complete at the category level \u2014 both marker families, not just backticks (review iteration 1 P1).",
+            "status": "MET",
+            "notes": "FenceTracker in parsing.py is the one implementation and handles both families; all six previously-independent trackers now delegate to it. test_a_fence_is_not_closed_by_the_other_marker_family and test_a_shorter_fence_does_not_close_a_longer_one pin the delimiter-matching rules; test_fenced_code_blocks_reads_both_families and test_contextual_fenced_blocks_reads_tilde_blocks cover the block extractors."
+          },
+          {
+            "criterion": "The same blindness in extract_ac_section / has_heading / find_heading is addressed, not just the diagnosis check.",
+            "status": "MET",
+            "notes": "Unchanged from iteration 0 \u2014 the fix lives in find_heading/section_span, which those helpers share. test_extract_ac_section_skips_heading_inside_fence and test_classifier_reads_the_real_diagnosis_not_the_quoted_one cover the AC and intake.shape_classify paths."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "17 pre-existing test failures remain in tests/test_cut_rc_isolation.py, tests/test_sprint_lock.py and tests/test_sprint_reexec_collision.py \u2014 the same 17 verified at baseline in iteration 0 by swapping in the HEAD version of parsing.py. Subprocess/process-supervision tests with no path to shape_check. Full suite this iteration: 6606 passed (up 6 from the new tests), same 17 failed."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "30837b046435d7cf"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The backtick-fenced regression is fixed, but tilde-fenced Markdown blocks still get parsed as document structure. | [google-gemini-3.5-flash] Approved: The shape-check parsing helpers are now fence-aware and correctly ignore headings inside fenced code blocks.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/shape_check/parsing.py",
+          "line": 9,
+          "description": "A bug body that quotes a Diagnosis stub inside a tilde-fenced Markdown block before its real Diagnosis section still has extract_section return the quoted stub and diagnosis_completeness report missing components.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A bug body that contains a ## Diagnosis section with all required components passes the gate regardless of any headings appearing inside fenced code blocks elsewhere in the body, including a fenced sample of a differently-shaped Diagnosis section.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/shape_check/parsing.py:64-75 routes heading discovery through fenced_spans, and tests/test_shape_check.py:639-646 covers the reported backtick-fenced Diagnosis sample, but src/theforge/shape_check/parsing.py:9 only recognizes backtick fences, so tilde-fenced samples still make diagnosis_completeness fail before reaching the real section.; Logic in src/theforge/shape_check/parsing.py:36-78 (fenced_spans and iter_headings). Covered by tests in tests/test_shape_check.py:639-646 (test_gate_admits_bug_quoting_a_diagnosis_sample) and tests/test_shape_check.py:569-573 (test_extract_section_skips_heading_inside_fence)."
+        },
+        {
+          "criterion": "A body whose only Diagnosis-like heading is inside a fence is still correctly refused as having no Diagnosis section.",
+          "status": "PARTIAL",
+          "evidence": "tests/test_shape_check.py:648-673 verifies a backtick-fenced-only Diagnosis is refused and src/theforge/shape_check/parsing.py:64-75 ignores headings in recognized fenced spans, but tilde-fenced-only Diagnosis headings are still visible because src/theforge/shape_check/parsing.py:9 does not recognize tilde fences.; Logic in src/theforge/shape_check/parsing.py:36-78 (fenced_spans and iter_headings). Covered by tests in tests/test_shape_check.py:648-674 (test_gate_still_refuses_a_fenced_only_diagnosis), tests/test_shape_check.py:590-603 (test_has_heading_ignores_fenced_only_heading), and tests/test_shape_check.py:627-637 (test_unclosed_fence_runs_to_end_of_body)."
+        },
+        {
+          "criterion": "The same blindness in extract_ac_section / has_heading / find_heading is addressed, not just the diagnosis check (spec Diagnosis, 'Ruled out' and 'Affected code path').",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/shape_check/parsing.py:78-126 makes find_heading, has_heading, section_span, extract_section, and extract_ac_section share iter_headings, with coverage at tests/test_shape_check.py:569-637 and tests/test_shape_check.py:675-690, but the shared helper only excludes backtick-fenced regions because src/theforge/shape_check/parsing.py:9 omits tilde fence markers.; Logic in src/theforge/shape_check/parsing.py:80-114 (find_heading and section_span) routing through iter_headings. Covered by tests in tests/test_shape_check.py:575-588 (test_extract_ac_section_skips_heading_inside_fence) and tests/test_shape_check.py:675-691 (test_classifier_reads_the_real_diagnosis_not_the_quoted_one)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior tilde-fence P1 is resolved, and I found no blocking regressions in the reviewed shape-check changes. | [google-gemini-3.5-flash] The shape gate now correctly skips fenced code blocks of both backtick and tilde families when parsing document structure, resolving the prior P1 finding.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: shape-check section parsing ignores headings quoted inside fenced code blocks and evaluates the real document sections instead.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/shape_check/parsing.py:39 adds the shared FenceTracker with backtick and tilde support, src/theforge/shape_check/parsing.py:89 routes fenced span detection through it, src/theforge/shape_check/parsing.py:111 filters iter_headings to exclude matches inside those spans, and src/theforge/shape_check/parsing.py:125 plus src/theforge/shape_check/parsing.py:142 make find_heading and section_span consume that filtered heading stream. The original gate symptom is covered by tests/test_shape_check.py:646, which asserts diagnosis_completeness returns true and check_bug_missing_diagnosis returns None for a bug body quoting a fenced Diagnosis sample before its real Diagnosis section; tests/test_shape_check.py:675 verifies a body whose only Diagnosis heading is fenced is still refused. The prior cycle tilde regression is covered by tests/test_shape_check.py:705 and tests/test_shape_check.py:714. I also ran the focused pytest targets for TestFencedHeadingsAreNotStructure and TestTildeFencesAreFences locally: 14 passed."
+        },
+        {
+          "criterion": "A bug body that contains a ## Diagnosis section with all required components passes the gate regardless of any headings appearing inside fenced code blocks elsewhere in the body, including a fenced sample of a differently-shaped Diagnosis section.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/shape_check/parsing.py:111-122 and tests/test_shape_check.py:638-646, 702-711"
+        },
+        {
+          "criterion": "A body whose only Diagnosis-like heading is inside a fence is still correctly refused as having no Diagnosis section.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/shape_check/parsing.py:111-122 and tests/test_shape_check.py:674-681, 713-719"
+        },
+        {
+          "criterion": "Fenced-code handling is complete at the category level \u2014 both marker families, not just backticks (review iteration 1 P1).",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/shape_check/parsing.py:39-87 and tests/test_shape_check.py:721-737"
+        },
+        {
+          "criterion": "The same blindness in extract_ac_section / has_heading / find_heading is addressed, not just the diagnosis check.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/shape_check/parsing.py:125-161 and tests/test_shape_check.py:566-581, 683-699"
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2105",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2059",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2105",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2105",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-01T05:58:25.610599+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "30837b046435d7cf",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/shape_check/parsing.py",
+      "line": 9,
+      "severity": "P1",
+      "description": "A bug body that quotes a Diagnosis stub inside a tilde-fenced Markdown block before its real Diagnosis section still has extract_section return the quoted stub and diagnosis_completeness report missing components.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 5,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "google-gemini-3.5-flash": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gemini-3.5-flash",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 5 \u2192 tier mid ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 5,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "parsing"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4",
+        "domain_head": "openai-gpt-5.4",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8226,
+        "weighted_success_rate": 0.824,
+        "sample_size": 62,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.824,
+          "threshold": 0.6,
+          "sample_size": 62,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:parsing",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "parsing"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 5 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:parsing (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "anti_self_review"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 90,
+            "completed": 90,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 37,
+            "completed": 30,
+            "raw": 0.8108,
+            "weighted": 0.7971,
+            "rate": 0.7971,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier mid, providers ['openai', 'anthropic'], complexity score 5; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            1,
+            5
+          ],
+          "output": "mid"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 5,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 90,
+            "completed": 90,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 71,
+            "completed": 64,
+            "raw": 0.9014,
+            "weighted": 0.9127,
+            "rate": 0.9127,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 37,
+            "completed": 30,
+            "raw": 0.8108,
+            "weighted": 0.7971,
+            "rate": 0.7971,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier mid, providers ['openai', 'google'], complexity score 5; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.383273,
+      "duration_s": 51.81,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 3.820855,
+      "duration_s": 647.12,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 217.54,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 1.39531,
+      "duration_s": 184.19,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 0.677718,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 0.717593,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 5.599438,
+    "duration_s": 1100.66,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "7272950c8b34",
+  "sprint_name": "issues-2054,2057,2059"
+}
