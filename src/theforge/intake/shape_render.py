@@ -8,6 +8,8 @@ the gate enforces, so it reads that contract rather than restating it (#2053).
 from __future__ import annotations
 
 import difflib
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from theforge.intake.shape_classify import (
     Classification,
@@ -15,6 +17,7 @@ from theforge.intake.shape_classify import (
     DiagnosisState,
     ShapeProposal,
 )
+from theforge.shape_check.check import check as shape_gate_check
 from theforge.shape_check.diagnosis_spec import (
     DIAGNOSIS_HEADING,
     REQUIRED_DIAGNOSIS_COMPONENTS,
@@ -24,6 +27,7 @@ from theforge.shape_check.heuristics import (
     diagnosis_completeness,
 )
 from theforge.shape_check.parsing import has_heading, section_span
+from theforge.shape_check.types import ShapeVerdict
 
 # Heading patterns for the two narrative sections a bug body carries alongside
 # its Diagnosis. Matched heading-level-agnostically through the same parser the
@@ -198,8 +202,64 @@ def render_proposal(
     return "\n".join(lines) + "\n"
 
 
-def next_command(proposal: ShapeProposal, issue_number: int | None) -> str:
-    """Return the operator-facing recommended next command."""
+@dataclass(frozen=True)
+class ShapeReadiness:
+    """Whether the issue, as it stands, already satisfies the shape gate.
+
+    ``ready`` is the single readiness signal ``forge shape`` reports: it is true
+    only when the gate's verdict on the *current* title/body/labels is
+    ``RUNNABLE`` **and** the proposal asks nothing further of the operator. A
+    proposal that restates state the issue already has is not a change, so it
+    must not keep the command from reporting a terminal state (#2054).
+    """
+
+    verdict: ShapeVerdict
+    ready: bool
+
+
+def evaluate_readiness(
+    proposal: ShapeProposal,
+    *,
+    title: str,
+    body: str,
+    labels: Iterable[str],
+) -> ShapeReadiness:
+    """Return the shape-gate verdict for the current issue state + readiness.
+
+    The verdict comes from the same ``shape_check.check`` entry point the sprint
+    gate and ``forge groom`` derive their own verdicts from, so a "ready" report
+    here means exactly what "runnable" means everywhere else — there is no
+    second, shape-private definition of readiness to drift from it.
+    """
+    verdict = shape_gate_check(title or "", body or "", list(labels)).verdict
+    ready = (
+        proposal.classification is not Classification.UNRESOLVED
+        and not proposal.proposed_labels
+        and not proposal.removed_labels
+        and restructure_body(proposal, body or "") == (body or "")
+        and verdict is ShapeVerdict.RUNNABLE
+    )
+    return ShapeReadiness(verdict=verdict, ready=ready)
+
+
+def next_command(
+    proposal: ShapeProposal,
+    issue_number: int | None,
+    *,
+    ready: bool = False,
+) -> str:
+    """Return the operator-facing recommended next command.
+
+    When ``ready``, the recommendation is terminal: the pipeline has nothing
+    left to do for this issue, and saying so is what makes the non-terminal
+    recommendations meaningful (#2054).
+    """
+    if ready:
+        subject = f"#{issue_number}" if issue_number is not None else "the draft"
+        return (
+            f"Next: none — {subject} already satisfies the shape gate "
+            "(verdict: runnable); no further action is needed."
+        )
     if proposal.classification is Classification.UNRESOLVED:
         return "Next: resolve ambiguity questions, then re-run `forge shape`."
     target = f" {issue_number}" if issue_number is not None else ""
@@ -226,4 +286,11 @@ def next_command(proposal: ShapeProposal, issue_number: int | None) -> str:
 
 # Confidence is only used through ShapeProposal, but re-export so consumers
 # don't have to import the classify module separately when assembling text.
-__all__ = ["Confidence", "next_command", "render_proposal", "restructure_body"]
+__all__ = [
+    "Confidence",
+    "ShapeReadiness",
+    "evaluate_readiness",
+    "next_command",
+    "render_proposal",
+    "restructure_body",
+]
