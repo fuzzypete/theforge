@@ -1,0 +1,152 @@
+{
+  "schema_version": 16,
+  "run_id": "49095513163f",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "`forge diagnose` resolves another repository's issue references against the local repo and injects the results as starting evidence",
+    "slug": "issue-2057",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\n`forge diagnose` pre-loads \"starting evidence\" from references it finds in the\nissue body, and resolves bare `#NNNN` references against the repository it is\nrunning in \u2014 even when the issue is about a different project. The agent is then\nhanded unrelated content presented as evidence for the bug under investigation.\n\nIssue #2029 describes a failure observed in the adopter project `hdp` and refers\nto that project's stories as `#246`, `#248`, `#245` and `#231`. Diagnose run\n`59bdfe42256b`, executed in the `theforge` checkout, reported:\n\n```\n[diagnose] pre-loaded 2 evidence excerpt(s) from issue-body references: PR #246, PR #248\n```\n\nThose are `theforge` pull requests from April 2026:\n\n```\nPR #246  MERGED 2026-04-01  Soft conventions \u2014 prompt-injected project standards\n                            for plan/dev/review\nPR #248  MERGED 2026-04-01  Story source abstraction \u2014 specs from GitHub issues,\n                            local files, or external trackers\n```\n\nThe issue's actual referents:\n\n```\nhdp #246  Native session state is lost on app relaunch: false end-of-session\n          error and 24h start block\nhdp #248  Watch rest alarm follow-up: dismiss, re-anchor, and zero-time\n          scheduling defects\n```\n\nTwo merged pull requests about prompt conventions and story sources were\ninjected into the prompt under the heading `== STARTING EVIDENCE (auto-loaded\nfrom issue body references) ==` for an investigation into a sandbox capability\ngap. This is the only automatic evidence-gathering step in the diagnose flow,\nand on a cross-project issue it is the step most likely to be wrong.\n\n## Expected behavior\n\nEvidence presented to an investigating agent as evidence must be evidence. A\nreference resolved against the wrong subject is not a harmless miss \u2014 it is\nasserted context that the agent has been told is relevant, and an investigation\nthat reasons from it reaches a conclusion the operator has no way to attribute\nto the substitution. Where a reference cannot be resolved against the subject it\nwas written about, loading nothing is correct and loading something else is not;\na best-effort mechanism whose failure mode is confidently wrong content is not\nbest-effort. More generally, a reference is only meaningful relative to the\nnamespace it was written in, so a mechanism that resolves references must either\nestablish that namespace or decline to resolve, rather than defaulting to\nwhichever namespace it happens to be executing in.\n\n## Diagnosis\n\n- **Observed symptom:** bare `#NNNN` references in an issue body that describe\n  another repository's issues are resolved against the local repository, and the\n  unrelated results are injected into the diagnose prompt as starting evidence.\n\n- **Evidence:** the extraction pattern is namespace-free \u2014\n  `_ISSUE_PR_RE = re.compile(r\"#(\\d{1,7})\\b\")` at\n  `src/theforge/coordinator/diagnose_evidence.py:64` \u2014 so it captures a number\n  with no owner or repository qualifier and no record of where the reference was\n  written. Resolution then binds those numbers to the local repository:\n  `_load_pr_issue_refs` (`diagnose_evidence.py:323-364`) calls `gh pr view <n>`\n  and falls back to `gh issue view <n>`, and `_run_gh`\n  (`diagnose_evidence.py:272-286`) executes with `cwd=str(project_root)`\n  (line 279), which makes `gh` resolve against the checkout's own remote. Both\n  loaders fail open on error but succeed on a wrong-repository hit, so a number\n  that happens to exist locally always resolves and always resolves incorrectly.\n  Observed end to end in run `59bdfe42256b`, whose audit records\n  `starting_evidence: {reference_labels: ['PR #246', 'PR #248'], chars: 560}` for\n  an issue whose `#246`/`#248` denote `hdp` issues.\n\n- **Ruled out:** not a `gh` misconfiguration \u2014 both lookups returned the correct\n  `theforge` PRs for the numbers they were given; the defect is in which\n  repository the numbers were sent to, not in the lookup. Not a body-parsing\n  error \u2014 the issue body does state `#246`/`#248` literally, and the pattern\n  matched what was written. Not confined to the `#NNNN` loader \u2014 the same\n  local-root assumption governs the other reference kinds, since `_HEX_ID_RE`\n  run and sprint ids are probed under `project_root / \".forge\"`\n  (`diagnose_evidence.py:143-191`) and `_load_branch_history`\n  (`diagnose_evidence.py:289-320`) shares `_run_gh`; the `#NNNN` case is simply\n  the one that silently succeeds instead of finding nothing.\n\n- **Confirmed cause:** the reference extractor captures no namespace and the\n  loaders bind every reference to the local project root, so an issue written\n  about another repository resolves its references against this one. There is no\n  representation of the subject repository anywhere in the evidence path, so the\n  mechanism cannot distinguish a correct hit from a collision on the same number.\n\n- **Affected code path:** `src/theforge/coordinator/diagnose_evidence.py` \u2014\n  `_ISSUE_PR_RE` (line 64), `_load_pr_issue_refs` (lines 323-364), `_run_gh`\n  (lines 272-286), and `build_starting_evidence` (lines 370-405) which assembles\n  the block; consumed by\n  `src/theforge/task/diagnose_prompts.py:203-237` (`build_diagnose_prompt`).\n\n- **Fix-success criterion:** diagnosing an issue whose body references another\n  repository's issues by bare number loads no excerpt for those references, or\n  loads the correct excerpt from the repository they were written about; in\n  neither case does the rendered starting-evidence block contain content from a\n  same-numbered issue or pull request in the local repository.\n\n## Notes\n\nThis is one half of a broader limit: `forge diagnose` reads one repository, and\nan issue filed in `theforge` about behavior observed in an adopter cannot reach\nthat adopter's run artifacts at all. That limit is real and is not what this\nissue asks to fix \u2014 an investigation that correctly reports it has no evidence is\nsound, and the diagnose agent does report it. What this issue asks is that the\nmechanism stop substituting wrong evidence for absent evidence, which is a\nstrictly worse failure than the limit itself.\n\nFound while testing whether `forge diagnose` can produce a runbook-grade\nDiagnosis section without operator-supplied evidence.\n",
+    "github_issue": 2057,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Workspace creation failed: Workspace setup command failed: [notice] A new release of pip is available: 25.0.1 -> 26.2\n[notice] To update, run: pip install --upgrade pip\nERROR: file:///Users/pwickersham/src/theforge/.forge/worktrees/issue-2057 does not appear to be a Python project: neither 'setup.py' nor 'pyproject.toml' found.",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "ddf64f41d89261f603b0024165e834a0f9eb38492532d54f5c681fcced351a61",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-01T06:29:59.932064+00:00",
+    "finished_at": "2026-08-01T06:30:01.144446+00:00",
+    "duration_seconds": 1.212382
+  },
+  "workspace": {
+    "path": null,
+    "branch": null,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "gate_runs": 0,
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": null,
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "dev_usd": 0,
+    "review_usd": 0,
+    "dev_invocations": 0,
+    "review_invocations": 0,
+    "agents": []
+  },
+  "preflight": null,
+  "context_manifests": [],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "Workspace setup command failed: [notice] A new release of pip is available: 25.0.1 -> 26.2\n[notice] To update, run: pip install --upgrade pip\nERROR: file:///Users/pwickersham/src/theforge/.forge/worktrees/issue-2057 does not appear to be a Python project: neither 'setup.py' nor 'pyproject.toml' found.",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": null,
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": null
+  },
+  "totals": {
+    "cost_usd": 0.0,
+    "duration_s": 0.0,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 0
+  },
+  "sprint_id": "7272950c8b34",
+  "sprint_name": "issues-2054,2057,2059"
+}

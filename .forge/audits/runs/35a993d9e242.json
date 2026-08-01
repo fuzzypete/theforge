@@ -1,0 +1,152 @@
+{
+  "schema_version": 16,
+  "run_id": "35a993d9e242",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "The shape gate reads headings inside fenced code blocks as document structure, refusing well-formed bugs that quote markdown",
+    "slug": "issue-2059",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nThe shape gate's section parser treats headings inside fenced code blocks as\nreal headings, so a bug body that quotes markdown is parsed against the quoted\nsample rather than its own structure and is refused as incomplete.\n\nEncountered while filing a bug about `forge shape`'s body restructure. The body\nquotes the restructured output the command proposes, which contains a `###\nDiagnosis` stub, and then carries its own complete `## Diagnosis` section\nfurther down. The gate reports:\n\n```\ndiagnosis_completeness: (False, ['observed symptom', 'evidence',\n                                 'affected code path', 'fix-success criterion'])\ncheck_bug_missing_diagnosis: Reason(code='needs_diagnosis', severity=BLOCKING)\n```\n\n`extract_section(body, r\"diagnosis|root cause\")` returns the quoted stub:\n\n```\n'\\nStatus: confirmed cause documented.\\n'\n```\n\nThat heading sits at character 840, preceded by three fence delimiters \u2014 an odd\ncount, so it is inside an open fence. The body's real `## Diagnosis` section,\nwhich contains every required component, is never reached, because extraction\nstops at the first heading match and that match is inside a code sample.\n\nThe effect is that a well-formed bug about markdown handling cannot pass the\ngate while it accurately quotes the markdown it is about. Removing the evidence\nmakes it pass.\n\n## Expected behavior\n\nA parser that reads a document's structure must read the document's own\nstructure, not the structure of samples the document quotes. Fenced code blocks\nexist to mark content as literal rather than as markup, so text inside them is\ndata the author is exhibiting, and treating it as though the author had written\nit at the top level inverts what the fence means. The consequence here is\nselective: it penalises exactly the issues whose subject matter is document\nshape, which are the ones where quoting the shape verbatim is the strongest\navailable evidence \u2014 so a gate that mis-parses fenced samples systematically\nrefuses the best-evidenced members of one class of bug and rewards removing\ntheir evidence. Structural extraction should therefore skip fenced regions, and\nwhere a document contains a real section and a quoted one, the real section is\nthe one that determines the verdict.\n\n## Diagnosis\n\n- **Observed symptom:** `extract_section` matches a heading inside a fenced code\n  block, so a bug body quoting markdown is evaluated against the quoted sample\n  and reported as missing Diagnosis components it actually contains.\n\n- **Evidence:** measured at baseline `f2caf7d` against a body containing a\n  fenced sample with a `### Diagnosis` heading followed by a genuine\n  `## Diagnosis` section with all five required components.\n  `extract_section(body, r\"diagnosis|root cause\")` returns\n  `'\\nStatus: confirmed cause documented.\\n'` \u2014 the fenced sample's content \u2014\n  and the first `### Diagnosis` occurrence is preceded by three ``` delimiters,\n  placing it inside an open fence. `diagnosis_completeness`\n  (`src/theforge/shape_check/heuristics.py:322-344`) consumes that section\n  directly and reports four missing tokens; `check_bug_missing_diagnosis`\n  (`heuristics.py:463-500`) then returns a BLOCKING `needs_diagnosis`. The same\n  body passes both once the heading in the sample is rewritten so it is no\n  longer at line start.\n\n- **Ruled out:** not a heading-level mismatch \u2014 the sample's heading is H3 and\n  the real section is H2, and the pattern `DIAGNOSIS_HEADING_PATTERN`\n  (`heuristics.py:217`) intentionally matches either, so the defect is which\n  occurrence wins rather than which levels are recognised. Not a\n  first-match-wins policy error in isolation \u2014 taking the first heading is\n  reasonable, and would be correct if fenced regions were excluded from\n  consideration. Not confined to the diagnosis check \u2014 `extract_section`,\n  `extract_ac_section` and `has_heading` share the same parsing module and the\n  same blindness, so an enhancement body quoting a sample `## Acceptance\n  criteria` block is exposed the same way.\n\n- **Confirmed cause:** the shape-check parsing helpers scan for headings without\n  tracking fenced-code state, so a heading inside a fenced block is\n  indistinguishable from a heading in the document body.\n\n- **Affected code path:** `src/theforge/shape_check/parsing.py` \u2014\n  `extract_section`, `find_heading`, `has_heading` and `extract_ac_section`;\n  consumed by `src/theforge/shape_check/heuristics.py` (`diagnosis_completeness`\n  at lines 322-344, `check_bug_missing_diagnosis` at 463-500) and by\n  `src/theforge/intake/shape_classify.py` (`_detect_diagnosis_state`, lines\n  95-104).\n\n- **Fix-success criterion:** a bug body that contains a `## Diagnosis` section\n  with all required components passes the gate regardless of any headings\n  appearing inside fenced code blocks elsewhere in the body, including a fenced\n  sample of a differently-shaped Diagnosis section; and a body whose only\n  Diagnosis-like heading is inside a fence is still correctly refused as having\n  no Diagnosis section.\n\n## Notes\n\nFound by running the shape gate over the body of a bug being filed about\n`forge shape` \u2014 the body was refused because it quoted the output it was\nreporting. The gate is doing its job in the sense that it refused; it refused\nfor a reason that was not true.\n\nThe `_detect_diagnosis_state` path in `shape_classify.py` shares the helper and\nwill therefore classify diagnosis state from a quoted sample as well, which\nmeans `forge shape` can report a confidently wrong `Proposed diagnosis state`\nfor the same class of body.\n",
+    "github_issue": 2059,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Workspace creation failed: Workspace setup command failed: [notice] A new release of pip is available: 25.0.1 -> 26.2\n[notice] To update, run: pip install --upgrade pip\nERROR: file:///Users/pwickersham/src/theforge/.forge/worktrees/issue-2059 does not appear to be a Python project: neither 'setup.py' nor 'pyproject.toml' found.",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "ddf64f41d89261f603b0024165e834a0f9eb38492532d54f5c681fcced351a61",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-01T06:30:02.061679+00:00",
+    "finished_at": "2026-08-01T06:30:03.223134+00:00",
+    "duration_seconds": 1.161455
+  },
+  "workspace": {
+    "path": null,
+    "branch": null,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "gate_runs": 0,
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": null,
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "dev_usd": 0,
+    "review_usd": 0,
+    "dev_invocations": 0,
+    "review_invocations": 0,
+    "agents": []
+  },
+  "preflight": null,
+  "context_manifests": [],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "Workspace setup command failed: [notice] A new release of pip is available: 25.0.1 -> 26.2\n[notice] To update, run: pip install --upgrade pip\nERROR: file:///Users/pwickersham/src/theforge/.forge/worktrees/issue-2059 does not appear to be a Python project: neither 'setup.py' nor 'pyproject.toml' found.",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": null,
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": null
+  },
+  "totals": {
+    "cost_usd": 0.0,
+    "duration_s": 0.0,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 0
+  },
+  "sprint_id": "7272950c8b34",
+  "sprint_name": "issues-2054,2057,2059"
+}
