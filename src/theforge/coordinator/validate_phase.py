@@ -13,7 +13,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import NamedTuple
 
-from theforge.advisory_conventions import update_advisory_violations
+from theforge.advisory_conventions import AdvisoryArtifactError, update_advisory_violations
 from theforge.config import ForgeConfig
 from theforge.gate_diagnostics import run_gate_diagnostic_pass
 from theforge.task import TaskStory
@@ -510,14 +510,35 @@ def _record_advisory_convention_state(
     violations: list[dict],
     logger: StructuredLogger | None,
 ) -> None:
-    """Persist rolling advisory convention state for the current scan."""
-    advisory_result = update_advisory_violations(
-        config,
-        violations,
-        observed_at=dt.datetime.now(dt.timezone.utc),
-        run_id=state.run_id,
-        story_slug=task.slug,
-    )
+    """Persist rolling advisory convention state for the current scan.
+
+    A failure to persist the artifact is a failure of infrastructure every story
+    in the sprint shares, not of this story's work (#2107). It is recorded
+    against the run's shared-infrastructure ledger and surfaced in the audit,
+    and the story keeps its real phase, outcome, and cost accounting — the
+    advisory artifact is non-blocking by definition, so losing one update must
+    never cost a completed story its result.
+    """
+    try:
+        advisory_result = update_advisory_violations(
+            config,
+            violations,
+            observed_at=dt.datetime.now(dt.timezone.utc),
+            run_id=state.run_id,
+            story_slug=task.slug,
+        )
+    except AdvisoryArtifactError as exc:
+        failure = {
+            "component": "advisory_conventions_artifact",
+            "path": str(exc.path),
+            "error": str(exc),
+            "error_type": type(exc.cause).__name__,
+        }
+        state.shared_infrastructure_failures.append(failure)
+        _log(f"  ⚠ Advisory artifact persistence failed (shared infrastructure): {exc}")
+        if logger:
+            logger._safe_emit("convention_advisory_persist_failed", **failure)
+        return
     if logger:
         logger._safe_emit(
             "convention_advisory_state",

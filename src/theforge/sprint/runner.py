@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig
 from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
@@ -1827,6 +1828,45 @@ def _run_single_story(
                 base_lands_locally=base_lands_locally,
                 lands_in_project_root=lands_in_project_root,
             )
+    except AdvisoryArtifactError as exc:
+        # A shared-infrastructure failure surfaced in this worker. The story did
+        # not fail — a path every story in the sprint writes did — so it is
+        # recorded with infrastructure-abort vocabulary rather than as this
+        # story's ESCALATE verdict (#2107). The real errno and artifact path are
+        # preserved so the operator is sent to the infrastructure, not to a
+        # story whose own work may well be complete.
+        _log(f"ERROR {task.slug}: shared infrastructure failure: {exc}")
+        message = f"Shared infrastructure failure (advisory artifact): {exc}"
+        failure_state = CoordinatorState(
+            phase=Phase.ESCALATE,
+            started_at=started_at.isoformat(),
+            workspace_path=workspace_path,
+            log_dir=_make_story_log_dir(config, task.slug, sprint_name),
+            error=message,
+            error_type=ERROR_TYPE_INFRASTRUCTURE_ABORT,
+        )
+        failure_state.infrastructure_failure = {
+            "message": message,
+            "component": "advisory_conventions_artifact",
+            "path": str(exc.path),
+            "cause_type": type(exc.cause).__name__,
+            "cause": str(exc.cause),
+        }
+        failure_state.shared_infrastructure_failures.append(
+            {
+                "component": "advisory_conventions_artifact",
+                "path": str(exc.path),
+                "error": str(exc),
+                "error_type": type(exc.cause).__name__,
+            }
+        )
+        result = CoordinatorResult(
+            success=False,
+            phase=Phase.ESCALATE,
+            state=failure_state,
+            message=message,
+            infrastructure_failure=True,
+        )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
         failure_state = CoordinatorState(

@@ -325,10 +325,13 @@ def test_resolved_digest_reflects_run_time_overrides(tmp_path: Path) -> None:
 # ── Step 3: schema version + migration ────────────────────────────────────────
 
 
-def test_new_records_are_written_at_schema_16(tmp_path: Path) -> None:
+def test_new_records_are_written_at_the_current_schema_version(tmp_path: Path) -> None:
+    """New records carry the writer's current version — v16 introduced the
+    configuration block; later bumps must not silently write a stale version."""
     config = _load(_write_config(tmp_path / "proj"))
-    assert _audit_for(config, tmp_path)["schema_version"] == 16
-    assert audit_substrate.CURRENT_RECORD_SCHEMA_VERSION == 16
+    current = audit_substrate.CURRENT_RECORD_SCHEMA_VERSION
+    assert current >= 16, "the configuration block landed in v16"
+    assert _audit_for(config, tmp_path)["schema_version"] == current
 
 
 def test_v15_records_migrate_to_a_null_configuration_block() -> None:

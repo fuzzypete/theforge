@@ -41,7 +41,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 5
+RULESET_VERSION = 6
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -58,6 +58,12 @@ UNKNOWN_CLASS = "unknown_needs_rca"
 # collision/launch-guard modules (which pull in subprocess/lock machinery). Keep
 # this in sync with ``launch_guard.REASON_STRANDED_WORKTREE``.
 _STRANDED_WORKTREE_REASON = "stranded-prior-generation-worktree"
+
+# ``error_type``/``outcome_code`` a run carries when it terminated because of the
+# substrate rather than a judgment about the story. Matched as a literal for the
+# same reason as above — keep in sync with
+# ``coordinator.agent_failure.ERROR_TYPE_INFRASTRUCTURE_ABORT``.
+_INFRASTRUCTURE_ABORT_ERROR_TYPE = "infrastructure_abort"
 
 _EXCERPT_MAX_LEN = 240
 # Cap per-file text reads so a runaway log cannot blow up classification.
@@ -165,6 +171,17 @@ RULES: tuple[RcaRule, ...] = (
             "spend limit",
             "429",
             "overloaded",
+        ),
+    ),
+    # ── primary: shared run-infrastructure abort ─────────────────────────────
+    RcaRule(
+        rule_id="shared_infrastructure_abort",
+        failure_class="shared_infrastructure",
+        role="primary",
+        description=(
+            "The run terminated on a failure of the substrate or of run "
+            "infrastructure shared by every story (e.g. the rolling advisory "
+            "artifact all workers write) — not on a judgment about this story."
         ),
     ),
     # ── primary: worker / agent timeout ──────────────────────────────────────
@@ -335,6 +352,12 @@ RULES_BY_ID: dict[str, RcaRule] = {rule.rule_id: rule for rule in RULES}
 # more actionable, so it is chosen as the primary_failure_class.
 _PRIMARY_PRIORITY: tuple[str, ...] = (
     "provider_quota",
+    # A substrate/shared-infrastructure abort outranks every story-level class
+    # below it: the run made no statement about the story, so classifying it by
+    # what the story was doing at the time sends the operator to the wrong
+    # subject entirely (#2107). It sits below provider_quota only because that
+    # class names a *specific* substrate cause with its own remediation.
+    "shared_infrastructure",
     "worker_timeout",
     "workspace_divergence",
     "intake_shape",
@@ -907,6 +930,66 @@ def _fallback_not_applied_evidence(audit: dict, audit_source: str) -> tuple[str,
     return None
 
 
+def _infrastructure_abort_evidence(
+    story: dict,
+    audit: dict,
+    summary_source: str,
+    audit_source: str,
+) -> tuple[str, str, str] | None:
+    """Return a ``shared_infrastructure_abort`` hit from the run's own record.
+
+    Fires only on the run's *terminal* classification of itself — the
+    ``infrastructure_abort`` error_type/outcome_code, or the structured
+    ``agent_invocation.infrastructure_failure`` cause. The
+    ``shared_infrastructure_failures`` ledger is deliberately not sufficient on
+    its own: a non-fatal shared-resource failure (e.g. one lost advisory
+    artifact update) is recorded there on runs that then failed review or the
+    gate for entirely unrelated reasons, and promoting it to primary would
+    reproduce #2107's misattribution with the subject reversed. When a terminal
+    signal *has* fired, the ledger supplies the concrete component and path.
+
+    Without this rule a substrate abort falls through to ``unknown_needs_rca``
+    and the operator is told to run ``forge diagnose`` on a story that never
+    failed — exactly the misattribution #2107 reports.
+    """
+    agent_block = audit.get("agent_invocation") if isinstance(audit, dict) else None
+    cause = agent_block.get("infrastructure_failure") if isinstance(agent_block, dict) else None
+    outcome_block = audit.get("outcome") if isinstance(audit, dict) else None
+    audit_error_type = (
+        _nonempty(outcome_block.get("error_type")) if isinstance(outcome_block, dict) else None
+    )
+    story_error_type = _nonempty(story.get("error_type")) or _nonempty(story.get("outcome_code"))
+    abort_stamped = _INFRASTRUCTURE_ABORT_ERROR_TYPE in {
+        (story_error_type or "").lower(),
+        (audit_error_type or "").lower(),
+    }
+    if not abort_stamped and not (isinstance(cause, dict) and cause):
+        return None
+
+    ledger = audit.get("shared_infrastructure_failures") if isinstance(audit, dict) else None
+    head = ledger[0] if isinstance(ledger, list) and ledger else None
+    first = head if isinstance(head, dict) else {}
+    cause = cause if isinstance(cause, dict) else {}
+    component = (
+        _nonempty(cause.get("component"))
+        or _nonempty(first.get("component"))
+        or _nonempty(cause.get("category"))
+        or "shared run infrastructure"
+    )
+    detail = (
+        _nonempty(cause.get("message"))
+        or _nonempty(first.get("error"))
+        or _nonempty(story.get("error"))
+        or "no agent judgment was obtained"
+    )
+    source = audit_source if (cause or first) else summary_source
+    return (
+        "shared_infrastructure_abort",
+        source,
+        _truncate(f"run terminated on a shared-infrastructure failure ({component}): {detail}"),
+    )
+
+
 def _signal_rule_hits(
     story: dict,
     audit: dict,
@@ -938,6 +1021,15 @@ def _signal_rule_hits(
     )
     if config_change is not None:
         hits.append(config_change)
+
+    # Shared-infrastructure abort (#2107) — field-derived from the run's own
+    # recorded error_type/outcome_code and the structured cause the runner or
+    # coordinator persisted. Never a text scan: "infrastructure" is ordinary
+    # English, and only forge's own classification of its own execution may
+    # assign this class.
+    infra_hit = _infrastructure_abort_evidence(story, audit, summary_source, audit_source)
+    if infra_hit is not None:
+        hits.append(infra_hit)
 
     # Provider quota / fallback classification from the run's own transport
     # telemetry rather than scanned for in prose (#2031).
@@ -1178,6 +1270,12 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
     base = {
         "provider_quota": (
             f"wait for quota reset or switch the provider/model, then re-sprint {ref}"
+        ),
+        "shared_infrastructure": (
+            f"repair the shared run infrastructure named in the evidence above, then "
+            f"re-run {ref} — the run aborted on the substrate, so this is not a "
+            f"judgment about {ref}'s work: check its branch before re-sprinting, the "
+            "commits it produced may already be complete"
         ),
         "worker_timeout": (
             f"inspect the worker log for the phase {ref} was in at timeout; "
