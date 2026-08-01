@@ -230,6 +230,12 @@ class DiagnoseState:
     # nothing recognizable. Recorded so the audit shows exactly what the
     # orchestrator handed the agent (convention: instrument cross-phase data).
     starting_evidence_chars: int = 0
+    starting_evidence_declined: list[str] = field(default_factory=list)
+    # Namespace-free "#NNNN" references the body cited that were deliberately
+    # not resolved (a bare number names no repository, so resolving it against
+    # this checkout would inject same-numbered content from the wrong project).
+    # Recorded so the audit distinguishes "declined on purpose" from "found
+    # nothing".
     # Machine-readable failure identifier returned by the runner (e.g.
     # "timeout"). None when the run did not fail or the runner reported no
     # code. Recorded so the audit trail distinguishes a timeout from a crash.
