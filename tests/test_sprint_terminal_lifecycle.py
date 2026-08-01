@@ -603,6 +603,57 @@ def test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies(
                 pass
 
 
+def test_gate_teardown_records_survivors_so_a_leaderless_tree_can_be_reaped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The gate seam must leave identity evidence, not just a pgid (#2115).
+
+    Once the gate shell (the group leader) is gone, its pgid is reusable, so
+    "a group with this id exists" no longer identifies the survivors. The
+    teardown that keeps the sidecar therefore snapshots the group's members
+    while it still knows the group is its own, and the reaper kills only on a
+    member that is still alive with the start time it was recorded with.
+    """
+    monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(coord_util, "_kill_process_group", lambda proc: False)
+
+    cmd = (
+        f'{sys.executable} -u -c "import subprocess, sys, time; '
+        f"child = subprocess.Popen([{sys.executable!r}, '-c', 'import time; time.sleep(120)']); "
+        'print(child.pid, flush=True); time.sleep(120)"'
+    )
+    _ok, output, _exit_code, _timed_out = coord_util._run_shell_detailed(cmd, tmp_path, timeout=2)
+    grandchild_pid = int(
+        next(line for line in output.splitlines() if line.strip().isdigit()).strip()
+    )
+
+    sidecars = list((tmp_path / ".forge" / "runs" / "agents").glob("*.json"))
+    assert len(sidecars) == 1
+    record = json.loads(sidecars[0].read_text(encoding="utf-8"))
+    gate_pid = record["pgid"]
+    assert str(grandchild_pid) in record.get("members", {}), (
+        "teardown kept the record but not the membership that identifies the group"
+    )
+
+    try:
+        # The leader dies, leaving a group that only its recorded members can
+        # distinguish from an unrelated one holding the same recycled id.
+        os.kill(gate_pid, signal.SIGKILL)
+        assert _wait_until_gone([gate_pid]) == []
+        record["owner_pid"] = _dead_pid()
+        sidecars[0].write_text(json.dumps(record), encoding="utf-8")
+
+        assert reap_orphan_agents(tmp_path) == 1
+        assert _wait_until_gone([grandchild_pid]) == [], (
+            "the recorded survivor of a leaderless gate group was not reaped"
+        )
+    finally:
+        try:
+            os.kill(grandchild_pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 # ── A stopped story's audit keeps the history it accumulated ───────────
 
 
