@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import textwrap
@@ -37,6 +38,7 @@ from theforge.shape_check.parsing import (
     extract_contextual_bullets,
     extract_contextual_fenced_code_blocks,
     extract_section,
+    fenced_code_blocks,
     has_heading,
 )
 
@@ -535,6 +537,11 @@ class TestExampleParsingContext:
         assert [block.in_example_section for block in blocks] == [True, False]
 
 
+def _with_tilde_fences(body: str) -> str:
+    """Rewrite a body's backtick fence delimiters as tilde delimiters."""
+    return re.sub(r"(?m)^(\s*)```", r"\1~~~", body)
+
+
 class TestFencedHeadingsAreNotStructure:
     """Headings inside fenced code are quoted samples, not document structure (#2059)."""
 
@@ -645,26 +652,28 @@ class TestFencedHeadingsAreNotStructure:
             is None
         )
 
+    FENCED_ONLY_DIAGNOSIS_BODY = textwrap.dedent(
+        """\
+        ## Observed behavior
+        It exits 1.
+
+        ## Expected behavior
+        It exits 0.
+
+        ```markdown
+        ## Diagnosis
+        - **Observed symptom.** x
+        - **Evidence.** y
+        - **Ruled out.** z
+        - **Confirmed cause.** off-by-one
+        - **Affected code path.** runner.py
+        - **Fix-success criterion.** exits 0
+        ```
+        """
+    )
+
     def test_gate_still_refuses_a_fenced_only_diagnosis(self):
-        body = textwrap.dedent(
-            """\
-            ## Observed behavior
-            It exits 1.
-
-            ## Expected behavior
-            It exits 0.
-
-            ```markdown
-            ## Diagnosis
-            - **Observed symptom.** x
-            - **Evidence.** y
-            - **Ruled out.** z
-            - **Confirmed cause.** off-by-one
-            - **Affected code path.** runner.py
-            - **Fix-success criterion.** exits 0
-            ```
-            """
-        )
+        body = self.FENCED_ONLY_DIAGNOSIS_BODY
         ok, missing = diagnosis_completeness(body)
         assert not ok
         assert missing == ["missing Diagnosis section"]
@@ -688,6 +697,95 @@ class TestFencedHeadingsAreNotStructure:
             """
         )
         assert _detect_diagnosis_state(body) is DiagnosisState.NO_DIAGNOSIS
+
+
+class TestTildeFencesAreFences:
+    """``~~~`` marks literal content exactly as ``` ``` ``` does (review iter 1)."""
+
+    def test_gate_admits_bug_quoting_a_tilde_fenced_diagnosis_sample(self):
+        body = _with_tilde_fences(TestFencedHeadingsAreNotStructure.QUOTED_SAMPLE_BUG_BODY)
+        assert "~~~markdown" in body
+        section = extract_section(body, r"diagnosis|root cause")
+        assert section is not None
+        assert "Status: confirmed cause documented." not in section
+        assert diagnosis_completeness(body) == (True, [])
+        assert check_bug_missing_diagnosis("shape gate misparses", body, ["bug"]) is None
+
+    def test_gate_still_refuses_a_tilde_fenced_only_diagnosis(self):
+        body = _with_tilde_fences(TestFencedHeadingsAreNotStructure.FENCED_ONLY_DIAGNOSIS_BODY)
+        assert diagnosis_completeness(body) == (False, ["missing Diagnosis section"])
+        reason = check_bug_missing_diagnosis("it exits 1", body, ["bug"])
+        assert reason is not None
+        assert reason.code == "needs_diagnosis"
+
+    def test_a_fence_is_not_closed_by_the_other_marker_family(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+
+            ~~~markdown
+            ```
+            ## Diagnosis
+            still inside the tilde block
+            ```
+            ~~~
+
+            ## Notes
+            Real content.
+            """
+        )
+        assert not has_heading(body, r"diagnosis")
+        assert has_heading(body, r"notes")
+
+    def test_a_shorter_fence_does_not_close_a_longer_one(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+
+            ````markdown
+            ```
+            ## Diagnosis
+            quoted sample that itself contains a fence
+            ```
+            ````
+
+            ## Notes
+            Real content.
+            """
+        )
+        assert not has_heading(body, r"diagnosis")
+        assert has_heading(body, r"notes")
+
+    def test_fenced_code_blocks_reads_both_families(self):
+        body = textwrap.dedent(
+            """\
+            ```yaml
+            first: block
+            ```
+
+            ~~~yaml
+            second: block
+            ~~~
+            """
+        )
+        assert fenced_code_blocks(body) == ["first: block", "second: block"]
+
+    def test_contextual_fenced_blocks_reads_tilde_blocks(self):
+        body = textwrap.dedent(
+            """\
+            ## Schema
+            ~~~yaml
+            primary_failure_class: flaky-tests
+            ~~~
+
+            ## Notes
+            ~~~yaml
+            function_signature: str
+            ~~~
+            """
+        )
+        blocks = extract_contextual_fenced_code_blocks(body)
+        assert [block.in_example_section for block in blocks] == [True, False]
 
 
 class TestTooManyBehavioralClusters:

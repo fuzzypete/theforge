@@ -6,7 +6,10 @@ import re
 from dataclasses import dataclass
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
-_FENCE_RE = re.compile(r"^\s{0,3}(`{3,})(.*?)\s*$")
+# Indentation is not restricted to CommonMark's 0-3 spaces: fences nested under
+# a bullet are indented to the item's content column, and the bullet-block
+# helpers below have always treated those as fences.
+_FENCE_RE = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})(?P<info>.*?)\s*$")
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+?)\s*$")
 _EXAMPLE_HEADING_RE = re.compile(
     r"^(?:"
@@ -33,30 +36,74 @@ class ContextualFencedBlock:
     in_example_section: bool
 
 
+class FenceTracker:
+    """Line-by-line fenced-code state for a Markdown document.
+
+    Both fence families are recognised (``` ``` ``` and ``~~~``). A fence closes
+    only on a line using the *same* marker character, at least as long as the
+    opener, with no info string — so a ``~~~`` line inside a backtick block is
+    content, not a delimiter. An unclosed fence runs to the end of the document,
+    as in CommonMark.
+
+    Every fence-aware helper in this module shares this one implementation:
+    the parsers must agree on what counts as literal content, or a body can be
+    admitted by one check and refused by another for the same text.
+    """
+
+    __slots__ = ("_char", "_len")
+
+    def __init__(self) -> None:
+        self._char: str | None = None
+        self._len = 0
+
+    @property
+    def in_fence(self) -> bool:
+        """True when the *previous* fed line left the document inside a fence."""
+        return self._char is not None
+
+    def feed(self, line: str) -> str:
+        """Consume ``line`` and return its role.
+
+        One of ``"open"``, ``"close"`` (the delimiter lines themselves),
+        ``"inside"`` (fenced content) or ``"outside"`` (ordinary document text).
+        """
+        m = _FENCE_RE.match(line)
+        if self._char is None:
+            if m:
+                self._char = m.group("marker")[0]
+                self._len = len(m.group("marker"))
+                return "open"
+            return "outside"
+        if (
+            m
+            and m.group("marker")[0] == self._char
+            and len(m.group("marker")) >= self._len
+            and not m.group("info").strip()
+        ):
+            self._char = None
+            self._len = 0
+            return "close"
+        return "inside"
+
+
 def fenced_spans(body: str) -> list[tuple[int, int]]:
     """Return ``(start, end)`` character offsets of each fenced code region.
 
     A region runs from the start of its opening fence line through the end of
-    its closing fence line. A fence closes on a line with at least as many
-    backticks as the opener and no info string; an unclosed fence runs to the
-    end of the document, as in CommonMark.
+    its closing fence line. See :class:`FenceTracker` for the delimiter rules.
     """
     spans: list[tuple[int, int]] = []
     offset = 0
-    open_start: int | None = None
-    open_ticks = 0
+    open_start = 0
+    tracker = FenceTracker()
     for line in body.splitlines(keepends=True):
-        m = _FENCE_RE.match(line)
-        if m:
-            ticks = len(m.group(1))
-            if open_start is None:
-                open_start = offset
-                open_ticks = ticks
-            elif ticks >= open_ticks and not m.group(2).strip():
-                spans.append((open_start, offset + len(line)))
-                open_start = None
+        role = tracker.feed(line)
+        if role == "open":
+            open_start = offset
+        elif role == "close":
+            spans.append((open_start, offset + len(line)))
         offset += len(line)
-    if open_start is not None:
+    if tracker.in_fence:
         spans.append((open_start, len(body)))
     return spans
 
@@ -163,16 +210,12 @@ def extract_top_level_bullet_blocks(section: str) -> list[str]:
 
     blocks: list[list[str]] = []
     current: list[str] | None = None
-    in_fence = False
+    tracker = FenceTracker()
     for line in lines:
         stripped = line.lstrip(" ")
         indent = len(line) - len(stripped)
-        if stripped.startswith("```"):
-            if current is not None:
-                current.append(line)
-            in_fence = not in_fence
-            continue
-        if in_fence:
+        if tracker.feed(line) != "outside":
+            # fence delimiters and their contents are literal continuation text
             if current is not None:
                 current.append(line)
             continue
@@ -197,21 +240,20 @@ def extract_contextual_bullets(section: str) -> list[ContextualBullet]:
     """Return bullets annotated with whether they appear under an example heading."""
     bullets: list[ContextualBullet] = []
     example_level: int | None = None
-    in_fence = False
+    tracker = FenceTracker()
 
     for line in section.splitlines():
-        stripped = line.strip()
+        role = tracker.feed(line)
+        if role in ("open", "close"):
+            continue
+
         heading_match = _HEADING_RE.match(line)
-        if heading_match and not in_fence:
+        if heading_match and role == "outside":
             level = len(heading_match.group(1))
             if example_level is not None and level <= example_level:
                 example_level = None
             if is_example_heading(heading_match.group(2)):
                 example_level = level
-            continue
-
-        if stripped.startswith("```"):
-            in_fence = not in_fence
             continue
 
         bullet_match = _BULLET_RE.match(line)
@@ -227,21 +269,20 @@ def extract_contextual_bullets(section: str) -> list[ContextualBullet]:
 
 
 def fenced_code_blocks(body: str) -> list[str]:
-    """Return the contents of each triple-backtick fenced code block."""
+    """Return the contents of each fenced code block (backtick or tilde)."""
     blocks: list[str] = []
-    lines = body.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        fence = re.match(r"^\s*```(\w*)\s*$", line)
-        if fence:
-            i += 1
-            buf: list[str] = []
-            while i < len(lines) and not re.match(r"^\s*```\s*$", lines[i]):
-                buf.append(lines[i])
-                i += 1
-            blocks.append("\n".join(buf))
-        i += 1
+    current: list[str] = []
+    tracker = FenceTracker()
+    for line in body.splitlines():
+        role = tracker.feed(line)
+        if role == "open":
+            current = []
+        elif role == "close":
+            blocks.append("\n".join(current))
+        elif role == "inside":
+            current.append(line)
+    if tracker.in_fence:
+        blocks.append("\n".join(current))
     return blocks
 
 
@@ -249,11 +290,12 @@ def extract_contextual_fenced_code_blocks(body: str) -> list[ContextualFencedBlo
     """Return fenced blocks annotated with whether they appear under an example heading."""
     blocks: list[ContextualFencedBlock] = []
     example_level: int | None = None
-    in_fence = False
     current: list[str] = []
+    tracker = FenceTracker()
 
     for line in body.splitlines():
-        if not in_fence:
+        role = tracker.feed(line)
+        if role == "outside":
             heading_match = _HEADING_RE.match(line)
             if heading_match:
                 level = len(heading_match.group(1))
@@ -261,23 +303,18 @@ def extract_contextual_fenced_code_blocks(body: str) -> list[ContextualFencedBlo
                     example_level = None
                 if is_example_heading(heading_match.group(2)):
                     example_level = level
-                continue
-
-        if re.match(r"^\s*```", line):
-            if in_fence:
-                blocks.append(
-                    ContextualFencedBlock(
-                        content="\n".join(current),
-                        in_example_section=example_level is not None,
-                    )
-                )
-                current = []
-                in_fence = False
-            else:
-                in_fence = True
             continue
 
-        if in_fence:
+        if role == "open":
+            current = []
+        elif role == "close":
+            blocks.append(
+                ContextualFencedBlock(
+                    content="\n".join(current),
+                    in_example_section=example_level is not None,
+                )
+            )
+        else:
             current.append(line)
 
     return blocks
