@@ -52,12 +52,27 @@ def test_update_advisory_violations_aggregates_and_prunes(tmp_path):
     assert entry["first_seen"] == "2026-05-02T18:45:00Z"
     assert entry["last_seen"] == "2026-05-02T18:45:00Z"
 
+    # A scan an hour later that did not observe the entry must NOT delete it:
+    # inside a sprint that is indistinguishable from a concurrent story whose
+    # observation this worker simply did not see (#2107).
     update_advisory_violations(
         config,
         [],
         observed_at=observed_at + dt.timedelta(hours=1),
         run_id="run-2",
         story_slug="story-2",
+    )
+    retained = load_advisory_summary(config)
+    assert len(retained["entries"]) == 1
+    assert next(iter(retained["entries"].values()))["last_seen"] == "2026-05-02T18:45:00Z"
+
+    # Once the entry is stale beyond the retention window, it is pruned.
+    update_advisory_violations(
+        config,
+        [],
+        observed_at=observed_at + dt.timedelta(hours=25),
+        run_id="run-3",
+        story_slug="story-3",
     )
     pruned = load_advisory_summary(config)
     assert pruned["entries"] == {}
