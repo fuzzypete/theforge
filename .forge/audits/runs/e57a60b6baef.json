@@ -1,0 +1,152 @@
+{
+  "schema_version": 16,
+  "run_id": "e57a60b6baef",
+  "parent_run_id": null,
+  "forge_version": "0.1.0",
+  "task": {
+    "name": "`forge shape` proposes labels the issue already carries and can never report an issue as ready",
+    "slug": "issue-2054",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\n`forge shape` proposes work that the issue has already had done to it, because\nits proposals are computed without reference to the issue's current state.\n\nOn issue #2050, which already carries the `bug` label, the command prints:\n\n```\nProposed classification: bug\nProposed diagnosis state: diagnosis-confirmed-cause\nConfidence: high\nAdd labels: bug\n```\n\n`Add labels: bug` is a no-op dressed as a change. The classifier received the\nissue's real label set and used it to reach its classification, then proposed\nadding a label it had just read.\n\nThe same output ends with:\n\n```\nNext: forge groom 2050\n```\n\nRunning that command reports `Pre-groom verdict: runnable` / `No body changes\nneeded` and exits 0. The issue was already gate-passing when `forge shape` ran,\nand nothing in the recommendation says so \u2014 there is no terminal state in which\n`forge shape` tells the operator an issue is ready.\n\nBoth behaviors also make the command's exit code unusable as a readiness\nsignal: `forge shape` returns non-zero whenever it has any proposal, including a\nredundant one, so a gate-passing issue cannot be distinguished from a\nmalformed one.\n\n## Expected behavior\n\nA command that proposes changes should first read the state it is proposing\nagainst, and should propose only the difference. Restating an attribute the\nsubject already has is not advice, and it costs the operator a verification step\nto discover that nothing was being asked of them. Where the proposed action is\nalready satisfied, the correct output is a statement that no action is needed,\nwhich is also what makes a recommendation trustworthy when it does appear.\nA tool that recommends the next step in a pipeline should likewise be able to\nreport that the pipeline is complete, rather than always naming a further stage;\nan advisory that never terminates gives the operator no way to tell progress\nfrom a loop.\n\n## Diagnosis\n\n- **Observed symptom:** `forge shape` proposes adding labels the issue already\n  carries, and its `Next:` recommendation names a further pipeline stage even\n  when the issue already satisfies the shape gate.\n\n- **Evidence:** `classify()` computes the issue's real label set at\n  `src/theforge/intake/shape_classify.py:208`\n  (`label_set = _label_set(labels or [])`) and consults it throughout the\n  `_looks_like_*` predicates, but every classification branch assigns a fixed\n  literal \u2014 `proposed_labels = (\"bug\",)` at `shape_classify.py:262`, and the same\n  pattern at lines 266, 269, 273, 276, 279, 284 \u2014 with no subtraction against\n  `label_set`. The only field that does consult current state is\n  `removed_labels`, guarded by `\"todo:draft\" in label_set` at\n  `shape_classify.py:254`, which demonstrates the check was available and was\n  applied on one field only. Separately, `next_command`\n  (`src/theforge/intake/shape_render.py:137-160`) branches solely on\n  `proposal.classification` and `proposal.diagnosis_state`; the bug branch at\n  lines 143-146 returns `forge groom {n}` for any confirmed-cause bug, and the\n  function never receives or consults a gate verdict, so no input to it can\n  produce a \"ready\" result. The caller (`src/theforge/cli/shape.py:262-268`)\n  then folds `bool(proposal.proposed_labels)` into `needs_change`, so the\n  redundant label proposal is also what makes the exit code non-zero.\n\n- **Ruled out:** not a `gh` label-read failure \u2014 `_load_issue`\n  (`src/theforge/cli/shape.py:49-81`) parses the label objects correctly and the\n  classification that depends on them is right. Not an `--apply`-only concern \u2014\n  the redundant proposal is printed and affects the exit code with or without\n  `--apply`. Not a missing gate API \u2014 `diagnosis_completeness` and\n  `check_bug_missing_diagnosis` are importable from `shape_check.heuristics` and\n  are what `forge groom` already calls to reach its own `runnable` verdict.\n\n- **Confirmed cause:** proposals are constructed from the classification alone\n  rather than as a diff against observed state. `proposed_labels` is a literal\n  per branch and is never subtracted from the label set the same function\n  already holds, and `next_command` has no access to a shape-gate verdict so it\n  cannot express a terminal state.\n\n- **Affected code path:** `src/theforge/intake/shape_classify.py` \u2014\n  `classify()`, the per-branch `proposed_labels` assignments at lines 261-287;\n  `src/theforge/intake/shape_render.py` \u2014 `next_command` (lines 137-160);\n  `src/theforge/cli/shape.py` \u2014 the `needs_change` computation at lines 262-268.\n\n- **Fix-success criterion:** running `forge shape` on an issue that already\n  carries its classification label proposes no label additions and its output\n  contains no `Add labels:` line; and running it on an issue whose body already\n  passes the shape gate reports that no further action is needed and exits 0,\n  rather than naming a downstream command.\n\n## Notes\n\nBoth halves have the same cause \u2014 a proposal built without reading current state\n\u2014 so they are filed together; a fix that addresses only one leaves the command\nstill reporting work that does not exist.\n\nFound while auditing which parts of issue filing can move out of an interactive\ncontroller session.\n",
+    "github_issue": 2054,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Workspace creation failed: Workspace setup command failed: [notice] A new release of pip is available: 25.0.1 -> 26.2\n[notice] To update, run: pip install --upgrade pip\nERROR: file:///Users/pwickersham/src/theforge/.forge/worktrees/issue-2054 does not appear to be a Python project: neither 'setup.py' nor 'pyproject.toml' found.",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "ddf64f41d89261f603b0024165e834a0f9eb38492532d54f5c681fcced351a61",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-01T06:29:59.928428+00:00",
+    "finished_at": "2026-08-01T06:30:02.072320+00:00",
+    "duration_seconds": 2.143892
+  },
+  "workspace": {
+    "path": null,
+    "branch": null,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "gate_runs": 0,
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": null,
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "dev_usd": 0,
+    "review_usd": 0,
+    "dev_invocations": 0,
+    "review_invocations": 0,
+    "agents": []
+  },
+  "preflight": null,
+  "context_manifests": [],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "Workspace setup command failed: [notice] A new release of pip is available: 25.0.1 -> 26.2\n[notice] To update, run: pip install --upgrade pip\nERROR: file:///Users/pwickersham/src/theforge/.forge/worktrees/issue-2054 does not appear to be a Python project: neither 'setup.py' nor 'pyproject.toml' found.",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": null,
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": null
+  },
+  "totals": {
+    "cost_usd": 0.0,
+    "duration_s": 0.0,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 0
+  },
+  "sprint_id": "7272950c8b34",
+  "sprint_name": "issues-2054,2057,2059"
+}
