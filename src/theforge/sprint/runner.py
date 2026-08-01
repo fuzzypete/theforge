@@ -1829,14 +1829,20 @@ def _run_single_story(
                 lands_in_project_root=lands_in_project_root,
             )
     except AdvisoryArtifactError as exc:
-        # A shared-infrastructure failure surfaced in this worker. The story did
-        # not fail — a path every story in the sprint writes did — so it is
-        # recorded with infrastructure-abort vocabulary rather than as this
-        # story's ESCALATE verdict (#2107). The real errno and artifact path are
-        # preserved so the operator is sent to the infrastructure, not to a
-        # story whose own work may well be complete.
+        # The worker boundary for a shared-resource failure. Containment is
+        # primarily at the call site — coordinator.validate_phase absorbs a
+        # failed advisory update and lets the story keep its real outcome — so
+        # in the current call graph nothing reaches here. That is exactly what
+        # makes this branch worth keeping rather than what makes it redundant:
+        # the blanket handler below turns *any* escaping exception into this
+        # story's ESCALATE verdict at cost_usd 0.0, which is the misattribution
+        # #2107 reports. A shared-resource failure that ever reaches the worker
+        # — from a future call site, or a call site whose own containment fails
+        # — must be recorded against the infrastructure, and this is the only
+        # place that can do it once the exception has left the coordinator.
         _log(f"ERROR {task.slug}: shared infrastructure failure: {exc}")
         message = f"Shared infrastructure failure (advisory artifact): {exc}"
+        failure_record = exc.as_failure_record()
         failure_state = CoordinatorState(
             phase=Phase.ESCALATE,
             started_at=started_at.isoformat(),
@@ -1845,21 +1851,8 @@ def _run_single_story(
             error=message,
             error_type=ERROR_TYPE_INFRASTRUCTURE_ABORT,
         )
-        failure_state.infrastructure_failure = {
-            "message": message,
-            "component": "advisory_conventions_artifact",
-            "path": str(exc.path),
-            "cause_type": type(exc.cause).__name__,
-            "cause": str(exc.cause),
-        }
-        failure_state.shared_infrastructure_failures.append(
-            {
-                "component": "advisory_conventions_artifact",
-                "path": str(exc.path),
-                "error": str(exc),
-                "error_type": type(exc.cause).__name__,
-            }
-        )
+        failure_state.infrastructure_failure = {"message": message, **failure_record}
+        failure_state.shared_infrastructure_failures.append(failure_record)
         result = CoordinatorResult(
             success=False,
             phase=Phase.ESCALATE,

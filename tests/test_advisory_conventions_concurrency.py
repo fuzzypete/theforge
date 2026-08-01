@@ -10,6 +10,7 @@ later writer delete observations it had never seen.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import threading
 from pathlib import Path
@@ -26,6 +27,7 @@ from theforge.advisory_conventions import (
     load_advisory_summary,
     update_advisory_violations,
 )
+from theforge.config import AdvisoryConventionsConfig
 
 OBSERVED_AT = dt.datetime(2026, 8, 1, 5, 31, tzinfo=dt.timezone.utc)
 
@@ -181,6 +183,73 @@ def test_lock_files_live_outside_the_working_tree(tmp_path: Path) -> None:
     assert locks and all(name.startswith("advisory.yaml-") for name in locks)
     # Nothing the story-lock sweeper's non-recursive glob would collect.
     assert list((tmp_path / ".forge" / "locks").glob("*.lock")) == []
+
+
+def _update_with_timeout(config, *, timeout: float = 30.0) -> None:
+    """Run one advisory update in a bounded thread so a hang fails the test."""
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            update_advisory_violations(
+                config,
+                [_violation("src/theforge/a.py")],
+                observed_at=OBSERVED_AT,
+                run_id="run-a",
+                story_slug="issue-2054",
+            )
+        except BaseException as exc:  # noqa: BLE001 - reported to the main thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    assert not thread.is_alive(), "advisory update deadlocked on its own artifact lock"
+    assert errors == [], f"advisory update raised: {errors!r}"
+
+
+@pytest.mark.parametrize(
+    "mirror_path",
+    [".forge/conventions/advisory.yaml", "./.forge/conventions/../conventions/advisory.yaml"],
+)
+def test_mirror_configured_to_the_artifact_itself_does_not_deadlock(
+    tmp_path: Path, mirror_path: str
+) -> None:
+    """A committed mirror that resolves to the artifact is not a second lock.
+
+    The mirror write runs while the artifact lock is held. ``flock`` is per open
+    file description, so re-acquiring the same lock on a second descriptor blocks
+    forever — a valid configuration would hang every advisory update.
+    """
+    config = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            commit_shared_artifact=True,
+            shared_artifact_path=mirror_path,
+        ),
+    )
+
+    _update_with_timeout(config)
+
+    assert _files(config) == {"src/theforge/a.py"}
+
+
+def test_distinct_mirror_is_still_written(tmp_path: Path) -> None:
+    """The skip is scoped to a mirror that IS the artifact, not to mirrors."""
+    config = dataclasses.replace(
+        _make_config(tmp_path),
+        conventions_advisory=AdvisoryConventionsConfig(
+            commit_shared_artifact=True,
+            shared_artifact_path="docs/advisory-conventions.yaml",
+        ),
+    )
+
+    _update_with_timeout(config)
+
+    mirror = tmp_path / "docs" / "advisory-conventions.yaml"
+    assert mirror.exists()
+    mirrored = yaml.safe_load(mirror.read_text(encoding="utf-8"))
+    assert {entry["file"] for entry in mirrored["entries"].values()} == {"src/theforge/a.py"}
 
 
 def test_write_failure_raises_advisory_artifact_error(tmp_path: Path) -> None:

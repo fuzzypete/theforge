@@ -528,12 +528,7 @@ def _record_advisory_convention_state(
             story_slug=task.slug,
         )
     except AdvisoryArtifactError as exc:
-        failure = {
-            "component": "advisory_conventions_artifact",
-            "path": str(exc.path),
-            "error": str(exc),
-            "error_type": type(exc.cause).__name__,
-        }
+        failure = exc.as_failure_record()
         state.shared_infrastructure_failures.append(failure)
         _log(f"  ⚠ Advisory artifact persistence failed (shared infrastructure): {exc}")
         if logger:

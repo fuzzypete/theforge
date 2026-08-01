@@ -74,10 +74,29 @@ class AdvisoryArtifactError(RuntimeError):
     record keeps the real errno and both paths (#2107).
     """
 
+    # Names the shared resource in every ledger entry and RCA excerpt. Owned
+    # here so the coordinator and the sprint worker cannot drift apart on what
+    # they call the same failure.
+    component = "advisory_conventions_artifact"
+
     def __init__(self, path: Path, cause: BaseException) -> None:
         super().__init__(f"advisory artifact persistence failed for {path}: {cause}")
         self.path = Path(path)
         self.cause = cause
+
+    def as_failure_record(self) -> dict[str, Any]:
+        """Structured shared-infrastructure ledger entry for the audit trail.
+
+        One definition of the shape, used by every recorder (CONVENTIONS §6):
+        the coordinator records it on the run that survived the failure, and the
+        sprint worker records it on one that did not.
+        """
+        return {
+            "component": self.component,
+            "path": str(self.path),
+            "error": str(self),
+            "error_type": type(self.cause).__name__,
+        }
 
 
 def advisory_artifact_path(config: ForgeConfig) -> Path:
@@ -271,14 +290,42 @@ def _entry_is_fresh(entry: dict[str, Any], observed_at: dt.datetime) -> bool:
     return age < _UNOBSERVED_ENTRY_RETENTION_SECONDS
 
 
+def _same_artifact(left: Path, right: Path) -> bool:
+    """True when two configured paths name the same file.
+
+    Compared after ``resolve()`` so a mirror configured as a differently-spelled
+    route to the artifact — ``./.forge/conventions/../conventions/advisory.yaml``,
+    a symlink, or simply the artifact path verbatim — is recognized as the same
+    destination rather than treated as a second one.
+    """
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:  # pragma: no cover - resolve() failing on both operands
+        return left.absolute() == right.absolute()
+
+
 def _persist_artifact_data(config: ForgeConfig, artifact_data: dict[str, Any]) -> None:
-    """Write the artifact (and its optional committed mirror) atomically."""
+    """Write the artifact (and its optional committed mirror) atomically.
+
+    Callers hold the *artifact* lock across this function. The committed mirror
+    therefore takes a second lock while the first is held, which is safe only
+    because the two are always acquired in this one order (artifact → mirror)
+    and are never the same lock: ``flock`` is per open file description, so a
+    mirror configured to the artifact's own path would block here forever,
+    waiting on a lock its own caller holds. A mirror that resolves to the
+    artifact is not a second destination — the write under the held lock already
+    produced exactly the requested file — so it is skipped rather than re-taken.
+    """
     advisory_cfg = config.conventions_advisory
-    _write_yaml_atomic(advisory_artifact_path(config), artifact_data)
-    if advisory_cfg.commit_shared_artifact and advisory_cfg.shared_artifact_path:
-        shared_path = config.project_root / advisory_cfg.shared_artifact_path
-        with _artifact_lock(config, shared_path):
-            _write_yaml_atomic(shared_path, artifact_data)
+    artifact_path = advisory_artifact_path(config)
+    _write_yaml_atomic(artifact_path, artifact_data)
+    if not (advisory_cfg.commit_shared_artifact and advisory_cfg.shared_artifact_path):
+        return
+    shared_path = config.project_root / advisory_cfg.shared_artifact_path
+    if _same_artifact(shared_path, artifact_path):
+        return
+    with _artifact_lock(config, shared_path):
+        _write_yaml_atomic(shared_path, artifact_data)
 
 
 def _normalize_advisory_violation(violation: dict[str, Any]) -> dict[str, Any] | None:
