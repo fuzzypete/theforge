@@ -27,6 +27,7 @@ from theforge.config.types import IntakeConfig
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint.dag import (
     StoryDAG,
+    _branch_merge_evidence,
     _is_branch_merged,
     build_dag,
     resolve_satisfied_dependencies,
@@ -756,8 +757,12 @@ def test_is_branch_merged_issue_branch_without_base_commit_or_audit(tmp_path: Pa
     assert result is False
 
 
-def test_is_branch_merged_issue_branch_open_issue_blocks_merge_evidence(tmp_path: Path) -> None:
-    """Open GitHub issues stay eligible even when audit or git hints look merged."""
+def test_is_branch_merged_open_issue_does_not_block_merge_evidence(tmp_path: Path) -> None:
+    """An open GitHub issue no longer suppresses merge evidence (#2111).
+
+    Symptom bugs are deliberately held open pending verification after their fix
+    lands, so issue state is not a precondition for detecting the merge.
+    """
 
     def _mock_external_squash(cmd: list[str], **kwargs: object) -> MagicMock:
         m = MagicMock()
@@ -775,9 +780,81 @@ def test_is_branch_merged_issue_branch_open_issue_blocks_merge_evidence(tmp_path
     with (
         patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_external_squash),
         patch("theforge.sprint.dag._is_issue_closed", return_value=False),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
     ):
         result = _is_branch_merged("feat/issue-265", "main", tmp_path, slug="issue-265")
-    assert result is False
+    assert result is True
+
+
+def test_branch_merge_evidence_never_consults_issue_state(tmp_path: Path) -> None:
+    """Issue state is not a gate on branch merge detection at all (#2111)."""
+
+    def _mock_no_evidence(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 1
+        m.stdout = b""
+        return m
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_no_evidence),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        patch("theforge.sprint.dag._is_issue_closed") as is_issue_closed,
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+    assert evidence.merged is False
+    is_issue_closed.assert_not_called()
+
+
+def test_branch_merge_evidence_prefers_owned_audit_over_issue_commit(tmp_path: Path) -> None:
+    """Owned audit evidence is consulted before the loose issue-commit grep."""
+
+    grepped: list[list[str]] = []
+
+    def _mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if cmd[:2] == ["git", "log"] and any(c.startswith("--grep=") for c in cmd):
+            grepped.append(cmd)
+        m.returncode = 1
+        m.stdout = b""
+        return m
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+        patch("theforge.sprint.dag.has_review_approve", return_value=True),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+    assert evidence.merged is True
+    assert evidence.source == "audit"
+    assert grepped == []
+
+
+def test_branch_merge_evidence_audit_error_falls_through_to_pr_lookup(tmp_path: Path) -> None:
+    """A transient audit-read failure must not discard the merged-PR fallback."""
+
+    def _mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if cmd[:3] == ["gh", "pr", "list"]:
+            m.returncode = 0
+            m.stdout = (
+                '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
+                '"mergedAt":"2026-05-01T12:34:56Z"}]'
+            )
+        else:
+            m.returncode = 1
+            m.stdout = b""
+        return m
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+        patch("theforge.sprint.dag.has_review_approve", side_effect=OSError("audit unreadable")),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+    assert evidence.merged is True
+    assert evidence.source == "github_pr"
+    assert evidence.pr_number == 1111
 
 
 def test_run_sprint_summary_records_run_log(tmp_path: Path) -> None:

@@ -1038,6 +1038,8 @@ class TestDeindexRunsOnAllReturnPaths:
         wt_path.mkdir(parents=True, exist_ok=True)
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            if "worktree list --porcelain" in cmd:
+                return (True, f"worktree {wt_path}\nbranch refs/heads/forge/test-task\n")
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "forge/test-task")
             if "git log" in cmd and ".." in cmd:
@@ -1090,3 +1092,135 @@ class TestDeindexRunsOnAllReturnPaths:
 
         assert err is None
         mock_deindex.assert_called_once_with(workspace_path, purge=True)
+
+
+# ── Unregistered leftover workspace paths (#2111) ─────────────────────
+
+
+class TestUnregisteredWorkspacePath:
+    """A path git does not register as a worktree is residue, not a checkout.
+
+    Git commands run inside a leftover directory under the managed worktrees
+    root resolve against the *parent* repository, so the staleness probe cannot
+    tell residue from a real worktree. Setup then runs against a directory with
+    no project in it and fails with a confusing error (#2111).
+    """
+
+    def _config_with_setup(self, tmp_path):
+        config = _make_config(tmp_path)
+        return dataclasses.replace(
+            config,
+            workspace=dataclasses.replace(config.workspace, setup_command="pip install -e ."),
+        )
+
+    @patch("theforge.coordinator.workspace._propagate_claude_memory")
+    @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
+    @patch("theforge.coordinator.workspace._run_setup_split")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_forge_only_residue_is_removed_and_recreated(
+        self, mock_log, mock_shell, mock_setup, mock_deindex, mock_memory, tmp_path
+    ):
+        """Forge-owned residue is deleted and the workspace recreated from scratch."""
+        config = self._config_with_setup(tmp_path)
+        task = _make_task(tmp_path)
+
+        wt_path = tmp_path / task.slug
+        (wt_path / ".forge").mkdir(parents=True)
+        (wt_path / ".forge" / "runs.jsonl").write_text("{}\n", encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "worktree list --porcelain" in cmd:
+                # git registers only the project root — the leftover path is
+                # not a worktree.
+                return (True, f"worktree {tmp_path}\nbranch refs/heads/main\n")
+            if cmd.startswith("mkdir -p"):
+                wt_path.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_setup.return_value = (True, "")
+
+        workspace_path, branch, err = _create_workspace(config, task, no_pull=True)
+
+        assert err is None
+        assert workspace_path == wt_path
+        assert branch == "forge/test-task"
+        # The residue was cleared before the workspace was recreated.
+        assert not (wt_path / ".forge" / "runs.jsonl").exists()
+        # Setup ran exactly once, on the freshly created workspace.
+        assert mock_setup.call_count == 1
+
+    @patch("theforge.coordinator.workspace._run_setup_split")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_unregistered_path_with_foreign_contents_fails_closed(
+        self, mock_log, mock_shell, mock_setup, tmp_path
+    ):
+        """Residue holding non-Forge contents is preserved and the run fails closed."""
+        config = self._config_with_setup(tmp_path)
+        task = _make_task(tmp_path)
+
+        wt_path = tmp_path / task.slug
+        (wt_path / ".venv").mkdir(parents=True)
+        (wt_path / ".venv" / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "worktree list --porcelain" in cmd:
+                return (True, f"worktree {tmp_path}\nbranch refs/heads/main\n")
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git status --porcelain" in cmd:
+                return (True, "?? .venv/\n")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, branch, err = _create_workspace(config, task, no_pull=True)
+
+        assert workspace_path is None
+        assert branch is None
+        assert err is not None
+        assert "not register it as a worktree" in err
+        # Critically: setup never ran inside the residue directory.
+        mock_setup.assert_not_called()
+        assert (wt_path / ".venv" / "pyvenv.cfg").exists()
+
+    @patch("theforge.coordinator.workspace._propagate_claude_memory")
+    @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
+    @patch("theforge.coordinator.workspace._run_setup_split")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_unreadable_worktree_list_fails_open_to_reuse(
+        self, mock_log, mock_shell, mock_setup, mock_deindex, mock_memory, tmp_path
+    ):
+        """An unreadable `git worktree list` must not delete an existing directory."""
+        config = self._config_with_setup(tmp_path)
+        task = _make_task(tmp_path)
+
+        wt_path = tmp_path / task.slug
+        wt_path.mkdir(parents=True)
+        (wt_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "worktree list --porcelain" in cmd:
+                return (False, "fatal: not a git repository")
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc1234 a commit\n")
+            if "rev-list" in cmd:
+                return (True, "0\n")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_setup.return_value = (True, "")
+
+        workspace_path, _, err = _create_workspace(config, task, no_pull=True)
+
+        assert err is None
+        assert workspace_path == wt_path
+        assert (wt_path / "pyproject.toml").exists()
