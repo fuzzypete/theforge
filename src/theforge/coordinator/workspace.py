@@ -643,6 +643,37 @@ def _count_unpublished_commits(branch_name: str, project_root: Path) -> int | No
         return None
 
 
+def _is_registered_worktree_path(path: Path, project_root: Path) -> bool | None:
+    """Return True when git registers ``path`` as a linked worktree.
+
+    Returns ``None`` when ``git worktree list`` cannot be read, so callers can
+    fail open rather than delete a directory on an unreadable answer. An empty
+    listing counts as unreadable: a real repository always reports at least its
+    own main worktree, so a listing with no entries is a failed probe, not a
+    statement that ``path`` is unregistered.
+    """
+    ok, output = _cu._run_shell("git worktree list --porcelain", project_root)
+    if not ok:
+        return None
+    try:
+        target = path.resolve()
+    except OSError:
+        target = path
+    saw_entry = False
+    for line in output.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        saw_entry = True
+        candidate = Path(line[len("worktree ") :])
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved == target:
+            return True
+    return False if saw_entry else None
+
+
 def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
     """Return the registered worktree path for branch, or None if not found."""
     ok, output = _cu._run_shell("git worktree list --porcelain", project_root)
@@ -1062,6 +1093,28 @@ def _create_workspace(
 
     if workspace_path.exists():
         _cu._log(f"⚠ WORKSPACE  existing worktree found: {workspace_path}")
+        # A directory under the managed worktrees root that git does not register
+        # as a worktree is residue, not a checkout. Reusing it runs the setup
+        # command against a directory with no project in it, and the failure
+        # surfaces as a confusing "not a Python project" error (#2111). Note that
+        # git commands run inside such a directory resolve against the *parent*
+        # repository, so the staleness probe below cannot tell the difference.
+        registered = _is_registered_worktree_path(workspace_path, config.project_root)
+        if registered is False:
+            _cu._log(
+                "⚠ WORKSPACE  path is not a registered git worktree — "
+                f"treating as stale residue: {workspace_path}"
+            )
+            _remove_leftover_worktree_dir(workspace_path)
+            if workspace_path.exists():
+                return (
+                    None,
+                    None,
+                    "Workspace path exists but git does not register it as a worktree "
+                    f"and it holds non-Forge contents: {workspace_path}",
+                )
+
+    if workspace_path.exists():
         is_stale, info_line = _is_stale_worktree(
             workspace_path, config.workspace.base_branch, config
         )

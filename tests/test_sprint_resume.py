@@ -544,8 +544,13 @@ class TestReadPriorSprintCost:
         assert triage.action == "skip_merged"
         assert "merged" in triage.reason
 
-    def test_triage_open_issue_with_landed_audit_stays_full(self, tmp_path: Path) -> None:
-        """An open issue is contradictory evidence and must not be skipped as merged."""
+    def test_triage_open_issue_with_landed_audit_skips_merged(self, tmp_path: Path) -> None:
+        """A landed audit record wins over an open issue (#2111).
+
+        Symptom bugs are held open pending verification after their fix merges,
+        so an open issue is no longer contradictory evidence — the run's own
+        landed APPROVE record is what establishes the merge.
+        """
 
         _make_spec_file(tmp_path, "Issue 1071", "issue-1071")
         config = _make_config(tmp_path)
@@ -582,8 +587,79 @@ class TestReadPriorSprintCost:
         ):
             triage = _triage_spec("issue-1071.md", config, tmp_path)
 
-        assert triage.action == "full"
-        assert triage.reason == "branch is at main HEAD with 0 commits ahead"
+        assert triage.action == "skip_merged"
+        assert "audit trail" in triage.reason
+
+    def test_triage_open_issue_with_base_commit_reference_skips_merged(
+        self, tmp_path: Path
+    ) -> None:
+        """A base commit referencing the open issue is enough to skip (#2111)."""
+
+        _make_spec_file(tmp_path, "Issue 1072", "issue-1072")
+        config = _make_config(tmp_path)
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if cmd[:2] == ["git", "log"] and "--grep=(#1072)" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123\n"
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"0"
+            elif "--is-ancestor" in cmd:
+                m.returncode = 1
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            patch("theforge.sprint.dag._is_issue_closed", return_value=False),
+            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        ):
+            triage = _triage_spec("issue-1072.md", config, tmp_path)
+
+        assert triage.action == "skip_merged"
+        assert triage.reason == "already merged to main"
+
+    def test_triage_open_issue_with_topology_merge_skips_merged(self, tmp_path: Path) -> None:
+        """A topologically merged branch skips even while its issue is open (#2111)."""
+
+        _make_spec_file(tmp_path, "Issue 1073", "issue-1073")
+        config = _make_config(tmp_path)
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "rev-list" in cmd and "--count" in cmd:
+                # Both directions non-zero: base advanced past a branch that had
+                # unique work of its own.
+                m.returncode = 0
+                m.stdout = b"2"
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            patch("theforge.sprint.dag._is_issue_closed", return_value=False),
+            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        ):
+            triage = _triage_spec("issue-1073.md", config, tmp_path)
+
+        assert triage.action == "skip_merged"
+        assert triage.reason == "already merged to main"
 
     def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
         """Worktree has commits ahead and prior APPROVE in audit trail → skip."""

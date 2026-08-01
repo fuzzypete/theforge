@@ -29,6 +29,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator import audit_substrate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import run_sprint
 from theforge.sprint.audit import persist_accumulated_story_state
@@ -797,3 +798,103 @@ def test_cmd_sprint_detached_child_reexec_passes_reexec_true(
     # ...but cmd_sprint captured the signal first, so reexec reached run_sprint.
     mock_run_sprint.assert_called_once()
     assert mock_run_sprint.call_args.kwargs["reexec"] is True
+
+
+def test_reexec_landed_story_with_open_issue_is_not_redispatched(
+    tmp_path: Path,
+) -> None:
+    """#2111: a landed story whose GitHub issue is deliberately held open must
+    still triage as skip_merged and keep its recorded DONE outcome.
+
+    This exercises the real ``_triage_spec`` (not a stubbed StoryTriage) so the
+    whole chain is covered: merge evidence is drawn from the run's own audit
+    trail rather than issue state, the story is pre-marked complete in the DAG,
+    and the scheduler never re-enters it through WORKSPACE where a workspace
+    failure could overwrite its outcome.
+    """
+    _make_spec_file(tmp_path, "Issue 2054", "issue-2054")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["issue-2054.md", "feature-b.md"])
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 0.33)
+    persist_accumulated_story_state(
+        sprint_id,
+        "Test Sprint",
+        tmp_path,
+        [
+            {
+                "canonical_ref": "issue-2054.md",
+                "slug": "issue-2054",
+                "path": "issue-2054.md",
+                "outcome": "DONE",
+                "cost_usd": 0.33,
+                "story_run_id": "run-prev",
+                "depends_on": [],
+            }
+        ],
+    )
+
+    # The run's own landed APPROVE record — the evidence it wrote when it merged.
+    audit_substrate.seed_records(
+        tmp_path,
+        [
+            {
+                "run_id": "run-prev",
+                "task": {"slug": "issue-2054"},
+                "landing_status": "landed",
+                "reviews": [{"verdict": "APPROVE"}],
+            }
+        ],
+    )
+
+    def _mock_git(cmd, **kwargs):
+        m = MagicMock()
+        # Patching subprocess.run via the dag module replaces the attribute on
+        # the shared stdlib module, so the runner's own probes land here too.
+        # tmp_path is not a git checkout: keep it that way so no base-branch
+        # pull is attempted.
+        if cmd[:2] == ["git", "rev-parse"]:
+            m.returncode = 128
+            m.stdout = ""
+            m.stderr = "fatal: not a git repository"
+        # Branch is at base HEAD: 0 commits ahead, 0 behind — the ambiguous
+        # same-tip state a squash merge plus rebase leaves behind.
+        elif "log" in cmd:
+            m.returncode = 0
+            m.stdout = b""
+        elif "rev-list" in cmd and "--count" in cmd:
+            m.returncode = 0
+            m.stdout = b"0"
+        elif "--is-ancestor" in cmd:
+            m.returncode = 0
+            m.stdout = b""
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git),
+        # The symptom bug is held open pending verification after its fix landed.
+        patch("theforge.sprint.dag._is_issue_closed", return_value=False),
+        patch(
+            "theforge.sprint.runner.run_batch_preflight", return_value={}
+        ) as mock_batch_preflight,
+        patch("theforge.sprint.runner.run_task", return_value=fresh_result) as mock_run_task,
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        result = run_sprint(config, manifest_path, reexec=True)
+
+    preflight_slugs = [t.slug for t in mock_batch_preflight.call_args.args[0]]
+    assert preflight_slugs == ["feature-b"]
+
+    dispatched_slugs = [c.args[1].slug for c in mock_run_task.call_args_list]
+    assert dispatched_slugs == ["feature-b"]
+
+    assert result.specs_succeeded == 2
+    assert result.specs_failed == 0
+    assert result.total_cost_usd == pytest.approx(1.33)
