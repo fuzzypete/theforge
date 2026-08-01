@@ -1,0 +1,2306 @@
+{
+  "schema_version": 16,
+  "run_id": "30df162d0f7f",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc14",
+  "task": {
+    "name": "Merge detection is gated on the issue being closed, so a landed story is re-triaged as stale and its recorded outcome overwritten",
+    "slug": "issue-2111",
+    "story_path": null,
+    "story_text": "## Observed behavior\n\nEvery path that detects whether a story's branch was merged is gated on the\nreferencing GitHub issue being closed. Since symptom bugs are now deliberately\nheld open after their fix merges, a landed story is classified as stale, a full\nre-run is scheduled against work that is already in the base branch, and the\nsprint's record of the successful outcome is overwritten with a failure.\n\nSprint `7272950c8b34` (`issues-2054,2057,2059`) was resumed after all three\nstories had landed. All three fixes are on `origin/release/v0.13`:\n\n```\n423c8c5  #2054   40f79c4  #2057   557d9f0  #2059\n```\n\nThe resume nonetheless reported `LANDED (0 of 3)` and\n`FAILED \u2014 unknown_needs_rca (3)`.\n\nThe classification was correct at first and then inverted. At 23:23:50, while the\nbranch still carried its commits:\n\n```\nissue-2054  REVIEW (worktree exists, gate passes (2 commits ahead))\n```\n\nThe story's fix then merged to the base branch and the worktree was brought up to\ndate. Six minutes later the same story re-triaged:\n\n```\nissue-2054  FULL (worktree exists but branch is at release/v0.13 HEAD (stale))\nissue-2057  FULL (worktree exists but 0 commits ahead of release/v0.13 (stale))\nissue-2059  FULL (worktree exists but 0 commits ahead of release/v0.13 (stale))\n```\n\nThe scheduled full re-run then failed for all three in workspace setup, because\nthe directory it reused was no longer a valid git worktree \u2014 `git worktree list`\nregisters none of the three, and each directory retains only untracked residue:\n\n```\nERROR: file:///.../.forge/worktrees/issue-2054 does not appear to be a Python\nproject: neither 'setup.py' nor 'pyproject.toml' found.\n```\n\nAll three stories were recorded `ESCALATE`, and the prior state \u2014 including the\nsuccessful outcomes and the recorded cause of an earlier failure \u2014 was replaced.\n\n## Expected behavior\n\nA run should establish whether it already merged a branch from what it recorded\nwhen it did so, rather than from a signal owned by another system that other\npolicy is free to redefine. Issue state is a reasonable corroborating signal and a\npoor precondition: making it a gate means any legitimate change to what closure\nmeans silently disables merge detection entirely, and the failure presents as a\nscheduling decision rather than as a broken lookup. Where a system has several\nmeans of establishing a fact, the one it owns should be consulted first and should\nnot be reachable only after a weaker external signal agrees.\n\nMore generally, a branch carrying no commits ahead of its base is ambiguous \u2014 it\ndescribes a branch that was merged and rebased just as well as one that never\nproduced work \u2014 and resolving that ambiguity toward \"no work was done\" discards\ncompleted work, while resolving it toward \"already merged\" at worst repeats a\nskip. A story whose outcome was already recorded should not have that record\nreplaced by a later attempt that was scheduled on a misreading of the same state.\n\n## Diagnosis\n\n- **Observed symptom:** three stories whose fixes are present in the base branch\n  are re-triaged as stale, scheduled for a full re-run, failed in workspace setup,\n  and recorded as failures replacing their earlier successful outcomes.\n\n- **Evidence:** `src/theforge/sprint/dag.py:257-258` returns unconditionally\n  before any merge evidence is examined:\n\n  ```python\n  if not issue_is_closed:\n      return no_merge\n  ```\n\n  `issue_is_closed` is computed at `dag.py:209-212` from the issue number derived\n  from the slug or branch. The same condition also guards the topology path at\n  `dag.py:246`, and the issue-referencing-commit search at `dag.py:260`. The\n  audit-trail fallback sits below both and is therefore unreachable whenever the\n  issue is open, despite being the evidence the run itself produced.\n\n  `_is_branch_merged`'s own docstring (`dag.py:301-323`) states that this\n  repository's configured strategy is squash merge and that \"Git topology alone\n  therefore cannot prove the merge,\" which is precisely why the audit fallback\n  exists.\n\n  With no merge evidence available, classification falls through to\n  `dag.py:617` \u2014 \"A branch at the base tip (0 ahead, 0 behind) is stale/empty, not\n  merged\" \u2014 emitting the reasons at `dag.py:625` and `dag.py:668` observed above.\n\n  The trigger is a closure-semantics change that landed earlier the same day:\n  commit `6213611` stops closing a symptom bug when a referencing pull request\n  merges, labelling it for verification instead. It landed before all three\n  stories (`40f79c4`, `557d9f0`, `423c8c5`), and all three issues are currently\n  open carrying that label. Because it is a repository workflow rather than\n  orchestrator code, it took effect from the branch immediately.\n\n- **Ruled out:** not an inability to detect squash merges \u2014 the fallbacks for that\n  exist and the landing commits do reference their issue numbers, so the\n  issue-commit search would have succeeded had it been reached. Not primarily a\n  worktree-cleanup defect; the invalid worktree is what the re-run then failed on,\n  but the re-run should never have been scheduled. Not a resume-specific bug in\n  the triage arithmetic: the same story classified correctly minutes earlier, and\n  only the merge of its own work changed the inputs.\n\n- **Confirmed cause:** merge detection treats issue closure as a precondition for\n  examining any merge evidence, including evidence the run recorded itself. A\n  policy change to what closure means therefore disables merge detection for the\n  affected class of issue, and the ambiguity that detection existed to resolve is\n  then resolved toward \"stale.\"\n\n- **Affected code path:** `src/theforge/sprint/dag.py` \u2014\n  `_branch_merge_evidence` and its `issue_is_closed` guards, `_is_branch_merged`,\n  and the stale classification that consumes their result; the workspace reuse\n  path that accepts a directory git no longer registers as a worktree.\n\n- **Fix-success criterion:** a story whose branch the run itself merged is\n  recognised as merged regardless of whether the referencing issue is open, a\n  story recorded as complete is not re-scheduled for a full re-run on a later\n  pass, and an outcome already recorded for a story is not replaced by one derived\n  from a misclassification of the same state.\n\n## Notes\n\nThis will recur for every symptom bug from now on, since holding the issue open\npending verification is the intended path for that class.\n\nThe invalid-worktree failure downstream is folded in here rather than filed\nseparately: it is reachable only because a landed story was scheduled for a full\nre-run, and a workspace step that accepts a path git does not list as a worktree\nis a second defect on the same route. It may warrant separating if it proves\nreachable by another path.\n",
+    "github_issue": 2111,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Merge detection is gated on the issue being closed, so a landed story is re-triaged as stale and its recorded outcome overwritten' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-2111",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "a823a5ae914aa0187cfa3a85d7e336400b45b202913a465e8b479ee4b22f55d1",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-01T23:04:05.226550+00:00",
+    "finished_at": "2026-08-01T23:28:41.983325+00:00",
+    "duration_seconds": 1476.756775
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2111",
+    "branch": "feat/issue-2111",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "gate_runs": 1,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 5.7517949999999995,
+        "duration_s": 722.75,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/workspace.py",
+          "src/theforge/sprint/dag.py",
+          "tests/test_coord_workspace.py",
+          "tests/test_coord_workspace_stale.py",
+          "tests/test_sprint_gate_visibility.py",
+          "tests/test_sprint_reexec_reconcile.py",
+          "tests/test_sprint_resume.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 8,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.24016,
+        "duration_s": 76.49
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 6,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 6,
+      "base_review": 5,
+      "profile_history_runs": 168,
+      "profile_avg_iterations": 1.5833,
+      "profile_avg_cost_usd": 4.511259,
+      "profile_raw_dev_max": 2.375,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.0225,
+      "review_history_sample_size": 21,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 168 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-01T23:14:24.755564+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 19.4498399,
+    "dev_usd": 5.7517949999999995,
+    "review_usd": 1.2401605,
+    "dev_invocations": 1,
+    "review_invocations": 2,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 5.7517949999999995,
+        "duration_seconds": 722.7508692080155,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.00739
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 5.7444049999999995
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.593941,
+        "duration_seconds": 38.1519559584558,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.593941
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.6462195000000001,
+        "duration_seconds": 38.1519559584558,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.6462195000000001
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Code inspection confirms the diagnosis exactly: dag.py:257-258 gates the issue-commit search and audit-trail fallback behind issue_is_closed, and the same guard at line 246 blocks the topology-merge return, so a landed branch whose issue is deliberately held open falls through to the stale/empty classification at line 621. The fix requires reordering evidence checks within one function plus module, not a cross-module rewrite.",
+    "complexity": "medium",
+    "complexity_score": 6,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "5 operator-visible surfaces enumerated in acceptance criteria: and its, is computed at, pyproject.toml, python if not issue_is_closed: return no_merge, returns unconditionally before any merge evidence is examined:",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "concurrency"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.47705040000000004,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "d6525ae694f2",
+    "cache_snapshot": {
+      "worktree_head": "9c4497726f1c7cb971ccde85b16373b116a412bc",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "9c4497726f1c7cb971ccde85b16373b116a412bc",
+      "story_content_hash": "3159f39c79e2652ec90dd04ec5f21ad11212895af66889e12c5670f1bf7f405a"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "9c4497726f1c7cb971ccde85b16373b116a412bc",
+      "current_worktree_head": "9c4497726f1c7cb971ccde85b16373b116a412bc",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "9c4497726f1c7cb971ccde85b16373b116a412bc",
+      "current_evaluation_base_branch_head": "9c4497726f1c7cb971ccde85b16373b116a412bc",
+      "cached_story_content_hash": "3159f39c79e2652ec90dd04ec5f21ad11212895af66889e12c5670f1bf7f405a",
+      "current_story_content_hash": "3159f39c79e2652ec90dd04ec5f21ad11212895af66889e12c5670f1bf7f405a",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.47705040000000004,
+        "duration_s": 202.56,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 6,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend+concurrency (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 6,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2111/iter_1.yaml",
+      "handoff": {
+        "summary": "Removed issue-closure gating from sprint merge detection. _branch_merge_evidence in src/theforge/sprint/dag.py no longer calls _is_issue_closed at all; it consults evidence strongest-first \u2014 the run's own audit trail (APPROVE + landed), then git topology, then GitHub's merged-PR record, then the loose base-commit-referencing-issue grep last \u2014 so a branch the run itself merged is recognised as merged even when the referencing symptom bug is deliberately held open pending verification. The bare `except: return no_merge` around the audit read now falls through to the remaining evidence sources instead of discarding them on a transient failure. Issue closure remains only as corroboration for external dependencies in resolve_satisfied_dependencies. Comments in _triage_spec were updated to record why the merge-evidence check must precede the stale/empty classification. Separately, _create_workspace in src/theforge/coordinator/workspace.py now verifies that an existing workspace_path is a registered git worktree before reusing it: Forge-owned residue is cleared and the workspace recreated, residue holding anything else is preserved and the run fails closed with a precise error instead of running setup inside a non-checkout, and an unreadable or empty `git worktree list` fails open.",
+        "commits": [
+          {
+            "sha": "cbb6b0b",
+            "message": "fix(sprint): detect merged branches without requiring the issue to be closed"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A story whose branch the run itself merged is recognised as merged regardless of whether the referencing issue is open",
+            "status": "MET",
+            "notes": "_branch_merge_evidence no longer references _is_issue_closed. Covered by test_branch_merge_evidence_never_consults_issue_state, test_is_branch_merged_open_issue_does_not_block_merge_evidence, and three _triage_spec regressions (landed audit, base-commit reference, topology merge) that all assert skip_merged with _is_issue_closed patched to False."
+          },
+          {
+            "criterion": "A story recorded as complete is not re-scheduled for a full re-run on a later pass",
+            "status": "MET",
+            "notes": "The merge_evidence check in _triage_spec already preceded the stale/empty branch; with evidence no longer collapsing to false, a same-tip landed branch returns skip_merged instead of falling through to action=full. Covered by test_triage_open_issue_with_landed_audit_skips_merged and the two sibling triage tests."
+          },
+          {
+            "criterion": "An outcome already recorded for a story is not replaced by one derived from a misclassification of the same state",
+            "status": "MET",
+            "notes": "SprintStoryState's landed-DONE immutability guard was already present and is left intact (tests/test_sprint_story_state.py covers it). Added test_reexec_landed_story_with_open_issue_is_not_redispatched, a seam test driving the real _triage_spec through run_sprint(reexec=True): the landed story with an open issue is excluded from batch preflight, never dispatched via run_task/WORKSPACE, and keeps its prior DONE outcome and $0.33 cost."
+          },
+          {
+            "criterion": "The workspace reuse path does not accept a directory git no longer registers as a worktree (folded-in second defect)",
+            "status": "MET",
+            "notes": "Added _is_registered_worktree_path and a guard in _create_workspace. Three tests: Forge-owned residue removed then recreated with setup run once on the fresh tree; residue with non-Forge contents preserved and _run_setup_split never called; unreadable `git worktree list` falls open to the existing reuse path without deleting anything."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Step 3 as planned routed leftover directories through the existing stale-worktree cleanup flow (_remove_worktree). That flow only deletes the directory when `git worktree remove` succeeds, which it cannot for an unregistered path, so it would have left the residue in place. Used _remove_leftover_worktree_dir directly instead, which is the helper that already encodes the safe Forge-owned-contents-only deletion rule, and fail closed when it declines.",
+          "The registration probe treats an empty `git worktree list` as unreadable rather than as 'not registered'. A real repository always lists at least its own main worktree, so an empty listing is a failed probe. Without this, ~400 existing tests that mock _run_shell with a permissive default would have had their bare workspace directories deleted as residue."
+        ],
+        "deferred_items": [
+          "17 tests fail in this sandbox with `Operation not permitted` (multiprocessing semaphores and mkstemp under /var/folders): all of tests/test_cut_rc_isolation.py, 5 in tests/test_sprint_lock.py, 1 in tests/test_sprint_reexec_collision.py. They are environmental and unrelated to this diff \u2014 none touch dag.py or workspace.py. Everything else passes: 6651 passed, 38 skipped."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "cbb6b0b46269f71f06c0120fd35b1b5984c6536b",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "cbb6b0b46269f71f06c0120fd35b1b5984c6536b",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": "PASS"
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Merge detection now uses owned merge evidence before stale classification, and the targeted regressions pass. | [google-gemini-3.5-flash] Approved: Merge detection is successfully decoupled from issue closure state, and workspace reuse is safely guarded against unregistered worktrees.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A story whose branch the run itself merged is recognised as merged regardless of whether the referencing issue is open",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:233 checks the landed APPROVE audit record before any external merge evidence, and src/theforge/sprint/dag.py:348 keeps issue state isolated to dependency resolution rather than merge evidence. Covered by tests/test_sprint_resume.py:547, tests/test_sprint_runner.py:760, and tests/test_sprint_runner.py:789 with _is_issue_closed patched false or asserted unused.; src/theforge/sprint/dag.py:204-295 (removed issue_is_closed gating from _branch_merge_evidence); tests/test_sprint_runner.py:757-841 (test_is_branch_merged_open_issue_does_not_block_merge_evidence, test_branch_merge_evidence_never_consults_issue_state, test_branch_merge_evidence_prefers_owned_audit_over_issue_commit, test_branch_merge_evidence_audit_error_falls_through_to_pr_lookup)"
+        },
+        {
+          "criterion": "A story recorded as complete is not re-scheduled for a full re-run on a later pass",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:625 consumes merge evidence before src/theforge/sprint/dag.py:646 classifies same-tip branches as stale, so landed same-tip branches return skip_merged instead of full. Covered by tests/test_sprint_resume.py:547, tests/test_sprint_resume.py:593, and tests/test_sprint_resume.py:630.; src/theforge/sprint/dag.py:619-638 (merge_evidence check precedes stale/empty branch check in _triage_spec); tests/test_sprint_resume.py:544-658 (test_triage_open_issue_with_landed_audit_skips_merged, test_triage_open_issue_with_base_commit_reference_skips_merged, test_triage_open_issue_with_topology_merge_skips_merged)"
+        },
+        {
+          "criterion": "An outcome already recorded for a story is not replaced by one derived from a misclassification of the same state",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:3147 records skip_merged slugs as no-dispatch, src/theforge/sprint/runner.py:3502 excludes them from batch preflight, and src/theforge/sprint/runner.py:3581 marks them complete before dispatch while preserving stronger successful state. Covered by tests/test_sprint_reexec_reconcile.py:803, which keeps the prior DONE outcome and cost while dispatching only the other story.; tests/test_sprint_reexec_reconcile.py:803-900 (test_reexec_landed_story_with_open_issue_is_not_redispatched)"
+        },
+        {
+          "criterion": "The workspace reuse path does not accept a directory git no longer registers as a worktree (folded-in second defect)",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/workspace.py:646 detects registered worktree paths, and src/theforge/coordinator/workspace.py:1094 rejects unregistered residue before setup can run in it. Covered by tests/test_coord_workspace.py:1121, tests/test_coord_workspace.py:1160, and tests/test_coord_workspace.py:1197 for Forge-owned cleanup, foreign-content fail-closed behavior, and unreadable-list fail-open behavior.; src/theforge/coordinator/workspace.py:646-674 (_is_registered_worktree_path), 1094-1116 (guard in _create_workspace); tests/test_coord_workspace.py:1100-1225 (TestUnregisteredWorkspacePath)"
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P2] [claude-opus] Step 1 changes _is_branch_merged's behavior for its two other callers, preflight_flow.py:914 and preflight_flow.py:1073, which the plan does not mention. The signature and bool return are unchanged and both call sites only run under verdict == ALREADY_DONE, so the more-permissive result is consistent with intent \u2014 but the dev should confirm rather than discover it.\n  Suggestion: Read preflight_flow.py:911-918 and 1069-1090 before landing Step 1 and note in the commit that the ALREADY_DONE branch-merged check now also fires for open issues.\n- [P1-impl] [claude-opus] Ungating _has_base_commit_referencing_issue while the issue is open widens the false-positive surface: any base commit mentioning '#N' (including a follow-up or an unrelated 'refs #N') can now mark a branch merged and skip real work. The spec explicitly accepts this direction ('at worst repeats a skip'), so it is not a blocker, but the ordering matters.\n  Suggestion: Consult run-owned evidence first \u2014 audit trail (_has_prior_review_approve) and _lookup_merged_pr_for_branch \u2014 before the looser issue-commit text search, matching the spec's 'the one it owns should be consulted first'.\n- [P1-impl] [claude-opus] dag.py:284-285 swallows any exception from _has_prior_review_approve by returning no_merge, short-circuiting the _lookup_merged_pr_for_branch fallback below it. With the issue-closed gate removed, the audit path becomes the primary evidence source, so this bare except: return no_merge now discards a working fallback on a transient audit read failure.\n  Suggestion: Change the except block to fall through to the merged-PR lookup instead of returning no_merge.\n- [P2] [claude-opus] Step 2 is a near no-op as written \u2014 the merge_evidence check at dag.py:602 already precedes the stale classification at dag.py:621 and the 0-commits-ahead branch at dag.py:662.\n  Suggestion: Scope Step 2 to updating the now-misleading comments at dag.py:600-601 and 617-620, or fold it into Step 1.",
+    "cost_usd": 11.343394,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 4.228692
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 2.13955
+      },
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.510987
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": 4.464165
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 52.2,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 208.22,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 1 changes _is_branch_merged's behavior for its two other callers, preflight_flow.py:914 and preflight_flow.py:1073, which the plan does not mention. The signature and bool return are unchanged and both call sites only run under verdict == ALREADY_DONE, so the more-permissive result is consistent with intent \u2014 but the dev should confirm rather than discover it.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Ungating _has_base_commit_referencing_issue while the issue is open widens the false-positive surface: any base commit mentioning '#N' (including a follow-up or an unrelated 'refs #N') can now mark a branch merged and skip real work. The spec explicitly accepts this direction ('at worst repeats a skip'), so it is not a blocker, but the ordering matters.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "dag.py:284-285 swallows any exception from _has_prior_review_approve by returning no_merge, short-circuiting the _lookup_merged_pr_for_branch fallback below it. With the issue-closed gate removed, the audit path becomes the primary evidence source, so this bare except: return no_merge now discards a working fallback on a transient audit read failure.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 is a near no-op as written \u2014 the merge_evidence check at dag.py:602 already precedes the stale classification at dag.py:621 and the 0-commits-ahead branch at dag.py:662.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "retry": 2,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ]
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2116",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2111",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2116",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2116",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-01T23:28:41.983325+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "PASS",
+    "cost_usd": 0.12430000000000001,
+    "duration_s": 9.806482666172087,
+    "findings": []
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3293 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1417 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1195 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1527 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 846 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1088 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2405 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1662 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1715 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 1914 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1167 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2075 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1139 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1254 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 616 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2750 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1446 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1612 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 5304 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1028 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1281 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1575 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1822 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 4,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 6,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 5,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 2,
+            "completed": 2,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 8,
+            "completed": 8,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 6,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "concurrency"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4",
+        "domain_head": "openai-gpt-5.4",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8226,
+        "weighted_success_rate": 0.824,
+        "sample_size": 62,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.824,
+          "threshold": 0.6,
+          "sample_size": 62,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "plan_review_p2_exceeded"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+concurrency",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "concurrency"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 62 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend+concurrency (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 6,
+            "completed": 6,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 77,
+            "completed": 70,
+            "raw": 0.9091,
+            "weighted": 0.9233,
+            "rate": 0.9233,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 40,
+            "completed": 33,
+            "raw": 0.825,
+            "weighted": 0.8165,
+            "rate": 0.8165,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 96,
+            "completed": 96,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 77,
+            "completed": 70,
+            "raw": 0.9091,
+            "weighted": 0.9233,
+            "rate": 0.9233,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 40,
+            "completed": 33,
+            "raw": 0.825,
+            "weighted": 0.8165,
+            "rate": 0.8165,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.47705,
+      "duration_s": 202.56,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 0.51314,
+      "duration_s": 83.83,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Make merge evidence detection issue-state independent by consulting owned/run-produced evidence before any issue-state corroboration, so a merged branch is classified as skip_merged even when its GitHub issue is intentionally open. Keep the downstream fix small: preserve existing landed-outcome immutability and add a narrow workspace guard for leftover directories that are not registered git worktrees.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Remove issue-closed gating from merge evidence detection",
+            "files": [
+              "src/theforge/sprint/dag.py"
+            ],
+            "action": "modify",
+            "details": "In _branch_merge_evidence, stop returning no_merge solely because _is_issue_closed is false. Treat topology success, _has_base_commit_referencing_issue, _has_prior_review_approve, and _lookup_merged_pr_for_branch as merge evidence in their own right; issue closure may remain only as an external dependency corroboration in resolve_satisfied_dependencies, not as a precondition for branch merge detection. Keep _is_branch_merged as the thin wrapper over _branch_merge_evidence."
+          },
+          {
+            "id": 2,
+            "description": "Keep same-tip merged branches out of stale/full triage",
+            "files": [
+              "src/theforge/sprint/dag.py"
+            ],
+            "action": "modify",
+            "details": "Leave _triage_spec's merge_evidence check before the commits_ahead == [] and commits_behind == 0 stale branch, and update comments/reasons if needed so audit-backed or issue-commit-backed same-tip branches return action=skip_merged before stale/full classification. Do not broaden full rerun scheduling for zero-ahead branches without merge evidence.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Defend workspace setup against unregistered leftover worktree directories",
+            "files": [
+              "src/theforge/coordinator/workspace.py"
+            ],
+            "action": "modify",
+            "details": "In _create_workspace, when workspace_path.exists(), require it to be a valid registered git worktree for branch_name before taking the reuse path. If the path is only leftover residue and git worktree list does not register it, treat it as stale managed workspace residue and remove or recreate it through the existing stale-worktree cleanup flow instead of running setup inside it."
+          },
+          {
+            "id": 4,
+            "description": "Add regression coverage for open-issue merged detection and stale avoidance",
+            "files": [
+              "tests/test_sprint_resume.py"
+            ],
+            "action": "modify",
+            "details": "Add focused tests around _triage_spec/_branch_merge_evidence where _is_issue_closed returns False but merge evidence exists: audit trail with landed merge evidence, base commit referencing the issue, and topology merge. Each should return skip_merged and never fall through to the stale/full reasons for 0 commits ahead.",
+            "depends_on": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": 5,
+            "description": "Add regression coverage for leftover unregistered workspace paths",
+            "files": [
+              "tests/test_coord_workspace_stale.py"
+            ],
+            "action": "modify",
+            "details": "Extend the existing workspace stale/collision tests with a case where workspace_path exists on disk, git worktree list does not contain it, and the branch has 0 commits ahead. Assert _create_workspace does not reuse the residue as a project checkout and instead recreates or fails before setup is run in that directory.",
+            "depends_on": [
+              3
+            ]
+          },
+          {
+            "id": 6,
+            "description": "Verify recorded landed outcomes remain protected",
+            "files": [
+              "tests/test_sprint_story_state.py",
+              "tests/test_sprint_reexec_reconcile.py"
+            ],
+            "action": "modify",
+            "details": "Keep the existing SprintStoryState landed-DONE immutability behavior intact, and add or adjust one resume/reexec regression showing a story already recorded as landed is classified as skip_merged/pre-satisfied and is not dispatched through WORKSPACE where a later failure could overwrite its outcome.",
+            "depends_on": [
+              1,
+              2
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "A story whose branch the run itself merged is recognised as merged regardless of whether the referencing issue is open",
+            "steps": [
+              1,
+              4
+            ]
+          },
+          {
+            "criterion": "A story recorded as complete is not re-scheduled for a full re-run on a later pass",
+            "steps": [
+              1,
+              2,
+              4,
+              6
+            ]
+          },
+          {
+            "criterion": "An outcome already recorded for a story is not replaced by one derived from a misclassification of the same state",
+            "steps": [
+              2,
+              6
+            ]
+          },
+          {
+            "criterion": "A workspace step must not accept a directory git no longer registers as a worktree on the misclassified full-rerun route",
+            "steps": [
+              3,
+              5
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "Issue closure is still useful for external dependency satisfaction, but it is not proof that a branch merged.",
+            "mitigation": "Confine issue-state fallback to resolve_satisfied_dependencies and keep _branch_merge_evidence based on git/audit/PR merge evidence."
+          },
+          {
+            "description": "Audit APPROVE alone can describe reviewed work that did not land.",
+            "mitigation": "Continue using _has_prior_review_approve, which already calls has_review_approve with require_landed=True."
+          },
+          {
+            "description": "Deleting an unregistered workspace directory could discard useful residue from an escalated run.",
+            "mitigation": "Reuse the existing stale-worktree preservation checks where possible, and limit automatic cleanup to managed workspace paths that are not registered and have no commits ahead."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": 11.343394,
+      "duration_s": 514.45,
+      "iterations": 4,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 4.228692
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 2.13955
+        },
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.510987
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": 4.464165
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 5.751795,
+      "duration_s": 722.75,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 48.74,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 1.24016,
+      "duration_s": 76.3,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 0.593941,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 0.64622,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 19.44984,
+    "duration_s": 1648.63,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "48acbe3a7091",
+  "sprint_name": "issues-2111,2115"
+}
