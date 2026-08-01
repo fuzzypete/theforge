@@ -149,10 +149,19 @@ def _scrub_agent_credentials_for_gate():
 # assume run in the non-detached default (e.g. cmd_run's daemonize branch).
 # Tests that exercise the detached branch set these explicitly via
 # monkeypatch.setenv, which overrides this session-scoped scrub for their scope.
+#
+# FORGE_PROJECT_ROOT belongs on this list for a sharper reason (#2115): it is
+# what ``process_group.register_agent_group`` resolves the pgid-sidecar
+# directory from, so when the suite runs inside a detached forge child (the
+# dogfood gate), every test that spawns a real subprocess writes agent sidecars
+# into the *real* project's ``.forge/runs/agents/`` — records naming pgids of
+# pytest subprocesses that a later ``forge`` sweep would then act on. Scrubbing
+# it makes registration a no-op unless a test opts in with monkeypatch.setenv.
 _DETACHED_RUNTIME_ENV_VARS: tuple[str, ...] = (
     "FORGE_DETACHED",
     "FORGE_DETACHED_RUN_ID",
     "FORGE_DETACHED_SLUG",
+    "FORGE_PROJECT_ROOT",
 )
 
 
