@@ -463,7 +463,8 @@ should become before grooming or diagnosing it.
 **The command never auto-invokes a producer.** `--next` prints a hint
 (`forge diagnose --issue 123`, `forge groom 123`, etc.); it does not run it.
 `--next` output is human-readable in v0.11; no stable machine-readable
-contract is promised yet.
+contract is promised yet. Its exit code carries the same readiness signal as
+the default path — 0 only when the recommendation is terminal.
 
 **ADR candidates** receive a proposed slug and title — the ADR file is not
 written. **Epic** classifications may propose child stories in prose; no
@@ -474,12 +475,29 @@ gate reports missing — an absent `## Observed` / `## Expected` section, or the
 specific `## Diagnosis` components the gate names — inserting missing diagnosis
 components into the existing `## Diagnosis` section. Existing headings are never
 re-levelled, rewritten, or demoted into quoted prose. A bug body that already
-passes the shape gate produces no diff, and `forge shape <issue>` exits 0 when
-neither the body nor the labels need changing.
+passes the shape gate produces no diff.
+
+**The proposal is a diff against observed state, and the exit code is the
+readiness signal.** Labels the issue already carries are never proposed, and
+`forge shape <issue>` exits 0 exactly when the issue already satisfies the
+shape gate — nothing left to add, remove, or restructure, and the gate's
+verdict on the current body is `runnable`. In that case the recommendation is
+terminal:
+
+```
+Next: none — #2050 already satisfies the shape gate (verdict: runnable); no further action is needed.
+```
+
+Any other state exits 1 and names the stage that still owes work (`forge
+diagnose`, `forge groom`, splitting an epic, closing a duplicate). This holds
+for `--next` too. `--apply` is the exception: it reports whether the mutation
+succeeded, not whether the issue is ready, and on a gate-passing issue it makes
+no `gh` call at all.
 
 Every invocation writes a row into the audit substrate's `shape_events`
 table (issue number, input source, classification, confidence, ambiguity
-question count, whether `--apply` mutated the issue).
+question count, whether `--apply` mutated the issue, and the shape-gate
+verdict observed).
 
 `forge shape` is the first step of the mid-sprint capture flow — see
 [Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full

@@ -101,7 +101,10 @@ def test_shape_next_prints_only_command(tmp_path, capsys):
     args = _make_args(tmp_path, from_brief=str(brief), next=True)
     rc = cmd_shape(args)
     out = capsys.readouterr().out
-    assert rc == 0
+    # --next prints the recommendation and nothing else; its exit code is the
+    # same readiness signal the default path reports, and this draft still
+    # needs diagnosis (#2054).
+    assert rc == 1
     assert out.strip().startswith("Next:")
     # Audit still emitted.
     db = substrate_path(tmp_path)

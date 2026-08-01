@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS shape_events (
     confidence TEXT NOT NULL,
     ambiguity_question_count INTEGER NOT NULL DEFAULT 0,
     apply_mutated INTEGER NOT NULL DEFAULT 0,
-    diagnosis_state TEXT
+    diagnosis_state TEXT,
+    gate_verdict TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_shape_events_emitted_at
     ON shape_events(emitted_at);
@@ -41,6 +42,13 @@ VALID_INPUT_SOURCES: frozenset[str] = frozenset({"issue", "file", "stdin", "none
 
 def _ensure_shape_events(conn: sqlite3.Connection) -> None:
     conn.executescript(_SHAPE_EVENTS_SCHEMA)
+    # Idempotent column add for substrates created under an older schema.
+    # SQLite < 3.35 lacks ADD COLUMN IF NOT EXISTS, so swallow the duplicate
+    # error from re-runs (same pattern as audit_substrate._apply_schema).
+    try:
+        conn.execute("ALTER TABLE shape_events ADD COLUMN gate_verdict TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 
 def _open_or_create(project_root: Path) -> sqlite3.Connection:
@@ -62,8 +70,14 @@ def emit_shape_event(
     ambiguity_question_count: int,
     apply_mutated: bool,
     diagnosis_state: str | None = None,
+    gate_verdict: str | None = None,
 ) -> int:
     """Insert a single shape event row. Returns the new ``id``.
+
+    ``gate_verdict`` is the shape-gate verdict observed on the issue's state at
+    invocation time (``None`` when the invocation failed before the issue could
+    be read). It is what makes a "no action needed" report reconstructable from
+    the audit trail rather than only from the operator's terminal (#2054).
 
     Emission is best-effort wrt schema migrations on older substrates: the
     ``shape_events`` table is created idempotently before insert. Callers
@@ -77,8 +91,9 @@ def emit_shape_event(
         cur = conn.execute(
             "INSERT INTO shape_events("
             "emitted_at, issue_number, input_source, classification, "
-            "confidence, ambiguity_question_count, apply_mutated, diagnosis_state"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "confidence, ambiguity_question_count, apply_mutated, diagnosis_state, "
+            "gate_verdict"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now_iso(),
                 issue_number,
@@ -88,6 +103,7 @@ def emit_shape_event(
                 int(ambiguity_question_count),
                 1 if apply_mutated else 0,
                 diagnosis_state,
+                gate_verdict,
             ),
         )
         conn.commit()
