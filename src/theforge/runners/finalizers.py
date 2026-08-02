@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any
 
 from theforge.agent_types import ModelUsage
 from theforge.runners.schema_utils import (
-    SUBMIT_REVIEW,
     Finalizer,
     LoopTurn,
     _build_submit_tools_anthropic,
     _is_reasoning_model,
     _sanitize_schema_for_google,
+    forced_output_contract,
 )
 
 if TYPE_CHECKING:
@@ -31,26 +31,14 @@ def _make_openai_chat_finalizer(
         _openai_client,
         _translate_messages_openai_chat,
     )
-    from theforge.schemas import plan_review_json_schema, review_json_schema
 
     if client is None:
         client = _openai_client(profile, secrets)
 
-    is_plan_review = profile.phase == "plan_review"
-    if is_plan_review:
-        schema = plan_review_json_schema()
-        schema_name = "plan_review_output"
-        time_up_content = (
-            "Time is up. Deliver your plan review verdict now as structured JSON. "
-            "Include verdict, summary, findings, and criteria_coverage."
-        )
-    else:
-        schema = review_json_schema()
-        schema_name = "review_output"
-        time_up_content = (
-            "Time is up. Deliver your code review verdict now as structured JSON. "
-            "Include verdict, summary, findings, story_compliance, and test_coverage."
-        )
+    contract = forced_output_contract(profile.phase)
+    schema = contract.json_schema
+    schema_name = contract.schema_name
+    time_up_content = contract.instruction()
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         oai_messages = _translate_messages_openai_chat(messages)
@@ -106,22 +94,15 @@ def _make_deepseek_finalizer(
     if client is None:
         client = _deepseek_client(profile, secrets)
 
-    is_plan_review = profile.phase == "plan_review"
+    # DeepSeek has no json_schema mode, so the phase's contract reaches the model
+    # through the instruction text alone — it still must be the right one.
+    time_up_content = forced_output_contract(profile.phase).instruction(
+        form="JSON",
+        suffix=" Output only valid JSON with no markdown fences.",
+    )
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         oai_messages = _translate_messages_openai_chat(messages)
-        if is_plan_review:
-            time_up_content = (
-                "Time is up. Deliver your plan review verdict now as JSON. "
-                "Include verdict, summary, findings, and criteria_coverage. "
-                "Output only valid JSON with no markdown fences."
-            )
-        else:
-            time_up_content = (
-                "Time is up. Deliver your code review verdict now as JSON. "
-                "Include verdict, summary, findings, story_compliance, and test_coverage. "
-                "Output only valid JSON with no markdown fences."
-            )
         oai_messages.append({"role": "user", "content": time_up_content})
         kwargs: dict[str, Any] = {
             "model": profile.model,
@@ -161,29 +142,21 @@ def _make_openai_responses_finalizer(
         _openai_client,
         _translate_messages_openai_responses,
     )
-    from theforge.schemas import review_json_schema
 
     client = _openai_client(profile, secrets)
-    schema = review_json_schema()
+    contract = forced_output_contract(profile.phase)
+    schema = contract.json_schema
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         input_items = _translate_messages_openai_responses(messages)
-        input_items.append(
-            {
-                "role": "user",
-                "content": (
-                    "Time is up. Deliver your code review verdict now as structured JSON. "
-                    "Include verdict, summary, findings, story_compliance, and test_coverage."
-                ),
-            }
-        )
+        input_items.append({"role": "user", "content": contract.instruction()})
         response = client.responses.create(
             model=profile.model,
             input=input_items,
             text={
                 "format": {
                     "type": "json_schema",
-                    "name": "review_output",
+                    "name": contract.schema_name,
                     "schema": schema,
                     "strict": True,
                 }
@@ -233,26 +206,21 @@ def _make_anthropic_finalizer(
         api_key=merged.get("ANTHROPIC_API_KEY"),
         timeout=profile.timeout_seconds,
     )
+    contract = forced_output_contract(profile.phase)
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         anth_messages = _translate_messages_anthropic(messages)
-        anth_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Time is up. Deliver your code review verdict now. "
-                    "Include verdict, summary, findings, story_compliance, and test_coverage."
-                ),
-            }
+        anth_messages.append({"role": "user", "content": contract.instruction(form=None)})
+        submit_tool = next(
+            t for t in _build_submit_tools_anthropic() if t["name"] == contract.submit_tool
         )
-        submit_tool = _build_submit_tools_anthropic()[0]  # submit_review
         response = client.messages.create(
             model=profile.model,
             max_tokens=8192,
             temperature=0,
             messages=anth_messages,
             tools=[submit_tool],
-            tool_choice={"type": "tool", "name": SUBMIT_REVIEW},
+            tool_choice={"type": "tool", "name": contract.submit_tool},
         )
 
         structured_data = None
@@ -260,7 +228,7 @@ def _make_anthropic_finalizer(
         for block in response.content:
             if block.type == "text":
                 text_parts.append(block.text)
-            elif block.type == "tool_use" and block.name == SUBMIT_REVIEW:
+            elif block.type == "tool_use" and block.name == contract.submit_tool:
                 structured_data = block.input if isinstance(block.input, dict) else {}
 
         usage = ModelUsage(
@@ -298,28 +266,15 @@ def _make_google_finalizer(
         _make_google_usage,
         _translate_messages_google,
     )
-    from theforge.schemas import review_json_schema
 
     merged = {**os.environ, **(secrets or {})}
     client = genai.Client(api_key=merged.get("GOOGLE_API_KEY") or merged.get("GEMINI_API_KEY"))
-    finalize_schema = _sanitize_schema_for_google(review_json_schema())
+    contract = forced_output_contract(profile.phase)
+    finalize_schema = _sanitize_schema_for_google(contract.json_schema)
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         contents = _translate_messages_google(messages)
-        contents.append(
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": (
-                            "Time is up. Deliver your code review verdict now "
-                            "as structured JSON. Include verdict, summary, "
-                            "findings, story_compliance, and test_coverage."
-                        )
-                    }
-                ],
-            }
-        )
+        contents.append({"role": "user", "parts": [{"text": contract.instruction()}]})
         config = _make_google_generate_config(
             genai_types,
             profile,
