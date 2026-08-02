@@ -400,8 +400,37 @@ def _build_plan_review_retry_prompt(error_desc: str, original_output: str) -> st
     )
 
 
+# Parse-error prefixes that mean the prior output never carried structured
+# plan-review content to anchor a corrective prompt on — the YAML extraction
+# itself failed, or the root wasn't even a mapping. Distinct from errors that
+# fire once a mapping WAS parsed (bad verdict value, malformed finding, etc.),
+# which are repairable.
+_NON_REPAIRABLE_PARSE_ERROR_PREFIXES = (
+    "YAML parse error",
+    "Plan review output root is not a YAML mapping",
+)
+
+
+def _plan_review_output_is_repairable(output: str | None, errors: list[str]) -> bool:
+    """Return True when a parse-failed plan review has content worth repairing.
+
+    A blank/whitespace-only response, or one whose YAML never parsed to a
+    mapping in the first place, has nothing for a corrective prompt to anchor
+    on — recovery for those must fall back to a full cold re-review of the
+    original task rather than repairing unusable text (#2065).
+    """
+    if not output or not output.strip():
+        return False
+    return not any(
+        error.startswith(prefix)
+        for error in errors
+        for prefix in _NON_REPAIRABLE_PARSE_ERROR_PREFIXES
+    )
+
+
 def _retry_parse_failed_plan_reviews(
     *,
+    prompt: str,
     profiles: list[ModelProfile],
     results: list["AgentResult"],
     state: CoordinatorState,
@@ -419,13 +448,18 @@ def _retry_parse_failed_plan_reviews(
     max_plan_review_parse_retries times before the minimum-reviewers gate is
     evaluated.
 
-    Unlike a fresh cold re-review, the retry prompt hands the reviewer its own
-    rejected output together with the specific parse objections and asks for a
-    corrected emission (#2065) — the reviewer has already done the expensive
+    When the prior output has usable content, the retry prompt hands the reviewer
+    its own rejected output together with the specific parse objections and asks
+    for a corrected emission (#2065) — the reviewer has already done the expensive
     work, so recovery repairs the encoding rather than re-deriving the review
     from scratch. Session continuity is kept for CLI-mode reviewers (the explicit
     anchor in the prompt makes relying on session memory alone unnecessary, but
     reusing the session when available is strictly more informative).
+
+    When the prior output is blank or never parsed to a YAML mapping at all
+    (`_plan_review_output_is_repairable` returns False), there is nothing to
+    repair — the retry falls back to the original task prompt on a fresh
+    session, the same cold re-review the transport-retry path performs.
 
     Each pre-retry result is appended to state.plan_review_results so cost and the
     per-reviewer audit reconstruction stay consistent with the transport path.
@@ -448,18 +482,28 @@ def _retry_parse_failed_plan_reviews(
             state.plan_review_results.append(current)
             retry_count += 1
             error_desc = "; ".join(errors)
-            _log(
-                f"  ↻ PLAN_REVIEW   {profile.name} unparseable output "
-                f"(parse retry {retry_count}/{max_retries}): {error_desc[:120]}"
-            )
-            retry_prompt = _build_plan_review_retry_prompt(error_desc, current.output or "")
+            repairable = _plan_review_output_is_repairable(current.output, errors)
+            if repairable:
+                _log(
+                    f"  ↻ PLAN_REVIEW   {profile.name} unparseable output "
+                    f"(parse retry {retry_count}/{max_retries}): {error_desc[:120]}"
+                )
+                retry_prompt = _build_plan_review_retry_prompt(error_desc, current.output or "")
+                retry_session_id = current.session_id if profile.mode == "cli" else None
+            else:
+                _log(
+                    f"  ↻ PLAN_REVIEW   {profile.name} non-repairable output — cold retry "
+                    f"(parse retry {retry_count}/{max_retries}): {error_desc[:120]}"
+                )
+                retry_prompt = prompt
+                retry_session_id = None  # fresh session — nothing usable to anchor on
             retried = run_agent(
                 prompt=retry_prompt,
                 profile=profile,
                 working_dir=workspace_path,
                 quiet=True,
                 secrets=config.secrets,
-                session_id=current.session_id if profile.mode == "cli" else None,
+                session_id=retry_session_id,
             )
             if retried.session_id:
                 state.plan_review_session_ids[profile.name] = retried.session_id
@@ -474,6 +518,7 @@ def _retry_parse_failed_plan_reviews(
                     "reviewer": profile.name,
                     "retry": retry_count,
                     "errors": list(errors),
+                    "repair": repairable,
                 }
             )
             current = retried
@@ -1116,6 +1161,7 @@ def _run_plan_agent_review(
         )
         state.plan_review_transport_retries.extend(_transport_retry_events)
         pr_results, _parse_retry_events = _retry_parse_failed_plan_reviews(
+            prompt=pr_prompt,
             profiles=par_profiles,
             results=pr_results,
             state=state,

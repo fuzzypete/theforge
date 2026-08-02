@@ -35,6 +35,7 @@ from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import _fresh_run_state, run_task
 from theforge.coordinator.plan_flow import (
     _build_plan_review_retry_prompt,
+    _plan_review_output_is_repairable,
     _record_plan_model_escalation,
     _retry_parse_failed_plan_reviews,
 )
@@ -2089,7 +2090,22 @@ class TestPlanReviewerFailureAudit:
 # Prose emitted by a reviewer that stalled instead of producing contract output
 # (mirrors issue-75: "Waiting on the verification agent's results before I
 # finalize the review.").  Parses to a non-mapping YAML root → parse error.
+# This is the "otherwise non-repairable" case (#2065): there is no structured
+# content to anchor a corrective prompt on, so recovery must cold-retry.
 PLAN_REVIEW_PROSE = "Waiting on the verification agent's results before I finalize the review."
+
+# A YAML mapping root with a valid verdict but a malformed finding (wrong key
+# name — "issue" instead of "description") — mirrors the issue-2050 defect the
+# story is built on: the CONTENT is correct, only the field encoding is wrong.
+# This IS repairable: the corrective prompt has something to anchor on.
+PLAN_REVIEW_BAD_FINDING_KEY = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P2
+    issue: "wrong key name used instead of description"
+```
+"""
 
 
 class TestPlanReviewParseRetry:
@@ -2116,7 +2132,8 @@ class TestPlanReviewParseRetry:
         mock_code_pool,
         tmp_path,
     ):
-        """Single reviewer emits prose → retried once → parses → story proceeds to DONE."""
+        """Single reviewer emits a malformed-but-repairable finding → retried
+        once with a corrective prompt → parses → story proceeds to DONE."""
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
@@ -2146,12 +2163,13 @@ class TestPlanReviewParseRetry:
             ),
             _make_agent_result(success=True, output="Implemented."),
         ]
-        # Initial pool completion succeeds at transport level but is unparseable prose.
+        # Initial pool completion succeeds at transport level with a dict-rooted
+        # output that has usable content (a valid verdict) but a malformed finding.
         mock_plan_pool.side_effect = [
             [
                 _make_agent_result(
                     success=True,
-                    output=PLAN_REVIEW_PROSE,
+                    output=PLAN_REVIEW_BAD_FINDING_KEY,
                     cost_usd=0.08,
                     profile_name="plan-review",
                 )
@@ -2174,7 +2192,8 @@ class TestPlanReviewParseRetry:
         assert retry["reviewer"] == "plan-review"
         assert retry["retry"] == 1
         assert retry["errors"]
-        # Both the prose completion and the successful retry are cost-tracked.
+        assert retry["repair"] is True
+        # Both the rejected completion and the successful retry are cost-tracked.
         assert len(result.state.plan_review_results) == 2
         assert result.state.total_plan_review_cost == pytest.approx(0.14)
         # CLI-mode reviewer: parse retry reuses the prior session (the corrective
@@ -2188,7 +2207,7 @@ class TestPlanReviewParseRetry:
         # a repair, not a cold re-review (#2065).
         retry_prompt = retry_call.kwargs["prompt"]
         assert "previous plan review output failed" in retry_prompt
-        assert PLAN_REVIEW_PROSE in retry_prompt
+        assert PLAN_REVIEW_BAD_FINDING_KEY in retry_prompt
 
         audit = generate_audit_log(config, task, result)
         assert audit["plan_review"]["parse_retries"] == result.state.plan_review_parse_retries
@@ -2211,7 +2230,8 @@ class TestPlanReviewParseRetry:
         mock_code_pool,
         tmp_path,
     ):
-        """Prose on every attempt → parse retries exhausted → min-reviewers gate escalates."""
+        """Malformed-but-repairable finding on every attempt → parse retries
+        exhausted → min-reviewers gate escalates."""
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
@@ -2230,21 +2250,27 @@ class TestPlanReviewParseRetry:
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
         )
-        # run_agent sequence: PLAN → two parse retries, both still unparseable prose.
+        # run_agent sequence: PLAN → two parse retries, both still malformed.
         mock_agent.side_effect = [
             _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
             _make_agent_result(
-                success=True, output=PLAN_REVIEW_PROSE, cost_usd=0.06, profile_name="plan-review"
+                success=True,
+                output=PLAN_REVIEW_BAD_FINDING_KEY,
+                cost_usd=0.06,
+                profile_name="plan-review",
             ),
             _make_agent_result(
-                success=True, output=PLAN_REVIEW_PROSE, cost_usd=0.06, profile_name="plan-review"
+                success=True,
+                output=PLAN_REVIEW_BAD_FINDING_KEY,
+                cost_usd=0.06,
+                profile_name="plan-review",
             ),
         ]
         mock_plan_pool.side_effect = [
             [
                 _make_agent_result(
                     success=True,
-                    output=PLAN_REVIEW_PROSE,
+                    output=PLAN_REVIEW_BAD_FINDING_KEY,
                     cost_usd=0.08,
                     profile_name="plan-review",
                 )
@@ -2263,10 +2289,11 @@ class TestPlanReviewParseRetry:
         # Two retries attempted before escalating, each with a corrective prompt
         # (CLI-mode reviewer, so the prior session is reused on top of that).
         assert len(result.state.plan_review_parse_retries) == 2
+        assert all(e["repair"] is True for e in result.state.plan_review_parse_retries)
         for _retry_call in mock_plan_agent.call_args_list[1:]:
             assert _retry_call.kwargs["session_id"] == "sess-1"
             assert "previous plan review output failed" in _retry_call.kwargs["prompt"]
-        # Prose completion + two prose retries are all cost-tracked.
+        # Rejected completion + two rejected retries are all cost-tracked.
         assert len(result.state.plan_review_results) == 3
         assert result.state.total_plan_review_cost == pytest.approx(0.20)
         assert len(result.state.plan_review_failures) == 1
@@ -2289,6 +2316,88 @@ class TestPlanReviewParseRetry:
             }
         ]
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_non_repairable_prose_falls_back_to_cold_retry(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Prose (no YAML mapping at all) has nothing to repair → the retry falls
+        back to the original review-task prompt on a fresh session instead of a
+        corrective prompt anchored on unusable text (#2065)."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        # run_agent sequence: PLAN → plan-review cold retry (now valid) → DEV
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.06,
+                profile_name="plan-review",
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_REVIEW_PROSE,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                    session_id="sess-1",
+                )
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert len(result.state.plan_review_parse_retries) == 1
+        retry = result.state.plan_review_parse_retries[0]
+        assert retry["repair"] is False
+        # The retry is the last plan_flow.run_agent call (PLAN is the first).
+        retry_call = mock_plan_agent.call_args_list[-1]
+        # Fresh session — nothing usable in the prose to anchor a session on.
+        assert retry_call.kwargs["session_id"] is None
+        # The original review-task prompt is re-issued verbatim, NOT a corrective
+        # prompt anchored on the unusable prose.
+        retry_prompt = retry_call.kwargs["prompt"]
+        assert "previous plan review output failed" not in retry_prompt
+        assert PLAN_REVIEW_PROSE not in retry_prompt
+
 
 # ── TestPlanReviewRetryPromptRepair ────────────────────────────────────
 # The retry must hand the reviewer its own rejected output plus the specific
@@ -2307,10 +2416,129 @@ class TestPlanReviewRetryPromptRepair:
         assert "Do NOT re-review the plan" in prompt
         assert "Keep the SAME verdict" in prompt
 
+    def test_repairable_detection(self):
+        # A YAML mapping root is repairable even when a nested field is malformed.
+        assert _plan_review_output_is_repairable(
+            PLAN_REVIEW_BAD_FINDING_KEY,
+            ["findings[0].description must be non-empty"],
+        )
+        # Prose that never parsed to a mapping is not repairable.
+        assert not _plan_review_output_is_repairable(
+            "Waiting on the verification agent's results.",
+            ["Plan review output root is not a YAML mapping"],
+        )
+        # A YAML syntax error also leaves nothing structured to anchor on.
+        assert not _plan_review_output_is_repairable(
+            "verdict: APPROVE\n  bad: [unterminated",
+            ["YAML parse error: while parsing a flow sequence"],
+        )
+        # Blank/whitespace-only output is not repairable regardless of errors.
+        assert not _plan_review_output_is_repairable("   \n  ", [])
+        assert not _plan_review_output_is_repairable(None, [])
+
     @patch("theforge.coordinator.plan_flow.run_agent")
     def test_retry_call_uses_corrective_prompt_not_original(self, mock_run_agent, tmp_path):
-        """The retried run_agent call must receive the corrective prompt (rejected
-        output + parse errors), never the original review-task prompt."""
+        """A repairable prior output (a YAML mapping with a malformed finding)
+        must receive the corrective prompt (rejected output + parse errors),
+        never the original review-task prompt."""
+        original_prompt = "Review this plan against the spec and submit a verdict."
+        profile = ModelProfile(
+            name="plan-review",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        malformed_result = _make_agent_result(
+            success=True,
+            output=PLAN_REVIEW_BAD_FINDING_KEY,
+            session_id="sess-cli",
+            cost_usd=0.06,
+            profile_name="plan-review",
+        )
+        mock_run_agent.return_value = _make_agent_result(
+            success=True,
+            output=PLAN_AGENT_APPROVE,
+            session_id="sess-cli",
+            cost_usd=0.02,
+            profile_name="plan-review",
+        )
+        state = CoordinatorState()
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(max_plan_review_parse_retries=2),
+        )
+
+        _retry_parse_failed_plan_reviews(
+            prompt=original_prompt,
+            profiles=[profile],
+            results=[malformed_result],
+            state=state,
+            config=config,
+            workspace_path=tmp_path,
+            attempt=0,
+        )
+
+        assert mock_run_agent.call_count == 1
+        call = mock_run_agent.call_args
+        assert call.kwargs["prompt"] != original_prompt
+        assert "previous plan review output failed" in call.kwargs["prompt"]
+        assert malformed_result.output in call.kwargs["prompt"]
+        # CLI-mode reviewer: session continuity kept on top of the explicit anchor.
+        assert call.kwargs["session_id"] == "sess-cli"
+
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    def test_api_mode_reviewer_retry_uses_fresh_session(self, mock_run_agent, tmp_path):
+        """API-mode reviewers have no session to continue — the corrective prompt
+        is the only anchor, and session_id must stay None."""
+        profile = ModelProfile(
+            name="plan-review",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        malformed_result = _make_agent_result(
+            success=True,
+            output=PLAN_REVIEW_BAD_FINDING_KEY,
+            session_id="sess-api",
+            cost_usd=0.06,
+            profile_name="plan-review",
+        )
+        mock_run_agent.return_value = _make_agent_result(
+            success=True,
+            output=PLAN_AGENT_APPROVE,
+            session_id=None,
+            cost_usd=0.02,
+            profile_name="plan-review",
+        )
+        state = CoordinatorState()
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(max_plan_review_parse_retries=2),
+        )
+
+        _retry_parse_failed_plan_reviews(
+            prompt="Review this plan against the spec and submit a verdict.",
+            profiles=[profile],
+            results=[malformed_result],
+            state=state,
+            config=config,
+            workspace_path=tmp_path,
+            attempt=0,
+        )
+
+        assert mock_run_agent.call_args.kwargs["session_id"] is None
+
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    def test_prose_output_falls_back_to_original_prompt_and_fresh_session(
+        self, mock_run_agent, tmp_path
+    ):
+        """Prose that never parsed to a YAML mapping has nothing to repair — the
+        retry must fall back to the ORIGINAL task prompt on a fresh session,
+        never a corrective prompt anchored on the unusable text (#2065)."""
         original_prompt = "Review this plan against the spec and submit a verdict."
         profile = ModelProfile(
             name="plan-review",
@@ -2330,7 +2558,7 @@ class TestPlanReviewRetryPromptRepair:
         mock_run_agent.return_value = _make_agent_result(
             success=True,
             output=PLAN_AGENT_APPROVE,
-            session_id="sess-cli",
+            session_id="sess-new",
             cost_usd=0.02,
             profile_name="plan-review",
         )
@@ -2340,7 +2568,8 @@ class TestPlanReviewRetryPromptRepair:
             retry=RetryPolicy(max_plan_review_parse_retries=2),
         )
 
-        _retry_parse_failed_plan_reviews(
+        _, retry_events = _retry_parse_failed_plan_reviews(
+            prompt=original_prompt,
             profiles=[profile],
             results=[prose_result],
             state=state,
@@ -2351,35 +2580,36 @@ class TestPlanReviewRetryPromptRepair:
 
         assert mock_run_agent.call_count == 1
         call = mock_run_agent.call_args
-        assert call.kwargs["prompt"] != original_prompt
-        assert "previous plan review output failed" in call.kwargs["prompt"]
-        assert prose_result.output in call.kwargs["prompt"]
-        # CLI-mode reviewer: session continuity kept on top of the explicit anchor.
-        assert call.kwargs["session_id"] == "sess-cli"
+        assert call.kwargs["prompt"] == original_prompt
+        assert call.kwargs["session_id"] is None
+        assert retry_events[0]["repair"] is False
 
     @patch("theforge.coordinator.plan_flow.run_agent")
-    def test_api_mode_reviewer_retry_uses_fresh_session(self, mock_run_agent, tmp_path):
-        """API-mode reviewers have no session to continue — the corrective prompt
-        is the only anchor, and session_id must stay None."""
+    def test_blank_output_falls_back_to_original_prompt_and_fresh_session(
+        self, mock_run_agent, tmp_path
+    ):
+        """An empty/whitespace-only response is the clearest non-repairable case
+        — there is no text at all to anchor a corrective prompt on."""
+        original_prompt = "Review this plan against the spec and submit a verdict."
         profile = ModelProfile(
             name="plan-review",
-            provider="anthropic",
-            model="claude-sonnet-4-6",
+            cli="claude",
+            model="sonnet",
             budget_usd=0.50,
             timeout_seconds=300,
             allowed_tools=(),
         )
-        prose_result = _make_agent_result(
+        blank_result = _make_agent_result(
             success=True,
-            output="Waiting on the verification agent's results.",
-            session_id="sess-api",
+            output="   \n  ",
+            session_id="sess-cli",
             cost_usd=0.06,
             profile_name="plan-review",
         )
         mock_run_agent.return_value = _make_agent_result(
             success=True,
             output=PLAN_AGENT_APPROVE,
-            session_id=None,
+            session_id="sess-new",
             cost_usd=0.02,
             profile_name="plan-review",
         )
@@ -2389,13 +2619,18 @@ class TestPlanReviewRetryPromptRepair:
             retry=RetryPolicy(max_plan_review_parse_retries=2),
         )
 
-        _retry_parse_failed_plan_reviews(
+        _, retry_events = _retry_parse_failed_plan_reviews(
+            prompt=original_prompt,
             profiles=[profile],
-            results=[prose_result],
+            results=[blank_result],
             state=state,
             config=config,
             workspace_path=tmp_path,
             attempt=0,
         )
 
-        assert mock_run_agent.call_args.kwargs["session_id"] is None
+        assert mock_run_agent.call_count == 1
+        call = mock_run_agent.call_args
+        assert call.kwargs["prompt"] == original_prompt
+        assert call.kwargs["session_id"] is None
+        assert retry_events[0]["repair"] is False
