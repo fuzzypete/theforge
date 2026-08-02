@@ -8,6 +8,11 @@ keeps cost variance predictable. This guide is the operator-facing answer to the
 fair question "I see `complexity_score=4` in the audit — what would `8` do
 differently?" (issue #1019).
 
+For the full adaptive-assignment system — eligibility vs. preference, signal
+admissibility, taint exclusion, recency recovery, exploration, and
+`routing_decision` explainability — see
+[Adaptive Assignment](adaptive-assignment.md).
+
 The thresholds below are **not** duplicated prose: they are read directly from
 the single source of truth, `src/theforge/routing.py`
 (`ROUTING_POLICY` / the `*_BUCKETS` tables). If the code and this table ever

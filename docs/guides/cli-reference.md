@@ -221,6 +221,48 @@ In v0.8, this is the quickest way to inspect the role table derived from `models
 
 ---
 
+## `forge explain`
+
+Render the operator-facing assignment summary for one recorded run.
+
+```bash
+forge explain --story <issue-or-slug>
+forge explain --run <run-id>
+forge explain --file .forge/audits/runs/<run-id>.json
+```
+
+**Use this when:** You need to answer why a model or reviewer was selected,
+avoided, deprioritized, or escalated.
+**Avoid this when:** You need live process state; use `forge status` for liveness
+and the raw per-run audit JSON for full forensics.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--story <id>` | Explain the latest recorded run for a GitHub issue number (`270`, `#270`) or slug (`issue-270`) |
+| `--run <run-id>` | Explain one exact run ID from the audit substrate |
+| `--file <path>` | Render directly from a per-run audit JSON file |
+| `--config <path>` | Path to `forge.yaml` when resolving substrate-backed lookups |
+
+`forge explain` is a **read-only view over the recorded `routing_decision`
+block**. It does not invoke agents, rebuild profiles, or recompute routing from
+live state. The per-run audit record is the contract; this command is one
+presentation of it.
+
+The output includes:
+
+- Selected model(s) per role and the recorded rationale
+- Candidate pools with canonical exclusion reasons
+- Consulted signals, including raw vs. recency-weighted values and sample-floor status
+- Adaptive mechanism outcomes, distinguishing not checked / checked and did not fire / fired
+- Exploration mode and score-policy details
+
+If a run predates the `routing_decision` contract, the command says so
+explicitly instead of fabricating an explanation.
+
+---
+
 ## `forge eval-preflight`
 
 Evaluate candidate preflight models against a golden story set.

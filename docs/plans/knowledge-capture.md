@@ -26,8 +26,8 @@ feeds that knowledge back into future runs.
 
 Three things are converging:
 
-**The adaptive router needs historical signal.** The self-adapting router
-vision (`docs/vision/self-adapting-router.md`) describes a flywheel:
+**Adaptive assignment needs historical signal.** The current adaptive
+assignment model (`docs/guides/adaptive-assignment.md`) describes a flywheel:
 "Run stories → Collect telemetry → Update performance table → Better routing."
 That flywheel runs on process metrics alone today — model, phase, outcome,
 cost, duration. But the router's real power comes from correlating outcomes
@@ -360,7 +360,7 @@ practice.
 
 #### 3e. Feeding the adaptive router
 
-The self-adapting router (`docs/vision/self-adapting-router.md`) consumes
+Adaptive assignment (`docs/guides/adaptive-assignment.md`) consumes
 **deterministic metrics and structured inputs from the audit record**, not
 freeform summary claims. Layer 1 enriches the router's data model from:
 
