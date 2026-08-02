@@ -353,9 +353,57 @@ def _plan_review_parse_errors(result: "AgentResult") -> list[str]:
     return [str(e) for e in parsed.parse_errors]
 
 
+# Corrective YAML structure appended to every plan-review parse-retry prompt.
+# Mirrors review_pool._CORRECTIVE_YAML_STRUCTURE for the plan-review schema
+# (verdict/summary/criteria_coverage/findings) so the reviewer sees the exact
+# shape parse_plan_review_output requires.
+_PLAN_REVIEW_CORRECTIVE_YAML_STRUCTURE = (
+    "verdict: APPROVE | REJECT\n"
+    'summary: "<one-line summary of your review>"\n'
+    "criteria_coverage:\n"
+    '  - criterion: "<acceptance criterion text from the spec>"\n'
+    "    covered: true | false\n"
+    '    plan_section: "<which part of the plan addresses this, or \'missing\'>"\n'
+    "findings:\n"
+    "  - severity: P0 | P1 | P1-impl | P2\n"
+    '    description: "<what is wrong with the plan>"\n'
+    '    suggestion: "<how to fix it>"\n'
+)
+
+
+def _build_plan_review_retry_prompt(error_desc: str, original_output: str) -> str:
+    """Build a corrective retry prompt that anchors the reviewer's prior content.
+
+    Mirrors review_pool._build_review_retry_prompt: the prior output's CONTENT
+    (verdict + findings) is correct, only its YAML ENCODING failed parsing.
+    Handing the reviewer its own rejected output plus the specific parse
+    objections lets it repair the emission instead of re-deriving the review
+    from scratch (#2065).
+    """
+    return (
+        "Your previous plan review output failed schema/parse validation:\n"
+        + error_desc
+        + "\n\n"
+        "The CONTENT of your previous review is correct — your verdict and your "
+        "findings are what you meant to say. ONLY the ENCODING (YAML formatting) "
+        "is broken. Re-emit the SAME review with the formatting error fixed.\n\n"
+        "Preserve your previous output verbatim:\n"
+        "  - Keep the SAME verdict. Do NOT switch APPROVE <-> REJECT.\n"
+        "  - Keep EVERY finding. Do NOT drop, merge, or downgrade a finding.\n\n"
+        "Dropping or altering a field to make a validation error go away is a "
+        "WRONG response. If a value failed to parse, fix the QUOTING/ESCAPING of "
+        "that value — do NOT delete the value, and do NOT change the verdict to "
+        "sidestep a cross-validation rule.\n\n"
+        "Do NOT re-review the plan.\n\n"
+        "Required YAML structure:\n"
+        + _PLAN_REVIEW_CORRECTIVE_YAML_STRUCTURE
+        + "\n\nYour previous output (fix its formatting, keep its content):\n"
+        + original_output
+    )
+
+
 def _retry_parse_failed_plan_reviews(
     *,
-    prompt: str,
     profiles: list[ModelProfile],
     results: list["AgentResult"],
     state: CoordinatorState,
@@ -369,9 +417,17 @@ def _retry_parse_failed_plan_reviews(
     non-mapping YAML root is a transient *agent* failure, not a story failure. The
     transport-retry path (_retry_transient_plan_review_failures) never reaches these
     because it gates on result.success == False. Mirror it for the success-but-
-    unparseable case: re-invoke that specific reviewer in a fresh session (a stale
-    session anchors on its own bad output) up to max_plan_review_parse_retries times
-    before the minimum-reviewers gate is evaluated.
+    unparseable case: re-invoke that specific reviewer up to
+    max_plan_review_parse_retries times before the minimum-reviewers gate is
+    evaluated.
+
+    Unlike a fresh cold re-review, the retry prompt hands the reviewer its own
+    rejected output together with the specific parse objections and asks for a
+    corrected emission (#2065) — the reviewer has already done the expensive
+    work, so recovery repairs the encoding rather than re-deriving the review
+    from scratch. Session continuity is kept for CLI-mode reviewers (the explicit
+    anchor in the prompt makes relying on session memory alone unnecessary, but
+    reusing the session when available is strictly more informative).
 
     Each pre-retry result is appended to state.plan_review_results so cost and the
     per-reviewer audit reconstruction stay consistent with the transport path.
@@ -393,17 +449,19 @@ def _retry_parse_failed_plan_reviews(
         while retry_count < max_retries and errors:
             state.plan_review_results.append(current)
             retry_count += 1
+            error_desc = "; ".join(errors)
             _log(
                 f"  ↻ PLAN_REVIEW   {profile.name} unparseable output "
-                f"(parse retry {retry_count}/{max_retries}): {'; '.join(errors)[:120]}"
+                f"(parse retry {retry_count}/{max_retries}): {error_desc[:120]}"
             )
+            retry_prompt = _build_plan_review_retry_prompt(error_desc, current.output or "")
             retried = run_agent(
-                prompt=prompt,
+                prompt=retry_prompt,
                 profile=profile,
                 working_dir=workspace_path,
                 quiet=True,
                 secrets=config.secrets,
-                session_id=None,  # fresh session — prior anchors on its own bad output
+                session_id=current.session_id if profile.mode == "cli" else None,
             )
             if retried.session_id:
                 state.plan_review_session_ids[profile.name] = retried.session_id
@@ -1060,7 +1118,6 @@ def _run_plan_agent_review(
         )
         state.plan_review_transport_retries.extend(_transport_retry_events)
         pr_results, _parse_retry_events = _retry_parse_failed_plan_reviews(
-            prompt=pr_prompt,
             profiles=par_profiles,
             results=pr_results,
             state=state,

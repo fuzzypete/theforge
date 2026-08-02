@@ -33,7 +33,11 @@ from theforge.config import (
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import _fresh_run_state, run_task
-from theforge.coordinator.plan_flow import _record_plan_model_escalation
+from theforge.coordinator.plan_flow import (
+    _build_plan_review_retry_prompt,
+    _record_plan_model_escalation,
+    _retry_parse_failed_plan_reviews,
+)
 from theforge.coordinator.state import CoordinatorState, Phase
 
 # ── Local helpers ─────────────────────────────────────────────────────
@@ -2173,9 +2177,18 @@ class TestPlanReviewParseRetry:
         # Both the prose completion and the successful retry are cost-tracked.
         assert len(result.state.plan_review_results) == 2
         assert result.state.total_plan_review_cost == pytest.approx(0.14)
-        # Fresh session on retry (session_id=None passed to run_agent). The retry
-        # is the last plan_flow.run_agent call (PLAN is the first).
-        assert mock_plan_agent.call_args_list[-1].kwargs["session_id"] is None
+        # CLI-mode reviewer: parse retry reuses the prior session (the corrective
+        # prompt anchors the reviewer's own rejected output; session continuity is
+        # kept on top of that, not discarded). The retry is the last
+        # plan_flow.run_agent call (PLAN is the first).
+        retry_call = mock_plan_agent.call_args_list[-1]
+        assert retry_call.kwargs["session_id"] == "sess-1"
+        # The retry prompt hands the reviewer its own rejected output and the
+        # specific parse objections instead of re-issuing the original prompt —
+        # a repair, not a cold re-review (#2065).
+        retry_prompt = retry_call.kwargs["prompt"]
+        assert "previous plan review output failed" in retry_prompt
+        assert PLAN_REVIEW_PROSE in retry_prompt
 
         audit = generate_audit_log(config, task, result)
         assert audit["plan_review"]["parse_retries"] == result.state.plan_review_parse_retries
@@ -2247,8 +2260,12 @@ class TestPlanReviewParseRetry:
         assert result.phase == Phase.ESCALATE
         assert result.state.plan_review_decision == "reject"
         assert "minimum required is 1" in (result.message or "")
-        # Two fresh-session retries attempted before escalating.
+        # Two retries attempted before escalating, each with a corrective prompt
+        # (CLI-mode reviewer, so the prior session is reused on top of that).
         assert len(result.state.plan_review_parse_retries) == 2
+        for _retry_call in mock_plan_agent.call_args_list[1:]:
+            assert _retry_call.kwargs["session_id"] == "sess-1"
+            assert "previous plan review output failed" in _retry_call.kwargs["prompt"]
         # Prose completion + two prose retries are all cost-tracked.
         assert len(result.state.plan_review_results) == 3
         assert result.state.total_plan_review_cost == pytest.approx(0.20)
@@ -2271,3 +2288,114 @@ class TestPlanReviewParseRetry:
                 "cost_usd": pytest.approx(0.06),
             }
         ]
+
+
+# ── TestPlanReviewRetryPromptRepair ────────────────────────────────────
+# The retry must hand the reviewer its own rejected output plus the specific
+# parse objections and ask for a correction — a bounded repair, not a cold
+# re-review that re-issues the original task from scratch (#2065).
+
+
+class TestPlanReviewRetryPromptRepair:
+    def test_retry_prompt_anchors_prior_output_and_errors(self):
+        prompt = _build_plan_review_retry_prompt(
+            "verdict must be APPROVE or REJECT, got: 'MAYBE'",
+            "```yaml\nverdict: MAYBE\nfindings: []\n```",
+        )
+        assert "verdict must be APPROVE or REJECT, got: 'MAYBE'" in prompt
+        assert "verdict: MAYBE" in prompt
+        assert "Do NOT re-review the plan" in prompt
+        assert "Keep the SAME verdict" in prompt
+
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    def test_retry_call_uses_corrective_prompt_not_original(self, mock_run_agent, tmp_path):
+        """The retried run_agent call must receive the corrective prompt (rejected
+        output + parse errors), never the original review-task prompt."""
+        original_prompt = "Review this plan against the spec and submit a verdict."
+        profile = ModelProfile(
+            name="plan-review",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        prose_result = _make_agent_result(
+            success=True,
+            output="Waiting on the verification agent's results.",
+            session_id="sess-cli",
+            cost_usd=0.06,
+            profile_name="plan-review",
+        )
+        mock_run_agent.return_value = _make_agent_result(
+            success=True,
+            output=PLAN_AGENT_APPROVE,
+            session_id="sess-cli",
+            cost_usd=0.02,
+            profile_name="plan-review",
+        )
+        state = CoordinatorState()
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(max_plan_review_parse_retries=2),
+        )
+
+        _retry_parse_failed_plan_reviews(
+            profiles=[profile],
+            results=[prose_result],
+            state=state,
+            config=config,
+            workspace_path=tmp_path,
+            attempt=0,
+        )
+
+        assert mock_run_agent.call_count == 1
+        call = mock_run_agent.call_args
+        assert call.kwargs["prompt"] != original_prompt
+        assert "previous plan review output failed" in call.kwargs["prompt"]
+        assert prose_result.output in call.kwargs["prompt"]
+        # CLI-mode reviewer: session continuity kept on top of the explicit anchor.
+        assert call.kwargs["session_id"] == "sess-cli"
+
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    def test_api_mode_reviewer_retry_uses_fresh_session(self, mock_run_agent, tmp_path):
+        """API-mode reviewers have no session to continue — the corrective prompt
+        is the only anchor, and session_id must stay None."""
+        profile = ModelProfile(
+            name="plan-review",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        prose_result = _make_agent_result(
+            success=True,
+            output="Waiting on the verification agent's results.",
+            session_id="sess-api",
+            cost_usd=0.06,
+            profile_name="plan-review",
+        )
+        mock_run_agent.return_value = _make_agent_result(
+            success=True,
+            output=PLAN_AGENT_APPROVE,
+            session_id=None,
+            cost_usd=0.02,
+            profile_name="plan-review",
+        )
+        state = CoordinatorState()
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(max_plan_review_parse_retries=2),
+        )
+
+        _retry_parse_failed_plan_reviews(
+            profiles=[profile],
+            results=[prose_result],
+            state=state,
+            config=config,
+            workspace_path=tmp_path,
+            attempt=0,
+        )
+
+        assert mock_run_agent.call_args.kwargs["session_id"] is None
