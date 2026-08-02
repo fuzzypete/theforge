@@ -363,7 +363,7 @@ _PLAN_REVIEW_CORRECTIVE_YAML_STRUCTURE = (
     "criteria_coverage:\n"
     '  - criterion: "<acceptance criterion text from the spec>"\n'
     "    covered: true | false\n"
-    '    plan_section: "<which part of the plan addresses this, or \'missing\'>"\n'
+    "    plan_section: \"<which part of the plan addresses this, or 'missing'>\"\n"
     "findings:\n"
     "  - severity: P0 | P1 | P1-impl | P2\n"
     '    description: "<what is wrong with the plan>"\n'
@@ -381,9 +381,7 @@ def _build_plan_review_retry_prompt(error_desc: str, original_output: str) -> st
     from scratch (#2065).
     """
     return (
-        "Your previous plan review output failed schema/parse validation:\n"
-        + error_desc
-        + "\n\n"
+        "Your previous plan review output failed schema/parse validation:\n" + error_desc + "\n\n"
         "The CONTENT of your previous review is correct — your verdict and your "
         "findings are what you meant to say. ONLY the ENCODING (YAML formatting) "
         "is broken. Re-emit the SAME review with the formatting error fixed.\n\n"
