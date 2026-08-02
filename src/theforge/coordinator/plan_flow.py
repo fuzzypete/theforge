@@ -353,6 +353,81 @@ def _plan_review_parse_errors(result: "AgentResult") -> list[str]:
     return [str(e) for e in parsed.parse_errors]
 
 
+# Corrective YAML structure appended to every plan-review parse-retry prompt.
+# Mirrors review_pool._CORRECTIVE_YAML_STRUCTURE for the plan-review schema
+# (verdict/summary/criteria_coverage/findings) so the reviewer sees the exact
+# shape parse_plan_review_output requires.
+_PLAN_REVIEW_CORRECTIVE_YAML_STRUCTURE = (
+    "verdict: APPROVE | REJECT\n"
+    'summary: "<one-line summary of your review>"\n'
+    "criteria_coverage:\n"
+    '  - criterion: "<acceptance criterion text from the spec>"\n'
+    "    covered: true | false\n"
+    "    plan_section: \"<which part of the plan addresses this, or 'missing'>\"\n"
+    "findings:\n"
+    "  - severity: P0 | P1 | P1-impl | P2\n"
+    '    description: "<what is wrong with the plan>"\n'
+    '    suggestion: "<how to fix it>"\n'
+)
+
+
+def _build_plan_review_retry_prompt(error_desc: str, original_output: str) -> str:
+    """Build a corrective retry prompt that anchors the reviewer's prior content.
+
+    Mirrors review_pool._build_review_retry_prompt: the prior output's CONTENT
+    (verdict + findings) is correct, only its YAML ENCODING failed parsing.
+    Handing the reviewer its own rejected output plus the specific parse
+    objections lets it repair the emission instead of re-deriving the review
+    from scratch (#2065).
+    """
+    return (
+        "Your previous plan review output failed schema/parse validation:\n" + error_desc + "\n\n"
+        "The CONTENT of your previous review is correct — your verdict and your "
+        "findings are what you meant to say. ONLY the ENCODING (YAML formatting) "
+        "is broken. Re-emit the SAME review with the formatting error fixed.\n\n"
+        "Preserve your previous output verbatim:\n"
+        "  - Keep the SAME verdict. Do NOT switch APPROVE <-> REJECT.\n"
+        "  - Keep EVERY finding. Do NOT drop, merge, or downgrade a finding.\n\n"
+        "Dropping or altering a field to make a validation error go away is a "
+        "WRONG response. If a value failed to parse, fix the QUOTING/ESCAPING of "
+        "that value — do NOT delete the value, and do NOT change the verdict to "
+        "sidestep a cross-validation rule.\n\n"
+        "Do NOT re-review the plan.\n\n"
+        "Required YAML structure:\n"
+        + _PLAN_REVIEW_CORRECTIVE_YAML_STRUCTURE
+        + "\n\nYour previous output (fix its formatting, keep its content):\n"
+        + original_output
+    )
+
+
+# Parse-error prefixes that mean the prior output never carried structured
+# plan-review content to anchor a corrective prompt on — the YAML extraction
+# itself failed, or the root wasn't even a mapping. Distinct from errors that
+# fire once a mapping WAS parsed (bad verdict value, malformed finding, etc.),
+# which are repairable.
+_NON_REPAIRABLE_PARSE_ERROR_PREFIXES = (
+    "YAML parse error",
+    "Plan review output root is not a YAML mapping",
+)
+
+
+def _plan_review_output_is_repairable(output: str | None, errors: list[str]) -> bool:
+    """Return True when a parse-failed plan review has content worth repairing.
+
+    A blank/whitespace-only response, or one whose YAML never parsed to a
+    mapping in the first place, has nothing for a corrective prompt to anchor
+    on — recovery for those must fall back to a full cold re-review of the
+    original task rather than repairing unusable text (#2065).
+    """
+    if not output or not output.strip():
+        return False
+    return not any(
+        error.startswith(prefix)
+        for error in errors
+        for prefix in _NON_REPAIRABLE_PARSE_ERROR_PREFIXES
+    )
+
+
 def _retry_parse_failed_plan_reviews(
     *,
     prompt: str,
@@ -369,9 +444,22 @@ def _retry_parse_failed_plan_reviews(
     non-mapping YAML root is a transient *agent* failure, not a story failure. The
     transport-retry path (_retry_transient_plan_review_failures) never reaches these
     because it gates on result.success == False. Mirror it for the success-but-
-    unparseable case: re-invoke that specific reviewer in a fresh session (a stale
-    session anchors on its own bad output) up to max_plan_review_parse_retries times
-    before the minimum-reviewers gate is evaluated.
+    unparseable case: re-invoke that specific reviewer up to
+    max_plan_review_parse_retries times before the minimum-reviewers gate is
+    evaluated.
+
+    When the prior output has usable content, the retry prompt hands the reviewer
+    its own rejected output together with the specific parse objections and asks
+    for a corrected emission (#2065) — the reviewer has already done the expensive
+    work, so recovery repairs the encoding rather than re-deriving the review
+    from scratch. Session continuity is kept for CLI-mode reviewers (the explicit
+    anchor in the prompt makes relying on session memory alone unnecessary, but
+    reusing the session when available is strictly more informative).
+
+    When the prior output is blank or never parsed to a YAML mapping at all
+    (`_plan_review_output_is_repairable` returns False), there is nothing to
+    repair — the retry falls back to the original task prompt on a fresh
+    session, the same cold re-review the transport-retry path performs.
 
     Each pre-retry result is appended to state.plan_review_results so cost and the
     per-reviewer audit reconstruction stay consistent with the transport path.
@@ -393,17 +481,29 @@ def _retry_parse_failed_plan_reviews(
         while retry_count < max_retries and errors:
             state.plan_review_results.append(current)
             retry_count += 1
-            _log(
-                f"  ↻ PLAN_REVIEW   {profile.name} unparseable output "
-                f"(parse retry {retry_count}/{max_retries}): {'; '.join(errors)[:120]}"
-            )
+            error_desc = "; ".join(errors)
+            repairable = _plan_review_output_is_repairable(current.output, errors)
+            if repairable:
+                _log(
+                    f"  ↻ PLAN_REVIEW   {profile.name} unparseable output "
+                    f"(parse retry {retry_count}/{max_retries}): {error_desc[:120]}"
+                )
+                retry_prompt = _build_plan_review_retry_prompt(error_desc, current.output or "")
+                retry_session_id = current.session_id if profile.mode == "cli" else None
+            else:
+                _log(
+                    f"  ↻ PLAN_REVIEW   {profile.name} non-repairable output — cold retry "
+                    f"(parse retry {retry_count}/{max_retries}): {error_desc[:120]}"
+                )
+                retry_prompt = prompt
+                retry_session_id = None  # fresh session — nothing usable to anchor on
             retried = run_agent(
-                prompt=prompt,
+                prompt=retry_prompt,
                 profile=profile,
                 working_dir=workspace_path,
                 quiet=True,
                 secrets=config.secrets,
-                session_id=None,  # fresh session — prior anchors on its own bad output
+                session_id=retry_session_id,
             )
             if retried.session_id:
                 state.plan_review_session_ids[profile.name] = retried.session_id
@@ -418,6 +518,7 @@ def _retry_parse_failed_plan_reviews(
                     "reviewer": profile.name,
                     "retry": retry_count,
                     "errors": list(errors),
+                    "repair": repairable,
                 }
             )
             current = retried
