@@ -15,12 +15,21 @@ name: Close story issue on merge
 # closes when the story merges to its base branch, NOT when its content later
 # reaches main.
 #
-# Merging a change and confirming its symptom stopped are different facts.
-# For a `bug`-labeled issue, resolution is defined by the reported symptom no
-# longer occurring — something this workflow cannot observe from a merge
-# event alone. So bug issues referenced by a merged PR are NOT closed; they
-# stay open, get a `verify-symptom` label, and get a comment naming the PR.
-# Only issues without the `bug` label (stories, enhancements) close on merge.
+# Every referenced issue closes on merge, `bug`-labeled or not (#2067 reverted).
+#
+# An earlier revision held bug issues open with a `verify-symptom` label on the
+# grounds that a merge is not an observation of the symptom stopping. That is
+# true and it was still the wrong trade: reviewers already verify symptom
+# resolution before a story merges, so the observation has happened by this
+# point. Holding the issue open past it created a state with an inflow and no
+# outflow — nothing removed the label or closed the issue — and the resulting
+# always-open bugs silently disabled merge detection, which keyed off issue
+# closure (#2111).
+#
+# The policy this restores: close at merge with whatever testing dev could do,
+# and if the symptom is later observed to persist, that is a new regression bug
+# carrying fresh evidence — which is better material than a months-old issue
+# held open waiting for someone to confirm it.
 
 on:
   pull_request:
@@ -58,38 +67,19 @@ jobs:
             exit 0
           fi
 
-          # Ensure the verify-symptom label exists; --force makes this
-          # idempotent whether or not a prior run already created it.
-          gh label create "verify-symptom" --repo "$REPO" \
-            --color "d93f0b" \
-            --description "Fix merged; reported symptom not yet observed to stop" \
-            --force
-
           for n in $nums; do
-            info=$(gh issue view "$n" --repo "$REPO" --json state,labels 2>/dev/null || echo "")
+            info=$(gh issue view "$n" --repo "$REPO" --json state 2>/dev/null || echo "")
             if [ -z "$info" ]; then
               echo "#$n not found or unreadable; skipping."
               continue
             fi
             state=$(printf '%s' "$info" | jq -r .state)
-            is_bug=$(printf '%s' "$info" | jq -r '[.labels[].name] | index("bug") != null')
 
             case "$state" in
               OPEN)
-                if [ "$is_bug" = "true" ]; then
-                  # A bug issue's resolution is defined by an observed symptom
-                  # stopping, not by a merge. Merging the fix is evidence, not
-                  # confirmation, so the issue stays open with that distinction
-                  # on record instead of being closed as resolved.
-                  echo "#$n is a bug issue; leaving open pending symptom verification (fix merged in PR #$PR_NUMBER)."
-                  gh issue edit "$n" --repo "$REPO" --add-label "verify-symptom"
-                  gh issue comment "$n" --repo "$REPO" \
-                    --body "PR #$PR_NUMBER merged a fix for this issue, but the reported symptom has not yet been observed to stop. Leaving this issue open — labeled \`verify-symptom\` — until the symptom is confirmed resolved."
-                else
-                  echo "Closing #$n (referenced by merged PR #$PR_NUMBER)"
-                  gh issue close "$n" --repo "$REPO" \
-                    --comment "Closed by merged PR #$PR_NUMBER."
-                fi
+                echo "Closing #$n (referenced by merged PR #$PR_NUMBER)"
+                gh issue close "$n" --repo "$REPO" \
+                  --comment "Closed by merged PR #$PR_NUMBER."
                 ;;
               CLOSED)
                 echo "#$n already closed; skipping (idempotent with the sprint's synchronous close)."
