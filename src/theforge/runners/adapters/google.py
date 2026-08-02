@@ -15,6 +15,7 @@ from theforge.runners.schema_utils import (
     ToolCallRequest,
     _estimate_cost,
     _sanitize_schema_for_google,
+    forced_output_contract,
 )
 
 if TYPE_CHECKING:
@@ -330,13 +331,14 @@ def _make_google_adapter(
     import google.genai as genai
     import google.genai.types as genai_types
 
-    from theforge.schemas import review_json_schema
-
     merged = {**os.environ, **(secrets or {})}
     client = genai.Client(api_key=merged.get("GOOGLE_API_KEY") or merged.get("GEMINI_API_KEY"))
 
-    # Pre-build the sanitized schema for finalization calls
-    _finalize_schema = _sanitize_schema_for_google(review_json_schema())
+    # Pre-build the sanitized schema for finalization calls. The contract must
+    # come from the phase in flight — forcing a plan reviewer into the
+    # code-review shape makes its complete review unparseable downstream.
+    _contract = forced_output_contract(profile.phase)
+    _finalize_schema = _sanitize_schema_for_google(_contract.json_schema)
 
     def _needs_finalization(response: Any) -> bool:
         """Check if the response indicates the model is done exploring
@@ -363,21 +365,16 @@ def _make_google_adapter(
 
     def _finalize(contents: list[dict], usage_so_far: "ModelUsage | None") -> LoopTurn:
         """Make a constrained-output call to extract the structured review."""
-        _log_verbose("  ⚠ Gemini finalization — switching to response_schema")
+        _log_verbose(
+            "  ⚠ Gemini finalization — switching to response_schema "
+            f"(phase={profile.phase or 'review'}, contract={_contract.schema_name})"
+        )
         # Append instruction to submit
         finalize_contents = list(contents)
         finalize_contents.append(
             {
                 "role": "user",
-                "parts": [
-                    {
-                        "text": (
-                            "Now deliver your code review verdict as structured JSON. "
-                            "Include verdict, summary, findings, story_compliance, "
-                            "and test_coverage."
-                        )
-                    }
-                ],
+                "parts": [{"text": _contract.instruction(prefix="")}],
             }
         )
         config = _make_google_generate_config(

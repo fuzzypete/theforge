@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from theforge.agent_types import ModelUsage
-from theforge.schemas import review_json_schema
+from theforge.schemas import plan_review_json_schema, review_json_schema
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,64 @@ _SUBMIT_TOOL_NAMES = {SUBMIT_REVIEW, SUBMIT_PLAN_REVIEW}
 
 # Phases that must NOT receive submit tools or review finalizers
 _NO_SUBMIT_PHASES = {"preflight", "dev"}
+
+# The phase whose forced-output contract is the plan-review one. Every other
+# submit-capable phase reviews code.
+PLAN_REVIEW_PHASE = "plan_review"
+
+
+@dataclass(frozen=True)
+class ForcedOutputContract:
+    """Schema + instruction pair for a phase's forced-structured-output fallback.
+
+    Forcing a phase into another phase's contract turns a complete answer into an
+    unparseable one, so every provider fallback selects its contract through
+    :func:`forced_output_contract` rather than hardcoding the code-review shape.
+    """
+
+    verdict_kind: str  # "code review" / "plan review"
+    schema_name: str  # response_format / json_schema name
+    submit_tool: str  # submit tool to force where the provider supports it
+    json_schema: dict
+    fields: str  # human-readable field list for the instruction
+
+    def instruction(
+        self,
+        *,
+        prefix: str = "Time is up. ",
+        form: str | None = "structured JSON",
+        suffix: str = "",
+    ) -> str:
+        """Render the instruction that accompanies the forced schema."""
+        as_clause = f" as {form}" if form else ""
+        return (
+            f"{prefix}Deliver your {self.verdict_kind} verdict now{as_clause}. "
+            f"Include {self.fields}.{suffix}"
+        )
+
+
+def forced_output_contract(phase: str | None) -> ForcedOutputContract:
+    """Return the forced-output contract belonging to ``phase``.
+
+    Phases in ``_NO_SUBMIT_PHASES`` never reach a forced-output fallback (they use
+    ``noop_finalizer``), so only the two review shapes are represented here.
+    """
+    if phase == PLAN_REVIEW_PHASE:
+        return ForcedOutputContract(
+            verdict_kind="plan review",
+            schema_name="plan_review_output",
+            submit_tool=SUBMIT_PLAN_REVIEW,
+            json_schema=plan_review_json_schema(),
+            fields="verdict, summary, findings, and criteria_coverage",
+        )
+    return ForcedOutputContract(
+        verdict_kind="code review",
+        schema_name="review_output",
+        submit_tool=SUBMIT_REVIEW,
+        json_schema=review_json_schema(),
+        fields="verdict, summary, findings, story_compliance, and test_coverage",
+    )
+
 
 # Max consecutive malformed tool calls before aborting
 _MAX_MALFORMED = 3
