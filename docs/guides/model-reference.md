@@ -4,8 +4,11 @@ Per-provider model recommendations for TheForge, organized by phase and
 complexity tier. These reflect vendor positioning and observed behavior as of
 April 2026.
 
-TheForge's adaptive assignment maps complexity (small/medium/large) to tiers
-(cheap/mid/strong). The tables below show which concrete model fits each cell.
+TheForge's adaptive assignment maps complexity to routing tiers
+(`cheap`/`mid`/`strong`) through the current routing policy described in
+[`adaptive-assignment.md`](adaptive-assignment.md) and
+[`routing-policy.md`](routing-policy.md). The tables below show which concrete
+model fits each tier cell.
 
 ---
 

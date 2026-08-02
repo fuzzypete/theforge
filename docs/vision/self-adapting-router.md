@@ -2,6 +2,14 @@
 
 Captured 2026-03-23 from design discussion on adaptive routing evolution.
 
+> **Historical design note.** This document predates ADR-0002 and ADR-0006.
+> It is retained as background on the direction that led to adaptive
+> assignment, not as the current routing contract. The current system is
+> documented in [Adaptive Assignment](../guides/adaptive-assignment.md) and the
+> ADRs it cites. In particular, references below to a direct
+> `query_escalation_memory()`-style router are superseded by the current
+> admissibility, taint, recency, and `routing_decision` rules.
+
 ## The Problem With Config
 
 Today's forge.yaml is ~100 lines of model configuration: reviewer profiles,

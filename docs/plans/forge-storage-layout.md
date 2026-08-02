@@ -596,4 +596,4 @@ Knowledge-capture Layer 1 has a hard implementation dependency on Story 1
 and nothing else from this chain. Stories 2–6 are independent
 improvements that land on the rollout and performance timelines described
 in "Story Sequence" above, and they also unblock other downstream work
-(the self-adapting router flywheel queries the same index, for example).
+(adaptive assignment's routing flywheel queries the same index, for example).
