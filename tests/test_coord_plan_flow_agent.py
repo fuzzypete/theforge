@@ -2219,6 +2219,160 @@ class TestPlanReviewParseRetry:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
+    def test_failed_first_attempt_output_survives_parse_retry(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """The parse-failed FIRST attempt keeps its own artifact (#2066).
+
+        The per-reviewer artifact used to be written from the post-retry result,
+        so `<reviewer>.yaml` was a byte-duplicate of the last retry and the
+        output that actually failed validation — the run's most diagnostic
+        output — was written nowhere.
+        """
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.06,
+                profile_name="plan-review",
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_REVIEW_BAD_FINDING_KEY,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert len(result.state.plan_review_parse_retries) == 1
+        log_dir = result.state.log_dir
+        assert log_dir is not None
+        attempt_dir = log_dir / "plan-review" / "attempt-0"
+        first = attempt_dir / "plan-review.yaml"
+        retry = attempt_dir / "plan-review-parse-retry1.yaml"
+        assert first.exists()
+        assert retry.exists()
+        # The base artifact holds the attempt that failed, verbatim …
+        assert first.read_text() == PLAN_REVIEW_BAD_FINDING_KEY
+        # … and the retry's output lives in its own slot, not on top of it.
+        assert retry.read_text() == PLAN_AGENT_APPROVE
+        assert first.read_text() != retry.read_text()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_every_parse_attempt_has_a_distinct_artifact(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Retries exhausted: each of the three attempts is separately readable."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_parse_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        _attempt_0 = PLAN_REVIEW_BAD_FINDING_KEY
+        _attempt_1 = PLAN_REVIEW_BAD_FINDING_KEY.replace("wrong key", "still wrong key")
+        _attempt_2 = PLAN_REVIEW_BAD_FINDING_KEY.replace("wrong key", "wrong key again")
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True, output=_attempt_1, cost_usd=0.06, profile_name="plan-review"
+            ),
+            _make_agent_result(
+                success=True, output=_attempt_2, cost_usd=0.06, profile_name="plan-review"
+            ),
+        ]
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True, output=_attempt_0, cost_usd=0.08, profile_name="plan-review"
+                )
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        log_dir = result.state.log_dir
+        assert log_dir is not None
+        attempt_dir = log_dir / "plan-review" / "attempt-0"
+        assert (attempt_dir / "plan-review.yaml").read_text() == _attempt_0
+        assert (attempt_dir / "plan-review-parse-retry1.yaml").read_text() == _attempt_1
+        assert (attempt_dir / "plan-review-parse-retry2.yaml").read_text() == _attempt_2
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
     def test_parse_failure_exhausts_retries_then_escalates(
         self,
         mock_shell,
