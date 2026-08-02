@@ -1,12 +1,9 @@
 """End-to-end behavior test for the close-story-on-merge workflow.
 
-Closing an issue asserts its reported problem no longer occurs. A merge event
-only establishes that a change shipped, not that a reported symptom stopped.
-This test extracts the workflow's *actual* shell step and runs it under
-``bash`` with the ``gh`` CLI stubbed at the process boundary, verifying that a
-`bug`-labeled issue (whose resolution is defined by an observation) is left
-open with a `verify-symptom` label instead of closed, while a non-bug issue
-still closes on merge as before.
+Every issue a merged PR references closes, whatever its labels. This test
+extracts the workflow's *actual* shell step and runs it under ``bash`` with the
+``gh`` CLI stubbed at the process boundary, verifying that closure does not
+depend on the `bug` label and that an already-closed issue is left alone.
 
 Because the script is read straight out of the YAML, the test stays in
 lockstep with the shipped workflow.
@@ -120,23 +117,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_bug_issue_is_left_open_pending_symptom_verification(tmp_path):
-    """AC: a merged PR fixing a bug issue does not close it before the symptom is observed."""
+def test_bug_issue_closes_on_merge(tmp_path):
+    """A `bug`-labeled issue closes on merge like any other (#2067 reverted)."""
     result = _run_step(
         tmp_path,
         "Fixes #2047",
         {"FAKE_STATE": "OPEN", "FAKE_LABELS": "bug"},
     )
-    assert result["close"].strip() == "", "a bug issue must not be closed on merge alone"
-    assert "2047" in result["edit"]
-    assert "verify-symptom" in result["edit"]
-    assert "2047" in result["comment"]
-    assert "2062" in result["comment"]
-    assert "pending symptom verification" in result["stdout"]
+    assert "2047" in result["close"]
+    assert "Closed by merged PR #2062" in result["close"]
+    assert result["edit"].strip() == "", "no label edit: the issue simply closes"
 
 
-def test_non_bug_issue_still_closes_on_merge(tmp_path):
-    """A story/enhancement issue (no `bug` label) keeps closing on merge as before."""
+def test_non_bug_issue_closes_on_merge(tmp_path):
+    """A story/enhancement issue closes on merge; label plays no part in the decision."""
     result = _run_step(
         tmp_path,
         "Closes #100",
@@ -147,7 +141,7 @@ def test_non_bug_issue_still_closes_on_merge(tmp_path):
     assert "Closed by merged PR #2062" in result["close"]
 
 
-def test_already_closed_bug_issue_is_skipped(tmp_path):
+def test_already_closed_issue_is_skipped(tmp_path):
     """An already-closed issue is left alone regardless of label (idempotent)."""
     result = _run_step(
         tmp_path,
@@ -159,11 +153,11 @@ def test_already_closed_bug_issue_is_skipped(tmp_path):
     assert "already closed" in result["stdout"]
 
 
-def test_label_create_is_invoked_idempotently(tmp_path):
-    """The verify-symptom label is (re)created before any bug-issue handling."""
+def test_no_label_is_created(tmp_path):
+    """Closure no longer depends on any label, so none is created (#2067 reverted)."""
     result = _run_step(
         tmp_path,
         "Fixes #2047",
         {"FAKE_STATE": "OPEN", "FAKE_LABELS": "bug"},
     )
-    assert "verify-symptom" in result["label"]
+    assert result["label"].strip() == ""
