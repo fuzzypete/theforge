@@ -13,7 +13,11 @@ coordinator run, with only the agent-invocation boundary mocked, asserting that
     authoritative substrate/native run records and the ``routing_decision`` block
     — the legacy ``.forge/assignment_history.yaml`` snapshot is never written;
   * the persisted block for a real runtime path carries candidate pool, exclusion
-    reasons, consulted signals, adaptive-mechanism outcomes, and final selection.
+    reasons, consulted signals, adaptive-mechanism outcomes, and final selection;
+  * the whole escalation-history learning arc — cold start below the sample
+    floor, taint exclusion, promotion once the floor is met, sprint stickiness,
+    and the paired recency recovery — holds end to end over one sprint against
+    one substrate (#271, ADR-0006 clauses 2.3, 4, 5, 7).
 
 Every explanation assertion reads from the canonical block; no parallel audit
 trail is introduced.
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import nullcontext
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 from unittest.mock import patch
@@ -43,8 +48,15 @@ from coord_test_helpers import (  # noqa: E402
 
 from theforge.assignment import (  # noqa: E402
     EXCLUSION_REASONS,
+    MECHANISM_DEV_PROMOTION,
+    MECHANISM_DEV_RECENCY_RECOVERY,
+    PROMOTION_OUTCOME_BELOW_FLOOR,
+    PROMOTION_OUTCOME_PROMOTED,
+    PROMOTION_OUTCOME_RECOVERED,
     REASON_EXPLICIT_OVERRIDE_LOCKED,
     REASON_NONE,
+    ROUTING_RATIONALE_PROMOTED,
+    ROUTING_RATIONALE_STAYED,
 )
 from theforge.config import (  # noqa: E402
     DEFAULT_DEV_PROFILE,
@@ -52,6 +64,7 @@ from theforge.config import (  # noqa: E402
     DEFAULT_VALIDATION,
     AgentDef,
     AssignmentConfig,
+    ExplorationConfig,
     ForgeConfig,
     LogConfig,
     ModelProfile,
@@ -64,6 +77,16 @@ from theforge.coordinator import audit_substrate as _sub  # noqa: E402
 from theforge.coordinator.engine import run_task  # noqa: E402
 from theforge.coordinator.escalation_history import (  # noqa: E402
     load_escalation_history_from_substrate,
+    load_escalation_history_with_taint_stats,
+)
+from theforge.coordinator.review_context import (  # noqa: E402
+    REVIEWER_TREE_CURRENCY_CHECK,
+    REVIEWER_TREE_CURRENCY_PRODUCER,
+)
+from theforge.coordinator.trust_status import (  # noqa: E402
+    CHECK_FAIL,
+    TRUST_TAINTED,
+    make_trust_check,
 )
 
 PLAN_AGENT_APPROVE = """\
@@ -72,6 +95,24 @@ verdict: APPROVE
 findings: []
 ```
 """
+
+# A failed reviewer tree-currency check — the landed mechanical producer of the
+# trust marker (#1851). Injecting THIS (rather than hand-setting trust_status)
+# keeps the tainted run in the fixture below on the production taint path: the
+# coordinator derives ``trust_status: tainted`` from it, the audit writer records
+# it, and the capability aggregator excludes the run (ADR-0006 clause 4).
+_FAILED_TREE_CURRENCY_CHECK = make_trust_check(
+    check=REVIEWER_TREE_CURRENCY_CHECK,
+    result=CHECK_FAIL,
+    producer=REVIEWER_TREE_CURRENCY_PRODUCER,
+    evidence={
+        "base_branch": "main",
+        "expected_commits": ["deadbee handoff-claimed commit"],
+        "actual_commits": [],
+        "missing_from_branch": ["deadbee handoff-claimed commit"],
+        "omitted_from_handoff": [],
+    },
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -208,11 +249,20 @@ def _run_story(
     *,
     review_outputs: list[str] | None = None,
     slug_dir: str = "test-task",
+    sprint_name: str | None = None,
+    taint: bool = False,
 ):
     """Drive a full ``run_task`` with only the agent boundary mocked.
 
     Returns ``(result, captured)`` where ``captured`` records the profiles the
     coordinator handed to each runner — the runtime truth the ACs are about.
+
+    ``sprint_name`` threads the sprint context through so several stories can be
+    run inside one sprint. ``taint`` forces the reviewer tree-currency trust
+    check — the landed mechanical producer of the ``trust_status`` marker
+    (#1851) — to FAIL, which is how a real run becomes ``tainted``; the taint
+    then flows through the production paths into both the native record and the
+    capability profiles.
     """
     task = _make_task(tmp_path)
     workspace = tmp_path / slug_dir
@@ -250,6 +300,15 @@ def _run_story(
             for p in kwargs["profiles"]
         ]
 
+    taint_patch = (
+        patch(
+            "theforge.coordinator.review_pool.evaluate_reviewer_tree_currency",
+            return_value=_FAILED_TREE_CURRENCY_CHECK,
+        )
+        if taint
+        else nullcontext()
+    )
+
     with (
         patch_gate_shell(side_effect=_shell_with_gate(workspace, "PASS")),
         patch(
@@ -262,8 +321,9 @@ def _run_story(
         patch("theforge.coordinator.plan_flow.run_agent_pool", side_effect=_plan_review_pool),
         patch("theforge.coordinator.dev_phase.run_agent", side_effect=_dev_agent),
         patch("theforge.coordinator.review_pool.run_agent_pool", side_effect=_code_review_pool),
+        taint_patch,
     ):
-        result = run_task(config, task)
+        result = run_task(config, task, sprint_name=sprint_name)
     return result, captured
 
 
@@ -601,3 +661,285 @@ def test_persisted_block_is_complete_for_a_runtime_path(tmp_path):
     assert block["planner"]["final"]["model"] == captured.plan_model
     assert block["code_review"]["final"]["models"] == captured.code_review_models
     assert block["plan_review"]["final"]["models"] == captured.plan_review_models
+
+
+# ── #271: assignment-history learning end-to-end fixture ──────────────
+
+
+_E2E_SPRINT = "adaptive-learning-e2e"
+_TIER_LADDER = ("cheap", "mid", "strong")
+
+
+def _learning_config(tmp_path: Path, **overrides) -> ForgeConfig:
+    """Runtime config tuned for a short, deterministic learning arc.
+
+    Only the sample floor moves off its production default: ``dev_promotion_min_runs``
+    drops from 5 to 3 so the fixture can cross the floor in a handful of runs
+    while still *having* a floor to cross. The promotion threshold, the recency
+    weighting, and the taint gate are all left at their shipped values — the
+    behaviour under test must be the production behaviour.
+    """
+    base = _stable_dev_config(tmp_path, **overrides)
+    return _dc_replace(
+        base,
+        assignment=_dc_replace(
+            base.assignment,
+            dev_promotion_min_runs=3,
+            # Challenger sampling (#325) is the other mechanism allowed to move
+            # the dev pick off the static tier, and in winner mode it re-routes
+            # to the empirical winner *after* a promotion fires. Disabling it
+            # (per_sprint_cap=0) isolates the escalation-history arc under test;
+            # exploration has its own coverage.
+            exploration=ExplorationConfig(per_sprint_cap=0),
+        ),
+    )
+
+
+def _dev_block(result) -> dict:
+    return result.state.routing_decision["dev"]
+
+
+def _legacy_yaml(tmp_path: Path) -> Path:
+    return tmp_path / ".forge" / "assignment_history.yaml"
+
+
+def test_assignment_history_learning_end_to_end(tmp_path):
+    """End-to-end proof of escalation-history learning through the substrate.
+
+    One sprint, one complexity/dev-model slice, five phases:
+
+      1. cold start — below the sample floor, routing falls back to the static
+         tier/budget policy;
+      2. accumulation — DONE and ESCALATE outcomes written as authoritative
+         native telemetry, plus one tainted run;
+      3. taint exclusion — the tainted run is visible in the substrate but keeps
+         the admissible sample *below* the floor;
+      4. promotion — once the floor is met the named mechanism fires and the
+         routing_decision block records signal, sample, floor, taint exclusions
+         and the ranking effect;
+      5. recovery — as admissible successes return, the paired recency-recovery
+         mechanism fires and the dev tier falls back to the static tier.
+
+    Every assertion reads the native per-run records, the substrate projection,
+    or the canonical ``routing_decision`` block. No assignment-history YAML is
+    written or consulted anywhere in the arc (ADR-0006 clauses 2.3, 4, 5, 7).
+    """
+    config = _learning_config(tmp_path)
+    min_runs = config.assignment.dev_promotion_min_runs
+    threshold = config.assignment.dev_promotion_threshold
+
+    # ── Phase 1: cold start ───────────────────────────────────────────
+    # Empty history: no substrate, no capability profiles. The escalation-history
+    # signal is consulted and comes back empty, so nothing crosses the floor and
+    # the static score→tier policy decides.
+    assert not _sub.substrate_path(tmp_path).exists()
+    assert not (tmp_path / ".forge" / "model_profiles.yaml").exists()
+
+    cold, cold_captured = _run_story(config, tmp_path, sprint_name=_E2E_SPRINT)
+    assert cold.success is True
+    cold_dev = _dev_block(cold)
+    base_tier = cold_dev["base_tier_from_score"]
+    assert base_tier in _TIER_LADDER
+    # Consulted, but with nothing to consult: no signal, floor not passed.
+    assert cold_dev["promotion_check"]["mechanism"] == MECHANISM_DEV_PROMOTION
+    assert cold_dev["promotion_check"]["fired"] is False
+    assert cold_dev["promotion_check"]["outcome"] == PROMOTION_OUTCOME_BELOW_FLOOR
+    assert cold_dev["promotion_check"]["sample_size"] == 0
+    assert cold_dev["promotion_check"]["floor"] == "fail"
+    assert cold_dev["promotion_check"]["min_runs"] == min_runs
+    # → fallback to the static tier/budget policy: the dev that RAN is the
+    #   score-derived tier pick, unmoved by any adaptive mechanism.
+    assert cold_dev["final"]["tier"] == base_tier
+    assert cold_dev["routing_rationale"]["state"] == ROUTING_RATIONALE_STAYED
+    assert cold_dev["routing_rationale"]["mechanism"] is None
+    static_dev_model = cold_dev["final"]["model"]
+    assert cold_captured["dev"] == [static_dev_model]
+    assert cold.state.routing_decision["excluded_for_taint"] == 0
+    assert not _legacy_yaml(tmp_path).exists()
+
+    cold_record = _persist_run(cold, config, tmp_path)
+    assert cold_record["outcome"]["success"] is True
+
+    # ── Phase 2: authoritative DONE / ESCALATE / tainted telemetry ────
+    # One admissible escalation. Still one run short of the floor at routing time.
+    esc_one, _ = _run_story(
+        config, tmp_path, sprint_name=_E2E_SPRINT, review_outputs=[REQUEST_CHANGES_REVIEW]
+    )
+    assert esc_one.phase.name == "ESCALATE"
+    assert _dev_block(esc_one)["promotion_check"]["sample_size"] == 1
+    esc_one_record = _persist_run(esc_one, config, tmp_path)
+    assert esc_one_record["outcome"]["final_phase"] == "ESCALATE"
+
+    # A tainted escalation for the SAME slice: the run happened, its telemetry is
+    # real, but it failed its own trust check so it must not teach.
+    tainted, _ = _run_story(
+        config,
+        tmp_path,
+        sprint_name=_E2E_SPRINT,
+        review_outputs=[REQUEST_CHANGES_REVIEW],
+        taint=True,
+    )
+    assert tainted.phase.name == "ESCALATE"
+    tainted_record = _persist_run(tainted, config, tmp_path)
+    assert tainted_record["trust_status"] == TRUST_TAINTED
+    assert [c["check"] for c in tainted_record["trust_checks"]] == [REVIEWER_TREE_CURRENCY_CHECK]
+
+    # The second admissible escalation. Two admissible escalations now sit behind
+    # this slice — and a third, tainted, run that must not count.
+    esc_two, _ = _run_story(
+        config, tmp_path, sprint_name=_E2E_SPRINT, review_outputs=[REQUEST_CHANGES_REVIEW]
+    )
+    assert esc_two.phase.name == "ESCALATE"
+    _persist_run(esc_two, config, tmp_path)
+
+    # ── Phase 3: the tainted run is present but excluded ──────────────
+    # Present: the substrate still holds all four runs (ADR-0002 refusal to forget).
+    conn = _sub.require_substrate(tmp_path)
+    try:
+        assert _sub.count_records(conn) == 4
+        stored = _sub.latest_record_for(conn, run_id=tainted.state.run_id)
+    finally:
+        conn.close()
+    assert stored is not None
+    assert stored["trust_status"] == TRUST_TAINTED
+
+    # Excluded: the router-consumed escalation history drops it and counts it.
+    history, excluded_for_taint = load_escalation_history_with_taint_stats(tmp_path)
+    assert excluded_for_taint == 1
+    assert [r.outcome for r in history] == ["DONE", "ESCALATE", "ESCALATE"]
+    # All three admissible runs are one slice: same complexity band, same dev
+    # model identity (recorded canonically as provider/model/transport).
+    assert {r.complexity for r in history} == {"MEDIUM"}
+    history_dev_ids = {r.dev_model for r in history}
+    assert len(history_dev_ids) == 1
+    assert static_dev_model in next(iter(history_dev_ids))
+    assert load_escalation_history_from_substrate(tmp_path) == history
+
+    # Excluded from the routing-weight aggregate too: three admissible runs behind
+    # the slice, the tainted one tallied separately — and that is exactly the
+    # difference between meeting the floor and not.
+    esc_two_promo = _dev_block(esc_two)["promotion_check"]
+    assert esc_two_promo["sample_size"] == 2  # NOT 3 — the tainted run is out
+    assert esc_two_promo["tainted_runs"] == 1
+    assert esc_two_promo["outcome"] == PROMOTION_OUTCOME_BELOW_FLOOR
+    assert esc_two_promo["floor"] == "fail"
+    assert _dev_block(esc_two)["final"]["tier"] == base_tier  # still static
+    assert esc_two.state.routing_decision["excluded_for_taint"] == 1
+
+    # ── Phase 4: promotion once the admissible floor is met ───────────
+    promoted, promoted_captured = _run_story(config, tmp_path, sprint_name=_E2E_SPRINT)
+    promoted_dev = _dev_block(promoted)
+    promo = promoted_dev["promotion_check"]
+
+    # The named mechanism fired, on the named signal.
+    assert promo["mechanism"] == MECHANISM_DEV_PROMOTION
+    assert promo["fired"] is True
+    assert promo["outcome"] == PROMOTION_OUTCOME_PROMOTED
+    assert promo["model"] == cold.state._adaptive_decision.dev.name
+    assert promo["complexity"] == "MEDIUM"
+    # Consulted signal + sample count + floor status + taint exclusions.
+    assert promo["sample_size"] == min_runs == 3  # DONE + 2 admissible ESCALATEs
+    assert promo["tainted_runs"] == 1
+    assert promo["floor"] == "pass"
+    assert promo["threshold"] == threshold
+    assert promo["raw_success_rate"] == pytest.approx(1 / 3, abs=1e-4)
+    assert promo["weighted_success_rate"] < threshold
+    # Final ranking effect: one tier up from the static pick, and that is the
+    # model the coordinator actually invoked.
+    promoted_tier = promo["resulting_tier"]
+    assert _TIER_LADDER.index(promoted_tier) == _TIER_LADDER.index(base_tier) + 1
+    assert promoted_dev["final"]["tier"] == promoted_tier
+    assert promoted_dev["final"]["model"] != static_dev_model
+    assert promoted_captured["dev"] == [promoted_dev["final"]["model"]]
+    assert promoted_dev["routing_rationale"] == {
+        "state": ROUTING_RATIONALE_PROMOTED,
+        "mechanism": MECHANISM_DEV_PROMOTION,
+        "from_tier": base_tier,
+        "to_tier": promoted_tier,
+    }
+    # The paired recovery mechanism is recorded as checked-but-not-fired: the
+    # promotion is active because the weighted rate has not come back yet.
+    assert promoted_dev["demotion_check"]["mechanism"] == MECHANISM_DEV_RECENCY_RECOVERY
+    assert promoted_dev["demotion_check"]["applicable"] is True
+    assert promoted_dev["demotion_check"]["fired"] is False
+    assert (
+        promoted_dev["demotion_check"]["reason"]
+        == "promotion_active_weighted_rate_below_threshold"
+    )
+
+    # The whole explanation is reconstructable from the persisted native record.
+    promoted_record = _persist_run(promoted, config, tmp_path)
+    assert promoted_record["routing_decision"]["dev"]["promotion_check"] == promo
+    assert promoted_record["routing_decision"]["excluded_for_taint"] == 1
+    assert not _legacy_yaml(tmp_path).exists()
+
+    # ── Phase 4b: sprint stickiness ───────────────────────────────────
+    # The next story in the SAME sprint re-derives the identical decision from
+    # the same native records. Stickiness is a property of the shared substrate,
+    # not of a second store: no promotion cache and no assignment-history file
+    # exists for it to have been read from.
+    sticky, sticky_captured = _run_story(config, tmp_path, sprint_name=_E2E_SPRINT)
+    sticky_dev = _dev_block(sticky)
+    assert sticky_dev["promotion_check"] == promo
+    assert sticky_dev["final"] == promoted_dev["final"]
+    assert sticky_captured["dev"] == promoted_captured["dev"]
+    assert sticky.state.sprint_name == _E2E_SPRINT == promoted.state.sprint_name
+    assert sticky.state.routing_decision["excluded_for_taint"] == 1
+    assert not _legacy_yaml(tmp_path).exists()
+    _persist_run(sticky, config, tmp_path)
+
+    # ── Phase 5: recovery ─────────────────────────────────────────────
+    # Successes return to the promoted-away-from slice. Pin dev to that exact
+    # profile so the recovering evidence lands on the same (complexity, dev_model)
+    # bucket the promotion was read off — an operator override, not a test-only
+    # back door into the aggregates.
+    pinned_config = _learning_config(tmp_path, dev_profile=cold.state._adaptive_decision.dev)
+    for _ in range(3):
+        recovering, recovering_captured = _run_story(
+            pinned_config, tmp_path, sprint_name=_E2E_SPRINT
+        )
+        assert recovering.success is True
+        assert recovering_captured["dev"] == [static_dev_model]
+        _persist_run(recovering, pinned_config, tmp_path)
+
+    recovered, recovered_captured = _run_story(config, tmp_path, sprint_name=_E2E_SPRINT)
+    recovered_dev = _dev_block(recovered)
+    recovered_promo = recovered_dev["promotion_check"]
+
+    # Admissible samples remain (still one taint-excluded) and the weighted rate
+    # has climbed back to/above threshold: the promotion stops firing...
+    assert recovered_promo["fired"] is False
+    assert recovered_promo["outcome"] == PROMOTION_OUTCOME_RECOVERED
+    assert recovered_promo["floor"] == "pass"
+    assert recovered_promo["sample_size"] == 6
+    assert recovered_promo["tainted_runs"] == 1
+    assert recovered_promo["weighted_success_rate"] >= threshold
+    # ...and the paired recovery mechanism records the return path firing.
+    assert recovered_dev["demotion_check"]["mechanism"] == MECHANISM_DEV_RECENCY_RECOVERY
+    assert recovered_dev["demotion_check"]["applicable"] is True
+    assert recovered_dev["demotion_check"]["fired"] is True
+    assert (
+        recovered_dev["demotion_check"]["reason"]
+        == "weighted_rate_recovered_to_or_above_threshold"
+    )
+    # Ranking effect of the recovery: dev is back at the static tier.
+    assert recovered_dev["final"]["tier"] == base_tier
+    assert recovered_dev["final"]["model"] == static_dev_model
+    assert recovered_captured["dev"] == [static_dev_model]
+    assert recovered_dev["routing_rationale"]["state"] == ROUTING_RATIONALE_STAYED
+
+    # ── Final record assertions target native surfaces only ───────────
+    recovered_record = _persist_run(recovered, config, tmp_path)
+    assert recovered_record["routing_decision"]["dev"]["demotion_check"]["fired"] is True
+    runs_dir = tmp_path / ".forge" / "audits" / "runs"
+    assert len(list(runs_dir.glob("*.json"))) == 10
+    conn = _sub.require_substrate(tmp_path)
+    try:
+        derived = _sub.derive_assignment_history(conn)
+    finally:
+        conn.close()
+    # The derived view is a projection of the native records with the tainted run
+    # filtered out — nine admissible runs, no separate authority behind them.
+    assert len(derived) == 9
+    assert not _legacy_yaml(tmp_path).exists()
+    assert not (tmp_path / ".forge" / "assignment_history.yml").exists()
