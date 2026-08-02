@@ -1149,6 +1149,21 @@ def _run_plan_agent_review(
             progress_cb=_pr_channel.cb,
             durations_out=_pr_reviewer_durations,
         )
+        # Persist each reviewer's FIRST-attempt raw output before any retry loop
+        # can replace it (#2066). Retries write their own -retryN /
+        # -parse-retryN artifact, so writing this slot from the post-retry
+        # result made the canonical file a byte-duplicate of the last retry and
+        # left the output that actually failed validation written nowhere — the
+        # single most diagnostic output the run produced. Written here rather
+        # than at the end of the phase, mirroring review_pool, which persists
+        # the base per-reviewer artifact straight off the initial pool result.
+        # Persist raw output regardless of approve/reject outcome.
+        for _prof, _res in zip(par_profiles, pr_results):
+            _write_log_artifact(
+                state.log_dir,
+                f"plan-review/attempt-{_attempt}/{_prof.name}.yaml",
+                _res.output or "",
+            )
         pr_results, _transport_retry_events = _retry_transient_plan_review_failures(
             prompt=pr_prompt,
             profiles=par_profiles,
@@ -1271,12 +1286,8 @@ def _run_plan_agent_review(
                     f"({'no blockers' if _p1_count == 0 else f'{_p1_count} P1'}"
                     f"{f', {_p2_count} P2' if _p2_count else ''})"
                 )
-            # persist raw output regardless of approve/reject outcome
-            _write_log_artifact(
-                state.log_dir,
-                f"plan-review/attempt-{_attempt}/{_prof.name}.yaml",
-                _res.output or "",
-            )
+            # Raw output is already persisted: the first attempt at the pool
+            # fan-out above, every retry by its own retry loop (#2066).
             _parsed_prs.append(_parsed)
 
         # ── Per-plan-reviewer mechanical value telemetry (#1443) ──────────────
