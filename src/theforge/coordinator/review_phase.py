@@ -58,6 +58,7 @@ from .remote_gates import (
     _escalate_gate_remote,
     _remote_human_review,
 )
+from .resume_persistence import save_resume_record
 from .review_context import (
     _get_commit_diffs,
     _get_commit_log,
@@ -212,11 +213,54 @@ def _run_escalate_gate(
 ) -> "CoordinatorResult | None":
     """HITL decision gate at review-related ESCALATE exit points.
 
+    Every exit persists the gate's decision and any advisory it generated to the
+    story's durable phase record. The escalation advisory is charged to the run
+    and rendered to the operator, and the runs that reach this gate are the ones
+    least likely to end through a normal finalization — so the record must not
+    depend on this process surviving to write it (#2155).
+
     Returns:
         CoordinatorResult — approve or reject decision (caller should return it).
         None — continue decision (caller should reset phase to REVIEW, decrement
                review_cycle by 1 if it was already incremented, and loop).
     """
+    try:
+        return _run_escalate_gate_inner(
+            state,
+            config,
+            task,
+            workspace_path,
+            branch_name,
+            task_start,
+            auto_merge=auto_merge,
+            notify=notify,
+            logger=logger,
+            run_id=run_id,
+        )
+    finally:
+        save_resume_record(
+            config.project_root,
+            state,
+            slug=task.slug,
+            story_content=state.story_content,
+            run_id=run_id or state.run_id,
+        )
+
+
+def _run_escalate_gate_inner(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    workspace_path: Path,
+    branch_name: str,
+    task_start: float,
+    *,
+    auto_merge: bool,
+    notify: bool,
+    logger: "StructuredLogger | None",
+    run_id: str = "",
+) -> "CoordinatorResult | None":
+    """Body of :func:`_run_escalate_gate`; see there for the contract."""
     escalate_policy = config.retry.escalate_policy
     reviewer_verdicts = _build_reviewer_verdicts(state)
     gate_result: str | None = None

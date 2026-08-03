@@ -66,6 +66,7 @@ from .preflight_cache import (
     apply_cached_preflight_state,
     validate_preflight_cache,
 )
+from .resume_persistence import save_resume_record
 from .signals import (  # noqa: E402
     _fire_post_run_hook,
     _make_sigterm_handler,
@@ -666,6 +667,17 @@ def _coordinator_loop(
                                     "new_timeout_seconds": _new_timeout,
                                     "reason": "timeout",
                                 }
+                                # Durable copy: a timeout escalation is exactly
+                                # the kind of event whose run is least likely to
+                                # reach a normal finalization, so the record must
+                                # not depend on this process surviving (#2155).
+                                save_resume_record(
+                                    config.project_root,
+                                    state,
+                                    slug=task.slug,
+                                    story_content=story_content,
+                                    run_id=state.run_id,
+                                )
                                 _log(
                                     f"  Timeout escalation:"
                                     f" {_old_timeout_model} → {_new_timeout_model}"
@@ -964,6 +976,17 @@ def run_task(
         if start_phase is not None and start_phase.value > Phase.PREFLIGHT.value:
             state.preflight_verdict = "SKIPPED"
             _log("  ⚡ PREFLIGHT   skipped (--from phase)")
+            # The one place a SKIPPED verdict is a real claim: the operator
+            # deliberately bypassed the phase. Persist it so a later resume
+            # reports the bypass rather than degrading it to "no record"
+            # (#2155) — SKIPPED and absent must stay distinguishable.
+            save_resume_record(
+                config.project_root,
+                state,
+                slug=task.slug,
+                story_content=story_content,
+                run_id=_run_id,
+            )
             # When starting at REVIEW (or later), skip DEV on the first iteration
             # so the existing worktree is reviewed before the dev agent is invoked.
             _skip_dev_first = start_phase.value >= Phase.REVIEW.value
@@ -1018,6 +1041,13 @@ def run_task(
                     config,
                     state,
                     task_slug=task.slug,
+                    story_content=story_content,
+                    run_id=_run_id,
+                )
+                save_resume_record(
+                    config.project_root,
+                    state,
+                    slug=task.slug,
                     story_content=story_content,
                     run_id=_run_id,
                 )
@@ -1401,6 +1431,13 @@ def _run_resume_coordinator(
                 config,
                 state,
                 task_slug=task.slug,
+                story_content=story_content,
+                run_id=logger._run_id,
+            )
+            save_resume_record(
+                config.project_root,
+                state,
+                slug=task.slug,
                 story_content=story_content,
                 run_id=logger._run_id,
             )

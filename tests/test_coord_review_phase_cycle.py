@@ -239,9 +239,11 @@ class TestRunFromReview:
         # One dev iteration ran
         assert result.state.dev_trace_count == 1
         assert len(result.state.dev_results) == 1
-        # preflight was skipped
-        assert result.state.preflight_verdict == "SKIPPED"
+        # This attempt did not run preflight, and no earlier attempt left a
+        # durable phase record — so the verdict is absent, not "SKIPPED" (#2155).
+        assert result.state.preflight_verdict is None
         assert result.state.preflight_result is None
+        assert result.state.phase_recovery["status"] == "unavailable"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -272,7 +274,14 @@ class TestRunFromReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch_gate_shell()
     def test_run_from_review_skips_preflight(self, mock_shell, mock_pool, tmp_path):
-        """preflight_verdict is 'SKIPPED' and no preflight agent is ever invoked."""
+        """No preflight agent runs, and the audit reports the phase as absent.
+
+        A resume that never ran preflight must not assert a bypass it did not
+        make: "SKIPPED" is a claim about a deliberate decision, and this run made
+        none — an earlier attempt of the story may have run preflight and left no
+        recoverable record. Absent (null) is the honest report, and
+        ``phase_recovery`` says why (#2155).
+        """
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -285,18 +294,19 @@ class TestRunFromReview:
 
         result = run_from_review(config, task, workspace)
 
-        assert result.state.preflight_verdict == "SKIPPED"
+        assert result.state.preflight_verdict is None
         assert result.state.preflight_result is None
         # run_agent was never called (no preflight, no dev)
         # We can verify by checking no dev results
         assert len(result.state.dev_results) == 0
 
-        # Spec requires: audit log records preflight_verdict as 'SKIPPED' with cost 0.0
-
         audit = generate_audit_log(config, task, result)
-        assert audit["preflight"] is not None
-        assert audit["preflight"]["verdict"] == "SKIPPED"
-        assert audit["preflight"]["cost_usd"] == 0.0
+        # Absent, not skipped — and the recovery block states why, so the two
+        # stay distinguishable for an operator reading the record.
+        assert audit["preflight"] is None
+        assert audit["phases"]["preflight"] is None
+        assert audit["phase_recovery"]["status"] == "unavailable"
+        assert audit["phase_recovery"]["recovered_phases"] == []
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
