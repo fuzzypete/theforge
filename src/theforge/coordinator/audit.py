@@ -765,6 +765,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "domains": list(state.preflight_domains or []),
                 "contract_change": state.preflight_contract_change,
                 "bundle_candidate": state.preflight_bundle_candidate,
+                "batch_group": state.preflight_batch_group,
                 "cost_usd": state.preflight_result.cost_usd if state.preflight_result else 0.0,
                 "cached": state.preflight_cached,
                 "original_verdict": state.preflight_cached_original_verdict,

@@ -4,7 +4,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 
-from ..config import ForgeConfig
+from ..config import ForgeConfig, SprintBatchConfig
 from ..coordinator.engine import run_task
 from ..coordinator.state import CoordinatorState, Phase
 from ..log_util import _log_line
@@ -170,6 +170,189 @@ def compute_bundle_assignments(
             bundles.append(bundle)
 
     return bundles
+
+
+@dataclass(frozen=True)
+class BatchHint:
+    """Per-story eligibility for a *cost-aware batch group*.
+
+    Distinct from :class:`BundleHint`, which answers "do these two stories
+    overlap enough that implementing them apart would cause merge pain".
+    A batch group is the opposite question: are these stories small enough,
+    well-understood enough, and *independent* enough that one dev pass can
+    do all of them and amortise the per-story orchestration overhead.
+    """
+
+    slug: str
+    work_type: str | None
+    complexity: str | None
+    sufficiency: str | None
+    likely_files: tuple[str, ...] | None
+    area: str | None
+    eligible: bool
+    ineligible_reason: str | None
+
+
+#: Work types whose small instances are mechanical enough to share a dev pass.
+BATCH_WORK_TYPES = frozenset({"bug", "mechanical"})
+
+
+def build_batch_hint(
+    task: TaskStory, state: CoordinatorState, *, max_touched_files: int
+) -> BatchHint:
+    """Derive batch eligibility for one story. Fails closed on missing evidence.
+
+    Every gate is a *preflight* fact, never an LLM opinion about batching:
+    complexity, work_type, sufficiency, and a known, bounded touched-file
+    estimate. A story whose preflight did not run, or ran without producing a
+    footprint, is ineligible — batching an unknown-footprint story is how a
+    "cheap" group turns into an unreviewable multi-subject diff.
+    """
+    work_type = state.preflight_work_type
+    complexity = state.preflight_complexity
+    sufficiency = state.preflight_sufficiency
+    likely_files = (
+        None
+        if state.preflight_likely_files is None
+        else tuple(sorted(set(state.preflight_likely_files)))
+    )
+
+    reason: str | None = None
+    if complexity != "small":
+        reason = f"complexity={complexity or 'unknown'} (batching requires small)"
+    elif work_type not in BATCH_WORK_TYPES:
+        reason = f"work_type={work_type or 'unknown'} (batching requires bug/mechanical)"
+    elif sufficiency != "implementation_ready":
+        reason = f"sufficiency={sufficiency or 'unknown'} (batching requires implementation_ready)"
+    elif not likely_files:
+        reason = "unknown touched-file footprint"
+    elif len(likely_files) > max_touched_files:
+        reason = f"touches {len(likely_files)} files (limit {max_touched_files})"
+
+    return BatchHint(
+        slug=task.slug,
+        work_type=work_type,
+        complexity=complexity,
+        sufficiency=sufficiency,
+        likely_files=likely_files,
+        area=_extract_area_label(task),
+        eligible=reason is None,
+        ineligible_reason=reason,
+    )
+
+
+def batch_group_id(members: list[str]) -> str:
+    """Deterministic display/audit id for a batch group."""
+    return f"batch-{members[0]}"
+
+
+def compute_batch_groups(
+    preflight_states: dict[str, CoordinatorState],
+    tasks: list[TaskStory],
+    *,
+    batch_config: SprintBatchConfig | None = None,
+    excluded_slugs: set[str] | None = None,
+) -> list[list[str]]:
+    """Group small, independent, implementation-ready stories for one dev pass.
+
+    Batch groups are the third scheduling primitive, alongside DAG dependencies
+    (ordering) and conflict bundles (merge-pain avoidance). They exist for cost
+    and throughput only, so they are subordinate to both of the others and never
+    override either:
+
+    * any story touched by a dependency edge — its own ``depends_on`` /
+      ``collision_deps``, or another story depending on it — is excluded
+      outright, so a batch can never reorder or short-circuit the DAG;
+    * any slug the conflict bundler already claimed (``excluded_slugs``) is
+      excluded, so bundling wins whenever both primitives would apply;
+    * members must be pairwise *non*-overlapping under the conflict-bundle
+      predicate, which is what makes the group independent rather than a bundle
+      by another name.
+
+    Returns groups of two or more slugs in deterministic issue/slug order.
+    Empty unless the project opted in via ``sprint.batch.max_stories >= 2``.
+    """
+    if not isinstance(batch_config, SprintBatchConfig):
+        # No usable batch config — fail closed rather than batching on defaults.
+        return []
+    if batch_config.max_stories < 2:
+        # A group of one is not a batch. ``max_stories: 1`` is the off switch,
+        # and it is the default: batching is not automatically cheaper, so a
+        # project opts in rather than discovering the change in a sprint.
+        return []
+    cfg = batch_config
+
+    excluded = set(excluded_slugs or set())
+    task_by_slug = {task.slug: task for task in tasks}
+
+    # Any story participating in a dependency edge in either direction is out.
+    # Batch members are dispatched as one unit and only the group leader lands a
+    # branch, so a dependency crossing a group boundary would be a scheduling
+    # constraint the batch cannot honour.
+    dependency_touched: set[str] = set()
+    for task in tasks:
+        edges = list(task.depends_on) + list(task.collision_deps)
+        if edges:
+            dependency_touched.add(task.slug)
+        dependency_touched.update(edges)
+
+    hints: dict[str, BatchHint] = {}
+    for slug, state in preflight_states.items():
+        if slug not in task_by_slug:
+            continue
+        hints[slug] = build_batch_hint(
+            task_by_slug[slug], state, max_touched_files=cfg.max_touched_files
+        )
+
+    eligible = [
+        task
+        for task in sorted(tasks, key=_bundle_sort_key)
+        if task.slug not in excluded
+        and task.slug not in dependency_touched
+        and hints.get(task.slug) is not None
+        and hints[task.slug].eligible
+    ]
+
+    groups: list[list[str]] = []
+    used: set[str] = set()
+
+    for task in eligible:
+        if task.slug in used:
+            continue
+        hint = hints[task.slug]
+        group = [task.slug]
+        used.add(task.slug)
+        total_complexity = _complexity_weight(hint.complexity) or 0
+        footprint = set(hint.likely_files or ())
+
+        for candidate in eligible:
+            if candidate.slug in used or len(group) >= cfg.max_stories:
+                continue
+            candidate_hint = hints[candidate.slug]
+            candidate_complexity = _complexity_weight(candidate_hint.complexity)
+            if candidate_complexity is None:
+                continue
+            if total_complexity + candidate_complexity > cfg.max_complexity_budget:
+                continue
+            candidate_files = set(candidate_hint.likely_files or ())
+            if len(footprint | candidate_files) > cfg.max_touched_files:
+                continue
+            # Independence: overlapping with ANY current member makes this a
+            # conflict-bundle question, not a cost question.
+            if any(_bundle_overlap(hints[member], candidate_hint) for member in group):
+                continue
+            group.append(candidate.slug)
+            used.add(candidate.slug)
+            total_complexity += candidate_complexity
+            footprint |= candidate_files
+
+        # A group of one is not a batch. The leader stays in ``used``: the
+        # overlap/budget predicates are symmetric, so a story that attracted no
+        # partner as leader cannot become someone else's partner later.
+        if len(group) > 1:
+            groups.append(group)
+
+    return groups
 
 
 def run_batch_preflight(

@@ -933,6 +933,7 @@ def _run_preflight_phase(
         "duration_s": round(_preflight_elapsed, 2),
         "likely_files": state.preflight_likely_files,
         "bundle_candidate": state.preflight_bundle_candidate,
+        "batch_group": state.preflight_batch_group,
         "branch_merged": branch_merged,
         "evaluation_base_branch": config.workspace.base_branch,
         "cache_snapshot": capture_preflight_cache_snapshot(

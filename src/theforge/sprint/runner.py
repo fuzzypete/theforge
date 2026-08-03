@@ -31,7 +31,7 @@ from ..coordinator.agent_failure import (
     is_infrastructure_abort,
     mark_infrastructure_abort,
 )
-from ..coordinator.engine import run_from_dev, run_from_review, run_task
+from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
 from ..coordinator.logging import StructuredLogger
@@ -54,7 +54,7 @@ from ..intake import (
     run_intake_remediation,
 )
 from ..log_util import _log_line
-from ..task import TaskStory
+from ..task import BatchMember, TaskStory
 from .audit import (
     _get_or_create_sprint_id,
     _write_sprint_audit,
@@ -67,6 +67,8 @@ from .auth_gate import enforce_sprint_auth_readiness
 from .budget import evaluate_budget
 from .ci_checks import failing_required_pr_checks, poll_required_checks
 from .collision import (
+    batch_group_id,
+    compute_batch_groups,
     compute_bundle_assignments,
     compute_synthetic_edges,
     inject_synthetic_deps,
@@ -1889,6 +1891,194 @@ def _run_single_story(
     return task, result, elapsed, started_at, finished_at
 
 
+def _batch_member_failure(
+    config: ForgeConfig,
+    task: TaskStory,
+    sprint_name: str,
+    started_at: datetime.datetime,
+    message: str,
+) -> CoordinatorResult:
+    """Terminal result for a member whose group's shared dev pass never delivered.
+
+    The member is not silently dropped and not credited with the leader's
+    verdict: it gets its own failed row naming the group, so an operator reads
+    "this story was batched and the batch failed" rather than an unexplained
+    zero-cost escalation.
+    """
+    state = CoordinatorState(
+        phase=Phase.ESCALATE,
+        started_at=started_at.isoformat(),
+        workspace_path=config.project_root / config.workspace.path_pattern.format(slug=task.slug),
+        log_dir=_make_story_log_dir(config, task.slug, sprint_name),
+        error=message,
+        error_type="BatchDevFailed",
+    )
+    state.preflight_batch_group = task.batch_group
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.ESCALATE,
+        state=state,
+        message=message,
+    )
+
+
+def _run_batch_group(
+    config: ForgeConfig,
+    leader_task: TaskStory,
+    member_tasks: list[TaskStory],
+    sprint_run_id: str,
+    sprint_name: str,
+    interactive: bool,
+    notify: bool,
+    effective_auto_merge: bool,
+    state_update_fns: "dict[str, Callable[[dict], None] | None]",
+    no_pull: bool,
+    preflight_states: dict[str, CoordinatorState] | None,
+    stop_event: "threading.Event | None",
+    *,
+    base_lands_locally: bool | None = None,
+    lands_in_project_root: bool | None = None,
+) -> "dict[str, tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]]":
+    """Run one cost-aware batch group: one dev pass, per-story review.
+
+    Returns one result tuple per member slug — the same shape a single-story
+    worker returns, one entry per original story. That is the whole point of the
+    primitive: the *implementation* is shared to amortise orchestration cost,
+    but nothing else is. Each member keeps its own state row, review verdict,
+    findings, cost, outcome, and audit record.
+
+    Shape of the run:
+
+    1. The leader story runs a normal coordinator pass (workspace, preflight
+       cache, DEV, VALIDATE, REVIEW) on its own worktree and branch, except that
+       its DEV prompt carries every member's spec (``batch_members``).
+    2. Each non-leader member is then reviewed *on that same worktree*, against
+       its own spec, via ``run_review_only``. Its verdict, findings, and cost are
+       its own.
+
+    Landing stays the leader's job: one branch carries the group's commits, so
+    only the leader returns ``pending_integration``. Members return with no
+    landing status, which the scheduler classifies as DONE-without-merge — their
+    code lands with the leader's branch.
+    """
+    started_at = datetime.datetime.now(datetime.timezone.utc)
+    group_id = leader_task.batch_group or "batch"
+    results: dict[
+        str, tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]
+    ] = {}
+
+    _log(
+        f"BATCH {group_id}: one dev pass for "
+        f"{', '.join(t.slug for t in [leader_task, *member_tasks])}"
+    )
+
+    def _broadcast(update: dict) -> None:
+        """Mirror shared-dev-pass phase updates onto every member's live row.
+
+        All members really are in DEV at that moment; showing only the leader as
+        running would make the others read as idle for the length of the pass.
+        """
+        for slug, fn in state_update_fns.items():
+            if fn is None:
+                continue
+            fn({**update, "spec": slug})
+
+    leader_task_dispatch, leader_result, leader_elapsed, leader_t0, leader_t1 = _run_single_story(
+        config,
+        leader_task,
+        None,
+        sprint_run_id,
+        sprint_name,
+        interactive,
+        notify,
+        False,
+        effective_auto_merge,
+        _broadcast,
+        no_pull,
+        None,
+        preflight_states,
+        stop_event,
+        base_lands_locally=base_lands_locally,
+        lands_in_project_root=lands_in_project_root,
+    )
+    leader_result.state.preflight_batch_group = group_id
+    results[leader_task.slug] = (
+        leader_task_dispatch,
+        leader_result,
+        leader_elapsed,
+        leader_t0,
+        leader_t1,
+    )
+
+    workspace_path = leader_result.state.workspace_path
+    if not leader_result.success or workspace_path is None:
+        message = (
+            f"batch group {group_id}: shared dev pass on {leader_task.slug} did not complete "
+            f"({leader_result.message})"
+        )
+        for member in member_tasks:
+            finished = datetime.datetime.now(datetime.timezone.utc)
+            results[member.slug] = (
+                member,
+                _batch_member_failure(config, member, sprint_name, started_at, message),
+                (finished - started_at).total_seconds(),
+                started_at,
+                finished,
+            )
+        return results
+
+    branch_name = leader_result.state.branch_name or config.workspace.branch_pattern.format(
+        slug=leader_task.slug
+    )
+    for member in member_tasks:
+        member_t0 = datetime.datetime.now(datetime.timezone.utc)
+        set_worker_slug(member.slug)
+        member_fn = state_update_fns.get(member.slug)
+        if member_fn is not None:
+            member_fn({"spec": member.slug, "phase": "REVIEW"})
+        try:
+            member_result = run_review_only(
+                config,
+                member,
+                workspace_path,
+                notify=notify,
+                sprint_name=sprint_name,
+                branch_name=branch_name,
+            )
+        except Exception as exc:
+            _log(f"ERROR {member.slug}: batch review raised {type(exc).__name__}: {exc}")
+            member_result = _batch_member_failure(
+                config,
+                member,
+                sprint_name,
+                member_t0,
+                f"batch group {group_id}: per-story review raised {type(exc).__name__}: {exc}",
+            )
+        finally:
+            set_worker_slug("")
+        member_result.state.preflight_batch_group = group_id
+        # The gate ran once, on the shared worktree. Carry its result onto every
+        # member so a batched story's audit shows the validation it actually
+        # passed instead of an empty VALIDATE section (conventions #6).
+        member_result.state.gate_decisions = list(leader_result.state.gate_decisions)
+        member_result.state.gate_runs = leader_result.state.gate_runs
+        member_result.state.last_gate_commit = leader_result.state.last_gate_commit
+        member_result.state.last_gate_decision = leader_result.state.last_gate_decision
+        # Members land with the leader's branch; the scheduler must not try to
+        # merge a branch that only exists for the leader.
+        member_result.landing_status = None
+        member_t1 = datetime.datetime.now(datetime.timezone.utc)
+        results[member.slug] = (
+            member,
+            member_result,
+            (member_t1 - member_t0).total_seconds(),
+            member_t0,
+            member_t1,
+        )
+
+    return results
+
+
 def _run_inherited_story(
     config: ForgeConfig,
     task: TaskStory,
@@ -3267,6 +3457,7 @@ def run_sprint(
             "error_type": result.state.error_type,
             "outcome_code": result.state.error_type or outcome.lower(),
             "merge": result.merge is not None and result.merge.get("merged", False),
+            "batch_group": getattr(result.state, "preflight_batch_group", None),
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "batch": 0,
@@ -3282,6 +3473,62 @@ def run_sprint(
             },
         }
         _persist_accumulated_story_entries()
+
+    # Cost-aware batch-group assignment (#727), filled in after preflight once
+    # compute_batch_groups has run. Declared here so the terminal-entry writers
+    # below can read it on paths that fire before the scheduler gets that far.
+    batch_group_by_slug: dict[str, str] = {}
+    batch_members_by_group: dict[str, list[str]] = {}
+    # group id -> leader slug, for groups actually dispatched as a batch, and
+    # the landing status that leader reached (members land with it or not at all).
+    _dispatched_batch_leader: dict[str, str] = {}
+    _batch_leader_landing: dict[str, str | None] = {}
+
+    def _break_batch_group(group_id: str, reason: str) -> None:
+        """Dissolve a batch group and dispatch its members individually.
+
+        Batching is an optimisation; when its precondition (all members ready as
+        a unit, none resuming) fails, the stories still run — they just run on
+        their own. The grouping metadata is cleared everywhere an operator can
+        see it so ``forge status`` never shows a batch that did not happen.
+        """
+        members = batch_members_by_group.pop(group_id, [])
+        if not members:
+            return
+        for member in members:
+            batch_group_by_slug.pop(member, None)
+            _state = preflight_states.get(member)
+            if _state is not None:
+                _state.preflight_batch_group = None
+            if _state_writer is not None:
+                _state_writer.update(member, batch_group=None)
+        _log(
+            f"BATCH {group_id}: dissolved ({reason}); dispatching {', '.join(members)} separately"
+        )
+
+    def _make_batch_leader(tasks: list[TaskStory], group_id: str) -> TaskStory:
+        """Build the group leader's TaskStory, carrying every member's spec.
+
+        Only the leader is handed to the coordinator, so only the leader's slug
+        owns a worktree and a branch. The members ride along as
+        ``batch_members`` — enough for the dev prompt to name and specify them,
+        and nothing more: their own TaskStory objects remain the authority for
+        review, landing, and reporting.
+        """
+        members = tuple(
+            BatchMember(
+                name=t.name,
+                slug=t.slug,
+                story_text=(
+                    t.story_text
+                    if t.story_text is not None
+                    else (t.story_path.read_text(encoding="utf-8") if t.story_path else "")
+                ),
+                display_ref=(f"Issue #{t.github_issue}" if t.github_issue is not None else t.slug),
+            )
+            for t in tasks
+        )
+        return replace(tasks[0], batch_members=members, batch_group=group_id)
 
     def _record_current_story_entry(
         slug: str,
@@ -3315,6 +3562,7 @@ def run_sprint(
             "error_type": error_type,
             "outcome_code": error_type or outcome.lower(),
             "merge": False,
+            "batch_group": batch_group_by_slug.get(slug),
             "batch": 0,
             "depends_on": list(getattr(task, "depends_on", None) or []),
             "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
@@ -3554,6 +3802,30 @@ def run_sprint(
     _scheduled_bundled_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
     for _slug, _state in preflight_states.items():
         _state.preflight_bundle_candidate = _slug in _scheduled_bundled_slugs
+
+    # Cost-aware batch groups (#727) — the third scheduling primitive, computed
+    # *after* conflict bundles and excluding everything they claimed. Bundles
+    # exist to avoid merge pain and win whenever both would apply; batch groups
+    # exist only to amortise per-story orchestration cost across small,
+    # independent, implementation-ready stories.
+    batch_groups = compute_batch_groups(
+        preflight_states,
+        normalized.tasks,
+        batch_config=config.sprint.batch,
+        excluded_slugs=_scheduled_bundled_slugs,
+    )
+    for _group in batch_groups:
+        _gid = batch_group_id(_group)
+        batch_members_by_group[_gid] = list(_group)
+        for _member_slug in _group:
+            batch_group_by_slug[_member_slug] = _gid
+    if batch_groups:
+        _log(
+            "Computed cost-aware batch groups: "
+            + "; ".join(f"{gid}=[{', '.join(m)}]" for gid, m in batch_members_by_group.items())
+        )
+    for _slug, _state in preflight_states.items():
+        _state.preflight_batch_group = batch_group_by_slug.get(_slug)
     synthetic_edges = compute_synthetic_edges(preflight_states, normalized.tasks)
     if synthetic_edges:
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")
@@ -3960,6 +4232,7 @@ def run_sprint(
                     # cost: record it unmeasured rather than fabricating $0.00.
                     "cost_usd": None if _slug in _dropped_with_work else 0.0,
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
+                    "batch_group": batch_group_by_slug.get(_slug),
                     "blocked_by": _blocked_by,
                     "complexity": None,
                     "detail": _detail,
@@ -4224,6 +4497,13 @@ def run_sprint(
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
+                # ``ready`` is a snapshot taken before this pass. A batch-group
+                # dispatch earlier in the same pass registers every member as
+                # active at once, so a member still sitting in the snapshot must
+                # not be dispatched a second time.
+                if task.slug in active:
+                    continue
+
                 # Auth circuit breaker (#1952): a credential the substrate
                 # already had refused is not worth re-presenting. Skip rather
                 # than fail — nothing about this story was ever judged.
@@ -4368,6 +4648,114 @@ def run_sprint(
                 # this run instead of being abandoned to the next invocation's
                 # orphan reaper.
                 _inherited = task.slug in _inflight_slugs
+
+                # ── Cost-aware batch group dispatch (#727) ──────────────
+                # Reached only after every ordinary readiness decision above:
+                # hard depends_on, collision_deps, the queued-PR reachability
+                # gate, the parallelism cap, and the budget check. Batching is a
+                # cost optimisation layered on top of scheduling, never a way
+                # around it.
+                _batch_gid = batch_group_by_slug.get(task.slug)
+                if _batch_gid is not None and (_inherited or triage is not None):
+                    # An inherited/resumed story re-enters through its own
+                    # worktree triage; it cannot join a shared dev pass.
+                    _break_batch_group(_batch_gid, f"{task.slug} resumed from existing worktree")
+                    _batch_gid = None
+                if _batch_gid is not None:
+                    _members = batch_members_by_group.get(_batch_gid, [])
+                    _ready_by_slug = {t.slug: t for t in ready}
+                    _dispatchable = [
+                        m
+                        for m in _members
+                        if m in _ready_by_slug
+                        and m not in active
+                        and m not in _inflight_slugs
+                        and m in slug_to_context
+                        and (triages.get(slug_to_spec[m]) if resume else None) is None
+                    ]
+                    if len(_dispatchable) < 2:
+                        # The group did not become ready as a unit (a member was
+                        # skipped, dropped, or is resuming). Dispatch every
+                        # member on its own rather than delaying or dropping
+                        # work for the sake of a cost optimisation.
+                        _break_batch_group(
+                            _batch_gid, "members did not become ready simultaneously"
+                        )
+                        _batch_gid = None
+                    elif task.slug != _dispatchable[0]:
+                        # Wait for the leader; it dispatches the whole group.
+                        continue
+                    else:
+                        _batch_tasks = [_ready_by_slug[m] for m in _dispatchable]
+                        _leader_task = _make_batch_leader(_batch_tasks, _batch_gid)
+                        _batch_stop_evt = threading.Event()
+                        _batch_state_fns: dict[str, Callable[[dict], None] | None] = {}
+                        for _member_slug, _member_task in zip(
+                            _dispatchable, _batch_tasks, strict=True
+                        ):
+                            batch_assignments[_member_slug] = batch_number
+                            _submission_counter[0] += 1
+                            print(
+                                _story_header(_submission_counter[0], total, _member_slug),
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            if _state_writer is not None:
+                                _state_writer.update(
+                                    _member_slug,
+                                    status="running",
+                                    batch_group=_batch_gid,
+                                    started_at=datetime.datetime.now(
+                                        datetime.timezone.utc
+                                    ).isoformat(),
+                                )
+                            # No plan gate for a batch group: the members were
+                            # selected precisely because they are pairwise
+                            # non-overlapping, and they share one worker, so
+                            # there is no sibling footprint for a PLAN_DONE gate
+                            # to arbitrate. Registering one would park the
+                            # scheduler on a signal this path never emits.
+                            _batch_state_fns[_member_slug] = _make_worker_phase_fn(
+                                _member_slug,
+                                worker_phases,
+                                phase_lock,
+                                state_update_fn,
+                                plan_done=None,
+                                state_writer=_state_writer,
+                                audit_flush=_make_audit_flush_fn(
+                                    config, _member_task, resolved.name, sprint_id=_sprint_id
+                                ),
+                            )
+                            stop_events[_member_slug] = _batch_stop_evt
+                        _batch_fut = pool.submit(
+                            _run_batch_group,
+                            config,
+                            _leader_task,
+                            _batch_tasks[1:],
+                            _sprint_run_id,
+                            resolved.name,
+                            interactive,
+                            notify,
+                            effective_am,
+                            _batch_state_fns,
+                            no_pull,
+                            preflight_states,
+                            _batch_stop_evt,
+                            base_lands_locally=_sprint_lands_locally,
+                            lands_in_project_root=_story_lands_in_root,
+                        )
+                        # One worker runs the group, so the whole group shares one
+                        # deadline: the sum of what its members would each have
+                        # been allowed on their own.
+                        _batch_deadline = time.monotonic() + float(
+                            sum(story_worker_timeouts[m] for m in _dispatchable)
+                        )
+                        _dispatched_batch_leader[_batch_gid] = _dispatchable[0]
+                        for _member_slug in _dispatchable:
+                            active[_member_slug] = _batch_fut
+                            story_deadlines[_member_slug] = _batch_deadline
+                        continue
+
                 batch_assignments[task.slug] = batch_number
                 _submission_counter[0] += 1
                 print(
@@ -4678,7 +5066,15 @@ def run_sprint(
                 if fut not in done_futs:
                     continue
                 try:
-                    task, result, elapsed, t0, t1 = fut.result()  # type: ignore[misc]
+                    _fut_value = fut.result()
+                    # A batch-group worker runs several stories on one future and
+                    # returns one result tuple per member slug. Everything below
+                    # this unpack is per-story and unchanged: the batch is a
+                    # dispatch detail, not a reporting unit.
+                    if isinstance(_fut_value, dict):
+                        task, result, elapsed, t0, t1 = _fut_value[slug]
+                    else:
+                        task, result, elapsed, t0, t1 = _fut_value  # type: ignore[misc]
                 except Exception as exc:
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
                     del active[slug]
@@ -4933,6 +5329,30 @@ def run_sprint(
                                 changed = True
                 else:
                     _write_story_audit(config, task, result, sprint_id=_sprint_id)
+
+                # Batch groups land as one branch (#727). Record the leader's
+                # landing outcome, and correct any member optimistically
+                # classified DONE when that branch never actually landed — a
+                # member's code lives in the leader's branch, so it is exactly as
+                # landed as the leader is, and no more.
+                _group_id = getattr(result.state, "preflight_batch_group", None)
+                if _group_id:
+                    if slug == _dispatched_batch_leader.get(_group_id):
+                        _batch_leader_landing[_group_id] = result.landing_status
+                    elif _batch_leader_landing.get(_group_id) == "failed":
+                        _batch_fail_reason = (
+                            f"batch group {_group_id}: leader "
+                            f"{_dispatched_batch_leader.get(_group_id)} failed to land"
+                        )
+                        result.landing_status = "failed"
+                        result.state.error = result.state.error or _batch_fail_reason
+                        _set_outcome(
+                            slug,
+                            StoryOutcome.MERGE_FAILED,
+                            phase=result.phase.name,
+                            reason=_batch_fail_reason,
+                        )
+                        _log(f"✗ {slug}: {_batch_fail_reason}")
 
                 # Fire StorySource lifecycle callbacks
                 ctx = slug_to_context.get(slug)

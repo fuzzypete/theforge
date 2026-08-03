@@ -665,11 +665,42 @@ class SandboxConfig:
 
 
 @dataclass(frozen=True)
+class SprintBatchConfig:
+    """Cost-aware batch-group limits (``sprint.batch`` in forge.yaml).
+
+    Batch groups pack small *independent* stories into a single dev assignment
+    to amortise per-story orchestration overhead. They are a separate primitive
+    from conflict bundles (which exist to avoid merge pain) and from DAG
+    dependencies (which encode ordering).
+
+    Batching is **off by default**. It is not automatically cheaper — a combined
+    prompt can exceed what one dev agent holds well, tests can broaden, and
+    review can get harder — so a project opts in rather than discovering a
+    changed dispatch shape mid-sprint. ``max_stories: 1`` is the off switch (a
+    group of one is not a batch); set it to 2 or more to enable::
+
+        sprint:
+          batch:
+            max_stories: 2
+            max_complexity_budget: 2
+            max_touched_files: 6
+    """
+
+    max_stories: int = 1
+    max_complexity_budget: int = 2
+    #: Upper bound on the *combined* distinct likely_files a group may touch.
+    #: A group whose members collectively claim a wide footprint is not a set of
+    #: small independent fixes, whatever preflight labelled the complexity.
+    max_touched_files: int = 6
+
+
+@dataclass(frozen=True)
 class SprintConfig:
     """Project-level sprint defaults from forge.yaml."""
 
     max_parallel: int = 1
     worker_timeout_seconds: int = 3600
+    batch: SprintBatchConfig = field(default_factory=SprintBatchConfig)
 
 
 @dataclass(frozen=True)
