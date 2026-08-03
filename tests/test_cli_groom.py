@@ -167,3 +167,37 @@ def test_cli_groom_appears_in_help():
         if isinstance(action, argparse._SubParsersAction)
     )
     assert "groom" in subparsers_action.choices
+
+
+# ── Unsupplied content is reported, not erased (#2129) ───────────────────
+
+_FEATURE_BODY = """\
+## What
+
+Users can export their data.
+"""
+
+
+def test_cli_reports_findings_groom_could_not_resolve(tmp_path, monkeypatch, capsys):
+    _patch_fetch(monkeypatch, {"title": "Add export", "body": _FEATURE_BODY, "labels": ["task"]})
+    rc = cli_groom.cmd_groom(_build_args("2129", tmp_path, want_next=True))
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "UNRESOLVED" in captured.out
+    assert "missing_example" in captured.out
+    assert "missing_acceptance_criteria" in captured.out
+    assert "--add-label ready" not in captured.out
+
+
+def test_cli_event_records_unsupplied_findings(tmp_path, monkeypatch, capsys):
+    _patch_fetch(monkeypatch, {"title": "Add export", "body": _FEATURE_BODY, "labels": ["task"]})
+    _patch_edit(monkeypatch, ok=True)
+    cli_groom.cmd_groom(_build_args("2129", tmp_path, apply=True))
+
+    conn = sqlite3.connect(str(substrate_path(tmp_path)))
+    rows = conn.execute("SELECT post_verdict, raw_json FROM readiness_events").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    post, raw = rows[0]
+    assert post != "runnable"
+    assert "missing_example" in raw
