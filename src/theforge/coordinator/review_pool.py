@@ -861,7 +861,14 @@ def _run_review_pool(
         for r in failed_results
     }
 
-    quorum_threshold = min(config.retry.review_quorum_threshold, pool_size)
+    # Quorum is measured against the reviewers that could actually answer this
+    # cycle, not the nominal pool: a budget-excluded reviewer was withdrawn as a
+    # spend decision, so counting it in the denominator can make the threshold
+    # unreachable before any verdict is weighed (#2154). Same collapse rule the
+    # nominal pool already gets — a threshold of 2 over a single eligible seat
+    # is a demand no run could satisfy, not a stricter standard.
+    eligible_pool_size = pool_size - len(_budget_excluded)
+    quorum_threshold = min(config.retry.review_quorum_threshold, eligible_pool_size)
     if quorum_threshold < 1:
         quorum_threshold = 1
     meta.quorum_threshold = quorum_threshold
@@ -886,11 +893,18 @@ def _run_review_pool(
         )
         if can_degrade:
             warning = (
-                f"Degraded quorum: {len(successful)}/{pool_size} reviewer(s) "
+                f"Degraded quorum: {len(successful)}/{eligible_pool_size} reviewer(s) "
                 f"delivered a verdict (threshold {quorum_threshold}); proceeding "
                 f"on surviving verdict(s) after non-verdict reviewer failure(s): "
                 f"{failed_desc}"
             )
+            if _budget_excluded:
+                # Same attribution rule as the escalation path: an excluded
+                # reviewer is a spend decision, not a failure to degrade past.
+                warning += (
+                    "; budget-excluded (ran, verdict not counted): "
+                    f"{', '.join(sorted(_budget_excluded))}"
+                )
             meta.degraded_quorum = True
             meta.degraded_quorum_warning = warning
             _log(f"  ⚠ {warning}")
@@ -903,6 +917,8 @@ def _run_review_pool(
                     failed_detail=meta.failed_detail,
                     quorum_threshold=quorum_threshold,
                     pool_size=pool_size,
+                    eligible_pool_size=eligible_pool_size,
+                    budget_excluded=sorted(_budget_excluded),
                     warning=warning,
                 )
         else:
@@ -918,15 +934,26 @@ def _run_review_pool(
                 budget_excluded=_budget_excluded,
             )
             state.phase = Phase.ESCALATE
+            # A reviewer withdrawn over budget did not fail — its verdict was
+            # dropped as a spend decision. Naming the two causes separately is
+            # what makes the shortfall diagnosable; the original #2154 report
+            # read "Quorum unmet: 1/5 succeeded < threshold 2; failed:" with an
+            # empty list, because the missing four had been excluded, not failed.
+            _shortfall = f"failed: {failed_desc}"
+            if _budget_excluded:
+                _shortfall += (
+                    "; budget-excluded (ran, verdict not counted): "
+                    f"{', '.join(sorted(_budget_excluded))}"
+                )
             state.error = (
-                f"Quorum unmet: {len(successful)}/{pool_size} succeeded "
-                f"< threshold {quorum_threshold}; failed: {failed_desc}"
+                f"Quorum unmet: {len(successful)}/{eligible_pool_size} succeeded "
+                f"< threshold {quorum_threshold}; {_shortfall}"
             )
             return successful, failed_results, None, [], []
 
     if failed_results and meta.quorum_met:
         _log(
-            f"Panel quorum met ({len(successful)}/{pool_size} reviewers succeeded "
+            f"Panel quorum met ({len(successful)}/{eligible_pool_size} reviewers succeeded "
             f"≥ quorum threshold {quorum_threshold}) — proceeding to synthesis"
         )
 

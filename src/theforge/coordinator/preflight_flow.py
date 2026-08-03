@@ -58,6 +58,7 @@ from .preflight import (
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _parse_preflight_work_type,
+    persist_routing_decision,
     score_to_band,
 )
 from .preflight_cache import capture_preflight_cache_snapshot
@@ -896,6 +897,17 @@ def _run_preflight_phase(
 
     config = _apply_preflight_config(
         config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
+    )
+    # Durable copy of the decision just installed: the in-memory preflight state
+    # this run holds does not survive a mid-sprint process re-exec, and a resume
+    # without it would seat the static roster instead of this panel (#2154).
+    persist_routing_decision(
+        config,
+        state,
+        task_slug=task.slug,
+        story_content=story_content,
+        run_id=getattr(logger, "_run_id", None),
+        log_verbose=_log_verbose,
     )
 
     _log(f"  {'✗' if verdict == NO_JUDGMENT else '✓'} PREFLIGHT   {verdict}")
