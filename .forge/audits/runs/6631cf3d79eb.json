@@ -1,0 +1,1473 @@
+{
+  "schema_version": 17,
+  "run_id": "6631cf3d79eb",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Stories that land work within the reporting invocation are reported ALREADY_DONE, disowning the run that produced them",
+    "slug": "issue-2150",
+    "story_path": null,
+    "story_text": "## What happened\n\nIn sprint `issues-2030,2029,2129,1906,1880,1415,728,727` (run `675e2792fa1b`,\nsprint `840e994353ba`), which began 2026-08-02 19:32 PT, `forge status` reported\nfive stories with status `done` and detail `ALREADY_DONE (merged)`:\n\n| Story | Issue closed (PT) | Reported cost | Reported elapsed |\n|---|---|---|---|\n| #1880 | 19:51 | $3.82 | blank |\n| #2129 | 20:04 | $6.46 | blank |\n| #727  | 20:20 | $28.09 | blank |\n| #728  | 20:53 | $11.93 | blank |\n| #1906 | 21:04 | $2.39 | blank |\n\nEvery one of those issues was closed by a commit produced inside that same run,\nbetween 19:51 and 21:04 PT \u2014 all after the sprint began at 19:32. Each carries a\nnon-zero cost for the run that is disowning the work.\n\nA story genuinely skipped because its work was already merged performs no work\nand costs nothing; #1906 records that shape as `outcome_source:\nresume_skip_merged` with zero cost and zero time. These five ran dev and review\nphases and landed commits.\n\nThe orchestrator serving this display is v0.13.0rc16 (tagged 2026-08-01 23:16\nPT). Commit `a5645eb` \u2014 the fix for #2096, \"Completed stories that landed a\ncommit are reported ALREADY_DONE, overwriting the DONE the coordinator recorded\"\n\u2014 is an ancestor of the `v0.13.0rc16` tag, so the fix for this symptom is\npresent in the running binary. Commit `01b3e47` (#1906) is not in rc16, and\nconcerns the opposite direction of the misreport.\n\n## What was expected\n\nA story whose work was performed and landed during the invocation that is\nreporting should be attributed to that invocation. The bucket meaning\n\"completion was established before this run\" describes how completion came\nabout, not merely that the branch is now merged; a story's own in-run landing\nmust not requalify it as pre-existing work, and the passage of time within a run\nmust not erode an outcome the coordinator already recorded.\n\nHowever a story's disposition is reached, the reported outcome, cost, and\nelapsed time should agree with one another. A story reported as having done\nnothing in the current run should not simultaneously report a cost and a set of\nexecuted phases for that run; where they disagree, the recorded execution is the\nauthoritative account of what happened.\n\n## Diagnosis\n\n> \u26a0 Partial diagnosis \u2014 the investigation hit its budget or timeout before reaching a confirmed cause. Operator review required.\n\n**Baseline:** `c3fad95337425577afd0c130fe9683a25a1807da` captured at `2026-08-03T05:53:57.597955+00:00`\n\n**Inspected files:**\n\n- `src/theforge/sprint/status_reader.py` \u2014 `sha256:23885b58998c59cdd05463d69692c0d4a85a84324e11633a5d0ac6feb0c42a1c`\n- `src/theforge/sprint/audit.py` \u2014 `sha256:39768d816079d66635ecfd2e73141b4e7224a9a4f6a5ce35ef797dc95e61601b`\n- `src/theforge/sprint/runner.py` \u2014 `sha256:b49ff97e9bc3fe8261a94dbe7e4eda1f91aebe67ed78c24030ef909a0e20d9d0`\n- `src/theforge/sprint/dag.py` \u2014 `sha256:1b37c49866ff1f1856c126cf6a017c39d5b3c81a33803fd699f03f5675ce7df0`\n- `src/theforge/sprint/story_state.py` \u2014 `sha256:bc0335aba24b3436cc1f5a82c01da5301cdef84c9ee642426c8a2c20c8c2c399`\n- `.forge/sprints/840e994353ba/state.yaml` \u2014 `sha256:e1749216f5cebbd1b2421ed0bfe0ebac8ff50d02340d56732ddec26034e0e9f8`\n- `.forge/logs/issues-2030,2029,2129,1906,1880,1415,728,727/run-675e2792fa1b.log` \u2014 `sha256:b7293648c42a1fd4357db0c4fb11e5ac3353e18952f330ffb3bf7beb379de029`\n\n### Observed symptom\n\nIn sprint issues-2030,2029,2129,1906,1880,1415,728,727 (run 675e2792fa1b),\n`forge status` / the persisted sprint state reported stories that had just\nbeen developed, reviewed, and landed by *this same run* as\n`ALREADY_DONE (merged)` with `outcome_source: resume_skip_merged` \u2014 the\nclassification meant for work a prior generation already finished. This\nboth misattributes the cost/effort away from the run that earned it and\n(for #728) survives permanently in the on-disk accumulated sprint state\neven after the run completes.\n\n### Reproduction / evidence\n\nRun log .forge/logs/issues-2030,2029,2129,1906,1880,1415,728,727/run-675e2792fa1b.log:\n  - 20:51:46.078 [issue-728] \"\u2713 DONE   total=$11.93  19m 5s\" \u2014 issue-728\n    finishes DEV+REVIEW normally in this run, cost measured, APPROVE.\n  - 20:51:55.788 [sprint] \"INFO issue-728: PR auto-merge queued; waiting\n    for GitHub to report MERGED\" \u2014 landing is asynchronous/in-flight.\n  - 20:53:42.890 [issue-1415] \"Source updated after pull \u2014 re-execing to\n    load new code\" \u2014 a mid-sprint, whole-process re-exec fires (source on\n    the base branch changed under the running worker).\n  - 20:54:58.692 [sprint] \"issue-728            SKIP MERGED (already\n    merged in PR #2146, skipping)\" \u2014 the *new* process generation\n    re-triages every story (reconcile=True is treated as resume-equivalent\n    for re-exec too), and by now #728's queued PR has actually merged, so\n    the git-only `_triage_spec` check reports `skip_merged`.\n  - 20:56:51.485 [sprint] \"SKIP issue-728 (already merged in PR #2146,\n    skipping)\" confirms it is never re-dispatched \u2014 it is simply relabeled.\n\nPersisted evidence: .forge/sprints/840e994353ba/state.yaml (the accumulated\nper-sprint story-state file written by persist_accumulated_story_state) \u2014\nissue-728's entry has outcome: ALREADY_DONE, outcome_source:\nresume_skip_merged, story_run_id: 675e2792fa1b (this run's own id),\ncost_usd: 11.9258, started_at/finished_at matching the DONE run above \u2014\ni.e. real cost/timestamps from this run's own completion were carried\nforward, but the outcome itself was overwritten to ALREADY_DONE by the\npost-re-exec triage. (Issues #1880, #2129, #727, #1906 in the same run show\noutcome: DONE, outcome_source: null \u2014 they did not straddle a mid-sprint\nre-exec boundary the way #728 did.)\n\n### Hypotheses tested\n\n- **[confirmed]** The rc16 fix for #2096/#2042 (commit a5645eb) did not cover this case \u2014 it patched the re-exec *live-status* hardcoding for stories a prior generation already finished before this generation started, not the case of a story finishing *during* this generation with landing still in flight when re-exec fires.\n  - Evidence: a5645eb touches only the REASON_RECONCILE_PRIOR_DONE path (runner.py ~4355-4366), which is a *different* branch from the skip_merged/triage path (~4390-4395, ~4260-4293) that this run actually hit. #728 never goes through REASON_RECONCILE_PRIOR_DONE \u2014 its drop_reason is unset; it hits the `_triage and _triage.action == \"skip_merged\"` branch instead, which a5645eb did not touch.\n- **[ruled out]** `_triage_spec` (dag.py) itself is buggy \u2014 it should not report \"merged\" for a branch that just landed.\n  - Evidence: `_triage_spec` is a pure git/audit-trail probe with no notion of \"which sprint run produced this merge\" \u2014 that is its whole design (it exists to detect genuinely pre-existing merged work across independent invocations). Its answer (\"branch X is merged to base\") is factually correct at the moment it runs. The defect is that callers treat \"currently merged\" and \"was already merged before this generation started\" as the same thing.\n- **[confirmed]** The `if resume:`/live-state-init code that classifies a triage `skip_merged` result unconditionally builds ALREADY_DONE / resume_skip_merged detail without checking whether this exact story was already recorded DONE by an earlier generation of the very same sprint run (i.e. it doesn't distinguish \"merged before this run started\" from \"merged by this run's own immediately-preceding process image, moments before a mid-run re-exec\").\n  - Evidence: runner.py `_already_done_story_entry` (~4260-4293) and the live-state initial-detail block (~4390-4395) both write `\"outcome\": \"ALREADY_DONE\", \"outcome_source\": \"resume_skip_merged\"` solely from `triage.action == \"skip_merged\"`. The former does reuse `prior_entry` (recovered_prior_entries_by_ref) for cost/timestamps/ verdict/story_run_id, which is why #728's entry carries this run's own real cost ($11.93) and timestamps \u2014 but it never checks `prior_entry.get(\"outcome\")`, so a `prior_entry` that was itself already recorded DONE by the pre-re-exec generation gets its outcome field silently replaced with ALREADY_DONE anyway.\n\n### Confirmed cause\n\nWhen a mid-sprint whole-process re-exec occurs (triggered by a source\nupdate pulled by a *different*, still-running story), the new process\ngeneration's reconcile/resume path re-triages every story from scratch via\n`_triage_spec`, which classifies purely on current git/PR merge state. For\na story that finished DEV+REVIEW and had its landing queued (async\nauto-merge) in the generation that just exited, the merge frequently\ncompletes in the gap before/around the re-exec. The new generation's\ntriage then sees \"merged\" and returns `skip_merged`, and both\n`_already_done_story_entry` and the live-state initial-detail block\n(src/theforge/sprint/runner.py) unconditionally stamp\n`outcome: ALREADY_DONE` / `outcome_source: resume_skip_merged` for that\nslug \u2014 without checking whether the recovered prior entry for the same\nstory already recorded a genuine, cost-bearing `DONE` from this same\nsprint run's own preceding process image. The recovered entry's cost and\ntimestamps are carried forward (which is why the misreported row still\nshows the real spend), but its `outcome` is discarded and replaced with\nthe resume-skip label, so the run that actually did and paid for the work\nis reported as having done nothing.\n\n### Affected code path\n\nsrc/theforge/sprint/runner.py:\n  - `_already_done_story_entry` (~lines 4260-4293), used inside the\n    `if resume:` accumulated-state persistence block (~4256-4331)\n  - the live-state initial-story-detail construction for\n    `_triage.action == \"skip_merged\"` (~lines 4390-4395)\nBoth consult `triages`/`triage.action` (built at ~3389-3412 via\n`_triage_spec` in src/theforge/sprint/dag.py) without cross-checking\n`recovered_prior_entries_by_ref[canonical_ref].get(\"outcome\")` /\n`.get(\"outcome_source\")` before deciding the classification.\n\n### Fix-success criterion\n\nA story that a coordinator run has already recorded as `DONE` (with a\nmeasured cost) for the current sprint must keep reporting `DONE` for that\nsame cost/story_run_id even when a mid-sprint re-exec re-triages it and\nobserves the branch as merged afterward \u2014 `outcome_source` must never be\nset to `resume_skip_merged` for a slug whose recovered prior entry already\nshows a non-ALREADY_DONE success outcome from the same sprint. Concretely:\nre-running this exact scenario (dev/review completes, PR merge queued,\nre-exec fires before the merge is confirmed) must leave `forge status` and\n`.forge/sprints/<id>/state.yaml` showing `outcome: DONE`,\n`outcome_source: null`, with the original cost/timestamps intact \u2014 not\n`ALREADY_DONE`/`resume_skip_merged`.\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- `_persist_current_story_result` records a story's `outcome` from `result.phase.name` rather than the fully-classified `StoryOutcome` produced by `_classify_and_record`, so the accumulated entry's outcome can momentarily diverge from the canonical structure's outcome before landing resolves (queued-PR window). Not the cause of this issue (the overwrite happens later, in the post-re-exec triage path), but a related fragility in the same accumulated-state bookkeeping area.\n\n### Notes\n\nI did not find the exact point where `recovered_prior_entries_by_ref`\nfails to prevent the overwrite via `_resume_accumulated_by_ref.setdefault`\n(that call *should* no-op when the key already exists with a DONE outcome)\n\u2014 full confirmation of that specific mechanics would need a live repro\nwith instrumentation across the re-exec boundary, which was outside this\ninvestigation's budget. The evidence is strong enough (real cost/timestamps\ncarried forward, outcome overwritten) that the fix belongs in\n`_already_done_story_entry`/the live-state init block regardless of the\nexact reason the `setdefault` guard doesn't hold in this path \u2014 that guard\nitself may need to become an explicit outcome-aware merge rather than\nkey-presence-only.\n",
+    "github_issue": 2150,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Stories that land work within the reporting invocation are reported ALREADY_DONE, disowning the run that produced them' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-2150",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "resolved_sha256": "cb2f49bf607a0c760e76e3418fd44c942e0825fbb52b88451db360ebde2191d8",
+    "source_sha256_at_finish": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T16:06:54.050501+00:00",
+    "finished_at": "2026-08-03T16:16:48.081479+00:00",
+    "duration_seconds": 594.030978
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2150",
+    "branch": "feat/issue-2150",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "gate_runs": 1,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 3.077148,
+        "duration_s": 418.63,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/runner.py",
+          "tests/test_sprint_reexec_reconcile.py",
+          "tests/test_sprint_resume.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.160477,
+        "duration_s": 106.97
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 6,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 6,
+      "base_review": 5,
+      "profile_history_runs": 180,
+      "profile_avg_iterations": 1.5778,
+      "profile_avg_cost_usd": 4.707552,
+      "profile_raw_dev_max": 2.3667,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.4151,
+      "review_history_sample_size": 27,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 180 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-03T16:07:05.898535+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 4.7136478,
+    "dev_usd": 3.077148,
+    "review_usd": 1.1604774999999998,
+    "dev_invocations": 1,
+    "review_invocations": 2,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 3.077148,
+        "duration_seconds": 418.6296878338326,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 3.0701970000000003
+          },
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006951
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.72154,
+        "duration_seconds": 53.41286579158623,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.72154
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.4389375,
+        "duration_seconds": 53.41286579158623,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.4389375
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The unconditional ALREADY_DONE/resume_skip_merged stamping on skip_merged triage is still present at three call sites in runner.py (lines ~3986-3994, ~4266-4293/4298-4316, ~4390-4395) in the current baseline; none of them consult the prior recorded outcome before overwriting, so the symptom still reproduces.",
+    "complexity": "medium",
+    "complexity_score": 6,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "5 operator-visible surfaces enumerated in acceptance criteria: 727/run-675e2792fa1b.log, forge status, forge/sprints/840e994353ba/state.yaml, if resume:, state.yaml",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "concurrency"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.47602229999999995,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "0a981b912bb8",
+    "cache_snapshot": {
+      "worktree_head": "d8fcf7b464faf2e3240e422ed8b870c82d062bef",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "d8fcf7b464faf2e3240e422ed8b870c82d062bef",
+      "story_content_hash": "fb81202c2ca96391d248ae317a94ea46fcd88dc474eb65964863bfeb98afee58"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "d8fcf7b464faf2e3240e422ed8b870c82d062bef",
+      "current_worktree_head": "d8fcf7b464faf2e3240e422ed8b870c82d062bef",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "d8fcf7b464faf2e3240e422ed8b870c82d062bef",
+      "current_evaluation_base_branch_head": "d8fcf7b464faf2e3240e422ed8b870c82d062bef",
+      "cached_story_content_hash": "fb81202c2ca96391d248ae317a94ea46fcd88dc474eb65964863bfeb98afee58",
+      "current_story_content_hash": "fb81202c2ca96391d248ae317a94ea46fcd88dc474eb65964863bfeb98afee58",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.47602229999999995,
+        "duration_s": 76.89,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 6,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.84 \u2265 threshold 0.60 over 63 admissible runs \u2014 pre-promotion held) (profile success_rate=0.84 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend+concurrency (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 6,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2150/iter_1.yaml",
+      "handoff": {
+        "summary": "A mid-sprint whole-process re-exec re-triages every story purely from current git state, so a story that this run carried to DONE \u2014 with its auto-merge queued and completing around the re-exec boundary \u2014 was observed as `skip_merged` and unconditionally restamped `ALREADY_DONE`/`resume_skip_merged`, disowning the run that did and paid for the work while that same row still reported the cost and phases. I added `_recorded_prior_done(slug, canonical_ref)` to runner.py, which asks whether this sprint already recorded the story as run-to-DONE (canonical `_story_state`, seeded from the accumulated file, or the recovered accumulated entry), and `_skip_merged_outcome(slug, canonical_ref)`, which returns `(DONE, None)` in that case and the previous `(ALREADY_DONE, 'resume_skip_merged')` otherwise. It is applied at all three skip_merged classification sites: the `if reconcile:` persist block (the one that produced the #728 state.yaml row), `_already_done_story_entry` in the resume persist block, and the live-status initial-detail block that `forge status` renders. The existing `_reconciled_prior_outcome` (a5645eb's fix for #2096/#2042) now delegates to the shared `_recorded_prior_done` so both directions of the misreport obey one rule.",
+        "commits": [
+          {
+            "sha": "9f6a644",
+            "message": "fix(sprint): keep in-run DONE when post-re-exec triage sees the branch merged"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A story whose work was performed and landed during the reporting invocation must be attributed to that invocation \u2014 its own in-run landing must not requalify it as pre-existing work, and time passing within a run must not erode an outcome the coordinator already recorded.",
+            "status": "MET",
+            "notes": "`_skip_merged_outcome` prefers a DONE already recorded for this sprint over the triage label at all three sites. Pinned by test_reexec_skip_merged_keeps_prior_done_in_accumulated_state and test_resume_skip_merged_keeps_prior_done_in_accumulated_state."
+          },
+          {
+            "criterion": "Reported outcome, cost and elapsed time must agree; where they disagree the recorded execution is authoritative. A story reported as having done nothing must not simultaneously report a cost and executed phases.",
+            "status": "MET",
+            "notes": "The row now keeps DONE alongside the cost/story_run_id/started_at/finished_at it already carried forward. test_reexec_skip_merged_renders_done_in_live_status asserts the live `forge status` row reads DONE and reports the $11.93 that belongs to it."
+          },
+          {
+            "criterion": "Fix-success criterion: re-running the scenario must leave `forge status` and `.forge/sprints/<id>/state.yaml` showing `outcome: DONE`, `outcome_source: null`, original cost/timestamps intact \u2014 not ALREADY_DONE/resume_skip_merged.",
+            "status": "MET",
+            "notes": "Asserted directly against the durable `.forge/sprints/<id>/state.yaml` and against `read_live_status` sampled mid-sprint during the next story's dispatch."
+          },
+          {
+            "criterion": "`outcome_source` must never be set to `resume_skip_merged` for a slug whose recovered prior entry already shows a non-ALREADY_DONE success outcome from the same sprint.",
+            "status": "MET",
+            "notes": "DONE is the only non-ALREADY_DONE succeeded StoryOutcome (`is_succeeded` is {DONE, ALREADY_DONE}), so the check is exactly `prior outcome == DONE`; documented in the helper docstring. The converse is pinned by test_reexec_skip_merged_preserves_prior_already_done_as_noop, which keeps ALREADY_DONE/resume_skip_merged for a genuine prior no-op."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Modified one assertion in an existing test: tests/test_sprint_resume.py::test_reexec_summary_preserves_prior_story_accounting_from_progressive_state asserted `outcome_source == 'resume_skip_merged'` for a prior-DONE $3.50 story hit by a skip_merged re-exec triage \u2014 the exact shape this story defines as the defect. It now asserts `outcome == 'DONE'` and `outcome_source is None`, with a comment citing #2150. The rest of that test (cost, started_at/finished_at, sprint duration) is unchanged; that is its stated purpose."
+        ],
+        "deferred_items": [
+          "Out of scope per spec: `_persist_current_story_result` records outcome from `result.phase.name` rather than the classified StoryOutcome (related fragility in the same bookkeeping area, not the cause here).",
+          "The Notes' suggestion that `_resume_accumulated_by_ref.setdefault` become an outcome-aware merge was not needed: it is seeded from `recovered_prior_entries_by_ref`, so it already no-ops when a prior entry exists. With `_already_done_story_entry` now outcome-aware, both branches agree. A prior *non-succeeded* entry (e.g. FAILED) whose branch reads as merged still keeps its FAILED entry \u2014 pre-existing behaviour, untouched.",
+          "Sandbox-only test failures observed and left alone: tests/test_sprint_lock.py and tests/test_sprint_reexec_collision.py (real fcntl.flock) and tests/test_cut_rc_isolation.py (mktemp in a shell script) fail with `Operation not permitted` in this sandbox, on code this change does not touch."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "9f6a6442bbb088ab3ed718f67fdf6928999491c9",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "9f6a6442bbb088ab3ed718f67fdf6928999491c9",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The change preserves prior in-sprint DONE records across skip_merged re-triage in persisted state, live status, and resume paths, with focused regression coverage passing. | [google-gemini-3.5-flash] The implementation successfully preserves in-run DONE outcomes across mid-sprint re-exec boundaries, preventing them from being incorrectly overwritten as ALREADY_DONE.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A story whose work was performed and landed during the reporting invocation must be attributed to that invocation \u2014 its own in-run landing must not requalify it as pre-existing work, and time passing within a run must not erode an outcome the coordinator already recorded.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:3414 records prior DONE evidence from canonical story state or recovered accumulated state, and src/theforge/sprint/runner.py:3430 maps skip_merged to DONE with no source when that evidence exists; tests/test_sprint_reexec_reconcile.py:954 and tests/test_sprint_reexec_reconcile.py:1092 exercise reexec and resume skip_merged paths with prior DONE records.; src/theforge/sprint/runner.py:3414-3453 implements _recorded_prior_done and _skip_merged_outcome to preserve DONE outcomes. Pinned by tests/test_sprint_reexec_reconcile.py:941-993 (test_reexec_skip_merged_keeps_prior_done_in_accumulated_state) and tests/test_sprint_reexec_reconcile.py:1181-1226 (test_resume_skip_merged_keeps_prior_done_in_accumulated_state)."
+        },
+        {
+          "criterion": "Reported outcome, cost and elapsed time must agree; where they disagree the recorded execution is authoritative. A story reported as having done nothing must not simultaneously report a cost and a set of executed phases.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:4029 carries the prior entry cost and timestamps while replacing only the skip_merged classification with the helper outcome, and src/theforge/sprint/runner.py:4307 applies the same rule when building resume already-done entries; tests/test_sprint_reexec_reconcile.py:986 asserts DONE, null outcome_source, cost, story_run_id, started_at, and finished_at stay aligned, and tests/test_sprint_reexec_reconcile.py:1005 verifies the live status row displays DONE with the same cost."
+        },
+        {
+          "criterion": "Fix-success criterion: re-running the scenario must leave forge status and .forge/sprints/<id>/state.yaml showing outcome: DONE, outcome_source: null, original cost/timestamps intact \u2014 not ALREADY_DONE/resume_skip_merged.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:4431 initializes live skip_merged rows from the shared helper so DONE rows do not get an ALREADY_DONE source tag, and src/theforge/sprint/runner.py:4029 persists the same helper result into accumulated sprint state; tests/test_sprint_reexec_reconcile.py:986 checks .forge/sprints/<id>/state.yaml, tests/test_sprint_reexec_reconcile.py:995 checks the summary, and tests/test_sprint_reexec_reconcile.py:1026 samples read_live_status during the next story dispatch."
+        },
+        {
+          "criterion": "outcome_source must never be set to resume_skip_merged for a slug whose recovered prior entry already shows a non-ALREADY_DONE success outcome from the same sprint.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:3423 returns true only for prior DONE records and src/theforge/sprint/runner.py:3451 returns (DONE, None) for skip_merged in that case, while src/theforge/sprint/runner.py:3453 preserves (ALREADY_DONE, resume_skip_merged) when no prior DONE exists; tests/test_sprint_reexec_reconcile.py:987 and tests/test_sprint_reexec_reconcile.py:1121 assert prior DONE keeps null outcome_source, and tests/test_sprint_reexec_reconcile.py:1050 asserts prior ALREADY_DONE remains resume_skip_merged."
+        },
+        {
+          "criterion": "Reported outcome, cost and elapsed time must agree; where they disagree the recorded execution is authoritative. A story reported as having done nothing must not simultaneously report a cost and executed phases.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:4431-4440 uses _skip_merged_outcome to render the correct outcome in live status. Pinned by tests/test_sprint_reexec_reconcile.py:996-1038 (test_reexec_skip_merged_renders_done_in_live_status)."
+        },
+        {
+          "criterion": "Fix-success criterion: re-running the scenario must leave `forge status` and `.forge/sprints/<id>/state.yaml` showing `outcome: DONE`, `outcome_source: null`, original cost/timestamps intact \u2014 not ALREADY_DONE/resume_skip_merged.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:4027-4036 and 4307-4318 preserve the DONE outcome and nullify outcome_source in both the reconcile and resume persistence blocks. Pinned by tests/test_sprint_reexec_reconcile.py:941-993 and 996-1038."
+        },
+        {
+          "criterion": "`outcome_source` must never be set to `resume_skip_merged` for a slug whose recovered prior entry already shows a non-ALREADY_DONE success outcome from the same sprint.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:3414-3428 checks that only a prior DONE outcome is preserved. Pinned by tests/test_sprint_reexec_reconcile.py:1041-1088 (test_reexec_skip_merged_preserves_prior_already_done_as_noop)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2161",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2150",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2161",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2161",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-03T16:16:48.081479+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_reexec_reconcile.py",
+      "detail": "tests/test_sprint_reexec_reconcile.py has 1123 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 6,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 3,
+            "raw": 0.75,
+            "weighted": 0.75,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 9,
+            "completed": 9,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 6,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "concurrency"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4",
+        "domain_head": "openai-gpt-5.4",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8254,
+        "weighted_success_rate": 0.8387,
+        "sample_size": 63,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8387,
+          "threshold": 0.6,
+          "sample_size": 63,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+concurrency",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend",
+          "concurrency"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.84 \u2265 threshold 0.60 over 63 admissible runs \u2014 pre-promotion held) (profile success_rate=0.84 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend+concurrency (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 97,
+            "completed": 90,
+            "raw": 0.9278,
+            "weighted": 0.9484,
+            "rate": 0.9484,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 44,
+            "completed": 36,
+            "raw": 0.8182,
+            "weighted": 0.8093,
+            "rate": 0.8093,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 48.8038,
+              "weighted": 48.8038,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "claude-sonnet": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 119,
+            "completed": 118,
+            "raw": 0.9916,
+            "weighted": 0.9852,
+            "rate": 0.9852,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 97,
+            "completed": 90,
+            "raw": 0.9278,
+            "weighted": 0.9484,
+            "rate": 0.9484,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 44,
+            "completed": 36,
+            "raw": 0.8182,
+            "weighted": 0.8093,
+            "rate": 0.8093,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.476022,
+      "duration_s": 76.89,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 3.077148,
+      "duration_s": 418.63,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 45.81,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 1.160477,
+      "duration_s": 106.83,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 0.72154,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 0.438937,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 4.713648,
+    "duration_s": 648.15,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "057f7c567abd",
+  "sprint_name": "issues-1415,2154,2155,2150"
+}

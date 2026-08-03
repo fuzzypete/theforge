@@ -1,0 +1,1632 @@
+{
+  "schema_version": 17,
+  "run_id": "b3ab75e7d239",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Simplify model config with first-class transport",
+    "slug": "issue-1415",
+    "story_path": null,
+    "story_text": "## Summary\n\nModel configuration should have one clean normalized shape. Transport must be a first-class field, not encoded in provider-like prefixes (`openai-api/`, `gemini-cli/`) or inferred from legacy sibling fields (`cli` plus `provider`).\n\nThis does not need to preserve the existing `forge.yaml` contract. A breaking config cleanup is acceptable if it removes the old leakage and leaves one model abstraction that is easy to reason about.\n\nToday, the same model name can mean different execution paths depending on where it appears: a built-in registry key, a custom overlay provider token, or a provider fallback. Local OpenAI-compatible models add another wrinkle: locality is endpoint metadata (`base_url`), not a transport kind.\n\n## Desired behavior\n\nA selected model has one normalized identity:\n\n- provider family, for example `openai`, `anthropic`, `google`, or `deepseek`\n- provider model name, for example `gpt-5.4`, `sonnet`, or `qwen2.5-coder:32b`\n- transport kind, with bounded values `cli` or `api`\n\nThat tuple is the canonical identity. Do not add a separate free-form model `id` that can drift from the provider/model/transport tuple. If a friendly display label is needed, it must not be the lookup key.\n\nExecution details are derived from identity where unambiguous:\n\n- `(openai, cli)` resolves to the Codex CLI runner\n- `(anthropic, cli)` resolves to the Claude CLI runner\n- `(google, cli)` resolves to the Gemini CLI runner\n- `(openai, api)` resolves to the OpenAI API adapter\n- `(google, api)` resolves to the Google API adapter\n- `(deepseek, api)` resolves to the DeepSeek API adapter\n\nOnly require an explicit runner/executor when there are genuinely multiple valid runners for the same provider and transport kind.\n\nRouting policy is separate from model identity. Tier, capability, cost rank, dev capability, and phase eligibility may still be configured or derived, but they should live in an explicit routing/policy layer rather than being confused with the identity of the model itself. Pricing metadata is similarly metadata used for accounting, not part of the model identity.\n\nLocal LLMs are API transports with endpoint metadata:\n\n- `transport.kind: api`\n- `provider: openai` or another OpenAI-compatible adapter family\n- `base_url` pointing at a localhost-ish endpoint such as `localhost`, `127.0.0.1`, `::1`, or `0.0.0.0`\n\nDo not introduce a `local/...` provider prefix or a `local` transport kind. Locality is endpoint metadata.\n\nThe loader may choose to reject old spellings instead of supporting aliases. If temporary aliases are kept for operator convenience, they must terminate at the raw input boundary. After loading, no legacy transport state should remain: no fake provider prefixes, no duplicated `cli`/`provider` dispatch inference, and no fallback shape that has to be interpreted differently from normal model transport.\n\n## Example\n\n```yaml\nmodels:\n  enabled:\n    - provider: openai\n      model: gpt-5.5\n      transport:\n        kind: cli\n      routing:\n        tier: strong\n\n    - provider: openai\n      model: gpt-5.5\n      transport:\n        kind: api\n      routing:\n        tier: strong\n\n    - provider: openai\n      model: qwen2.5-coder:32b\n      transport:\n        kind: api\n      base_url: http://localhost:11434/v1\n      routing:\n        tier: fast\n```\n\n## Acceptance criteria\n\n1. The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.\n2. Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id` that can diverge from that tuple.\n3. CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as `openai-api/...` or `gemini-cli/...` are removed or treated only as raw input aliases.\n4. Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.\n5. Local LLMs are represented as API transports with endpoint metadata such as `base_url`; local is not a separate provider prefix or transport kind.\n6. Routing policy is separate from identity. Tier, capability, cost rank, dev capability, and phase eligibility do not define the model identity.\n7. Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.\n8. Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API, not a provider-family fallback.\n9. After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy `cli`/`provider` field combinations.\n10. Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.\n11. Documentation shows only the canonical shape as the recommended configuration. Any old shape, if documented, is marked as rejected or migration-only.\n\n## Relationship to existing work\n\nThis supersedes the narrow transport portion of #751. That issue can either be closed as covered by this broader cleanup or kept only for its unrelated config-type cleanup items (`PlanConfig.validate_spec`, `RetryPolicy.plan_escalation_threshold`, and `NotificationConfig.human_review_timeout_seconds` loader/default drift).\n",
+    "github_issue": 1415,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Simplify model config with first-class transport' completed. Review approved after 1 cycle(s), 0 dev iteration(s). Branch: feat/issue-1415",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "resolved_sha256": "cb2f49bf607a0c760e76e3418fd44c942e0825fbb52b88451db360ebde2191d8",
+    "source_sha256_at_finish": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T16:24:11.683023+00:00",
+    "finished_at": "2026-08-03T16:27:57.668687+00:00",
+    "duration_seconds": 225.985664
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1415",
+    "branch": "feat/issue-1415",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "gate_runs": 0,
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 8.638869,
+        "duration_s": 215.32
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 102,
+      "profile_avg_iterations": 1.8922,
+      "profile_avg_cost_usd": 9.855031,
+      "profile_raw_dev_max": 2.8383,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 24.6376,
+      "review_history_sample_size": 14,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 102 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 9.0874627,
+    "dev_usd": 0,
+    "review_usd": 8.6388687,
+    "dev_invocations": 0,
+    "review_invocations": 3,
+    "agents": [
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 2.286699,
+        "duration_seconds": 71.66066691667463,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.286699
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.244496,
+        "duration_seconds": 71.66066691667463,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.244496
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 5.1076737,
+        "duration_seconds": 71.66066691667463,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 5.1076737
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Model config still exposes legacy openai-api/gemini-cli provider-prefix registry keys and ModelProfile.cli/provider fields that runtime dispatch infers transport from, with provider_fallbacks still provider-named rather than transport-fallback-named \u2014 none of the AC set is satisfied.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "refactor",
+    "domains": [
+      "config",
+      "backend",
+      "cli"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.44859400000000005,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "7272b1201863",
+    "cache_snapshot": {
+      "worktree_head": "0d9e373b301974071f2befe3a8fd048c7061b8dc",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "ec2f6ac13772874eee63986a6ffda0e197c9957e",
+      "story_content_hash": "8b90a2c8a345943e9fc21ba276c141bded24811d497bac1595df2bc180cc66d7"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "0d9e373b301974071f2befe3a8fd048c7061b8dc",
+      "current_worktree_head": "0d9e373b301974071f2befe3a8fd048c7061b8dc",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "ec2f6ac13772874eee63986a6ffda0e197c9957e",
+      "current_evaluation_base_branch_head": "ec2f6ac13772874eee63986a6ffda0e197c9957e",
+      "cached_story_content_hash": "8b90a2c8a345943e9fc21ba276c141bded24811d497bac1595df2bc180cc66d7",
+      "current_story_content_hash": "8b90a2c8a345943e9fc21ba276c141bded24811d497bac1595df2bc180cc66d7",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.44859400000000005,
+        "duration_s": 56.19,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.76 \u2265 threshold 0.60 over 102 admissible runs \u2014 pre-promotion held) (profile success_rate=0.76 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "0d9e373b301974071f2befe3a8fd048c7061b8dc",
+      "verification": {
+        "state": "ungated",
+        "gate_decision": null,
+        "gate_commit": null,
+        "gate_runs": 0,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The implementation normalizes model identity around provider, model, and transport kind, and the focused transport/config tests pass. | [google-gemini-3.5-flash] Simplify model config with first-class transport is fully verified and approved. | [claude-sonnet] This is the same five-commit implementation of #1415 already verified in the prior review cycle (0f54dcb through 0d9e373, identical hashes). Canonical model identity is (provider, model, transport.kind); the registry is keyed by that tuple and every key is derived from its own spec so it cannot drift. Transport is a bounded TransportSpec (cli|api) with runner derived from (provider, kind); routing policy lives in a separate RoutingPolicy object; local models are api transports distinguished only by base_url. Legacy spellings (claude/sonnet, openai-api/..., gemini-cli/..., provider_fallbacks, auto_api_fallback) are translated only at the raw-input boundary via normalize_model_key/LEGACY_MODEL_KEY_ALIASES and validate_cli_provider_pair, which rejects contradictory cli/provider pairs rather than silently normalizing them to an undispatchable identity. The three allowed_tools gating bugs (profiles.py _apply_profile_overrides/_parse_profile, PlanAgentReviewConfig.profiles) are fixed to key off transport.kind rather than provider truthiness. Re-ran ruff (clean) and the full targeted test suite (346 passed) covering profile/ref override mutation, the v0.8 loader, canonical identity/transport, schema, config load, model registry, and auto-fallback wiring. No regressions found.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "The model config schema has a first-class transport object with a bounded kind enum of cli and api.",
+          "status": "VERIFIED",
+          "evidence": "TransportSpec.__post_init__ rejects any kind outside cli/api at src/theforge/config/models.py:37, and _parse_transport_kind validates transport.kind at src/theforge/config/load.py:145. Covered by tests/test_model_identity_transport.py:58 and tests/test_model_identity_transport.py:297.; TransportSpec.__post_init__ (config/models.py) rejects any kind other than cli/api; tests/test_model_identity_transport.py::TestCanonicalIdentity::test_transport_kind_is_a_bounded_enum and TestRoutingPolicySeparation::test_unbounded_transport_kind_is_rejected_at_the_boundary."
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form id that can diverge from that tuple.",
+          "status": "VERIFIED",
+          "evidence": "AgentSpec.canonical_id, canonical_model_id, and _build_registry derive keys from provider/model/kind at src/theforge/config/models.py:128 and src/theforge/config/models.py:601. Covered by tests/test_model_identity_transport.py:62 and tests/test_model_identity_transport.py:68.; _build_registry (config/models.py) keys AGENT_REGISTRY by canonical_id_for_spec(spec), rejecting duplicates; AgentSpec has no id field (test_agent_spec_exposes_no_free_form_id_field). validate_cli_provider_pair (config/models.py) closes the remaining drift vector by rejecting cli/provider pairs whose derived identity would disagree with actual dispatch, wired into ModelProfile, ModelRef, PlanConfig __post_init__. Covered by test_v08_mixed_cli_provider_override_is_rejected, test_mixed_cli_provider_profile_override_is_rejected, test_mixed_cli_provider_ref_override_is_rejected, test_mixed_cli_provider_parse_profile_is_rejected, test_mixed_cli_provider_plan_config_is_rejected, plus consistent-pair counterparts confirming valid pairs still load."
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as openai-api/... or gemini-cli/... are removed or treated only as raw input aliases.",
+          "status": "VERIFIED",
+          "evidence": "The registry is keyed from canonical specs at src/theforge/config/models.py:619, legacy aliases are confined to LEGACY_MODEL_KEY_ALIASES/normalize_model_key at src/theforge/config/models.py:633, and loader normalization happens in _parse_enabled_list at src/theforge/config/load.py:300. Covered by tests/test_model_identity_transport.py:94, tests/test_model_identity_transport.py:105, and tests/test_model_identity_transport.py:135."
+        },
+        {
+          "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.",
+          "status": "VERIFIED",
+          "evidence": "_RUNNER_BY_IDENTITY, runner_for, and transport_for derive runner selection from provider/kind at src/theforge/config/models.py:147. The canonical transport config parser only accepts kind at src/theforge/config/load.py:158. Covered by tests/test_model_identity_transport.py:150 and tests/test_model_identity_transport.py:170.; src/theforge/config/models.py near line 170 defines runner_for and transport_for. tests/test_model_identity_transport.py near line 147 verifies this."
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as base_url; local is not a separate provider prefix or transport kind.",
+          "status": "VERIFIED",
+          "evidence": "Local OpenAI-compatible registry entries use provider openai, API transport, and base_url at src/theforge/config/models.py:417 and src/theforge/config/models.py:505, while inline config preserves base_url at src/theforge/config/load.py:261. Covered by tests/test_model_identity_transport.py:186 and tests/test_model_identity_transport.py:201."
+        },
+        {
+          "criterion": "Routing policy is separate from identity. Tier, capability, cost rank, dev capability, and phase eligibility do not define the model identity.",
+          "status": "VERIFIED",
+          "evidence": "RoutingPolicy is a separate dataclass at src/theforge/config/models.py:66 and AgentSpec stores it under routing while canonical identity uses only provider/model/kind at src/theforge/config/models.py:83. Covered by tests/test_model_identity_transport.py:73 and tests/test_model_identity_transport.py:237.; src/theforge/config/models.py near line 63 defines RoutingPolicy. tests/test_model_identity_transport.py near line 234 verifies this."
+        },
+        {
+          "criterion": "Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.",
+          "status": "VERIFIED",
+          "evidence": "Model projections carry provider, canonical id, transport, and base_url at src/theforge/config/models.py:796, bridge and adaptive assignment preserve transport/canonical metadata at src/theforge/config/bridge.py:43 and src/theforge/assignment.py:1582, and model profile/status helpers retain identity and transport fields at src/theforge/model_profiles.py:329 and src/theforge/sprint/runner.py:791. Covered by tests/test_model_identity_transport.py:320, tests/test_model_identity_transport.py:336, and tests/test_model_identity_transport.py:350.; src/theforge/config/types.py near line 249 defines ModelProfile with distinct provider, model, and transport fields. tests/test_model_identity_transport.py near line 317 verifies this.; ModelProfile.identity/canonical_id and AgentDef.transport_kind render provider and transport.kind separately; check_config._split_provider_transport shows both. Verified by TestIdentityInTelemetry."
+        },
+        {
+          "criterion": "Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API, not a provider-family fallback.",
+          "status": "VERIFIED",
+          "evidence": "TransportFallbackConfig pins fallback kind to api at src/theforge/config/types.py:356, loader aliases provider_fallbacks into transport_fallbacks at src/theforge/config/load.py:994, and auto fallback builds same-provider API targets at src/theforge/config/load.py:506. Covered by tests/test_model_identity_transport.py:370, tests/test_model_identity_transport.py:374, and tests/test_model_identity_transport.py:388.; src/theforge/config/types.py near line 356 defines TransportFallbackConfig. tests/test_model_identity_transport.py near line 367 verifies this.; TransportFallbackConfig.__post_init__ pins kind to \"api\"; transport_fallbacks/auto_transport_fallback replace provider_fallbacks/ auto_api_fallback, with legacy keys accepted only as aliases and rejected if both are set. Verified by TestTransportFallback."
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy cli/provider field combinations.",
+          "status": "VERIFIED",
+          "evidence": "ModelProfile.mode reads transport.kind at src/theforge/config/types.py:321, _profile_transport_kind returns profile.mode at src/theforge/runners/cli.py:445, and run_agent dispatches on that value at src/theforge/runners/cli.py:488. Covered by tests/test_model_identity_transport.py:440, tests/test_model_identity_transport.py:458, and tests/test_model_identity_transport.py:474."
+        },
+        {
+          "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.",
+          "status": "VERIFIED",
+          "evidence": "Runtime dataclasses now carry transport, transport_fallback, and derived canonical_id at src/theforge/config/types.py:250 and src/theforge/config/schema.py:23, while legacy raw-field normalization is isolated in transport_from_raw_fields at src/theforge/config/models.py:292. Covered by tests/test_profile_transport_mutation.py:189, tests/test_profile_transport_mutation.py:216, and tests/test_model_identity_transport.py:440.; src/theforge/config/types.py near line 285 normalizes transport in __post_init__. tests/test_model_identity_transport.py near line 437 verifies this."
+        },
+        {
+          "criterion": "Documentation shows only the canonical shape as the recommended configuration. Any old shape, if documented, is marked as rejected or migration-only.",
+          "status": "VERIFIED",
+          "evidence": "The inputs reference documents canonical provider/model/transport identities and marks legacy keys migration-only at docs/guides/inputs-reference.md:340 and docs/guides/inputs-reference.md:413, while local model docs show openai/.../api keys at docs/guides/local-models.md:46. Covered by the canonical loader/alias tests in tests/test_model_identity_transport.py:94 and tests/test_model_identity_transport.py:135.; docs/guides/getting-started.md near line 57 and docs/guides/inputs-reference.md near line 315 show only canonical shapes.; docs/guides/inputs-reference.md documents the canonical shape, a \"Legacy model keys (migration only)\" table, and the cli/provider consistency rule with the exact rejection condition."
+        },
+        {
+          "criterion": "The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py near line 40 defines TransportSpec with bounded kind check. tests/test_model_identity_transport.py near line 58 verifies this."
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id` that can diverge from that tuple.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py near line 442 defines canonical_model_id. tests/test_model_identity_transport.py near line 62 verifies this."
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as `openai-api/...` or `gemini-cli/...` are removed or treated only as raw input aliases.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py near line 630 defines LEGACY_MODEL_KEY_ALIASES and normalize_model_key. tests/test_model_identity_transport.py near line 91 verifies this."
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as `base_url`; local is not a separate provider prefix or transport kind.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py near line 410 defines local models with api transport and base_url. tests/test_model_identity_transport.py near line 183 verifies this."
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy `cli`/`provider` field combinations.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/cli.py near line 445 defines _profile_transport_kind reading profile.mode which reads profile.transport.kind. tests/test_model_identity_transport.py near line 437 verifies this."
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config.",
+          "status": "VERIFIED",
+          "evidence": "Every AGENT_REGISTRY key is a three-segment provider/model/kind string (TestNoTransportPrefixes); legacy prefixed keys translate via normalize_model_key/LEGACY_MODEL_KEY_ALIASES at the raw boundary only and are unresolvable directly against the registry."
+        },
+        {
+          "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous.",
+          "status": "VERIFIED",
+          "evidence": "runner_for()/_RUNNER_BY_IDENTITY (config/models.py) derive runner from (provider, kind); ghaw is the sole _EXPLICIT_ONLY_RUNNERS exception. Verified by TestRunnerInference."
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as base_url.",
+          "status": "VERIFIED",
+          "evidence": "LOCAL_OPENAI_BASE_URL entries in _REGISTRY_SPECS are api-transport with base_url set; TestLocalModelsAreApiTransports covers built-ins and inline models.enabled declarations round-tripping base_url."
+        },
+        {
+          "criterion": "Routing policy is separate from identity.",
+          "status": "VERIFIED",
+          "evidence": "RoutingPolicy is a distinct dataclass on AgentSpec.routing; AgentSpec has no tier/capability/cost_rank fields of its own. Verified by TestRoutingPolicySeparation."
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object.",
+          "status": "VERIFIED",
+          "evidence": "_profile_transport_kind/_profile_cli_runner (runners/cli.py) read only profile.mode/transport. TestDispatchReadsTransportOnly confirms transport wins over stale sibling fields and provider alone does not imply API dispatch."
+        },
+        {
+          "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical.",
+          "status": "VERIFIED",
+          "evidence": "transport_from_raw_fields/validate_cli_provider_pair are documented migration-only helpers confined to __post_init__; cli is retained only as a runner projection, not a dispatch input."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2163",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-1415",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2163",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2163",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-03T16:27:57.668687+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 3,
+            "raw": 0.75,
+            "weighted": 0.75,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 9,
+            "completed": 9,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8529,
+              "weighted": 0.7628,
+              "runs": 102,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.7628
+            },
+            "domain": {
+              "domains": [
+                "config",
+                "backend",
+                "cli"
+              ],
+              "raw": 0.8977,
+              "weighted": 0.95,
+              "runs": 88,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.95,
+              "by_domain": {
+                "config": {
+                  "runs": 10,
+                  "raw": 0.9,
+                  "weighted": 0.9,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 51,
+                  "raw": 0.902,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 27,
+                  "raw": 0.8889,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "config",
+                "backend",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "config",
+          "backend",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "config",
+            "backend",
+            "cli"
+          ],
+          "raw": 0.8977,
+          "weighted": 0.95,
+          "runs": 88,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.95,
+          "by_domain": {
+            "config": {
+              "runs": 10,
+              "raw": 0.9,
+              "weighted": 0.9,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 51,
+              "raw": 0.902,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 27,
+              "raw": 0.8889,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8529,
+        "weighted_success_rate": 0.7628,
+        "sample_size": 102,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.7628,
+          "threshold": 0.6,
+          "sample_size": 102,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+cli+config",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.76 \u2265 threshold 0.60 over 102 admissible runs \u2014 pre-promotion held) (profile success_rate=0.76 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 98,
+            "completed": 91,
+            "raw": 0.9286,
+            "weighted": 0.9494,
+            "rate": 0.9494,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 44,
+            "completed": 36,
+            "raw": 0.8182,
+            "weighted": 0.8093,
+            "rate": 0.8093,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 93.875,
+              "weighted": 93.875,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "claude-sonnet": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 120,
+            "completed": 119,
+            "raw": 0.9917,
+            "weighted": 0.9854,
+            "rate": 0.9854,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 98,
+            "completed": 91,
+            "raw": 0.9286,
+            "weighted": 0.9494,
+            "rate": 0.9494,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 44,
+            "completed": 36,
+            "raw": 0.8182,
+            "weighted": 0.8093,
+            "rate": 0.8093,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.448594,
+      "duration_s": 56.19,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": {
+      "cost_usd": 8.638869,
+      "duration_s": 214.98,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 2.286699,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 1.244496,
+          "verdict": "APPROVE"
+        },
+        "claude-sonnet": {
+          "cost": 5.107674,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 9.087463,
+    "duration_s": 271.17,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 1
+  },
+  "sprint_id": "057f7c567abd",
+  "sprint_name": "issues-1415,2154,2155,2150"
+}
